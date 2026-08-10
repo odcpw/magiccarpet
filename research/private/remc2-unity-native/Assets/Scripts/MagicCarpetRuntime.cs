@@ -523,6 +523,10 @@ namespace MagicCarpet.Native
         private NativeSim.CampaignWorldInfo campaignWorldInfo;
         private NativeSim.CampaignStepSnapshot level2StepSnapshot;
         private NativeSim.CampaignTerrainState level2TerrainState;
+        private NativeSim.CampaignDayHudSnapshot level2DayHud;
+        private NativeSim.CampaignDayHudSnapshot level2PresentedDayHud;
+        private bool level2DayHudPresenterReady;
+        private OwnerAssetCache.Level2DayHudDescriptor level2DayHudDescriptor;
         private NativeSim.CampaignEvent[] level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
         private NativeSim.CampaignAuthoredGroupEvent[] level2AuthoredGroupEvents =
             Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
@@ -676,6 +680,8 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int, byte[]> hudBitmapIndices = new();
         private readonly Dictionary<int, byte[]> hudBitmapMasks = new();
         private readonly Dictionary<int, Texture2D> ownerSpellTierTextures = new();
+        private readonly Dictionary<int, Level2DayHudTierRowDescriptor>
+            level2DayHudTierRows = new();
         private readonly Dictionary<int, Material> entitySpriteMaterials = new();
         private readonly Dictionary<int, Texture2D> entitySpriteTextures = new();
         private readonly Dictionary<int, string> entitySpriteIndicesSha256 = new();
@@ -911,6 +917,12 @@ namespace MagicCarpet.Native
         internal NativeSim.CampaignTerrainState Level2ProductionTerrainState =>
             level2TerrainState;
 
+        internal NativeSim.CampaignDayHudSnapshot Level2ProductionDayHud =>
+            level2DayHud;
+
+        internal bool Level2ProductionDayHudPresenterReady =>
+            level2DayHudPresenterReady;
+
         internal NativeSim.CampaignEvent[] Level2ProductionStepEvents =>
             level2StepEvents;
 
@@ -919,6 +931,9 @@ namespace MagicCarpet.Native
 
         internal (ushort x, ushort y, short z) Level2ProductionLastStepInput =>
             (level2LastStepInputX, level2LastStepInputY, level2LastStepInputZ);
+
+        internal (ushort x, ushort y, short z) Level2ProductionNextStepInput =>
+            (level2StepInputX, level2StepInputY, level2StepInputZ);
 
         internal string Level2ProductionFatalError => fatalError;
 
@@ -1676,6 +1691,17 @@ namespace MagicCarpet.Native
             public int palette_index;
         }
 
+        private sealed class Level2DayHudTierRowDescriptor
+        {
+            public int tier;
+            public string text;
+            public int stored_width;
+            public int stored_height;
+            public int runtime_width;
+            public int runtime_height;
+            public string raster_path;
+        }
+
         [Serializable]
         private sealed class HudSpellSlotDescriptor
         {
@@ -2080,6 +2106,8 @@ namespace MagicCarpet.Native
             level2StepEvents = result.events;
             level2AuthoredGroupEvents = campaignSession.AuthoredGroupEvents();
             level2TerrainState = campaignSession.TerrainState();
+            level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
+            PresentLevel2DayHud(level2DayHud);
             level2StepInputX = result.snapshot.x;
             level2StepInputY = result.snapshot.y;
             level2StepInputZ = result.snapshot.z;
@@ -3640,6 +3668,14 @@ namespace MagicCarpet.Native
             RenderSettings.fogMode = FogMode.ExponentialSquared;
             RenderSettings.fogDensity = 0.0015f;
             RenderSettings.ambientLight = new Color(0.20f, 0.23f, 0.36f);
+
+            if (level2Mode)
+            {
+                // Level 2 materializes its bounded Day HUD from the explicit
+                // aggregate before this method runs. The Level 1 PALN/TMAP
+                // route must not be entered for the campaign presenter.
+                return;
+            }
 
             if (debugMode)
             {
@@ -6937,6 +6973,175 @@ namespace MagicCarpet.Native
                 "bars=MissionStateLiveSourceMapped highres=HSPRN-native");
         }
 
+        private void MaterializeLevel2DayHud()
+        {
+            Require(
+                level2Mode &&
+                ownerAssetCache != null &&
+                level2DayHudDescriptor != null,
+                "Level 2 Day HUD materialization has a validated owner cache");
+
+            var hud = level2DayHudDescriptor;
+            DestroyLevel2DayHudPresentation();
+            level2DayHudDescriptor = hud;
+            ownerHudPaletteRgb8 = ownerAssetCache.ReadLevel2GameplayOutput(
+                hud.palette.rgb8_path);
+            Require(
+                ownerHudPaletteRgb8.Length == 256 * 3,
+                "Level 2 Day HUD PALD rgb8 extent");
+
+            foreach (var row in hud.bitmap_assets)
+            {
+                Require(
+                    row != null &&
+                    OwnerAssetCache.IsQualifiedDayHudSpriteSelector(row.selector) &&
+                    row.stored_width > 0 &&
+                    row.stored_height > 0 &&
+                    row.runtime_width == row.stored_width * 2 &&
+                    row.runtime_height == row.stored_height * 2,
+                    $"Level 2 Day HUD bitmap descriptor {row?.selector}");
+                var indices = ownerAssetCache.ReadLevel2GameplayOutput(row.indices_path);
+                var mask = ownerAssetCache.ReadLevel2GameplayOutput(row.mask_path);
+                var storedPixels = checked(row.stored_width * row.stored_height);
+                Require(
+                    indices.Length == storedPixels &&
+                    mask.Length == storedPixels,
+                    $"Level 2 Day HUD bitmap payload {row.selector}");
+                var rgba = new byte[checked(row.runtime_width * row.runtime_height * 4)];
+                for (var sourceY = 0; sourceY < row.stored_height; sourceY++)
+                {
+                    for (var sourceX = 0; sourceX < row.stored_width; sourceX++)
+                    {
+                        var source = sourceY * row.stored_width + sourceX;
+                        var paletteOffset = indices[source] * 3;
+                        var visible = mask[source] != 0;
+                        for (var y = 0; y < 2; y++)
+                        {
+                            for (var x = 0; x < 2; x++)
+                            {
+                                var runtime =
+                                    (sourceY * 2 + y) * row.runtime_width +
+                                    sourceX * 2 + x;
+                                var rgbaOffset = runtime * 4;
+                                if (!visible)
+                                {
+                                    rgba[rgbaOffset] = 0;
+                                    rgba[rgbaOffset + 1] = 0;
+                                    rgba[rgbaOffset + 2] = 0;
+                                    rgba[rgbaOffset + 3] = 0;
+                                }
+                                else
+                                {
+                                    rgba[rgbaOffset] = ownerHudPaletteRgb8[paletteOffset];
+                                    rgba[rgbaOffset + 1] = ownerHudPaletteRgb8[paletteOffset + 1];
+                                    rgba[rgbaOffset + 2] = ownerHudPaletteRgb8[paletteOffset + 2];
+                                    rgba[rgbaOffset + 3] = 255;
+                                }
+                            }
+                        }
+                    }
+                }
+                var descriptor = new HudBitmapDescriptor
+                {
+                    selector = row.selector,
+                    bank = row.bank,
+                    source_asset_id = row.source_asset_id,
+                    indices_path = row.indices_path,
+                    mask_path = row.mask_path,
+                    indices_sha256 = row.indices_sha256,
+                    mask_sha256 = row.mask_sha256,
+                    stored_width = row.stored_width,
+                    stored_height = row.stored_height,
+                    runtime_width = row.runtime_width,
+                    runtime_height = row.runtime_height,
+                    source_scale = row.source_scale,
+                    palette = row.palette_asset_id,
+                    filter = row.filter,
+                    authority = row.authority
+                };
+                Require(
+                    hudBitmapDescriptors.TryAdd(row.selector, descriptor),
+                    $"unique Level 2 Day HUD bitmap selector {row.selector}");
+                hudBitmapIndices.Add(row.selector, indices);
+                hudBitmapMasks.Add(row.selector, mask);
+                hudBitmapTextures.Add(
+                    row.selector,
+                    CreateTopDownRgbaTexture(
+                        $"Owner Level 2 Day MSPRD0-0 selector {row.selector}",
+                        rgba,
+                        row.runtime_width,
+                        row.runtime_height));
+            }
+
+            foreach (var row in hud.spell_tier_text.tiers)
+            {
+                Require(
+                    row != null &&
+                    row.tier >= 0 &&
+                    row.tier < 5 &&
+                    row.stored_width > 0 &&
+                    row.stored_height > 0 &&
+                    row.runtime_width == row.stored_width * 2 &&
+                    row.runtime_height == row.stored_height * 2,
+                    $"Level 2 Day HUD Roman tier {row?.tier}");
+                var raster = ownerAssetCache.ReadLevel2GameplayOutput(row.raster_path);
+                Require(
+                    raster.Length == checked(row.stored_width * row.stored_height * 4),
+                    $"Level 2 Day HUD Roman tier payload {row.tier}");
+                level2DayHudTierRows.Add(
+                    row.tier,
+                    new Level2DayHudTierRowDescriptor
+                    {
+                        tier = row.tier,
+                        text = row.text,
+                        stored_width = row.stored_width,
+                        stored_height = row.stored_height,
+                        runtime_width = row.runtime_width,
+                        runtime_height = row.runtime_height,
+                        raster_path = row.raster_path
+                    });
+                ownerSpellTierTextures.Add(
+                    row.tier,
+                    CreateTopDownRgbaTexture(
+                        $"Owner Level 2 Day Roman tier {row.text}",
+                        raster,
+                        row.stored_width,
+                        row.stored_height));
+            }
+            Require(
+                hudBitmapDescriptors.Count == hud.bitmap_assets.Length &&
+                level2DayHudTierRows.Count == 5,
+                "complete Level 2 Day HUD materialization");
+        }
+
+        private void DestroyLevel2DayHudPresentation()
+        {
+            foreach (var texture in hudBitmapTextures.Values)
+            {
+                if (texture != null)
+                {
+                    if (Application.isPlaying) Destroy(texture);
+                    else DestroyImmediate(texture);
+                }
+            }
+            foreach (var texture in ownerSpellTierTextures.Values)
+            {
+                if (texture != null)
+                {
+                    if (Application.isPlaying) Destroy(texture);
+                    else DestroyImmediate(texture);
+                }
+            }
+            hudBitmapDescriptors.Clear();
+            hudBitmapTextures.Clear();
+            hudBitmapIndices.Clear();
+            hudBitmapMasks.Clear();
+            ownerSpellTierTextures.Clear();
+            level2DayHudTierRows.Clear();
+            ownerHudPaletteRgb8 = null;
+            level2DayHudDescriptor = null;
+        }
+
         private static Texture2D CreateTopDownRgbaTexture(
             string name,
             byte[] topDownRgba,
@@ -7751,14 +7956,26 @@ namespace MagicCarpet.Native
                 assetCache);
         }
 
-        internal void QualificationInitializeLevel2Production(string package)
+        internal void QualificationInitializeLevel2Production(
+            string package,
+            string assetCache)
         {
             Require(
                 !gameObject.activeInHierarchy &&
                 session == null &&
                 campaignSession == null,
                 "Level 2 production route starts before Awake with no owner handle");
-            var arguments = new[] { "-mc-level2", "-mc-package", package };
+            Require(
+                !string.IsNullOrWhiteSpace(assetCache),
+                "Level 2 production route requires an explicit owner cache path");
+            var arguments = new[]
+            {
+                "-mc-level2",
+                "-mc-package",
+                package,
+                "-mc-asset-cache",
+                assetCache
+            };
             disposed = false;
             try
             {
@@ -7788,6 +8005,27 @@ namespace MagicCarpet.Native
                     string.IsNullOrEmpty(fatalError),
                     $"Level 2 frame {index} completed without a runtime failure");
             }
+        }
+
+        internal void QualificationResetLevel2Production()
+        {
+            Require(
+                level2Mode &&
+                level2StartupReady &&
+                campaignSession != null,
+                "Level 2 reset route requires a validated campaign session");
+            campaignSession.Reset();
+            level2StepSnapshot = default;
+            level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
+            level2AuthoredGroupEvents =
+                Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
+            level2TerrainState = campaignSession.TerrainState();
+            SeedLevel2LocalPlayerPosition();
+            level2LastStepInputX = 0;
+            level2LastStepInputY = 0;
+            level2LastStepInputZ = 0;
+            level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
+            PresentLevel2DayHud(level2DayHud);
         }
 
         internal void QualificationDisposeNativeOwners()
@@ -9948,6 +10186,306 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void PresentLevel2DayHud(NativeSim.CampaignDayHudSnapshot hud)
+        {
+            Require(
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.minimapPanelSelector) &&
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.castlePanelSelector) &&
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.balloonPanelSelector) &&
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.playerPanelSelector) &&
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.playerIconSelector) &&
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.lifeManaIconSelector),
+                "qualified Day HUD status roots");
+            ValidateLevel2DayHudPresenterSlot(hud.left, hud.localPlayerEntityIndex);
+            ValidateLevel2DayHudPresenterSlot(hud.right, hud.localPlayerEntityIndex);
+
+            level2PresentedDayHud = hud;
+            level2DayHudPresenterReady = false;
+            if (HasMaterializedLevel2DayHudRoots(hud))
+            {
+                ComputeLevel2DayHudTopBarLayout(hud);
+                level2DayHudPresenterReady = true;
+            }
+        }
+
+        private int Level2DayHudRuntimeWidth(int selector)
+        {
+            Require(
+                hudBitmapDescriptors.TryGetValue(selector, out var bitmap),
+                $"materialized Level 2 Day HUD descriptor {selector}");
+            Require(
+                bitmap.runtime_width > 0,
+                $"materialized Level 2 Day HUD width {selector}");
+            return bitmap.runtime_width;
+        }
+
+        private (int castleX, int balloonX, int playerX) ComputeLevel2DayHudTopBarLayout(
+            NativeSim.CampaignDayHudSnapshot hud)
+        {
+            const int minimapX = 2;
+            var minimapWidth = Level2DayHudRuntimeWidth(hud.minimapPanelSelector);
+            var panelWidth = Level2DayHudRuntimeWidth(hud.castlePanelSelector);
+            var balloonWidth = Level2DayHudRuntimeWidth(hud.balloonPanelSelector);
+            var playerWidth = Level2DayHudRuntimeWidth(hud.playerPanelSelector);
+
+            Require(
+                panelWidth == balloonWidth &&
+                panelWidth == playerWidth &&
+                minimapWidth < panelWidth,
+                "Level 2 Day HUD panel runtime-width progression");
+
+            var castleX = minimapX + minimapWidth;
+            var balloonX = castleX + panelWidth;
+            var playerX = balloonX + panelWidth;
+            return (castleX, balloonX, playerX);
+        }
+
+        private bool HasMaterializedLevel2DayHudRoots(
+            NativeSim.CampaignDayHudSnapshot hud)
+        {
+            var statusRoots =
+                hudBitmapDescriptors.ContainsKey(hud.minimapPanelSelector) &&
+                hudBitmapDescriptors.ContainsKey(hud.castlePanelSelector) &&
+                hudBitmapDescriptors.ContainsKey(hud.balloonPanelSelector) &&
+                hudBitmapDescriptors.ContainsKey(hud.playerPanelSelector) &&
+                hudBitmapDescriptors.ContainsKey(hud.playerIconSelector) &&
+                hudBitmapDescriptors.ContainsKey(hud.lifeManaIconSelector) &&
+                hudBitmapTextures.ContainsKey(hud.minimapPanelSelector) &&
+                hudBitmapTextures.ContainsKey(hud.castlePanelSelector) &&
+                hudBitmapTextures.ContainsKey(hud.balloonPanelSelector) &&
+                hudBitmapTextures.ContainsKey(hud.playerPanelSelector) &&
+                hudBitmapTextures.ContainsKey(hud.playerIconSelector) &&
+                hudBitmapTextures.ContainsKey(hud.lifeManaIconSelector);
+            var leftRoots = hud.left.holderEntityIndex == 0 ||
+                hud.left.drawAdmitted == 0 ||
+                hudBitmapDescriptors.ContainsKey(hud.left.frameSelector) &&
+                hudBitmapDescriptors.ContainsKey(hud.left.iconSelector) &&
+                hudBitmapTextures.ContainsKey(hud.left.frameSelector) &&
+                hudBitmapTextures.ContainsKey(hud.left.iconSelector) &&
+                level2DayHudTierRows.ContainsKey(hud.left.levelTextSelector) &&
+                ownerSpellTierTextures.ContainsKey(hud.left.levelTextSelector);
+            var rightRoots = hud.right.holderEntityIndex == 0 ||
+                hud.right.drawAdmitted == 0 ||
+                hudBitmapDescriptors.ContainsKey(hud.right.frameSelector) &&
+                hudBitmapDescriptors.ContainsKey(hud.right.iconSelector) &&
+                hudBitmapTextures.ContainsKey(hud.right.frameSelector) &&
+                hudBitmapTextures.ContainsKey(hud.right.iconSelector) &&
+                level2DayHudTierRows.ContainsKey(hud.right.levelTextSelector) &&
+                ownerSpellTierTextures.ContainsKey(hud.right.levelTextSelector);
+            return statusRoots && leftRoots && rightRoots && ownerHudPaletteRgb8 != null;
+        }
+
+        private static void ValidateLevel2DayHudPresenterSlot(
+            NativeSim.CampaignDayHudSpellSlot slot,
+            ushort localPlayerEntityIndex)
+        {
+            if (slot.rawSpellSelector < 0)
+            {
+                Require(
+                    slot.holderEntityIndex == 0 &&
+                    slot.frameSelector == 0 &&
+                    slot.iconSelector == 0 &&
+                    slot.levelTextSelector == 0,
+                    "empty Day HUD hand root");
+                return;
+            }
+            Require(
+                slot.holderEntityIndex != 0 &&
+                slot.parentEntityIndex == localPlayerEntityIndex &&
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(slot.frameSelector) &&
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(slot.iconSelector) &&
+                OwnerAssetCache.IsQualifiedDayHudLevelTextSelector(slot.levelTextSelector),
+                $"qualified Day HUD hand roots for holder {slot.holderEntityIndex}");
+        }
+
+        private bool TryDrawLevel2DayHudSprite(int selector, int x, int y)
+        {
+            if (!OwnerAssetCache.IsQualifiedDayHudSpriteSelector(selector))
+            {
+                return false;
+            }
+            if (!hudBitmapDescriptors.TryGetValue(selector, out var bitmap) ||
+                !hudBitmapTextures.TryGetValue(selector, out var texture))
+            {
+                // A Day route never substitutes a Generic box, generated
+                // texture, or Level 1 cache row for a missing owner asset.
+                return false;
+            }
+            GUI.DrawTexture(
+                new Rect(x, y, bitmap.runtime_width, bitmap.runtime_height),
+                texture,
+                ScaleMode.StretchToFill,
+                true);
+            return true;
+        }
+
+        internal bool QualificationTryDrawLevel2DayHudSprite(int selector)
+        {
+            return TryDrawLevel2DayHudSprite(selector, 0, 0);
+        }
+
+        internal bool QualificationHasMaterializedLevel2DayHudSprite(int selector)
+        {
+            return OwnerAssetCache.IsQualifiedDayHudSpriteSelector(selector) &&
+                hudBitmapDescriptors.ContainsKey(selector) &&
+                hudBitmapTextures.TryGetValue(selector, out var texture) &&
+                texture != null;
+        }
+
+        internal string QualificationSelectedLevel2DayHudRomanTierTexture(int tier)
+        {
+            if (!level2DayHudPresenterReady ||
+                !level2DayHudTierRows.ContainsKey(tier) ||
+                !ownerSpellTierTextures.TryGetValue(tier, out var texture) ||
+                texture == null)
+            {
+                return null;
+            }
+            var leftSelected = level2PresentedDayHud.left.drawAdmitted != 0 &&
+                level2PresentedDayHud.left.levelTextSelector == tier;
+            var rightSelected = level2PresentedDayHud.right.drawAdmitted != 0 &&
+                level2PresentedDayHud.right.levelTextSelector == tier;
+            return leftSelected || rightSelected ? texture.name : null;
+        }
+
+        private bool TryDrawLevel2DayHudTier(
+            NativeSim.CampaignDayHudSpellSlot slot,
+            int x,
+            int y)
+        {
+            if (slot.holderEntityIndex == 0 || slot.drawAdmitted == 0 ||
+                !hudBitmapDescriptors.TryGetValue(
+                    slot.frameSelector,
+                    out var frame) ||
+                !level2DayHudTierRows.TryGetValue(
+                    slot.levelTextSelector,
+                    out var tier) ||
+                !ownerSpellTierTextures.TryGetValue(
+                    slot.levelTextSelector,
+                    out var texture))
+            {
+                return false;
+            }
+            GUI.DrawTexture(
+                new Rect(
+                    x + frame.runtime_width - tier.runtime_width - 2,
+                    y,
+                    tier.runtime_width,
+                    tier.runtime_height),
+                texture,
+                ScaleMode.StretchToFill,
+                true);
+            return true;
+        }
+
+        private void DrawLevel2DayHud()
+        {
+            if (!level2DayHudPresenterReady ||
+                level2DayHud.generation != level2PresentedDayHud.generation ||
+                level2DayHud.tick != level2PresentedDayHud.tick)
+            {
+                return;
+            }
+            var hud = level2PresentedDayHud;
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            var offsetX = (Screen.width - 640f * scale) * 0.5f;
+            var offsetY = (Screen.height - 480f * scale) * 0.5f;
+            var priorMatrix = GUI.matrix;
+            var priorColour = GUI.color;
+            GUI.matrix = Matrix4x4.TRS(
+                new Vector3(offsetX, offsetY, 0f),
+                Quaternion.identity,
+                new Vector3(scale, scale, 1f));
+            GUI.color = Color.white;
+            try
+            {
+                DrawLevel2DayHudSpellSlot(hud.left, 510, 2);
+                DrawLevel2DayHudSpellSlot(hud.right, 574, 2);
+                var (castleX, balloonX, playerX) =
+                    ComputeLevel2DayHudTopBarLayout(hud);
+                TryDrawLevel2DayHudSprite(hud.minimapPanelSelector, 2, 2);
+                TryDrawLevel2DayHudSprite(hud.castlePanelSelector, castleX, 2);
+                TryDrawLevel2DayHudSprite(hud.balloonPanelSelector, balloonX, 2);
+                TryDrawLevel2DayHudSprite(hud.playerPanelSelector, playerX, 2);
+                TryDrawLevel2DayHudSprite(hud.playerIconSelector, playerX + 2, 2);
+                TryDrawLevel2DayHudSprite(
+                    hud.lifeManaIconSelector,
+                    playerX + 38,
+                    2);
+                var lifeWidth = SourceHudWidth(
+                    hud.localPlayerLife,
+                    hud.localPlayerMaxLife);
+                var maxManaWidth = SourceHudWidth(
+                    hud.localPlayerMaxMana,
+                    hud.globalManaDenominator);
+                var manaWidth = SourceHudWidth(
+                    hud.localPlayerMana,
+                    hud.globalManaDenominator);
+                DrawOwnerHudBar(
+                    playerX + 58,
+                    10,
+                    lifeWidth,
+                    10,
+                    hud.lifePaletteIndex);
+                DrawOwnerHudBar(
+                    playerX + 58,
+                    28,
+                    maxManaWidth,
+                    10,
+                    hud.manaMaxPaletteIndex);
+                DrawOwnerHudBar(
+                    playerX + 58,
+                    28,
+                    manaWidth,
+                    10,
+                    hud.manaPaletteIndex);
+            }
+            finally
+            {
+                GUI.matrix = priorMatrix;
+                GUI.color = priorColour;
+            }
+        }
+
+        private void DrawLevel2DayHudSpellSlot(
+            NativeSim.CampaignDayHudSpellSlot slot,
+            int x,
+            int y)
+        {
+            if (slot.holderEntityIndex == 0 || slot.drawAdmitted == 0)
+            {
+                return;
+            }
+            TryDrawLevel2DayHudSprite(slot.frameSelector, x, y);
+            TryDrawLevel2DayHudSprite(slot.iconSelector, x, y);
+            TryDrawLevel2DayHudTier(slot, x, y);
+            if (slot.maxMana <= 0)
+            {
+                return;
+            }
+            var remainder = slot.casterMana % slot.maxMana;
+            DrawOwnerHudBar(
+                x + 4,
+                y + 36,
+                (int)(56L * remainder / slot.maxMana),
+                4,
+                level2PresentedDayHud.manaMaxPaletteIndex);
+            var wholeCharges = slot.casterMana / slot.maxMana;
+            for (var column = 0; column < 27 && wholeCharges > 0; column++)
+            {
+                for (var row = 0; row < 2 && wholeCharges > 0; row++)
+                {
+                    DrawOwnerHudBar(
+                        x + 2 * (column + 2),
+                        y + 2 * (row + 18),
+                        2,
+                        2,
+                        level2PresentedDayHud.manaPaletteIndex);
+                    wholeCharges--;
+                }
+            }
+        }
+
         private void DrawOwnerHud()
         {
             if (CurrentNativeFinalPresentationOwns())
@@ -10351,6 +10889,11 @@ namespace MagicCarpet.Native
                 fontSize = Mathf.Max(21, Screen.height / 38),
                 fontStyle = FontStyle.Bold
             };
+            if (campaignSession != null && level2Mode)
+            {
+                DrawLevel2DayHud();
+                return;
+            }
             if (session == null) return;
             if (entityGallery)
             {
@@ -10751,15 +11294,18 @@ namespace MagicCarpet.Native
         private void OpenLevel2FromStartupArguments(string[] arguments)
         {
             ResolveOwnerPaths(arguments, out packagePath, out closurePath);
-            if (OwnerAssetCache.ResolveOptionalPath(arguments) != null)
+            var assetCachePath = OwnerAssetCache.ResolveOptionalPath(arguments);
+            if (string.IsNullOrWhiteSpace(assetCachePath))
             {
-                throw new InvalidDataException(
-                    "Level 2 startup rejects the Level 1 owner asset cache");
+                throw new InvalidOperationException(
+                    "Pass -mc-asset-cache or MC_ASSET_CACHE_PATH for Level 2 owner data");
             }
-            OpenAndValidateLevel2ProductionSession(packagePath);
+            OpenAndValidateLevel2ProductionSession(packagePath, assetCachePath);
         }
 
-        internal void OpenAndValidateLevel2ProductionSession(string package)
+        internal void OpenAndValidateLevel2ProductionSession(
+            string package,
+            string assetCachePath)
         {
             if (campaignSession != null || session != null)
             {
@@ -10771,6 +11317,15 @@ namespace MagicCarpet.Native
             level2StartupReady = false;
             packagePath = Path.GetFullPath(package);
             closurePath = string.Empty;
+            if (string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "Level 2 owner cache path is required explicitly via " +
+                    "-mc-asset-cache or MC_ASSET_CACHE_PATH");
+            }
+            ownerAssetCache = OwnerAssetCache.OpenAndValidateLevel2(assetCachePath);
+            level2DayHudDescriptor = ownerAssetCache.DayHud;
+            MaterializeLevel2DayHud();
             campaignSession = NativeCampaignSession.OpenLevel2(packagePath);
             try
             {
@@ -10797,6 +11352,8 @@ namespace MagicCarpet.Native
                     campaignWorldInfo.terrainWidth == 256 &&
                     campaignWorldInfo.terrainHeight == 256,
                     "Level 2 256x256 terrain profile");
+                level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
+                PresentLevel2DayHud(level2DayHud);
                 Require(
                     NativeCampaignSession.ActiveSessionCount == 1,
                     "exactly one authoritative Level 2 campaign handle");
@@ -11172,6 +11729,7 @@ namespace MagicCarpet.Native
         {
             if (disposed) return;
             disposed = true;
+            var wasLevel2 = level2Mode;
             if (flightCamera != null && terrainFrameCommandBuffer != null)
             {
                 flightCamera.RemoveCommandBuffer(
@@ -11199,11 +11757,20 @@ namespace MagicCarpet.Native
             playthroughRecorder = null;
             ownerAudio?.Dispose();
             ownerAudio = null;
+            if (wasLevel2)
+            {
+                DestroyLevel2DayHudPresentation();
+                ownerAssetCache = null;
+            }
             campaignSession?.Dispose();
             campaignSession = null;
             level2StartupReady = false;
+            level2Mode = false;
             level2StepSnapshot = default;
             level2TerrainState = default;
+            level2DayHud = default;
+            level2PresentedDayHud = default;
+            level2DayHudPresenterReady = false;
             level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
             level2AuthoredGroupEvents = Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
             level2StepInputX = 0;

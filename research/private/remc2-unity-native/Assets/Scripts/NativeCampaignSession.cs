@@ -193,6 +193,115 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal NativeSim.CampaignDayHudSnapshot DayHudState(ulong expectedTick)
+        {
+            var state = default(NativeSim.CampaignDayHudSnapshot);
+            var status = NativeSim.mc_native_campaign_day_hud_state(
+                Handle,
+                generation,
+                expectedTick,
+                ref state,
+                272);
+            NativeSession.Check(status, "read Level 2 Day HUD state");
+            ValidateDayHudState(state, generation, expectedTick);
+            return state;
+        }
+
+        internal static void ValidateDayHudState(
+            NativeSim.CampaignDayHudSnapshot state,
+            ulong expectedGeneration,
+            ulong expectedTick)
+        {
+            if (
+                state.abiVersion != NativeSim.AbiVersion ||
+                state.structSize != 272 ||
+                state.generation != expectedGeneration ||
+                state.tick != expectedTick ||
+                state.localPlayerActive > 1 ||
+                state.localPlayerMaxLife <= 0 ||
+                state.localPlayerMaxMana <= 0 ||
+                state.globalManaDenominator <= 0 ||
+                !OwnerAssetCache.IsQualifiedDayHudSpriteSelector(state.minimapPanelSelector) ||
+                !OwnerAssetCache.IsQualifiedDayHudSpriteSelector(state.castlePanelSelector) ||
+                !OwnerAssetCache.IsQualifiedDayHudSpriteSelector(state.balloonPanelSelector) ||
+                !OwnerAssetCache.IsQualifiedDayHudSpriteSelector(state.playerPanelSelector) ||
+                !OwnerAssetCache.IsQualifiedDayHudSpriteSelector(state.playerIconSelector) ||
+                !OwnerAssetCache.IsQualifiedDayHudSpriteSelector(state.lifeManaIconSelector) ||
+                state.lifePaletteIndex == 0 ||
+                state.manaPaletteIndex == 0 ||
+                state.manaMaxPaletteIndex == 0 ||
+                state.colorPhase1 > 1 ||
+                state.colorPhase2 > 1 ||
+                state.reserved0 != 0)
+            {
+                throw new InvalidOperationException(
+                    "native Level 2 Day HUD state returned invalid ABI, " +
+                    "generation/tick, status selectors, values, or source phases");
+            }
+
+            ValidateDayHudSpellSlot(state.left, state.localPlayerEntityIndex);
+            ValidateDayHudSpellSlot(state.right, state.localPlayerEntityIndex);
+            var nyphur = state.nyphur;
+            if (
+                nyphur.abiVersion != NativeSim.AbiVersion ||
+                nyphur.structSize != 104 ||
+                nyphur.generation != expectedGeneration ||
+                nyphur.active != 1 ||
+                nyphur.playerSlot != 1 ||
+                nyphur.isAi != 1 ||
+                nyphur.colorIndex != 1 ||
+                nyphur.entityIndex != 112 ||
+                nyphur.entityClass != 3 ||
+                nyphur.entityModel != 1 ||
+                nyphur.entityAction != 1 ||
+                nyphur.fireballHolderIndex != 113 ||
+                nyphur.possessionHolderIndex != 114 ||
+                (nyphur.visibilityFlags & ~0x1Fu) != 0 ||
+                !AllZero(nyphur.reserved4) ||
+                !AllZero(nyphur.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native Level 2 Day HUD state returned an unqualified Nyphur row");
+            }
+        }
+
+        private static void ValidateDayHudSpellSlot(
+            NativeSim.CampaignDayHudSpellSlot slot,
+            ushort localPlayerEntityIndex)
+        {
+            if (slot.drawAdmitted > 1 || !AllZero(slot.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native Level 2 Day HUD spell row has invalid admission or reserved state");
+            }
+            if (slot.rawSpellSelector < 0)
+            {
+                if (
+                    slot.holderEntityIndex != 0 ||
+                    slot.parentEntityIndex != 0 ||
+                    slot.frameSelector != 0 ||
+                    slot.iconSelector != 0 ||
+                    slot.levelTextSelector != 0 ||
+                    slot.drawAdmitted != 0)
+                {
+                    throw new InvalidOperationException(
+                        "native Level 2 Day HUD empty spell row is not empty");
+                }
+                return;
+            }
+            if (
+                slot.holderEntityIndex == 0 ||
+                slot.parentEntityIndex != localPlayerEntityIndex ||
+                slot.tier < 0 ||
+                !OwnerAssetCache.IsQualifiedDayHudSpriteSelector(slot.frameSelector) ||
+                !OwnerAssetCache.IsQualifiedDayHudSpriteSelector(slot.iconSelector) ||
+                !OwnerAssetCache.IsQualifiedDayHudLevelTextSelector(slot.levelTextSelector))
+            {
+                throw new InvalidOperationException(
+                    "native Level 2 Day HUD spell row is outside qualified owner roots");
+            }
+        }
+
         internal NativeSim.CampaignObjectiveStageSnapshot ObjectiveStageState(
             byte objectiveSlot = 0,
             byte stageSlot = 3)
@@ -761,6 +870,11 @@ namespace MagicCarpet.Native
         }
 
         private static bool AllZero(uint[] values)
+        {
+            return values != null && values.All(value => value == 0);
+        }
+
+        private static bool AllZero(byte[] values)
         {
             return values != null && values.All(value => value == 0);
         }

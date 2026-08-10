@@ -13,6 +13,9 @@ namespace MagicCarpet.Native.Tests
         private static string Level2Package =>
             Path.Combine(PrivateRoot, "generated/l2-debug3.fJ3PaM/level2");
 
+        private static string Level2DayCache =>
+            Path.Combine(PrivateRoot, "generated/level2-day-owner-cache");
+
         private static string Level1Package =>
             Path.Combine(PrivateRoot, "generated/level1-export-m");
 
@@ -25,7 +28,9 @@ namespace MagicCarpet.Native.Tests
             try
             {
                 runtime = root.AddComponent<MagicCarpetRuntime>();
-                runtime.QualificationInitializeLevel2Production(Level2Package);
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
 
                 Assert.That(runtime.Level2ProductionStartupReady, Is.True);
                 var info = runtime.Level2ProductionWorldInfo;
@@ -61,7 +66,9 @@ namespace MagicCarpet.Native.Tests
             {
                 runtime = root.AddComponent<MagicCarpetRuntime>();
                 Assert.Throws<InvalidDataException>(
-                    () => runtime.QualificationInitializeLevel2Production(Level1Package));
+                    () => runtime.QualificationInitializeLevel2Production(
+                        Level1Package,
+                        Level2DayCache));
                 Assert.That(runtime.Level2ProductionStartupReady, Is.False);
                 Assert.That(runtime.Level2ProductionFatalError, Is.Not.Null.And.Not.Empty);
                 StringAssert.Contains(
@@ -90,7 +97,9 @@ namespace MagicCarpet.Native.Tests
             try
             {
                 runtime = root.AddComponent<MagicCarpetRuntime>();
-                runtime.QualificationInitializeLevel2Production(Level2Package);
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
 
                 runtime.QualificationDriveLevel2Frames(1);
                 var first = runtime.Level2ProductionStepSnapshot;
@@ -154,6 +163,235 @@ namespace MagicCarpet.Native.Tests
 
             Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void Level2StatusHudAndSpellHandsFollowRust()
+        {
+            var root = new GameObject("Level 2 Day HUD route");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
+
+                var initial = runtime.Level2ProductionDayHud;
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+                Assert.That(initial.nyphur.visibilityFlags, Is.EqualTo(2u));
+                AssertDayHudEmpty(initial.left);
+                AssertDayHudEmpty(initial.right);
+                Assert.That(
+                    runtime.QualificationHasMaterializedLevel2DayHudSprite(1),
+                    Is.True);
+
+                runtime.QualificationDriveLevel2Frames(1);
+                Assert.That(
+                    runtime.Level2ProductionLastStepInput.x,
+                    Is.EqualTo((ushort)384));
+                Assert.That(
+                    runtime.Level2ProductionLastStepInput.y,
+                    Is.EqualTo((ushort)62080));
+                Assert.That(
+                    runtime.Level2ProductionLastStepInput.z,
+                    Is.EqualTo((short)256));
+                runtime.QualificationDriveLevel2Frames(281);
+                var hud = runtime.Level2ProductionDayHud;
+                Assert.That(hud.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+                Assert.That(hud.structSize, Is.EqualTo(272));
+                Assert.That(
+                    (hud.generation, hud.tick),
+                    Is.EqualTo((
+                        runtime.Level2ProductionTerrainState.generation,
+                        runtime.Level2ProductionTerrainState.tick)));
+                Assert.That(hud.localPlayerSlot, Is.Zero);
+                Assert.That(hud.localPlayerEntityIndex, Is.GreaterThan(0));
+                Assert.That(hud.localPlayerMaxLife, Is.GreaterThan(0));
+                Assert.That(hud.localPlayerMaxMana, Is.GreaterThan(0));
+                Assert.That(hud.globalManaDenominator, Is.GreaterThan(0));
+                Assert.That(hud.minimapPanelSelector, Is.EqualTo(40));
+                Assert.That(hud.castlePanelSelector, Is.EqualTo(54));
+                Assert.That(hud.balloonPanelSelector, Is.EqualTo(54));
+                Assert.That(hud.playerPanelSelector, Is.EqualTo(41));
+                Assert.That(hud.playerIconSelector, Is.EqualTo(43));
+                Assert.That(hud.lifeManaIconSelector, Is.EqualTo(42));
+                Assert.That(hud.lifePaletteIndex, Is.EqualTo(0x7B));
+                Assert.That(hud.manaPaletteIndex, Is.EqualTo(0x60));
+                Assert.That(hud.manaMaxPaletteIndex, Is.EqualTo(0x64));
+                Assert.That(hud.nyphur.entityIndex, Is.EqualTo(112));
+                Assert.That(hud.nyphur.visibilityFlags, Is.EqualTo(6u));
+                var acquiredStateHash = runtime.Level2ProductionStepSnapshot.stateHash;
+                var acquiredNyphurVisibilityFlags = hud.nyphur.visibilityFlags;
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+                AssertDayHudFamily12(hud.left, hud.localPlayerEntityIndex);
+                AssertDayHudEmpty(hud.right);
+                Assert.That(
+                    runtime.QualificationHasMaterializedLevel2DayHudSprite(
+                        hud.left.frameSelector),
+                    Is.True);
+                Assert.That(
+                    runtime.QualificationHasMaterializedLevel2DayHudSprite(
+                        hud.left.iconSelector),
+                    Is.True);
+                Assert.That(
+                    runtime.QualificationSelectedLevel2DayHudRomanTierTexture(
+                        hud.left.levelTextSelector),
+                    Does.Contain("Roman tier I"));
+                Assert.That(
+                    runtime.QualificationTryDrawLevel2DayHudSprite(999),
+                    Is.False);
+
+                using (var boundarySession = NativeCampaignSession.OpenLevel2(Level2Package))
+                {
+                    var terrain = boundarySession.TerrainState();
+                    var oldGeneration = boundarySession.Generation;
+                    var staleSentinel = new NativeSim.CampaignDayHudSnapshot
+                    {
+                        abiVersion = 0xA1B2_C3D4u,
+                        generation = 0x1122_3344_5566_7788UL,
+                        tick = 0x8877_6655_4433_2211UL,
+                        globalManaDenominator = 0x1357_9BDF,
+                        right = new NativeSim.CampaignDayHudSpellSlot
+                        {
+                            holderEntityIndex = 0x4567,
+                            rawSpellSelector = -1234,
+                            casterMana = 0x0246_8ACE
+                        }
+                    };
+                    var rejectedGeneration = staleSentinel;
+                    var status = NativeSim.mc_native_campaign_day_hud_state(
+                        boundarySession.Handle,
+                        oldGeneration + 1,
+                        terrain.tick,
+                        ref rejectedGeneration,
+                        272);
+                    Assert.That(status, Is.EqualTo(NativeSim.GenerationMismatch));
+                    Assert.That(rejectedGeneration.abiVersion, Is.EqualTo(staleSentinel.abiVersion));
+                    Assert.That(rejectedGeneration.generation, Is.EqualTo(staleSentinel.generation));
+                    Assert.That(rejectedGeneration.tick, Is.EqualTo(staleSentinel.tick));
+                    Assert.That(
+                        rejectedGeneration.globalManaDenominator,
+                        Is.EqualTo(staleSentinel.globalManaDenominator));
+                    Assert.That(
+                        rejectedGeneration.right.holderEntityIndex,
+                        Is.EqualTo(staleSentinel.right.holderEntityIndex));
+                    Assert.That(
+                        rejectedGeneration.right.rawSpellSelector,
+                        Is.EqualTo(staleSentinel.right.rawSpellSelector));
+                    Assert.That(
+                        rejectedGeneration.right.casterMana,
+                        Is.EqualTo(staleSentinel.right.casterMana));
+                    boundarySession.Reset();
+                    boundarySession.Step((ushort)384, (ushort)62080, (short)256);
+                    var resetTerrain = boundarySession.TerrainState();
+                    rejectedGeneration = staleSentinel;
+                    status = NativeSim.mc_native_campaign_day_hud_state(
+                        boundarySession.Handle,
+                        oldGeneration,
+                        resetTerrain.tick,
+                        ref rejectedGeneration,
+                        272);
+                    Assert.That(status, Is.EqualTo(NativeSim.GenerationMismatch));
+                    Assert.That(rejectedGeneration.abiVersion, Is.EqualTo(staleSentinel.abiVersion));
+                    Assert.That(rejectedGeneration.generation, Is.EqualTo(staleSentinel.generation));
+                    Assert.That(rejectedGeneration.tick, Is.EqualTo(staleSentinel.tick));
+                    Assert.That(
+                        rejectedGeneration.globalManaDenominator,
+                        Is.EqualTo(staleSentinel.globalManaDenominator));
+                    Assert.That(
+                        rejectedGeneration.right.holderEntityIndex,
+                        Is.EqualTo(staleSentinel.right.holderEntityIndex));
+                    Assert.That(
+                        rejectedGeneration.right.rawSpellSelector,
+                        Is.EqualTo(staleSentinel.right.rawSpellSelector));
+                    Assert.That(
+                        rejectedGeneration.right.casterMana,
+                        Is.EqualTo(staleSentinel.right.casterMana));
+                }
+
+                runtime.QualificationResetLevel2Production();
+                var reset = runtime.Level2ProductionDayHud;
+                Assert.That(reset.generation, Is.EqualTo(1));
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+                Assert.That(reset.nyphur.visibilityFlags, Is.EqualTo(2u));
+                AssertDayHudEmpty(reset.left);
+                AssertDayHudEmpty(reset.right);
+                Assert.That(
+                    runtime.QualificationSelectedLevel2DayHudRomanTierTexture(0),
+                    Is.Null);
+                Assert.That(
+                    runtime.Level2ProductionNextStepInput.x,
+                    Is.EqualTo((ushort)384));
+                Assert.That(
+                    runtime.Level2ProductionNextStepInput.y,
+                    Is.EqualTo((ushort)62080));
+                Assert.That(
+                    runtime.Level2ProductionNextStepInput.z,
+                    Is.EqualTo((short)256));
+
+                runtime.QualificationDriveLevel2Frames(282);
+                var replay = runtime.Level2ProductionDayHud;
+                Assert.That(replay.generation, Is.EqualTo(1));
+                Assert.That(
+                    runtime.Level2ProductionStepSnapshot.stateHash,
+                    Is.EqualTo(acquiredStateHash));
+                Assert.That(
+                    replay.nyphur.visibilityFlags,
+                    Is.EqualTo(acquiredNyphurVisibilityFlags));
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+                AssertDayHudFamily12(replay.left, replay.localPlayerEntityIndex);
+                AssertDayHudEmpty(replay.right);
+                Assert.That(
+                    (replay.left.holderEntityIndex,
+                        replay.left.rawSpellSelector,
+                        replay.left.frameSelector,
+                        replay.left.iconSelector,
+                        replay.left.levelTextSelector,
+                        replay.left.tier),
+                    Is.EqualTo((
+                        hud.left.holderEntityIndex,
+                        hud.left.rawSpellSelector,
+                        hud.left.frameSelector,
+                        hud.left.iconSelector,
+                        hud.left.levelTextSelector,
+                        hud.left.tier)));
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        private static void AssertDayHudEmpty(NativeSim.CampaignDayHudSpellSlot slot)
+        {
+            Assert.That(slot.rawSpellSelector, Is.LessThan(0));
+            Assert.That(slot.holderEntityIndex, Is.Zero);
+            Assert.That(slot.parentEntityIndex, Is.Zero);
+            Assert.That(slot.frameSelector, Is.Zero);
+            Assert.That(slot.iconSelector, Is.Zero);
+            Assert.That(slot.levelTextSelector, Is.Zero);
+            Assert.That(slot.drawAdmitted, Is.Zero);
+        }
+
+        private static void AssertDayHudFamily12(
+            NativeSim.CampaignDayHudSpellSlot slot,
+            ushort localPlayerEntityIndex)
+        {
+            Assert.That(slot.holderEntityIndex, Is.EqualTo(38));
+            Assert.That(slot.parentEntityIndex, Is.EqualTo(localPlayerEntityIndex));
+            Assert.That(slot.parentEntityIndex, Is.EqualTo(111));
+            Assert.That(slot.rawSpellSelector, Is.EqualTo(12));
+            Assert.That(slot.action, Is.EqualTo(36));
+            Assert.That(slot.frameSelector, Is.EqualTo(1));
+            Assert.That(slot.iconSelector, Is.EqualTo(135));
+            Assert.That(slot.levelTextSelector, Is.EqualTo(0));
+            Assert.That(slot.tier, Is.EqualTo(0));
+            Assert.That(slot.drawAdmitted, Is.EqualTo(1));
         }
 
         [Test]

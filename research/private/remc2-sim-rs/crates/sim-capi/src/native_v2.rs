@@ -101,9 +101,10 @@ use sim_core::{
         level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
     native_world::{
-        AssetRef, EntityAuthority, EntitySnapshot, Level2DispatchEvent, Level2EconomyEvent,
-        Level2ResetSession, NativeWorld, NativeWorldInspection, ParticleParameter, SessionTerrain,
-        TerrainPlanes, apply_level1_source_effects, level1_turn_start_source_views,
+        AssetRef, EntityAuthority, EntitySnapshot, Level2DayHudSnapshot, Level2DayHudSpellSlot,
+        Level2DispatchEvent, Level2EconomyEvent, Level2ResetSession, NativeWorld,
+        NativeWorldInspection, ParticleParameter, SessionTerrain, TerrainPlanes,
+        apply_level1_source_effects, level1_turn_start_source_views,
         refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
@@ -956,6 +957,72 @@ pub struct McCampaignOpponentSnapshotV2 {
     /// holder is active. Bit 4: the target's family-4 holder gate is active.
     pub visibility_flags: u32,
     pub reserved: [u32; 4],
+}
+
+/// Additive generation/tick-bound Level 2 Day HUD spell-hand row. The
+/// selectors are source-qualified values; managed presentation validates them
+/// against the owner-data roots before drawing.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignDayHudSpellSlotV2 {
+    pub holder_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub raw_spell_selector: i16,
+    pub color_index: u8,
+    pub model: u8,
+    pub tier: i8,
+    pub action: u8,
+    pub action_marker: i8,
+    pub active_value: i16,
+    pub activation_value: u16,
+    pub control_flags: u32,
+    pub max_mana: i32,
+    pub mana_regen: i32,
+    pub caster_mana: i32,
+    pub frame_selector: u16,
+    pub icon_selector: u16,
+    pub level_text_selector: u8,
+    pub draw_admitted: u8,
+    pub reserved: [u32; 2],
+}
+
+/// Minimal authoritative Day status-bar, spell-hand, and Nyphur visibility
+/// projection. The nested opponent row remains the existing typed Nyphur
+/// participant contract; this outer record binds it and the HUD rows to one
+/// campaign generation and simulation tick.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignDayHudSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub local_player_slot: u8,
+    pub local_player_active: u8,
+    pub local_player_color_index: u8,
+    pub hit_frame_time_pre_draw: u8,
+    pub local_player_entity_index: u16,
+    pub color_phase_1: u8,
+    pub color_phase_2: u8,
+    pub local_player_control_flags: u32,
+    pub local_player_life: i32,
+    pub local_player_max_life: i32,
+    pub local_player_mana: i32,
+    pub local_player_max_mana: i32,
+    pub global_mana_denominator: i32,
+    pub minimap_panel_selector: u16,
+    pub castle_panel_selector: u16,
+    pub balloon_panel_selector: u16,
+    pub player_panel_selector: u16,
+    pub player_icon_selector: u16,
+    pub life_mana_icon_selector: u16,
+    pub life_palette_index: u8,
+    pub mana_palette_index: u8,
+    pub mana_max_palette_index: u8,
+    pub reserved_0: u8,
+    pub nyphur: McCampaignOpponentSnapshotV2,
+    pub left: McCampaignDayHudSpellSlotV2,
+    pub right: McCampaignDayHudSpellSlotV2,
 }
 
 /// Additive Rust-owned Level 1 Goat row. The existing 52-byte entity snapshot
@@ -8339,6 +8406,54 @@ pub extern "C" fn mc_native_campaign_opponent_state(
     })
 }
 
+/// Read the authoritative Day HUD/status/hand projection for one campaign
+/// generation. The projection is reset-owned and therefore unavailable to
+/// the legacy Level 1 handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_day_hud_state(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    out_state: *mut McCampaignDayHudSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Day HUD state requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Day HUD generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            if expected_tick != reset.state.tick {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Day HUD tick {expected_tick} does not match {}",
+                        reset.state.tick
+                    ),
+                ));
+            }
+            let snapshot = reset.day_hud().map_err(|error| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("campaign Day HUD projection is invalid: {error}"),
+                )
+            })?;
+            Ok(campaign_day_hud_snapshot(session.generation, snapshot))
+        })
+    })
+}
+
 /// Execute one additive Level 2 outer turn.  This path deliberately owns a
 /// separate campaign handle and never enters the legacy Level 1 session
 /// dispatcher.  The candidate session is stepped on a clone first so a short
@@ -12047,6 +12162,70 @@ fn campaign_opponent_snapshot(
             | (u32::from(visibility.beyond_sight_active) << 3)
             | (u32::from(visibility.family4_gate_active) << 4),
         ..McCampaignOpponentSnapshotV2::default()
+    }
+}
+
+fn campaign_day_hud_spell_slot(slot: Level2DayHudSpellSlot) -> McCampaignDayHudSpellSlotV2 {
+    McCampaignDayHudSpellSlotV2 {
+        holder_entity_index: slot.holder_entity_index,
+        parent_entity_index: slot.parent_entity_index,
+        raw_spell_selector: slot.raw_spell_selector,
+        color_index: slot.color_index,
+        model: slot.model,
+        tier: slot.tier,
+        action: slot.action,
+        action_marker: slot.action_marker,
+        active_value: slot.active_value,
+        activation_value: slot.activation_value,
+        control_flags: slot.control_flags,
+        max_mana: slot.max_mana,
+        mana_regen: slot.mana_regen,
+        caster_mana: slot.caster_mana,
+        frame_selector: slot.frame_selector,
+        icon_selector: slot.icon_selector,
+        level_text_selector: slot.level_text_selector,
+        draw_admitted: u8::from(slot.draw_admitted),
+        reserved: [0; 2],
+    }
+}
+
+fn campaign_day_hud_snapshot(
+    generation: u64,
+    snapshot: Level2DayHudSnapshot,
+) -> McCampaignDayHudSnapshotV2 {
+    let nyphur =
+        campaign_opponent_snapshot(generation, snapshot.nyphur, snapshot.nyphur_visibility);
+    McCampaignDayHudSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignDayHudSnapshotV2>(),
+        generation,
+        tick: snapshot.tick,
+        local_player_slot: snapshot.local_player_slot,
+        local_player_active: u8::from(snapshot.local_player_active),
+        local_player_color_index: snapshot.local_player_color_index,
+        hit_frame_time_pre_draw: snapshot.hit_frame_time_pre_draw,
+        local_player_entity_index: snapshot.local_player_entity_index,
+        color_phase_1: snapshot.color_phase_1,
+        color_phase_2: snapshot.color_phase_2,
+        local_player_control_flags: snapshot.local_player_control_flags,
+        local_player_life: snapshot.local_player_life,
+        local_player_max_life: snapshot.local_player_max_life,
+        local_player_mana: snapshot.local_player_mana,
+        local_player_max_mana: snapshot.local_player_max_mana,
+        global_mana_denominator: snapshot.global_mana_denominator,
+        minimap_panel_selector: snapshot.minimap_panel_selector,
+        castle_panel_selector: snapshot.castle_panel_selector,
+        balloon_panel_selector: snapshot.balloon_panel_selector,
+        player_panel_selector: snapshot.player_panel_selector,
+        player_icon_selector: snapshot.player_icon_selector,
+        life_mana_icon_selector: snapshot.life_mana_icon_selector,
+        life_palette_index: snapshot.life_palette_index,
+        mana_palette_index: snapshot.mana_palette_index,
+        mana_max_palette_index: snapshot.mana_max_palette_index,
+        reserved_0: 0,
+        nyphur,
+        left: campaign_day_hud_spell_slot(snapshot.left),
+        right: campaign_day_hud_spell_slot(snapshot.right),
     }
 }
 
@@ -17910,6 +18089,8 @@ mod tests {
         assert_eq!(size_of::<McCampaignInvisibleSnapshotV2>(), 80);
         assert_eq!(size_of::<McCampaignBeyondSightSnapshotV2>(), 80);
         assert_eq!(size_of::<McCampaignOpponentSnapshotV2>(), 104);
+        assert_eq!(size_of::<McCampaignDayHudSpellSlotV2>(), 48);
+        assert_eq!(size_of::<McCampaignDayHudSnapshotV2>(), 272);
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McCampaignGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McCampaignSpellPickupSnapshotV2>(), 64);
@@ -18038,6 +18219,29 @@ mod tests {
             std::mem::offset_of!(McCampaignOpponentSnapshotV2, visibility_flags),
             80
         );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayHudSpellSlotV2, max_mana),
+            20
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayHudSpellSlotV2, draw_admitted),
+            37
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayHudSnapshotV2, global_mana_denominator),
+            52
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayHudSnapshotV2, player_panel_selector),
+            62
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayHudSnapshotV2, life_palette_index),
+            68
+        );
+        assert_eq!(std::mem::offset_of!(McCampaignDayHudSnapshotV2, nyphur), 72);
+        assert_eq!(std::mem::offset_of!(McCampaignDayHudSnapshotV2, left), 176);
+        assert_eq!(std::mem::offset_of!(McCampaignDayHudSnapshotV2, right), 224);
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, life), 48);
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, reserved), 68);
         assert_eq!(std::mem::offset_of!(McCampaignGoatSnapshotV2, life), 48);
@@ -20132,6 +20336,27 @@ mod tests {
             canonical_events.update([event.pass, event.kind, event.family, event.flags]);
             canonical_events.update(event.source_slot.to_le_bytes());
         }
+        let nyphur_dispatch_traces = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset.nyphur_dispatch_traces().to_vec())
+        })
+        .expect("read Level 2 Nyphur dispatch traces");
+        canonical_events.update(b"level2-nyphur-dispatch-traces-v1");
+        for trace in &nyphur_dispatch_traces {
+            canonical_events.update([trace.pass]);
+            canonical_events.update(trace.source_slot.to_le_bytes());
+            canonical_events.update(trace.state_byte.to_le_bytes());
+            canonical_events.update(
+                u32::try_from(trace.calls.len())
+                    .expect("sub_12910 trace call count is bounded")
+                    .to_le_bytes(),
+            );
+            for call in &trace.calls {
+                canonical_events.update([call.hash_tag()]);
+            }
+        }
         assert_eq!(
             snapshot.dispatch_hash,
             canonical_events.finalize().as_slice()
@@ -20343,6 +20568,72 @@ mod tests {
             Ok(pickup.position)
         })
         .expect("read family-12 source position");
+        assert_eq!(pickup_position.x, 384);
+        assert_eq!(pickup_position.y, 39040);
+        assert_eq!(pickup_position.z, 16);
+
+        let mut initial_terrain = McCampaignTerrainStateV2::default();
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                0,
+                &raw mut initial_terrain,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut initial_hud = McCampaignDayHudSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_hud_state(
+                handle,
+                0,
+                initial_terrain.tick,
+                &raw mut initial_hud,
+                struct_size::<McCampaignDayHudSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(initial_hud.left.raw_spell_selector, -1);
+        assert_eq!(initial_hud.right.raw_spell_selector, -1);
+        let mut initial_hud_repeat = McCampaignDayHudSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_hud_state(
+                handle,
+                0,
+                initial_terrain.tick,
+                &raw mut initial_hud_repeat,
+                struct_size::<McCampaignDayHudSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(initial_hud_repeat, initial_hud);
+        let mut hud_sentinel = McCampaignDayHudSnapshotV2 {
+            global_mana_denominator: 0x1357_9BDF,
+            ..McCampaignDayHudSnapshotV2::default()
+        };
+        let unchanged_hud = hud_sentinel;
+        assert_eq!(
+            mc_native_campaign_day_hud_state(
+                handle,
+                1,
+                initial_terrain.tick,
+                &raw mut hud_sentinel,
+                struct_size::<McCampaignDayHudSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(hud_sentinel, unchanged_hud);
+        assert_eq!(
+            mc_native_campaign_day_hud_state(
+                handle,
+                0,
+                initial_terrain.tick.wrapping_add(1),
+                &raw mut hud_sentinel,
+                struct_size::<McCampaignDayHudSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(hud_sentinel, unchanged_hud);
 
         let input_command = McCommandV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
@@ -20366,8 +20657,8 @@ mod tests {
         let mut events = [McCampaignEventV2::default(); 1024];
         let mut event_count;
         let mut acquired = None;
-        // The source cadence is part of the reset-visible row. Walk the
-        // minimum bounded number of turns needed to reach its phase gate
+        // The source cadence is part of the reset-visible row. Walk exactly
+        // the four ordinary public turns needed to reach its phase gate
         // instead of mutating private source bytes through the C ABI.
         for _ in 0..4 {
             event_count = 0;
@@ -20394,9 +20685,6 @@ mod tests {
                 })
                 .copied()
                 .or(acquired);
-            if acquired.is_some() {
-                break;
-            }
         }
         let acquired = acquired.expect("C ABI exposes family-12 slot-38 acquisition");
         assert_eq!(acquired.pass, 0);
@@ -20404,7 +20692,89 @@ mod tests {
         assert_eq!(acquired.abi_version, MC_NATIVE_ABI_VERSION);
         let acquired_snapshot = snapshot;
 
+        let mut terrain = McCampaignTerrainStateV2::default();
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                0,
+                &raw mut terrain,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut hud = McCampaignDayHudSnapshotV2::default();
+        let hud_status = mc_native_campaign_day_hud_state(
+            handle,
+            0,
+            terrain.tick,
+            &raw mut hud,
+            struct_size::<McCampaignDayHudSnapshotV2>(),
+        );
+        assert_eq!(
+            hud_status,
+            MC_STATUS_OK,
+            "Day HUD read failed: {}",
+            LAST_ERROR.with(|error| error.borrow().clone())
+        );
+        assert_eq!(hud.left.holder_entity_index, 38);
+        assert_eq!(hud.left.parent_entity_index, 111);
+        assert_eq!(hud.left.raw_spell_selector, 12);
+        assert_eq!(hud.left.frame_selector, 1);
+        assert_eq!(hud.left.icon_selector, 135);
+        assert_eq!(hud.left.level_text_selector, 0);
+        assert_eq!(hud.left.tier, 0);
+        assert_eq!(hud.left.draw_admitted, 1);
+        assert_eq!(hud.right.raw_spell_selector, -1);
+        assert_eq!(
+            (
+                hud.life_palette_index,
+                hud.mana_palette_index,
+                hud.mana_max_palette_index,
+            ),
+            (0x7B, 0x60, 0x64)
+        );
+        assert_eq!(hud.player_panel_selector, 41);
+        assert_eq!(hud.hit_frame_time_pre_draw, 0);
+        let mut hud_repeat = McCampaignDayHudSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_hud_state(
+                handle,
+                0,
+                terrain.tick,
+                &raw mut hud_repeat,
+                struct_size::<McCampaignDayHudSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(hud_repeat, hud);
+
         assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        let mut reset_terrain = McCampaignTerrainStateV2::default();
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                1,
+                &raw mut reset_terrain,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut reset_hud = McCampaignDayHudSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_hud_state(
+                handle,
+                1,
+                reset_terrain.tick,
+                &raw mut reset_hud,
+                struct_size::<McCampaignDayHudSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(reset_hud.left.raw_spell_selector, -1);
+        assert_eq!(reset_hud.right.raw_spell_selector, -1);
+        assert_eq!(reset_hud.generation, 1);
+        assert_eq!(reset_hud.player_panel_selector, 41);
+
         input.generation = 1;
         let mut replay = None;
         for _ in 0..4 {
@@ -20432,9 +20802,6 @@ mod tests {
                 })
                 .copied()
                 .or(replay);
-            if replay.is_some() {
-                break;
-            }
         }
         let replay = replay.expect("reset replay exposes family-12 slot-38 acquisition");
         assert_eq!(replay.generation, 1);
@@ -20448,6 +20815,34 @@ mod tests {
         assert_eq!(snapshot.dispatch_hash, acquired_snapshot.dispatch_hash);
         assert_eq!(snapshot.event_count, acquired_snapshot.event_count);
         assert_eq!(snapshot.event_kind_mask, acquired_snapshot.event_kind_mask);
+        let mut replay_terrain = McCampaignTerrainStateV2::default();
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                1,
+                &raw mut replay_terrain,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut replay_hud = McCampaignDayHudSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_hud_state(
+                handle,
+                1,
+                replay_terrain.tick,
+                &raw mut replay_hud,
+                struct_size::<McCampaignDayHudSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(replay_hud.left, hud.left);
+        assert_eq!(replay_hud.right, hud.right);
+        assert_eq!(replay_hud.mana_palette_index, hud.mana_palette_index);
+        assert_eq!(
+            replay_hud.mana_max_palette_index,
+            hud.mana_max_palette_index
+        );
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -21928,10 +22323,20 @@ _Static_assert(sizeof(McCampaignShieldSnapshotV2) == 72, "McCampaignShieldSnapsh
 _Static_assert(sizeof(McCampaignInvisibleSnapshotV2) == 80, "McCampaignInvisibleSnapshotV2 size");
 _Static_assert(sizeof(McCampaignBeyondSightSnapshotV2) == 80, "McCampaignBeyondSightSnapshotV2 size");
 _Static_assert(sizeof(McCampaignOpponentSnapshotV2) == 104, "McCampaignOpponentSnapshotV2 size");
+_Static_assert(sizeof(McCampaignDayHudSpellSlotV2) == 48, "McCampaignDayHudSpellSlotV2 size");
+_Static_assert(sizeof(McCampaignDayHudSnapshotV2) == 272, "McCampaignDayHudSnapshotV2 size");
 _Static_assert(offsetof(McCampaignBeyondSightSnapshotV2, experience_awarded) == 52, "campaign Beyond Sight experience offset");
 _Static_assert(offsetof(McCampaignOpponentSnapshotV2, entity_control_flags) == 36, "campaign opponent control flags offset");
 _Static_assert(offsetof(McCampaignOpponentSnapshotV2, objective_relation_value) == 76, "campaign opponent objective relation offset");
 _Static_assert(offsetof(McCampaignOpponentSnapshotV2, visibility_flags) == 80, "campaign opponent visibility flags offset");
+_Static_assert(offsetof(McCampaignDayHudSpellSlotV2, max_mana) == 20, "campaign Day HUD spell max mana offset");
+_Static_assert(offsetof(McCampaignDayHudSpellSlotV2, draw_admitted) == 37, "campaign Day HUD spell draw admission offset");
+_Static_assert(offsetof(McCampaignDayHudSnapshotV2, global_mana_denominator) == 52, "campaign Day HUD denominator offset");
+_Static_assert(offsetof(McCampaignDayHudSnapshotV2, player_panel_selector) == 62, "campaign Day HUD player panel offset");
+_Static_assert(offsetof(McCampaignDayHudSnapshotV2, life_palette_index) == 68, "campaign Day HUD palette offset");
+_Static_assert(offsetof(McCampaignDayHudSnapshotV2, nyphur) == 72, "campaign Day HUD Nyphur offset");
+_Static_assert(offsetof(McCampaignDayHudSnapshotV2, left) == 176, "campaign Day HUD left offset");
+_Static_assert(offsetof(McCampaignDayHudSnapshotV2, right) == 224, "campaign Day HUD right offset");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McCampaignGoatSnapshotV2) == 84, "McCampaignGoatSnapshotV2 size");
 _Static_assert(sizeof(McCampaignSpellPickupSnapshotV2) == 64, "McCampaignSpellPickupSnapshotV2 size");

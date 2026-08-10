@@ -406,6 +406,63 @@ typedef struct McCampaignOpponentSnapshotV2 {
     uint32_t reserved[4];
 } McCampaignOpponentSnapshotV2;
 
+/* Additive generation/tick-bound Level 2 Day HUD spell-hand row. */
+typedef struct McCampaignDayHudSpellSlotV2 {
+    uint16_t holder_entity_index;
+    uint16_t parent_entity_index;
+    int16_t raw_spell_selector;
+    uint8_t color_index;
+    uint8_t model;
+    int8_t tier;
+    uint8_t action;
+    int8_t action_marker;
+    int16_t active_value;
+    uint16_t activation_value;
+    uint32_t control_flags;
+    int32_t max_mana;
+    int32_t mana_regen;
+    int32_t caster_mana;
+    uint16_t frame_selector;
+    uint16_t icon_selector;
+    uint8_t level_text_selector;
+    uint8_t draw_admitted;
+    uint32_t reserved[2];
+} McCampaignDayHudSpellSlotV2;
+
+/* Additive generation/tick-bound Level 2 Day status/hand/Nyphur projection. */
+typedef struct McCampaignDayHudSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint8_t local_player_slot;
+    uint8_t local_player_active;
+    uint8_t local_player_color_index;
+    uint8_t hit_frame_time_pre_draw;
+    uint16_t local_player_entity_index;
+    uint8_t color_phase_1;
+    uint8_t color_phase_2;
+    uint32_t local_player_control_flags;
+    int32_t local_player_life;
+    int32_t local_player_max_life;
+    int32_t local_player_mana;
+    int32_t local_player_max_mana;
+    int32_t global_mana_denominator;
+    uint16_t minimap_panel_selector;
+    uint16_t castle_panel_selector;
+    uint16_t balloon_panel_selector;
+    uint16_t player_panel_selector;
+    uint16_t player_icon_selector;
+    uint16_t life_mana_icon_selector;
+    uint8_t life_palette_index;
+    uint8_t mana_palette_index;
+    uint8_t mana_max_palette_index;
+    uint8_t reserved_0;
+    McCampaignOpponentSnapshotV2 nyphur;
+    McCampaignDayHudSpellSlotV2 left;
+    McCampaignDayHudSpellSlotV2 right;
+} McCampaignDayHudSnapshotV2;
+
 /* Kind 10 is additive; existing McCampaignEventV2 rows are unchanged. */
 enum {
     MC_CAMPAIGN_EVENT_ECONOMY = 10
@@ -533,6 +590,9 @@ int32_t mc_native_campaign_beyond_sight_activate(
 int32_t mc_native_campaign_opponent_state(
     uint64_t handle, uint64_t generation,
     McCampaignOpponentSnapshotV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_day_hud_state(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McCampaignDayHudSnapshotV2 *out_state, uint32_t out_state_size);
 int32_t mc_native_campaign_session_step(
     uint64_t handle, const McCampaignStepInputV2 *input,
     McCampaignStepSnapshotV2 *out_snapshot, uint32_t out_snapshot_size,

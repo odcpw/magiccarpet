@@ -598,6 +598,66 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignDayHudSpellSlot
+        {
+            internal ushort holderEntityIndex;
+            internal ushort parentEntityIndex;
+            internal short rawSpellSelector;
+            internal byte colorIndex;
+            internal byte model;
+            internal sbyte tier;
+            internal byte action;
+            internal sbyte actionMarker;
+            internal short activeValue;
+            internal ushort activationValue;
+            internal uint controlFlags;
+            internal int maxMana;
+            internal int manaRegen;
+            internal int casterMana;
+            internal ushort frameSelector;
+            internal ushort iconSelector;
+            internal byte levelTextSelector;
+            internal byte drawAdmitted;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignDayHudSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal byte localPlayerSlot;
+            internal byte localPlayerActive;
+            internal byte localPlayerColorIndex;
+            internal byte hitFrameTimePreDraw;
+            internal ushort localPlayerEntityIndex;
+            internal byte colorPhase1;
+            internal byte colorPhase2;
+            internal uint localPlayerControlFlags;
+            internal int localPlayerLife;
+            internal int localPlayerMaxLife;
+            internal int localPlayerMana;
+            internal int localPlayerMaxMana;
+            internal int globalManaDenominator;
+            internal ushort minimapPanelSelector;
+            internal ushort castlePanelSelector;
+            internal ushort balloonPanelSelector;
+            internal ushort playerPanelSelector;
+            internal ushort playerIconSelector;
+            internal ushort lifeManaIconSelector;
+            internal byte lifePaletteIndex;
+            internal byte manaPaletteIndex;
+            internal byte manaMaxPaletteIndex;
+            internal byte reserved0;
+            internal CampaignOpponentSnapshot nyphur;
+            internal CampaignDayHudSpellSlot left;
+            internal CampaignDayHudSpellSlot right;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct Command
         {
             internal uint abiVersion;
@@ -2029,6 +2089,14 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_day_hud_state(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            ref CampaignDayHudSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_session_step(
             ulong handle,
             ref CampaignStepInput input,
@@ -2647,6 +2715,8 @@ namespace MagicCarpet.Native
             RequireSize<CampaignInvisibleSnapshot>(80);
             RequireSize<CampaignBeyondSightSnapshot>(80);
             RequireSize<CampaignOpponentSnapshot>(104);
+            RequireSize<CampaignDayHudSpellSlot>(48);
+            RequireSize<CampaignDayHudSnapshot>(272);
             RequireSize<Command>(32);
             RequireSize<CameraInput>(28);
             RequireSize<SessionSnapshot>(120);
@@ -2723,6 +2793,17 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.entityControlFlags), 36);
             RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.objectiveRelationValue), 76);
             RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.visibilityFlags), 80);
+            RequireOffset<CampaignDayHudSpellSlot>(nameof(CampaignDayHudSpellSlot.maxMana), 20);
+            RequireOffset<CampaignDayHudSpellSlot>(nameof(CampaignDayHudSpellSlot.drawAdmitted), 37);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.globalManaDenominator), 52);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.playerPanelSelector), 62);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.lifePaletteIndex), 68);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.hitFrameTimePreDraw), 27);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.colorPhase1), 30);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.colorPhase2), 31);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.nyphur), 72);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.left), 176);
+            RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.right), 224);
             RequireOffset<Command>(nameof(Command.requestedSpell), 14);
             RequireOffset<CameraInput>(nameof(CameraInput.lookYaw), 8);
             RequireOffset<CameraInput>(nameof(CameraInput.reserved), 12);

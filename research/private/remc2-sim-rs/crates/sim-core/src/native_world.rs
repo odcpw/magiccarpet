@@ -712,6 +712,14 @@ impl EntitySnapshot {
         u16::from_le_bytes([self.record[52], self.record[53]])
     }
 
+    /// Source SetSpell parent relation written at the holder record's
+    /// `word_0x28_40` slot. This is distinct from the terrain oldMapEntity
+    /// link, which remains zero for the acquired source pickup.
+    #[must_use]
+    pub fn source_spell_parent_entity_index(&self) -> u16 {
+        u16::from_le_bytes([self.record[44], self.record[45]])
+    }
+
     /// Raw source `dword_0x5E_94`, the spell payload mailbox consumed by
     /// `sub_11900` and the wind parent pulse helper.
     #[must_use]
@@ -3753,6 +3761,150 @@ pub struct Level2NyphurVisibility {
     pub beyond_sight_tier: Option<u8>,
     pub family4_gate_active: bool,
     pub visible_to_local_player: bool,
+}
+
+/// One source-owned Day spell-hand row consumed by the HUD presenter.
+///
+/// The row deliberately carries the holder's live source fields together
+/// with the direct MSPRD0-0/text selectors selected by the pinned draw routine.
+/// Unity may validate and draw these values, but it must not reconstruct the
+/// holder chain or choose a neighboring selector when a row is absent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2DayHudSpellSlot {
+    pub holder_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub raw_spell_selector: i16,
+    pub color_index: u8,
+    pub model: u8,
+    pub tier: i8,
+    pub action: u8,
+    pub action_marker: i8,
+    pub active_value: i16,
+    pub activation_value: u16,
+    pub control_flags: u32,
+    pub max_mana: i32,
+    pub mana_regen: i32,
+    pub caster_mana: i32,
+    pub frame_selector: u16,
+    pub icon_selector: u16,
+    pub level_text_selector: u8,
+    /// Final source admission for `DrawSpellIcon_2E260`. Unity presents the
+    /// carried decision and never reconstructs the enabled/active/phase
+    /// suppression predicate.
+    pub draw_admitted: bool,
+}
+
+impl Level2DayHudSpellSlot {
+    #[must_use]
+    const fn empty(raw_spell_selector: i16, color_index: u8) -> Self {
+        Self {
+            holder_entity_index: 0,
+            parent_entity_index: 0,
+            raw_spell_selector,
+            color_index,
+            model: 0,
+            tier: 0,
+            action: 0,
+            action_marker: 0,
+            active_value: 0,
+            activation_value: 0,
+            control_flags: 0,
+            max_mana: 0,
+            mana_regen: 0,
+            caster_mana: 0,
+            frame_selector: 0,
+            icon_selector: 0,
+            level_text_selector: 0,
+            draw_admitted: false,
+        }
+    }
+}
+
+/// `SetDefaultSpells_5C0A0` sets `isEnabled_1 & 4` for these source spell
+/// models. Keeping this source table beside the projection lets Rust carry
+/// the final `DrawSpellIcon_2E260` admission without asking Unity to rebuild
+/// source spell metadata.
+const LEVEL2_DAY_SPELL_MODELS_WITH_DRAW_SUPPRESSION: [u8; 7] = [3, 4, 6, 8, 11, 12, 14];
+
+fn level2_day_spell_draw_admitted(model: u8, active_value: i16, color_phase_1: u8) -> bool {
+    !(LEVEL2_DAY_SPELL_MODELS_WITH_DRAW_SUPPRESSION.contains(&model)
+        && active_value > 0
+        && active_value < 32
+        && color_phase_1 != 0)
+}
+
+fn level2_day_color_phases(turn: i32) -> (u8, u8) {
+    // EventsFunctions.cpp writes colorIndex[i] = Turn / i & 1.
+    let color_phase_1 = u8::try_from((turn / 1) & 1).expect("source color phase is one bit");
+    let color_phase_2 = u8::try_from((turn / 2) & 1).expect("source color phase is one bit");
+    (color_phase_1, color_phase_2)
+}
+
+fn level2_day_player_panel_selector(hit_frame_time: u8, color_phase_1: u8) -> u16 {
+    if hit_frame_time > 0 && color_phase_1 != 0 {
+        55
+    } else {
+        41
+    }
+}
+
+const LEVEL2_DAY_HUD_PALETTE_TABLE: [[u8; 3]; 8] = [
+    [0x60, 0x64, 0x7B],
+    [0x7B, 0x77, 0x7B],
+    [0x1C, 0x18, 0x7B],
+    [0x5B, 0x57, 0x7B],
+    [0x9A, 0x97, 0x7B],
+    [0xDB, 0xD8, 0x7B],
+    [0x76, 0xA0, 0x7B],
+    [0x3D, 0x3A, 0x7B],
+];
+
+fn level2_day_hud_palette_indices(color_index: u8) -> Result<[u8; 3]> {
+    LEVEL2_DAY_HUD_PALETTE_TABLE
+        .get(usize::from(color_index))
+        .copied()
+        .ok_or_else(|| {
+            NativeWorldError::new(format!(
+                "Level 2 Day HUD player color {color_index} has no source palette row"
+            ))
+        })
+}
+
+/// Minimal authoritative projection for the Day top bar and two spell hands.
+///
+/// `tick` is the simulation carrier; the C ABI adds the campaign generation
+/// at the handle boundary. Nyphur and local-visibility data are copied from
+/// their typed reset-owned projections so the Unity route cannot silently
+/// replace them with a generic participant or a Level 1 cache row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2DayHudSnapshot {
+    pub tick: u64,
+    pub local_player_slot: u8,
+    pub local_player_entity_index: u16,
+    pub local_player_color_index: u8,
+    pub local_player_active: bool,
+    pub hit_frame_time_pre_draw: u8,
+    pub color_phase_1: u8,
+    pub color_phase_2: u8,
+    pub local_player_control_flags: u32,
+    pub local_player_life: i32,
+    pub local_player_max_life: i32,
+    pub local_player_mana: i32,
+    pub local_player_max_mana: i32,
+    pub global_mana_denominator: i32,
+    pub minimap_panel_selector: u16,
+    pub castle_panel_selector: u16,
+    pub balloon_panel_selector: u16,
+    pub player_panel_selector: u16,
+    pub player_icon_selector: u16,
+    pub life_mana_icon_selector: u16,
+    pub life_palette_index: u8,
+    pub mana_palette_index: u8,
+    pub mana_max_palette_index: u8,
+    pub left: Level2DayHudSpellSlot,
+    pub right: Level2DayHudSpellSlot,
+    pub nyphur: Level2NyphurParticipant,
+    pub nyphur_visibility: Level2NyphurVisibility,
 }
 
 /// Level 2's shared spell/economy reset projection. The two active authored
@@ -15154,6 +15306,42 @@ impl Level2SharedSpellResetSession {
         }
     }
 
+    /// Execute the source PlayerEvents phase update once for the complete
+    /// outer frame.  The source increments Turn and rewrites its colorIndex
+    /// array before any speed-index entity pass; the bounded projection keeps
+    /// the lossless turn carrier in both local/player views and returns the
+    /// two HUD phases consumed by this slice.
+    fn step_day_hud_player_events(&mut self) -> (u8, u8) {
+        let local_player_slot = self.local_player.slot;
+        let turn = self.local_player.turn.wrapping_add(1);
+        self.local_player.turn = turn;
+        self.local_player.record[8..12].copy_from_slice(&turn.to_le_bytes());
+        if let Some(player) = self
+            .players
+            .iter_mut()
+            .find(|player| player.slot == local_player_slot)
+        {
+            player.turn = turn;
+            player.record[8..12].copy_from_slice(&turn.to_le_bytes());
+        }
+        level2_day_color_phases(turn)
+    }
+
+    /// Carry the source PlayerHitFrameTime_406 write through every typed
+    /// player view.  The value is decremented only by the post-update HUD
+    /// phase, never by a snapshot read.
+    fn set_player_hit_frame_time(&mut self, value: u8) {
+        let local_player_slot = self.local_player.slot;
+        self.local_player.record[406] = value;
+        if let Some(player) = self
+            .players
+            .iter_mut()
+            .find(|player| player.slot == local_player_slot)
+        {
+            player.record[406] = value;
+        }
+    }
+
     /// Keep the shared spell projection's source damage mailbox in lockstep
     /// with the Level 2 player route.  The exported entity record carries a
     /// four-byte header, so the source payload lives at bytes 98..102 and its
@@ -16974,6 +17162,7 @@ pub struct Level2ResetSession {
     pub context: FlightContext,
     baseline_entities: Box<[EntitySnapshot]>,
     entities: Box<[EntitySnapshot]>,
+    baseline_players: Box<[PlayerSnapshot]>,
     players: Box<[PlayerSnapshot]>,
     baseline_runtime: RuntimeSnapshot,
     runtime: RuntimeSnapshot,
@@ -17000,6 +17189,14 @@ pub struct Level2ResetSession {
     player_pending_attacker: u16,
     baseline_player_life: i32,
     player_life: i32,
+    baseline_level2_day_hud_color_phase_1: u8,
+    level2_day_hud_color_phase_1: u8,
+    baseline_level2_day_hud_color_phase_2: u8,
+    level2_day_hud_color_phase_2: u8,
+    baseline_level2_day_hud_hit_frame_time_pre_draw: u8,
+    level2_day_hud_hit_frame_time_pre_draw: u8,
+    baseline_level2_day_hud_player_panel_selector: u16,
+    level2_day_hud_player_panel_selector: u16,
     dispatch_events: Vec<Level2DispatchEvent>,
     economy_event_cursor: usize,
     baseline_level2_group8_activated: bool,
@@ -17774,6 +17971,14 @@ impl Level2ResetSession {
                 .expect("player attacker mailbox bytes"),
         );
         let initial_player_life = initial_player.life;
+        let (initial_day_hud_color_phase_1, initial_day_hud_color_phase_2) =
+            level2_day_color_phases(shared_spells.local_player.turn);
+        let initial_day_hud_hit_frame_time_pre_draw =
+            shared_spells.local_player.record_bytes()[406];
+        let initial_day_hud_player_panel_selector = level2_day_player_panel_selector(
+            initial_day_hud_hit_frame_time_pre_draw,
+            initial_day_hud_color_phase_1,
+        );
         Self {
             profile,
             baseline_state: state,
@@ -17784,6 +17989,7 @@ impl Level2ResetSession {
             context,
             baseline_entities: entities.clone(),
             entities,
+            baseline_players: players.clone(),
             players,
             baseline_runtime: runtime.clone(),
             runtime,
@@ -17807,6 +18013,15 @@ impl Level2ResetSession {
             player_pending_attacker: initial_player_pending_attacker,
             baseline_player_life: initial_player_life,
             player_life: initial_player_life,
+            baseline_level2_day_hud_color_phase_1: initial_day_hud_color_phase_1,
+            level2_day_hud_color_phase_1: initial_day_hud_color_phase_1,
+            baseline_level2_day_hud_color_phase_2: initial_day_hud_color_phase_2,
+            level2_day_hud_color_phase_2: initial_day_hud_color_phase_2,
+            baseline_level2_day_hud_hit_frame_time_pre_draw:
+                initial_day_hud_hit_frame_time_pre_draw,
+            level2_day_hud_hit_frame_time_pre_draw: initial_day_hud_hit_frame_time_pre_draw,
+            baseline_level2_day_hud_player_panel_selector: initial_day_hud_player_panel_selector,
+            level2_day_hud_player_panel_selector: initial_day_hud_player_panel_selector,
             dispatch_events: Vec::new(),
             economy_event_cursor: 0,
             baseline_level2_group8_activated: false,
@@ -18116,6 +18331,146 @@ impl Level2ResetSession {
     /// a stale or cross-player holder relation cannot become authority.
     pub fn nyphur_participant(&self) -> Result<Level2NyphurParticipant> {
         level2_nyphur_participant(&self.players, &self.entities, &self.runtime)
+    }
+
+    /// Build the generation-bound Day HUD projection from the live shared
+    /// spell/session state. Unknown hand selectors and broken parent links are
+    /// rejected so presentation cannot fall back to a neighboring asset row.
+    pub fn day_hud(&self) -> Result<Level2DayHudSnapshot> {
+        let local_player_slot = self.runtime.local_player_slot;
+        let local_player = &self.shared_spells.local_player;
+        let local_entity = &self.shared_spells.player_entity;
+        if local_player.slot != local_player_slot
+            || local_player.entity_index != self.state.entity_index
+            || local_entity.index != self.state.entity_index
+        {
+            return Err(NativeWorldError::new(
+                "Level 2 Day HUD local player/entity relation is invalid",
+            ));
+        }
+
+        let global_mana_denominator = self.economy.owner_mana_global();
+        if global_mana_denominator <= 0 {
+            return Err(NativeWorldError::new(
+                "Level 2 Day HUD global mana denominator is not positive",
+            ));
+        }
+
+        let local_player_color_index = local_player.player_color_index();
+        let [
+            mana_palette_index,
+            mana_max_palette_index,
+            life_palette_index,
+        ] = level2_day_hud_palette_indices(local_player_color_index)?;
+        let spell_slot = |raw_spell_selector: i16| -> Result<Level2DayHudSpellSlot> {
+            if raw_spell_selector < 0 {
+                return Ok(Level2DayHudSpellSlot::empty(
+                    raw_spell_selector,
+                    local_player_color_index,
+                ));
+            }
+            let family_index = usize::try_from(raw_spell_selector).map_err(|_| {
+                NativeWorldError::new("Level 2 Day HUD spell selector does not fit usize")
+            })?;
+            let holder_index = *local_player
+                .enabled_spell_holders
+                .get(family_index)
+                .ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "Level 2 Day HUD spell selector {raw_spell_selector} is unknown"
+                    ))
+                })?;
+            if holder_index == 0 {
+                return Err(NativeWorldError::new(format!(
+                    "Level 2 Day HUD spell selector {raw_spell_selector} has no holder"
+                )));
+            }
+            let holder = self
+                .shared_spells
+                .holders
+                .iter()
+                .chain(self.shared_spells.pickups().iter())
+                .chain(self.shared_spells.dynamic_pickups().iter())
+                .find(|holder| holder.index == holder_index)
+                .ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "Level 2 Day HUD holder {holder_index} is absent"
+                    ))
+                })?;
+            let parent_entity_index = holder.source_spell_parent_entity_index();
+            if parent_entity_index != local_entity.index {
+                return Err(NativeWorldError::new(format!(
+                    "Level 2 Day HUD holder {holder_index} is owned by entity {parent_entity_index}"
+                )));
+            }
+            let level_text_selector = u8::try_from(holder.level_gate).map_err(|_| {
+                NativeWorldError::new(format!(
+                    "Level 2 Day HUD holder {holder_index} has an unknown level selector"
+                ))
+            })?;
+            let icon_selector = 123_u16
+                .checked_add(u16::from(holder.model))
+                .ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "Level 2 Day HUD holder {holder_index} icon selector overflow"
+                    ))
+                })?;
+            Ok(Level2DayHudSpellSlot {
+                holder_entity_index: holder.index,
+                parent_entity_index,
+                raw_spell_selector,
+                color_index: local_player_color_index,
+                model: holder.model,
+                tier: holder.level_gate,
+                action: holder.action,
+                action_marker: holder.action_marker,
+                active_value: holder.active_value,
+                activation_value: holder.activation_value,
+                control_flags: holder.control_flags,
+                max_mana: holder.max_mana,
+                mana_regen: holder.mana_regen,
+                caster_mana: self.shared_spells.player_mana(),
+                frame_selector: if holder.active_value == 0 { 1 } else { 2 },
+                icon_selector,
+                level_text_selector,
+                draw_admitted: level2_day_spell_draw_admitted(
+                    holder.model,
+                    holder.active_value,
+                    self.level2_day_hud_color_phase_1,
+                ),
+            })
+        };
+
+        Ok(Level2DayHudSnapshot {
+            tick: self.state.tick,
+            local_player_slot,
+            local_player_entity_index: local_entity.index,
+            local_player_color_index,
+            local_player_active: local_player.active_player_index >= 0 && local_entity.active,
+            hit_frame_time_pre_draw: self.level2_day_hud_hit_frame_time_pre_draw,
+            color_phase_1: self.level2_day_hud_color_phase_1,
+            color_phase_2: self.level2_day_hud_color_phase_2,
+            local_player_control_flags: local_entity.control_flags,
+            local_player_life: local_entity.life,
+            local_player_max_life: local_entity.max_life,
+            local_player_mana: self.shared_spells.player_mana(),
+            local_player_max_mana: local_entity.max_mana,
+            global_mana_denominator,
+            // DrawTopStatusBar_2D710's direct MSPRD0-0 roots and geometry.
+            minimap_panel_selector: 40,
+            castle_panel_selector: 54,
+            balloon_panel_selector: 54,
+            player_panel_selector: self.level2_day_hud_player_panel_selector,
+            player_icon_selector: 43,
+            life_mana_icon_selector: 42,
+            life_palette_index,
+            mana_palette_index,
+            mana_max_palette_index,
+            left: spell_slot(local_player.left_spell_slot_raw)?,
+            right: spell_slot(local_player.right_spell_slot_raw)?,
+            nyphur: self.nyphur_participant()?,
+            nyphur_visibility: self.nyphur_visibility()?,
+        })
     }
 
     /// Focused reset/replay digest for the typed Nyphur participant chain.
@@ -21538,6 +21893,12 @@ impl Level2ResetSession {
         hasher.update(self.player_pending_damage.to_le_bytes());
         hasher.update(self.player_pending_attacker.to_le_bytes());
         hasher.update(self.player_life.to_le_bytes());
+        hasher.update(b"level2-day-hud-frame-state-v1");
+        hasher.update([
+            self.level2_day_hud_color_phase_1,
+            self.level2_day_hud_color_phase_2,
+        ]);
+        hasher.update(self.level2_day_hud_player_panel_selector.to_le_bytes());
         hasher.update(self.runtime.bytes());
         for entity in &self.entities {
             hasher.update(entity.record_bytes());
@@ -21561,6 +21922,37 @@ impl Level2ResetSession {
     #[must_use]
     pub fn terrain_hash(&self) -> u64 {
         self.terrain.deterministic_hash()
+    }
+
+    fn sync_level2_day_hud_player_projection(&mut self) {
+        let local_player_slot = self.shared_spells.local_player.slot;
+        let turn = self.shared_spells.local_player.turn;
+        let hit_frame_time = self.shared_spells.local_player.record_bytes()[406];
+        if let Some(player) = self
+            .players
+            .iter_mut()
+            .find(|player| player.slot == local_player_slot)
+        {
+            player.turn = turn;
+            player.record[8..12].copy_from_slice(&turn.to_le_bytes());
+            player.record[406] = hit_frame_time;
+        }
+    }
+
+    /// Complete the source DrawGameFrame HUD phase after all entity passes.
+    /// DrawTopStatus selects the hit panel from the pre-decrement timer, then
+    /// decrements only when colorIndex[1] is set.  Store that final panel
+    /// decision so repeated ABI reads are idempotent.
+    fn finish_level2_day_hud_frame(&mut self) {
+        let hit_frame_time = self.shared_spells.local_player.record_bytes()[406];
+        self.level2_day_hud_hit_frame_time_pre_draw = hit_frame_time;
+        self.level2_day_hud_player_panel_selector =
+            level2_day_player_panel_selector(hit_frame_time, self.level2_day_hud_color_phase_1);
+        if hit_frame_time > 0 && self.level2_day_hud_color_phase_1 != 0 {
+            self.shared_spells
+                .set_player_hit_frame_time(hit_frame_time - 1);
+        }
+        self.sync_level2_day_hud_player_projection();
     }
 
     /// Queue the source `sub_11900` contact payload for the local player.
@@ -21653,6 +22045,7 @@ impl Level2ResetSession {
         }
 
         self.player_life = self.player_life.wrapping_sub(damage);
+        self.shared_spells.set_player_hit_frame_time(4);
         let lethal = self.player_life < 0;
         let killer = if lethal && attacker_is_model67.is_some() {
             0
@@ -21702,6 +22095,10 @@ impl Level2ResetSession {
             command.argument_6,
             command.argument_8,
         );
+        let (color_phase_1, color_phase_2) = self.shared_spells.step_day_hud_player_events();
+        self.level2_day_hud_color_phase_1 = color_phase_1;
+        self.level2_day_hud_color_phase_2 = color_phase_2;
+        self.sync_level2_day_hud_player_projection();
         let latched_command =
             crate::latch_command_with_context(&mut self.state, command, &mut self.context);
         let mut evidence = Vec::new();
@@ -21726,6 +22123,7 @@ impl Level2ResetSession {
                     .copied(),
             );
         }
+        self.finish_level2_day_hud_frame();
         // remc2 evaluates objectives after the complete entity update and
         // before the next outer turn's authored switch pass.  Keep that
         // ordering so model-32 sees the newly completed stage only on the
@@ -21740,6 +22138,7 @@ impl Level2ResetSession {
         self.terrain = self.baseline_terrain.clone();
         self.context = self.baseline_context.clone();
         self.entities = self.baseline_entities.clone();
+        self.players.clone_from(&self.baseline_players);
         self.runtime = self.baseline_runtime.clone();
         self.bad_stones.clone_from(&self.baseline_bad_stones);
         self.shared_spells = self.baseline_shared_spells.clone();
@@ -21753,6 +22152,12 @@ impl Level2ResetSession {
         self.player_pending_damage = self.baseline_player_pending_damage;
         self.player_pending_attacker = self.baseline_player_pending_attacker;
         self.player_life = self.baseline_player_life;
+        self.level2_day_hud_color_phase_1 = self.baseline_level2_day_hud_color_phase_1;
+        self.level2_day_hud_color_phase_2 = self.baseline_level2_day_hud_color_phase_2;
+        self.level2_day_hud_hit_frame_time_pre_draw =
+            self.baseline_level2_day_hud_hit_frame_time_pre_draw;
+        self.level2_day_hud_player_panel_selector =
+            self.baseline_level2_day_hud_player_panel_selector;
         self.dispatch_events.clear();
         self.economy_event_cursor = 0;
         self.level2_group8_activated = self.baseline_level2_group8_activated;
@@ -36152,6 +36557,10 @@ mod tests {
         assert_eq!(session.player_pending_damage, LEVEL2_BEE_CONTACT_SUBSPELL);
         assert_eq!(session.player_pending_attacker, bee.entity_id);
         assert_eq!(session.player_life, life_before);
+        let first_hud = session.day_hud().expect("Day HUD after queued contact");
+        assert_eq!(first_hud.color_phase_1, 1);
+        assert_eq!(first_hud.player_panel_selector, 41);
+        assert_eq!(first_hud.hit_frame_time_pre_draw, 0);
 
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert_eq!(session.player_pending_damage, LEVEL2_BEE_CONTACT_SUBSPELL);
@@ -36208,6 +36617,24 @@ mod tests {
                 LEVEL2_BEE_CONTACT_SUBSPELL,
                 false
             ))
+        );
+        let second_hud = session.day_hud().expect("Day HUD after damage consume");
+        assert_eq!(second_hud.color_phase_1, 0);
+        assert_eq!(second_hud.player_panel_selector, 41);
+        assert_eq!(second_hud.hit_frame_time_pre_draw, 4);
+        let second_player_record = session.shared_spells().local_player.record_bytes();
+        assert_eq!(second_player_record[406], 4);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let third_hud = session.day_hud().expect("Day HUD during hit flash");
+        assert_eq!(third_hud.color_phase_1, 1);
+        assert_eq!(third_hud.player_panel_selector, 55);
+        assert_eq!(third_hud.hit_frame_time_pre_draw, 4);
+        let third_player_record = session.shared_spells().local_player.record_bytes();
+        assert_eq!(third_player_record[406], 3);
+        assert_eq!(
+            session.day_hud().expect("idempotent Day HUD read"),
+            third_hud
         );
     }
 
