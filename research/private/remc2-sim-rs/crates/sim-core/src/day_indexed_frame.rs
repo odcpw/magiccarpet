@@ -114,13 +114,11 @@ struct OutputRecord {
 pub struct DayIndexedFrameAssets {
     profile: DayIndexedProfile,
     package_sha256: String,
-    closure_sha256: String,
     cache_content_sha256: String,
     palette_rgb8: Box<[u8]>,
     tablesd: Box<[u8]>,
     sky: Box<[u8]>,
     terrain_atlas: Box<[u8]>,
-    terrain_tiles: Box<[u8]>,
 }
 
 impl DayIndexedFrameAssets {
@@ -328,7 +326,7 @@ impl DayIndexedFrameAssets {
             TERRAIN_ATLAS_BYTES,
             &["owner_data:DATA/BL32N0-0.DAT"],
         )?;
-        let terrain_tiles = read_output(
+        let _ = read_output(
             cache_dir,
             &outputs,
             TERRAIN_TILES_PATH,
@@ -340,13 +338,11 @@ impl DayIndexedFrameAssets {
         Ok(Self {
             profile: DayIndexedProfile::qualified(),
             package_sha256,
-            closure_sha256,
             cache_content_sha256: claimed_content_hash.to_owned(),
             palette_rgb8: palette_rgb8.into_boxed_slice(),
             tablesd: tablesd.into_boxed_slice(),
             sky: sky.into_boxed_slice(),
             terrain_atlas: terrain_atlas.into_boxed_slice(),
-            terrain_tiles: terrain_tiles.into_boxed_slice(),
         })
     }
 
@@ -358,11 +354,6 @@ impl DayIndexedFrameAssets {
     #[must_use]
     pub fn package_sha256(&self) -> &str {
         &self.package_sha256
-    }
-
-    #[must_use]
-    pub fn closure_sha256(&self) -> &str {
-        &self.closure_sha256
     }
 
     #[must_use]
@@ -388,11 +379,6 @@ impl DayIndexedFrameAssets {
     #[must_use]
     pub fn terrain_atlas(&self) -> &[u8] {
         &self.terrain_atlas
-    }
-
-    #[must_use]
-    pub fn terrain_tiles(&self) -> &[u8] {
-        &self.terrain_tiles
     }
 }
 
@@ -591,9 +577,11 @@ fn validate_level2_route(
             "Day indexed frame metadata is not the qualified external-2/internal-1 Day profile",
         ));
     }
-    if assets.package_sha256() != inspection.package_sha256() {
+    if assets.package_sha256() != inspection.package_sha256()
+        || session.package_sha256() != inspection.package_sha256()
+    {
         return Err(DayIndexedFrameError::new(
-            "Day indexed frame material cache is bound to a different owner package",
+            "Day indexed frame inspection, session, and material cache owner identities differ",
         ));
     }
     if session.profile().cave_mode {
@@ -1033,11 +1021,11 @@ mod tests {
         assert_eq!(assets.tablesd().len(), TABLESD_BYTES);
         assert_eq!(assets.sky().len(), SKY_BYTES);
         assert_eq!(assets.terrain_atlas().len(), TERRAIN_ATLAS_BYTES);
-        assert_eq!(assets.terrain_tiles().len(), TERRAIN_TILE_BANK_BYTES);
 
         let session = inspection
             .level2_reset_session()
             .expect("ordinary Level 2 reset session");
+        assert_eq!(session.package_sha256(), inspection.package_sha256());
         let mut frame_state = DayIndexedFrameState::new(41);
         let first = frame_state
             .render(&inspection, &session, &assets, 41)
@@ -1052,6 +1040,7 @@ mod tests {
         assert!(first.indices.iter().any(|index| *index != 0));
         assert_eq!(first.index_hash, byte_hash(&first.indices));
         assert_eq!(first.tick, session.state.tick);
+        assert_eq!(first.package_sha256, session.package_sha256());
         assert_eq!(frame_state.current_tick(), Some(0));
         assert_eq!(frame_state.current_frame(), Some(&first));
 
@@ -1089,6 +1078,16 @@ mod tests {
         let error = DayIndexedFrameAssets::load(&tampered_cache.0)
             .expect_err("unknown profile must fail closed");
         assert!(error.to_string().contains("profile identity mismatch"));
+
+        let output_tampered_cache = temporary_cache();
+        let sky_path = output_tampered_cache.0.join(SKY_PATH);
+        let mut sky = fs::read(&sky_path).expect("read temporary sky output");
+        sky[0] ^= 1;
+        fs::write(&sky_path, sky).expect("write tampered sky output");
+        let error = DayIndexedFrameAssets::load(&output_tampered_cache.0)
+            .expect_err("tampered decoded output must fail before rendering");
+        assert!(error.to_string().contains(SKY_PATH));
+        assert!(error.to_string().contains("hash mismatch"));
 
         let mut state = DayIndexedFrameState::new(9);
         let first = state

@@ -3440,6 +3440,7 @@ impl NativeWorldInspection {
         )?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
+            self.package_sha256.clone(),
             state,
             SessionTerrain::from_inspection(self),
             self.entities.clone(),
@@ -17177,6 +17178,7 @@ struct Level2ImportedSwitchRootState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2ResetSession {
     profile: FlightProfile,
+    package_sha256: String,
     baseline_state: FlightState,
     pub state: FlightState,
     baseline_terrain: SessionTerrain,
@@ -17898,6 +17900,7 @@ impl Level2ResetSession {
 
     fn new(
         profile: FlightProfile,
+        package_sha256: String,
         state: FlightState,
         terrain: SessionTerrain,
         entities: Box<[EntitySnapshot]>,
@@ -18009,6 +18012,7 @@ impl Level2ResetSession {
         );
         Self {
             profile,
+            package_sha256,
             baseline_state: state,
             state,
             baseline_terrain: terrain.clone(),
@@ -18112,6 +18116,13 @@ impl Level2ResetSession {
     #[must_use]
     pub const fn profile(&self) -> FlightProfile {
         self.profile
+    }
+
+    /// Immutable owner-package identity carried from the validated Level 2
+    /// inspection into this live reset session.
+    #[must_use]
+    pub fn package_sha256(&self) -> &str {
+        &self.package_sha256
     }
 
     /// Select the authored Level 2 campaign entry objective for the C ABI
