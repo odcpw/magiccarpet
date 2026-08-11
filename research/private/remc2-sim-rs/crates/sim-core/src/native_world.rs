@@ -570,6 +570,36 @@ impl EntitySnapshot {
         self.record[134..136].copy_from_slice(&actual_speed.to_le_bytes());
     }
 
+    /// Keep the source life field in lockstep with a common AI upkeep write.
+    fn set_life(&mut self, life: i32) {
+        self.life = life;
+        self.record[12..16].copy_from_slice(&life.to_le_bytes());
+    }
+
+    /// Keep the source mana field in lockstep with a common AI upkeep write.
+    fn set_mana(&mut self, mana: i32) {
+        self.mana = mana;
+        self.record[148..152].copy_from_slice(&mana.to_le_bytes());
+    }
+
+    /// Keep the source mana-regeneration field in lockstep with a common AI
+    /// upkeep write.
+    fn set_mana_regen(&mut self, mana_regen: i32) {
+        self.mana_regen = mana_regen;
+        self.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
+    }
+
+    /// Borrow the source `str_0x5E_94` payload cleared by `sub_12A70` while
+    /// the AI cooldown carrier is active.
+    fn source_upkeep_mailbox(&self) -> &[u8] {
+        &self.record[98..134]
+    }
+
+    /// Apply the source `memset(str_0x5E_94, 0, 36)` operation.
+    fn clear_source_upkeep_mailbox(&mut self) {
+        self.record[98..134].fill(0);
+    }
+
     /// Keep the source entity RNG in lockstep with a callback draw.
     fn set_entity_rng(&mut self, entity_rng: u16) {
         self.entity_rng = entity_rng;
@@ -3437,6 +3467,7 @@ impl NativeWorldInspection {
             &self.players,
             &self.entities,
             &self.runtime,
+            &mission,
         )?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
@@ -3644,10 +3675,486 @@ impl Level2NyphurDispatchTrace {
     }
 }
 
-/// Production carrier for the source AI dispatch state byte.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The source-owned mutable fields consumed by `sub_12A70`.
+///
+/// `Type_str_164` is not serialized as a standalone owner-package member.
+/// These fields therefore live beside, rather than inside, the lossless
+/// entity/player records.  Their reset values come from the qualified AI
+/// player and `MissionWizardMapSettings`; the entity remains authoritative for
+/// the source position/life/mana projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Level2NyphurCommonUpkeep {
+    player_slot: u8,
+    player_color_index: u8,
+    source_slot: u16,
+    source_list_model_zero: Option<u16>,
+    castle_entity_index: u16,
+    speed: i16,
+    strafe_speed: i16,
+    word_0x1a2: i16,
+    byte_0x154: u8,
+    word_0x159: i16,
+    life_regen: i16,
+    dword_0x16d: i32,
+    source_mailbox: [u8; 36],
+    // The pinned loop reaches words 32 and 33, which occupy the six-byte
+    // source padding immediately following the declared 32-word array.
+    array_0x1fc: [u16; 34],
+    word_0x242: i16,
+    word_0x244: i16,
+    word_0x246: i16,
+    word_0x24a: i16,
+    word_0x24c: i16,
+    spell_enabled: [i16; PLAYER_SPELL_COUNT],
+    mana_regen: i32,
+    mana: i32,
+    life: i32,
+    max_mana: i32,
+    max_life: i32,
+    high_upkeep: bool,
+    map_angle_allowed: bool,
+    cadence_eligible: bool,
+    cadence_candidate: Option<u16>,
+    return_value: i8,
+}
+
+/// Source `sub_12A70` state made available to the next AI leaves and to
+/// deterministic Rust tests.  The arrays retain their source widths and
+/// ordering; no local-player projection is used for AI-owned values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2NyphurCommonUpkeepSnapshot {
+    pub player_slot: u8,
+    pub player_color_index: u8,
+    pub source_slot: u16,
+    pub source_list_model_zero: Option<u16>,
+    pub castle_entity_index: u16,
+    pub phase: u8,
+    pub speed: i16,
+    pub strafe_speed: i16,
+    pub word_0x1a2: i16,
+    pub byte_0x154: u8,
+    pub word_0x159: i16,
+    pub life_regen: i16,
+    pub dword_0x16d: i32,
+    pub source_mailbox: [u8; 36],
+    pub array_0x1fc: [u16; 34],
+    pub word_0x242: i16,
+    pub word_0x244: i16,
+    pub word_0x246: i16,
+    pub word_0x24a: i16,
+    pub word_0x24c: i16,
+    pub spell_enabled: [i16; PLAYER_SPELL_COUNT],
+    pub mana_regen: i32,
+    pub mana: i32,
+    pub life: i32,
+    pub max_mana: i32,
+    pub max_life: i32,
+    pub high_upkeep: bool,
+    pub map_angle_allowed: bool,
+    pub cadence_eligible: bool,
+    pub cadence_candidate: Option<u16>,
+    pub return_value: i8,
+}
+
+impl Level2NyphurCommonUpkeep {
+    fn from_qualified_reset(
+        participant: Level2NyphurParticipant,
+        players: &[PlayerSnapshot],
+        entities: &[EntitySnapshot],
+        mission: &MissionContentSession,
+    ) -> Result<Self> {
+        let settings = mission
+            .wizard_map_settings()
+            .get(usize::from(participant.color_index))
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Level 2 Nyphur wizard settings row {} is absent",
+                    participant.color_index
+                ))
+            })?;
+        let player = players
+            .get(usize::from(participant.player_slot))
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur AI player is absent"))?;
+        let entity = entities
+            .get(usize::from(participant.entity_index))
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur AI entity is absent"))?;
+        let mut array_0x1fc = [0_u16; 34];
+        for index in 0..8 {
+            // Model-1 reset writes the eight per-color source thresholds to
+            // the exact uint16 sentinel consumed by sub_12A70.
+            array_0x1fc[4 * index + 4] = 24_607;
+        }
+        let mut spell_enabled = [0_i16; PLAYER_SPELL_COUNT];
+        spell_enabled[2] = i16::from(participant.color_index).wrapping_mul(4);
+        let castle_entity_index = entities
+            .iter()
+            .find(|candidate| {
+                candidate.active
+                    && candidate.class == 2
+                    && candidate.source_id == participant.entity_source_id
+            })
+            .map_or(0, |candidate| candidate.index);
+        let mut source_mailbox = [0_u8; 36];
+        source_mailbox.copy_from_slice(entity.source_upkeep_mailbox());
+        Ok(Self {
+            player_slot: player.slot,
+            player_color_index: participant.color_index,
+            source_slot: participant.entity_index,
+            source_list_model_zero: entities
+                .iter()
+                .filter(|candidate| candidate.active && candidate.model == 0)
+                .map(|candidate| candidate.index)
+                .next_back(),
+            castle_entity_index,
+            speed: 0,
+            strafe_speed: 0,
+            word_0x1a2: 0,
+            byte_0x154: 0,
+            word_0x159: 100,
+            life_regen: 0,
+            dword_0x16d: 2_000,
+            source_mailbox,
+            array_0x1fc,
+            word_0x242: settings.aggression,
+            word_0x244: settings.perception,
+            word_0x246: settings.reflexes,
+            word_0x24a: if settings.life != 0 {
+                settings.life
+            } else {
+                256
+            },
+            word_0x24c: 0,
+            spell_enabled,
+            mana_regen: entity.mana_regen,
+            mana: entity.mana,
+            life: entity.life,
+            max_mana: entity.max_mana,
+            max_life: entity.max_life,
+            high_upkeep: false,
+            map_angle_allowed: false,
+            cadence_eligible: false,
+            cadence_candidate: None,
+            return_value: 1,
+        })
+    }
+
+    fn snapshot(&self, phase: u8) -> Level2NyphurCommonUpkeepSnapshot {
+        Level2NyphurCommonUpkeepSnapshot {
+            player_slot: self.player_slot,
+            player_color_index: self.player_color_index,
+            source_slot: self.source_slot,
+            source_list_model_zero: self.source_list_model_zero,
+            castle_entity_index: self.castle_entity_index,
+            phase,
+            speed: self.speed,
+            strafe_speed: self.strafe_speed,
+            word_0x1a2: self.word_0x1a2,
+            byte_0x154: self.byte_0x154,
+            word_0x159: self.word_0x159,
+            life_regen: self.life_regen,
+            dword_0x16d: self.dword_0x16d,
+            source_mailbox: self.source_mailbox,
+            array_0x1fc: self.array_0x1fc,
+            word_0x242: self.word_0x242,
+            word_0x244: self.word_0x244,
+            word_0x246: self.word_0x246,
+            word_0x24a: self.word_0x24a,
+            word_0x24c: self.word_0x24c,
+            spell_enabled: self.spell_enabled,
+            mana_regen: self.mana_regen,
+            mana: self.mana,
+            life: self.life,
+            max_mana: self.max_mana,
+            max_life: self.max_life,
+            high_upkeep: self.high_upkeep,
+            map_angle_allowed: self.map_angle_allowed,
+            cadence_eligible: self.cadence_eligible,
+            cadence_candidate: self.cadence_candidate,
+            return_value: self.return_value,
+        }
+    }
+
+    fn hash_into(&self, hasher: &mut Sha256, phase: u8) {
+        hasher.update(b"level2-nyphur-common-upkeep-v1");
+        hasher.update([
+            self.player_slot,
+            self.player_color_index,
+            phase,
+            u8::from(self.high_upkeep),
+            u8::from(self.map_angle_allowed),
+            u8::from(self.cadence_eligible),
+            self.return_value.cast_unsigned(),
+        ]);
+        hasher.update(self.source_slot.to_le_bytes());
+        match self.source_list_model_zero {
+            Some(index) => {
+                hasher.update([1]);
+                hasher.update(index.to_le_bytes());
+            }
+            None => hasher.update([0]),
+        }
+        hasher.update(self.castle_entity_index.to_le_bytes());
+        hasher.update(self.speed.to_le_bytes());
+        hasher.update(self.strafe_speed.to_le_bytes());
+        hasher.update(self.word_0x1a2.to_le_bytes());
+        hasher.update([self.byte_0x154]);
+        hasher.update(self.word_0x159.to_le_bytes());
+        hasher.update(self.life_regen.to_le_bytes());
+        hasher.update(self.dword_0x16d.to_le_bytes());
+        hasher.update(self.source_mailbox);
+        for value in self.array_0x1fc {
+            hasher.update(value.to_le_bytes());
+        }
+        for value in [
+            self.word_0x242,
+            self.word_0x244,
+            self.word_0x246,
+            self.word_0x24a,
+            self.word_0x24c,
+        ] {
+            hasher.update(value.to_le_bytes());
+        }
+        for value in self.spell_enabled {
+            hasher.update(value.to_le_bytes());
+        }
+        hasher.update(self.mana_regen.to_le_bytes());
+        hasher.update(self.mana.to_le_bytes());
+        hasher.update(self.life.to_le_bytes());
+        hasher.update(self.max_mana.to_le_bytes());
+        hasher.update(self.max_life.to_le_bytes());
+        match self.cadence_candidate {
+            Some(index) => {
+                hasher.update([1]);
+                hasher.update(index.to_le_bytes());
+            }
+            None => hasher.update([0]),
+        }
+    }
+
+    fn cadence_period(&self) -> u16 {
+        let sign = i32::from(self.word_0x246).signum();
+        let adjusted = (i32::from(self.word_0x246) - (sign << 2) + sign) >> 2;
+        let period = 64 - adjusted;
+        u16::try_from(period).expect("qualified Nyphur reflexes produce a positive cadence")
+    }
+
+    fn cadence_candidate(
+        &self,
+        source: &EntitySnapshot,
+        entities: &[EntitySnapshot],
+    ) -> Option<u16> {
+        let mut nearest = None;
+        let mut nearest_distance = u32::MAX;
+        for candidate in entities.iter().filter(|candidate| {
+            candidate.active
+                && candidate.index != source.index
+                && candidate.source_word_96() == source.source_id
+        }) {
+            let left_x = i16::from_le_bytes(source.position.x.to_le_bytes());
+            let right_x = i16::from_le_bytes(candidate.position.x.to_le_bytes());
+            let left_y = i16::from_le_bytes(source.position.y.to_le_bytes());
+            let right_y = i16::from_le_bytes(candidate.position.y.to_le_bytes());
+            let dx = i32::from(right_x.wrapping_sub(left_x));
+            let dy = i32::from(right_y.wrapping_sub(left_y));
+            let distance = u32::try_from(dx * dx + dy * dy)
+                .expect("source XY distance fits the pinned uint32 carrier");
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest = Some(candidate.index);
+            }
+        }
+        (nearest_distance < 0x0190_0000)
+            .then_some(nearest)
+            .flatten()
+    }
+
+    fn step(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+        presentation: &PresentationSelectors,
+    ) -> Result<Level2NyphurCommonUpkeepSnapshot> {
+        let entity_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur common source row is absent"))?;
+        if source_slot != self.source_slot {
+            return Err(NativeWorldError::new(
+                "Level 2 Nyphur common source slot changed",
+            ));
+        }
+        let source_entity = entities[entity_index].clone();
+
+        // sub_15EE0 runs before every other common-upkeep write and retains
+        // the last model-0 source encountered in the source-order walk.
+        self.source_list_model_zero = entities
+            .iter()
+            .filter(|candidate| candidate.active && candidate.model == 0)
+            .map(|candidate| candidate.index)
+            .next_back();
+        if self.word_0x1a2 < 0 {
+            self.word_0x1a2 = self.word_0x1a2.wrapping_add(1);
+        }
+        for enabled in &mut self.spell_enabled {
+            if *enabled > 0 {
+                *enabled -= 1;
+            }
+        }
+        for index in 0..8 {
+            let threshold = 4 * index + 4;
+            if self.array_0x1fc[threshold] < 0x601f {
+                let next = i32::from(self.word_0x242) + 1 + i32::from(self.array_0x1fc[4 * index]);
+                self.array_0x1fc[threshold] = next as u16;
+                if self.array_0x1fc[threshold] > 0x601f {
+                    self.array_0x1fc[threshold] = 0x601f;
+                }
+            }
+            if self.array_0x1fc[threshold] > 0x601f {
+                if self.array_0x1fc[threshold + 1] == 0 {
+                    let decrement = (256_i32 - i32::from(self.word_0x242)) as u16;
+                    self.array_0x1fc[threshold] =
+                        self.array_0x1fc[threshold].wrapping_sub(decrement);
+                }
+                if self.array_0x1fc[threshold] < 0x601f {
+                    self.array_0x1fc[threshold] = 0x601f;
+                }
+            }
+        }
+
+        let castle = (self.castle_entity_index != 0)
+            .then(|| entities.get(usize::from(self.castle_entity_index)))
+            .flatten();
+        let castle_overlaps =
+            castle.is_some_and(|castle| level2_nyphur_strict_overlap(&source_entity, castle));
+        self.high_upkeep = castle_overlaps || source_entity.control_flags & 0x1000 != 0;
+        if castle_overlaps {
+            self.word_0x159 = 2;
+        }
+        if self.word_0x159 != 0 {
+            entities[entity_index].clear_source_upkeep_mailbox();
+            self.source_mailbox = [0; 36];
+            self.word_0x159 = self.word_0x159.wrapping_sub(1);
+        } else {
+            // sub_5EFA0 always clears word_0x26 before consuming its mailbox.
+            entities[entity_index].record[42..44].fill(0);
+            self.source_mailbox
+                .copy_from_slice(entities[entity_index].source_upkeep_mailbox());
+            self.return_value = if self.life < 0 { 2 } else { 1 };
+            if self.return_value == 2 {
+                entities[entity_index].action = 2;
+                entities[entity_index].record[73] = 2;
+                return Ok(self.snapshot(source_entity.phase));
+            }
+        }
+
+        // sub_146F0's first branch clears the source movement latch.  The
+        // qualified row has no active latch, so its ordinary route preserves
+        // the imported position while still carrying the exact bit operation.
+        if entities[entity_index].control_flags & 0x0800 != 0 {
+            let control_flags = entities[entity_index].control_flags & !0x0800;
+            entities[entity_index].set_control_flags(control_flags);
+        }
+        self.map_angle_allowed =
+            level2_nyphur_map_angle_allowed(terrain, entities[entity_index].position);
+        if self.byte_0x154 < 200 {
+            self.byte_0x154 += 1;
+        }
+        self.mana = self.mana.wrapping_add(self.mana_regen);
+        self.life = self.life.wrapping_add(i32::from(self.life_regen));
+        if self.life < -1 {
+            self.life = -1;
+        }
+        if self.life > self.max_life {
+            self.life = self.max_life;
+        }
+        if self.dword_0x16d != 0 {
+            self.dword_0x16d = self.dword_0x16d.wrapping_sub(1);
+        }
+        if self.high_upkeep {
+            self.mana_regen = (self.max_mana / 200).max(1_000);
+            self.life_regen = (self.max_life / 200) as i16;
+            let control_flags = entities[entity_index].control_flags & !0x1000;
+            entities[entity_index].set_control_flags(control_flags);
+        } else {
+            self.mana_regen = (self.max_mana / 2_000).max(100);
+            self.life_regen = (self.max_life / 500) as i16;
+        }
+        self.mana = self.mana.clamp(0, self.max_mana);
+        let period = self.cadence_period();
+        self.cadence_eligible = u16::from(source_entity.phase) % period == 0;
+        self.cadence_candidate = if self.cadence_eligible {
+            self.cadence_candidate(&source_entity, entities)
+        } else {
+            None
+        };
+        if self.cadence_candidate.is_some() && self.strafe_speed == 0 {
+            self.strafe_speed = 80;
+        }
+
+        let parameter_index = source_entity.parameter_relation.ok_or_else(|| {
+            NativeWorldError::new("Level 2 Nyphur common source parameter is absent")
+        })?;
+        let parameter = presentation
+            .entity_parameters
+            .get(usize::from(parameter_index))
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur common parameter row is absent")
+            })?;
+        let upper_clearance = i16::from_le_bytes([parameter[10], parameter[11]]);
+        let lower_clearance = i16::from_le_bytes([parameter[12], parameter[13]]);
+        let ground = terrain.ground_height(entities[entity_index].position);
+        let upper = ground.wrapping_add(upper_clearance);
+        let lower = ground.wrapping_add(lower_clearance);
+        let mut position = entities[entity_index].position;
+        if position.z > upper {
+            position.z = upper;
+        }
+        if position.z < lower {
+            position.z = lower;
+        }
+        if position != entities[entity_index].position {
+            entities[entity_index].set_position(position);
+        }
+        entities[entity_index].set_mana(self.mana);
+        entities[entity_index].set_life(self.life);
+        entities[entity_index].set_mana_regen(self.mana_regen);
+        Ok(self.snapshot(entities[entity_index].phase))
+    }
+}
+
+fn level2_nyphur_strict_overlap(left: &EntitySnapshot, right: &EntitySnapshot) -> bool {
+    let left_x = i16::from_le_bytes(left.position.x.to_le_bytes());
+    let right_x = i16::from_le_bytes(right.position.x.to_le_bytes());
+    let left_y = i16::from_le_bytes(left.position.y.to_le_bytes());
+    let right_y = i16::from_le_bytes(right.position.y.to_le_bytes());
+    let dx = i32::from(right_x.wrapping_sub(left_x)).abs();
+    let dy = i32::from(right_y.wrapping_sub(left_y)).abs();
+    let dz = i32::from(
+        left.position
+            .z
+            .wrapping_add(left.array_yaw())
+            .wrapping_sub(right.position.z.wrapping_add(right.array_yaw())),
+    )
+    .abs();
+    dx < i32::from(left.array_pitch()) + i32::from(right.array_pitch())
+        && dy < i32::from(left.array_roll()) + i32::from(right.array_roll())
+        && dz < i32::from(left.array_fov()) + i32::from(right.array_fov())
+}
+
+fn level2_nyphur_map_angle_allowed(terrain: &SessionTerrain, position: Position) -> bool {
+    let x = position.x.to_be_bytes()[0];
+    let y = position.y.to_be_bytes()[0];
+    let angle = i8::from_ne_bytes([terrain.planes.angles[terrain_index(x, y)]]);
+    angle >= 0 && (terrain.map_type != MapType::Cave || angle & 8 == 0)
+}
+
+/// Production carrier for the source AI dispatch state byte and common
+/// `sub_12A70` state.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Level2NyphurDispatcher {
     state_byte: i8,
+    common_upkeep: Level2NyphurCommonUpkeep,
 }
 
 impl Level2NyphurDispatcher {
@@ -3659,6 +4166,7 @@ impl Level2NyphurDispatcher {
         players: &[PlayerSnapshot],
         entities: &[EntitySnapshot],
         runtime: &RuntimeSnapshot,
+        mission: &MissionContentSession,
     ) -> Result<Self> {
         let participant = level2_nyphur_participant(players, entities, runtime)?;
         if participant.entity_model != 1 || participant.entity_action != 1 {
@@ -3666,11 +4174,19 @@ impl Level2NyphurDispatcher {
                 "Level 2 Nyphur dispatcher requires the qualified model-1 action-1 row",
             ));
         }
-        Ok(Self { state_byte: 0 })
+        Ok(Self {
+            state_byte: 0,
+            common_upkeep: Level2NyphurCommonUpkeep::from_qualified_reset(
+                participant,
+                players,
+                entities,
+                mission,
+            )?,
+        })
     }
 
     #[must_use]
-    const fn state_byte(self) -> i8 {
+    const fn state_byte(&self) -> i8 {
         self.state_byte
     }
 
@@ -3678,8 +4194,24 @@ impl Level2NyphurDispatcher {
     /// Mode helper bodies are owned by their separate Level 2 slices; this
     /// common dispatcher records their exact source call and tail position.
     #[must_use]
-    fn dispatch_trace(self, pass: u8, source_slot: u16) -> Level2NyphurDispatchTrace {
+    fn dispatch_trace(&self, pass: u8, source_slot: u16) -> Level2NyphurDispatchTrace {
         Self::trace_for_state(self.state_byte, pass, source_slot)
+    }
+
+    fn step_common_upkeep(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+        presentation: &PresentationSelectors,
+    ) -> Result<Level2NyphurCommonUpkeepSnapshot> {
+        self.common_upkeep
+            .step(source_slot, entities, terrain, presentation)
+    }
+
+    #[must_use]
+    fn common_upkeep(&self, phase: u8) -> Level2NyphurCommonUpkeepSnapshot {
+        self.common_upkeep.snapshot(phase)
     }
 
     /// Pure selector used by the production carrier and boundary tests. It
@@ -18024,7 +18556,7 @@ impl Level2ResetSession {
             baseline_goats: goats.clone(),
             goats,
             mission,
-            baseline_nyphur_dispatcher: nyphur_dispatcher,
+            baseline_nyphur_dispatcher: nyphur_dispatcher.clone(),
             nyphur_dispatcher,
             baseline_nyphur_dispatch_traces: Vec::new(),
             nyphur_dispatch_traces: Vec::new(),
@@ -18524,6 +19056,18 @@ impl Level2ResetSession {
     #[must_use]
     pub const fn nyphur_dispatch_state_byte(&self) -> i8 {
         self.nyphur_dispatcher.state_byte()
+    }
+
+    /// Read the source-owned common upkeep carrier after the Nyphur source
+    /// row has run. The phase is read from the live entity because the outer
+    /// dispatcher increments byte `0x3E` after the callback returns.
+    pub fn nyphur_common_upkeep(&self) -> Result<Level2NyphurCommonUpkeepSnapshot> {
+        let entity = self
+            .entities
+            .iter()
+            .find(|entity| entity.index == self.nyphur_dispatcher.common_upkeep.source_slot)
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur common source row is absent"))?;
+        Ok(self.nyphur_dispatcher.common_upkeep(entity.phase))
     }
 
     /// Ordered `sub_12910` traces emitted by the real Level 2 source pass.
@@ -21017,8 +21561,21 @@ impl Level2ResetSession {
                     });
                 }
                 10 => {
-                    let trace = self.nyphur_dispatcher.dispatch_trace(pass, source_slot);
-                    self.nyphur_dispatch_traces.push(trace);
+                    if let Err(error) = self.nyphur_dispatcher.step_common_upkeep(
+                        source_slot,
+                        &mut self.entities,
+                        &self.terrain,
+                        &self.presentation,
+                    ) {
+                        self.dispatch_events.push(Level2DispatchEvent::Error {
+                            pass,
+                            source_slot,
+                            message: error.to_string(),
+                        });
+                    } else {
+                        let trace = self.nyphur_dispatcher.dispatch_trace(pass, source_slot);
+                        self.nyphur_dispatch_traces.push(trace);
+                    }
                     // `ApplyEvents_498A0` advances byte_0x3E after every
                     // action callback, including the class-3/model-1 AI row.
                     if let Some(entity) = self
@@ -21973,6 +22530,15 @@ impl Level2ResetSession {
             hasher.update(source_slot.to_le_bytes());
         }
         hasher.update(b"level2-nyphur-dispatch-traces-v1");
+        if let Some(entity) = self
+            .entities
+            .iter()
+            .find(|entity| entity.index == self.nyphur_dispatcher.common_upkeep.source_slot)
+        {
+            self.nyphur_dispatcher
+                .common_upkeep
+                .hash_into(&mut hasher, entity.phase);
+        }
         for trace in &self.nyphur_dispatch_traces {
             hasher.update([trace.pass]);
             hasher.update(trace.source_slot.to_le_bytes());
@@ -22117,6 +22683,15 @@ impl Level2ResetSession {
         ]);
         hasher.update(b"level2-nyphur-dispatcher-v1");
         hasher.update(self.nyphur_dispatcher.state_byte().to_le_bytes());
+        if let Some(entity) = self
+            .entities
+            .iter()
+            .find(|entity| entity.index == self.nyphur_dispatcher.common_upkeep.source_slot)
+        {
+            self.nyphur_dispatcher
+                .common_upkeep
+                .hash_into(&mut hasher, entity.phase);
+        }
         for trace in &self.nyphur_dispatch_traces {
             hasher.update([trace.pass]);
             hasher.update(trace.source_slot.to_le_bytes());
@@ -22387,7 +22962,7 @@ impl Level2ResetSession {
         self.ordinary.reset();
         self.goats = self.baseline_goats.clone();
         self.mission.reset();
-        self.nyphur_dispatcher = self.baseline_nyphur_dispatcher;
+        self.nyphur_dispatcher = self.baseline_nyphur_dispatcher.clone();
         self.nyphur_dispatch_traces
             .clone_from(&self.baseline_nyphur_dispatch_traces);
         self.player_pending_damage = self.baseline_player_pending_damage;
@@ -44131,6 +44706,125 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn level_two_ai_common_upkeep_matches_0002_0007_0009() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 common-upkeep production session");
+        let baseline = session
+            .nyphur_common_upkeep()
+            .expect("qualified Nyphur common carrier");
+        let local_player_before = session.entities[usize::from(session.state.entity_index)].clone();
+        assert_eq!((baseline.player_slot, baseline.player_color_index), (1, 1));
+        assert_eq!(session.runtime.local_player_slot, 0);
+        assert_eq!(baseline.source_slot, 112);
+        assert_eq!(baseline.castle_entity_index, 0);
+        assert_eq!(baseline.phase, 113);
+        assert_eq!(baseline.word_0x1a2, 0);
+        assert_eq!(baseline.byte_0x154, 0);
+        assert_eq!(baseline.word_0x159, 100);
+        assert_eq!(baseline.life_regen, 0);
+        assert_eq!(baseline.dword_0x16d, 2_000);
+        assert_eq!(baseline.word_0x242, 243);
+        assert_eq!(baseline.word_0x244, 90);
+        assert_eq!(baseline.word_0x246, 39);
+        assert_eq!(baseline.word_0x24a, 79);
+        assert_eq!(baseline.word_0x24c, 0);
+        assert_eq!(baseline.spell_enabled[2], 4);
+        assert!(
+            baseline
+                .spell_enabled
+                .iter()
+                .enumerate()
+                .all(|(index, value)| { index == 2 && *value == 4 || index != 2 && *value == 0 })
+        );
+        for index in 0..8 {
+            assert_eq!(baseline.array_0x1fc[4 * index + 4], 24_607);
+        }
+        assert_eq!(baseline.mana_regen, 100);
+        assert_eq!((baseline.mana, baseline.max_mana), (1_000, 1_000));
+        assert_eq!((baseline.life, baseline.max_life), (3_085, 3_085));
+        assert!(!baseline.high_upkeep);
+        assert!(!baseline.map_angle_allowed);
+        assert!(!baseline.cadence_eligible);
+        assert_eq!(baseline.cadence_candidate, None);
+        assert_eq!(baseline.return_value, 1);
+        assert_eq!(baseline.source_mailbox, [0; 36]);
+
+        let baseline_campaign_hash = session.campaign_state_hash();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let local_player_after = &session.entities[usize::from(session.state.entity_index)];
+        // Common upkeep belongs to the discovered AI row, not the local
+        // player projection.  This read-only public-route assertion rejects
+        // a local-player shortcut while allowing the player phase callback.
+        assert_eq!(local_player_after.position, local_player_before.position);
+        assert_eq!(
+            local_player_after.control_flags,
+            local_player_before.control_flags
+        );
+        assert_eq!(
+            local_player_after.record[12..16],
+            local_player_before.record[12..16]
+        );
+        assert_eq!(
+            local_player_after.record[140..152],
+            local_player_before.record[140..152]
+        );
+        assert_eq!(
+            local_player_after.record[98..134],
+            local_player_before.record[98..134]
+        );
+        let stepped = session
+            .nyphur_common_upkeep()
+            .expect("stepped Nyphur common carrier");
+        assert_eq!(stepped.source_list_model_zero, Some(113));
+        assert_eq!(stepped.phase, 114);
+        assert_eq!(stepped.word_0x1a2, 0);
+        assert_eq!(stepped.byte_0x154, 1);
+        assert_eq!(stepped.word_0x159, 99);
+        assert_eq!(stepped.life_regen, 6);
+        assert_eq!(stepped.dword_0x16d, 1_999);
+        assert_eq!(stepped.word_0x242, 243);
+        assert_eq!(stepped.word_0x244, 90);
+        assert_eq!(stepped.word_0x246, 39);
+        assert_eq!(stepped.spell_enabled[2], 3);
+        for index in 0..8 {
+            assert_eq!(stepped.array_0x1fc[4 * index + 4], 24_607);
+        }
+        assert_eq!(stepped.mana_regen, 100);
+        assert_eq!((stepped.mana, stepped.max_mana), (1_000, 1_000));
+        assert_eq!((stepped.life, stepped.max_life), (3_085, 3_085));
+        assert!(!stepped.high_upkeep);
+        assert!(stepped.map_angle_allowed);
+        assert!(!stepped.cadence_eligible);
+        assert_eq!(stepped.cadence_candidate, None);
+        assert_eq!(stepped.return_value, 1);
+        assert_eq!(stepped.source_mailbox, [0; 36]);
+        assert_eq!(session.nyphur_dispatch_traces().len(), 1);
+        assert_eq!(session.nyphur_dispatch_traces()[0].state_byte, 0);
+        assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
+        let stepped_campaign_hash = session.campaign_state_hash();
+
+        session.reset();
+        assert_eq!(
+            session
+                .nyphur_common_upkeep()
+                .expect("reset Nyphur common carrier"),
+            baseline
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .nyphur_common_upkeep()
+                .expect("replayed Nyphur common carrier"),
+            stepped
+        );
+        assert_eq!(session.campaign_state_hash(), stepped_campaign_hash);
     }
 
     #[test]
