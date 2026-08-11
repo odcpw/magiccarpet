@@ -4980,7 +4980,10 @@ impl Level2NyphurDispatcher {
         runtime: &RuntimeSnapshot,
         mission: &MissionContentSession,
     ) -> Result<Self> {
-        let participant = level2_nyphur_participant(players, entities, runtime)?;
+        let baseline_entity = entities
+            .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
+        let participant = level2_nyphur_participant(players, entities, runtime, baseline_entity)?;
         if participant.entity_model != 1 || participant.entity_action != 1 {
             return Err(NativeWorldError::new(
                 "Level 2 Nyphur dispatcher requires the qualified model-1 action-1 row",
@@ -19723,7 +19726,16 @@ impl Level2ResetSession {
     /// the mutable reset session. The typed view is deliberately fallible so
     /// a stale or cross-player holder relation cannot become authority.
     pub fn nyphur_participant(&self) -> Result<Level2NyphurParticipant> {
-        level2_nyphur_participant(&self.players, &self.entities, &self.runtime)
+        let baseline_entity = self
+            .baseline_entities
+            .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
+        level2_nyphur_participant(
+            &self.players,
+            &self.entities,
+            &self.runtime,
+            baseline_entity,
+        )
     }
 
     /// Build the generation-bound Day HUD projection from the live shared
@@ -23358,16 +23370,11 @@ impl Level2ResetSession {
             hasher.update([pass, kind, family, flags]);
             hasher.update(source_slot.to_le_bytes());
         }
+        // This digest is the stable typed event/dispatch-trace contract. The
+        // mutable common-upkeep carrier belongs to campaign_state_hash; adding
+        // it here makes the C ABI dispatch digest depend on unrelated movement
+        // and regeneration fields that are not present in its canonical ledger.
         hasher.update(b"level2-nyphur-dispatch-traces-v1");
-        if let Some(entity) = self
-            .entities
-            .iter()
-            .find(|entity| entity.index == self.nyphur_dispatcher.common_upkeep.source_slot)
-        {
-            self.nyphur_dispatcher
-                .common_upkeep
-                .hash_into(&mut hasher, entity.phase);
-        }
         for trace in &self.nyphur_dispatch_traces {
             hasher.update([trace.pass]);
             hasher.update(trace.source_slot.to_le_bytes());
@@ -23879,6 +23886,7 @@ fn level2_nyphur_participant(
     players: &[PlayerSnapshot],
     entities: &[EntitySnapshot],
     runtime: &RuntimeSnapshot,
+    baseline_entity: &EntitySnapshot,
 ) -> Result<Level2NyphurParticipant> {
     let player = players
         .get(1)
@@ -23919,7 +23927,7 @@ fn level2_nyphur_participant(
         || entity.max_life != 3_085
         || entity.mana != 1_000
         || entity.max_mana != 1_000
-        || !level2_nyphur_entity_record_matches_census(entity)
+        || !level2_nyphur_entity_record_matches_census(entity, baseline_entity)
     {
         return Err(NativeWorldError::new(
             "Level 2 Nyphur constructor/ownership census row changed",
@@ -23997,15 +24005,27 @@ fn level2_nyphur_participant(
     })
 }
 
-fn level2_nyphur_entity_record_matches_census(entity: &EntitySnapshot) -> bool {
+fn level2_nyphur_entity_record_matches_census(
+    entity: &EntitySnapshot,
+    baseline_entity: &EntitySnapshot,
+) -> bool {
     let record = entity.record_bytes();
     if record.get(66) != Some(&entity.phase) {
         return false;
     }
+    let baseline_record = baseline_entity.record_bytes();
+    if baseline_record.len() != record.len() {
+        return false;
+    }
+    let mut normalized = record.to_vec();
+    // `sub_146F0` and its final terrain clamp own the position bytes during
+    // the ordinary source pass. Keep the reset bytes for the constructor hash
+    // while retaining the explicit class/action/owner checks above and every
+    // other record byte in the census.
+    normalized[80..86].copy_from_slice(&baseline_record[80..86]);
+    normalized[66] = LEVEL2_NYPHUR_INITIAL_PHASE;
     let mut hasher = Sha256::new();
-    hasher.update(&record[..66]);
-    hasher.update([LEVEL2_NYPHUR_INITIAL_PHASE]);
-    hasher.update(&record[67..]);
+    hasher.update(normalized);
     format!("{:x}", hasher.finalize()) == LEVEL2_NYPHUR_ENTITY_SHA256
 }
 
