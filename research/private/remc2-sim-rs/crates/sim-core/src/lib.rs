@@ -12,6 +12,7 @@ pub mod classic_hd_render_graph;
 pub mod classic_hd_sprites;
 pub mod classic_hd_terrain;
 pub mod combat_tmap;
+pub mod day_indexed_frame;
 pub mod dynamic_lighting;
 pub mod economy_tmap;
 pub mod enhanced_presentation;
