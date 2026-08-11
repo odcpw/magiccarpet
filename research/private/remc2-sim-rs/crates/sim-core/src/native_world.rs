@@ -20715,6 +20715,13 @@ impl Level2ResetSession {
         // boundary's capacity just like remc2.
         self.economy.rebuild_owner_max_mana_projection();
         self.synchronize_level2_terrain();
+        let preexisting_class14_model5_slots = self
+            .economy
+            .authored_class14()
+            .iter()
+            .filter(|source| source.active && source.model == 5)
+            .map(|source| source.source_entity_index)
+            .collect::<BTreeSet<_>>();
         self.step_level2_imported_switch_roots(pass);
         self.activate_level2_authored_group8(pass);
         self.activate_level2_authored_group31(pass);
@@ -20725,6 +20732,17 @@ impl Level2ResetSession {
         self.activate_level2_authored_model76(pass);
         self.activate_level2_authored_class14(pass);
         self.sync_level2_model76_targets_from_entities();
+        let deferred_class14_model5_slots = self
+            .economy
+            .authored_class14()
+            .iter()
+            .filter(|source| {
+                source.active
+                    && source.model == 5
+                    && !preexisting_class14_model5_slots.contains(&source.source_entity_index)
+            })
+            .map(|source| source.source_entity_index)
+            .collect::<BTreeSet<_>>();
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
         for event in self.goats.begin_source_turn(&goat_players) {
             let source_slot = match event {
@@ -20783,6 +20801,7 @@ impl Level2ResetSession {
             .economy
             .live_arena_cursor_rows()
             .into_iter()
+            .filter(|row| !deferred_class14_model5_slots.contains(&row.source_slot))
             .filter(|row| !routes.iter().any(|(known, _)| known == &row.source_slot))
             .map(|row| (row.source_slot, row))
             .collect::<BTreeMap<_, _>>();
@@ -20793,7 +20812,13 @@ impl Level2ResetSession {
         // above are the first walk; remember which dynamic rows it exposed
         // so a bounded follow-up walk can surface same-turn allocations
         // without replaying an already observed row indefinitely.
-        let mut dispatched_dynamic_slots = BTreeSet::new();
+        let mut dispatched_dynamic_slots = self
+            .economy
+            .live_arena_cursor_rows()
+            .into_iter()
+            .filter(|row| deferred_class14_model5_slots.contains(&row.source_slot))
+            .map(|row| (row.source_slot, row.generation))
+            .collect::<BTreeSet<_>>();
         for (source_slot, kind) in routes {
             match kind {
                 9 => {
