@@ -8108,6 +8108,8 @@ pub extern "C" fn mc_native_campaign_session_open_with_asset_cache(
     out_handle: *mut u64,
 ) -> i32 {
     boundary(|| {
+        require_output(out_handle, "out_handle")?;
+        write_output(out_handle, 0);
         let asset_cache_path =
             utf8_input(asset_cache_path, asset_cache_path_len, "asset_cache_path")?;
         open_campaign_session(
@@ -20232,6 +20234,43 @@ mod tests {
             map_type: 0,
             ..McCampaignSelectionV2::default()
         };
+
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let mut null_cache_handle = 0x1111_2222_3333_4444;
+        assert_eq!(
+            mc_native_campaign_session_open_with_asset_cache(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                1,
+                &raw const selection,
+                &raw mut null_cache_handle,
+            ),
+            MC_STATUS_NULL_POINTER
+        );
+        assert_eq!(null_cache_handle, 0);
+
+        let invalid_cache_path = [0xff_u8];
+        let mut invalid_utf8_handle = 0x5555_6666_7777_8888;
+        assert_eq!(
+            mc_native_campaign_session_open_with_asset_cache(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                invalid_cache_path.as_ptr(),
+                invalid_cache_path.len() as u32,
+                &raw const selection,
+                &raw mut invalid_utf8_handle,
+            ),
+            MC_STATUS_INVALID_UTF8
+        );
+        assert_eq!(invalid_utf8_handle, 0);
+
         let handle = open_level2_campaign_handle_with_asset_cache(&cache);
 
         let mut pre_render_indices = vec![0xa5; INDEX_BYTES];
