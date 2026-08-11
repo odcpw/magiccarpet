@@ -758,6 +758,20 @@ impl EntitySnapshot {
         u16::from_le_bytes([self.record[154], self.record[155]])
     }
 
+    /// Raw source `word_0x98_152`, the identity checksum paired with
+    /// `word_0x96_150` by the Nyphur target selectors.
+    fn source_word_98(&self) -> i16 {
+        i16::from_le_bytes([self.record[156], self.record[157]])
+    }
+
+    /// Install the two-word source relation written by the pinned target
+    /// selectors. The relation stays in the lossless entity record; the
+    /// common carrier does not invent a second target identity.
+    fn set_source_relation(&mut self, target: &EntitySnapshot) {
+        self.record[154..156].copy_from_slice(&target.index.to_le_bytes());
+        self.record[156..158].copy_from_slice(&level2_nyphur_source_identity(target).to_le_bytes());
+    }
+
     /// Apply the source relation clear used by `sub_5EFA0` when a previous
     /// target is no longer a live contact.
     fn clear_source_word_96(&mut self) {
@@ -4161,10 +4175,55 @@ impl Level2NyphurCommonUpkeep {
     }
 
     fn source_spell_holder_slot(&self, family: u8) -> Option<u16> {
+        // The source `sub_146C0` table is `str_611.SpellsEnabled`, which is
+        // distinct from `array_0x367.SpellEnabled` (`spell_enabled` here),
+        // the cooldown words decremented by `sub_12A70`.
         self.spell_holder_indices
             .get(usize::from(family))
             .copied()
             .filter(|slot| *slot != 0)
+    }
+
+    /// Pinned `sub_15760`: return a holder only while its source word 0x2E is
+    /// positive. A cold holder remains a real source slot but is not an
+    /// active target for this predicate.
+    fn sub_15760<'a>(
+        &self,
+        family: u8,
+        entities: &'a [EntitySnapshot],
+    ) -> Option<&'a EntitySnapshot> {
+        self.source_spell_holder_slot(family)
+            .and_then(|slot| entities.get(usize::from(slot)))
+            .filter(|holder| holder.active_value > 0)
+    }
+
+    /// Pinned `sub_156F0`: the bounded family input is part of the helper's
+    /// contract; values outside the 26 source spell rows fail closed.
+    fn sub_156f0(&self, family: u8, entities: &[EntitySnapshot]) -> bool {
+        family < PLAYER_SPELL_COUNT as u8 && self.sub_15760(family, entities).is_some()
+    }
+
+    /// Pinned `sub_15E60`: report whether any of the seven source families
+    /// that can provide a targeting/ability carrier has a holder slot.
+    fn sub_15e60(&self) -> bool {
+        [0_u8, 7, 0x12, 0x10, 0x14, 0x15, 9]
+            .into_iter()
+            .any(|family| self.source_spell_holder_slot(family).is_some())
+    }
+
+    /// The qualified fall-through of `sub_12E70` reaches `sub_14630`. Keep
+    /// its castle/relation write here so the post-mode tail owns the source
+    /// slot and identity together. Mode-specific selector helpers remain in
+    /// their packets; this is only the common-tail operation itself.
+    fn step_sub_14630(&self, source: &mut EntitySnapshot, castle: Option<&EntitySnapshot>) -> i8 {
+        if self.life >= self.max_life || self.castle_entity_index == 0 {
+            return 12;
+        }
+        let Some(castle) = castle else {
+            return 12;
+        };
+        source.set_source_relation(castle);
+        11
     }
 
     fn source_spell_profile(family: u8, raw_tier: i8) -> Option<(u8, Level2SetSpellProfile)> {
@@ -4181,6 +4240,7 @@ impl Level2NyphurCommonUpkeep {
         family: u8,
         holder: &EntitySnapshot,
         profile: Level2SetSpellProfile,
+        entities: &[EntitySnapshot],
     ) -> bool {
         if self.max_mana < profile.max_mana
             || self.mana < profile.mana
@@ -4189,7 +4249,7 @@ impl Level2NyphurCommonUpkeep {
         {
             return false;
         }
-        if matches!(family, 4 | 6 | 8 | 11) && holder.active_value != 0 {
+        if matches!(family, 4 | 6 | 8 | 11) && self.sub_156f0(family, entities) {
             return false;
         }
         true
@@ -4218,7 +4278,7 @@ impl Level2NyphurCommonUpkeep {
         let Some(holder) = entities.get(usize::from(holder_slot)) else {
             return 0;
         };
-        if !self.source_spell_available(family, holder, profile) {
+        if !self.source_spell_available(family, holder, profile, entities) {
             return if self.max_mana < profile.max_mana || self.mana < profile.mana {
                 -1
             } else {
@@ -4228,32 +4288,134 @@ impl Level2NyphurCommonUpkeep {
         family.cast_signed()
     }
 
-    /// Execute `sub_5F660`/`sub_5F7B0`/`sub_5F7E0` for an AI holder.  The
-    /// source model is passed explicitly because these helpers modify the
-    /// owner control dword, not the local player projection.
-    fn step_sub_5f660(
+    /// Pinned `sub_5F7E0`: the owner visibility mode is read as an unsigned
+    /// byte, while the suppression write targets byte zero of the source
+    /// control dword.
+    fn step_sub_5f7e0(&self, holder_model: u8, source_control_flags: &mut u32) {
+        if self.owner_control_mode < 2 || (self.owner_control_mode <= 2 && holder_model != 1) {
+            *source_control_flags &= !0x0000_0020;
+        }
+    }
+
+    /// Pinned `sub_5F7B0`: copy holder word 0x30 into word 0x2E, clear only
+    /// byte-one bits 0/1 of the source control dword, preserve the caller's
+    /// activation mask, then apply `sub_5F7E0`.
+    fn step_sub_5f7b0(
         &self,
+        holder: &mut EntitySnapshot,
+        source_control_flags: &mut u32,
+        activation_flags: u32,
+    ) {
+        holder.active_value = holder.activation_value.cast_signed();
+        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        *source_control_flags &= !0x0000_0300;
+        *source_control_flags |= activation_flags;
+        self.step_sub_5f7e0(holder.model, source_control_flags);
+    }
+
+    /// Execute the source `sub_5F660` switch, including its model-specific
+    /// direct-success cases and its allocation/mana fallback.  The source
+    /// model is passed explicitly because these helpers modify the owner
+    /// control dword, not the local-player projection.
+    fn step_sub_5f660(
+        &mut self,
         source_model: u8,
         source_control_flags: &mut u32,
         holder: &mut EntitySnapshot,
+        activation_flags: u32,
     ) -> bool {
-        if source_model != 1 {
+        let source_model_one = source_model == 1;
+        let activation_flags = if source_model_one {
+            0
+        } else {
+            activation_flags
+        };
+        let mut direct_success = false;
+        let mut use_mana_fallback = false;
+
+        match holder.model {
+            0 => {
+                // Both the byte<2 break and the byte>=2 jump land in the
+                // source allocation/mana fallback after the switch.
+                use_mana_fallback = true;
+            }
+            1 => {
+                if holder.active_value > 0 {
+                    holder.byte_3c = 1;
+                    holder.record[64] = 1;
+                    *source_control_flags &= !0x0000_0300;
+                    *source_control_flags |= activation_flags;
+                    self.step_sub_5f7e0(holder.model, source_control_flags);
+                    direct_success = true;
+                } else {
+                    use_mana_fallback = true;
+                }
+            }
+            2 => {
+                if holder.active_value > 0 {
+                    // The source prepares sound 29 here for a non-model-1
+                    // caster. The common carrier has no event journal for
+                    // this unowned mode branch, but retain the source audio
+                    // call identity rather than fabricating a typed event.
+                    if !source_model_one {
+                        mark_source_audio_call(SourceAudioCallTag::NotEnoughManaImmediate);
+                    }
+                    direct_success = false;
+                } else {
+                    use_mana_fallback = true;
+                }
+            }
+            4 | 6 | 8 | 11 | 12 | 14 => {
+                if source_model == 0 && holder.active_value > 0 {
+                    holder.active_value = if holder.model == 4 { 7 } else { 1 };
+                    holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+                    // The pinned branch jumps to LABEL_23 with v7 still
+                    // zero. It mutates the holder but does not report a
+                    // successful activation or enter the mana fallback.
+                } else {
+                    use_mana_fallback = true;
+                }
+            }
+            7 => {
+                if holder.byte_3b >= 1 && holder.active_value > 0 {
+                    // LABEL_23 returns the switch's initial zero result.
+                } else {
+                    use_mana_fallback = true;
+                }
+            }
+            9 | 10 | 13 | 15..=24 => {
+                if holder.active_value > 0 {
+                    // LABEL_23 returns the switch's initial zero result.
+                } else {
+                    use_mana_fallback = true;
+                }
+            }
+            _ => {
+                // The source default also reaches the shared mana/allocation
+                // tail for a live holder; it is not an implicit refusal.
+                use_mana_fallback = true;
+            }
+        }
+
+        if direct_success {
+            return true;
+        }
+        if !use_mana_fallback {
             return false;
         }
-        if holder.model == 1 && holder.active_value > 0 {
-            holder.byte_3c = 1;
-            holder.record[64] = 1;
-        } else if holder.active_value == 0 {
-            if self.mana < holder.max_mana {
-                return false;
+        if self.mana < holder.max_mana {
+            // AI_HELPER-0076 (`sub_88B60`) and its notification storage are
+            // owned by the later mode/caster carrier. The pinned source calls
+            // it only at EventsFunctions.cpp:61006 from the insufficient-
+            // mana branch. Preserve only the source audio call when this
+            // common primitive reaches that branch; do not invent a help UI
+            // state here.
+            if !source_model_one {
+                mark_source_audio_call(SourceAudioCallTag::NotEnoughManaFallback);
             }
-            holder.active_value = holder.activation_value.cast_signed();
-            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            return false;
         }
-        *source_control_flags &= !0x0000_0300;
-        if self.owner_control_mode < 2 || (self.owner_control_mode <= 2 && holder.model != 1) {
-            *source_control_flags &= !0x0000_0020;
-        }
+        self.step_sub_5f7b0(holder, source_control_flags, activation_flags);
         true
     }
 
@@ -4277,13 +4439,13 @@ impl Level2NyphurCommonUpkeep {
         else {
             return false;
         };
-        if !self.source_spell_available(family, holder_before, profile) {
+        if !self.source_spell_available(family, holder_before, profile, entities) {
             return false;
         }
         let Some(holder) = entities.get_mut(usize::from(holder_slot)) else {
             return false;
         };
-        if !self.step_sub_5f660(source_model, source_control_flags, holder) {
+        if !self.step_sub_5f660(source_model, source_control_flags, holder, 0) {
             return false;
         }
         self.spell_enabled[usize::from(family)] =
@@ -4430,6 +4592,14 @@ impl Level2NyphurCommonUpkeep {
         }
     }
 
+    /// Pinned `sub_5C800`: the global palette sub-mod is written only for the
+    /// source whose player color is the active level color.
+    fn step_sub_5c800(&mut self, entity_color_index: u8, active_level_color_index: u8) {
+        if entity_color_index == active_level_color_index {
+            self.palette_sub_mod = 2;
+        }
+    }
+
     /// Execute the source `sub_5EFA0` mailbox consumer.  The owner mailbox is
     /// part of the imported entity record; the remaining `Type_str_164`
     /// fields are carried here so a contact cannot silently become a
@@ -4535,6 +4705,7 @@ impl Level2NyphurCommonUpkeep {
                 i32::from(source.position.z) - i32::from(target_position.z),
             );
         }
+        self.step_sub_5c800(self.player_color_index, active_level_color_index);
         self.player_hit_frame_time = 4;
         self.dword_0x18d = 16;
         self.word_0x24c = 64;
@@ -4632,7 +4803,11 @@ impl Level2NyphurCommonUpkeep {
             let relation_live = source_entity.source_word_96() == 0
                 || entities
                     .get(usize::from(source_entity.source_word_96()))
-                    .is_some_and(|target| target.life > 0 && target.control_flags & 0x0400 == 0);
+                    .is_some_and(|target| {
+                        target.life > 0
+                            && target.control_flags & 0x0400 == 0
+                            && level2_nyphur_source_identity_matches(&source_entity, target)
+                    });
             let contact_target = entities
                 .get(usize::from(source_entity.source_upkeep_word_7a()))
                 .filter(|_| source_entity.source_upkeep_word_7a() != 0)
@@ -4683,12 +4858,7 @@ impl Level2NyphurCommonUpkeep {
             let word_160_4 = i16::from_le_bytes([parameter[4], parameter[5]]);
             let mut predicted = entities[entity_index].position;
             let ground = terrain.ground_height(predicted);
-            if predicted.z > ground {
-                predicted.z = predicted.z.wrapping_add(word_160_e);
-            }
-            if i32::from(predicted.z) <= i32::from(ground) + i32::from(lower_clearance) {
-                predicted.z = ground.wrapping_add(lower_clearance);
-            }
+            level2_nyphur_sub_580e0(&mut predicted, ground, lower_clearance, word_160_e);
             let yaw = entities[entity_index].yaw;
             crate::move_entity(&mut predicted, yaw, 0, entities[entity_index].actual_speed);
             crate::move_entity(&mut predicted, yaw.wrapping_add(512), 0, self.strafe_speed);
@@ -4873,6 +5043,28 @@ fn level2_nyphur_class3_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
     })
 }
 
+/// Rebuild the source `bytearray_38403x[0..29]` class-5 buckets in the same
+/// pool order as `UpdateEntities_57730`. The source excludes only the three
+/// action sentinels that are being torn down or already consumed.
+fn level2_nyphur_class5_bucket_order(entities: &[EntitySnapshot]) -> Vec<u16> {
+    let mut order = Vec::new();
+    for model in 0..29_u8 {
+        order.extend(
+            entities
+                .iter()
+                .filter(|entity| {
+                    entity.active
+                        && entity.life >= 0
+                        && entity.class == 5
+                        && entity.model == model
+                        && !matches!(entity.action, 0xb4 | 0xe8 | 0xea)
+                })
+                .map(|entity| entity.index),
+        );
+    }
+    order
+}
+
 fn level2_nyphur_class45_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
     level2_nyphur_linked_source_order(entities, |entity| {
         entity.active && entity.life >= 0 && entity.class == 10 && entity.model == 45
@@ -4900,6 +5092,71 @@ fn level2_nyphur_turn_direction(from: i16, to: i16) -> i16 {
     difference.signum() as i16
 }
 
+/// Pinned `sub_14C40`: the source identity is a signed 16-bit sum of the
+/// entity id, model, and class discriminator.  The exported entity fields are
+/// unsigned carriers, so perform the source-width wrap before interpreting
+/// the checksum as signed.
+fn level2_nyphur_source_identity(entity: &EntitySnapshot) -> i16 {
+    let value = entity
+        .source_id
+        .wrapping_add(u16::from(entity.model))
+        .wrapping_add(u16::from(entity.class).wrapping_shl(7));
+    i16::from_le_bytes(value.to_le_bytes())
+}
+
+/// Pinned `sub_14C60`: compare the stored target identity, not just its slot.
+fn level2_nyphur_source_identity_matches(source: &EntitySnapshot, target: &EntitySnapshot) -> bool {
+    source.source_word_98() == level2_nyphur_source_identity(target)
+}
+
+/// Pinned `sub_580E0`. The fourth source argument is intentionally absent:
+/// the recovered helper never reads it. The Z write and comparison retain the
+/// source `i16` carrier at both boundaries.
+fn level2_nyphur_sub_580e0(position: &mut Position, ground: i16, lower: i16, step: i16) {
+    if position.z > ground {
+        position.z = position.z.wrapping_add(step);
+    }
+    if i32::from(position.z) <= i32::from(ground) + i32::from(lower) {
+        position.z = ground.wrapping_add(lower);
+    }
+}
+
+/// Pinned `sub_583B0`: a non-wrapping Chebyshev distance over X/Y. This is a
+/// separate probe from the signed-16 Euclidean helper below.
+fn level2_nyphur_source_distance_xy_max(left: Position, right: Position) -> i32 {
+    let dx = (i32::from(right.x) - i32::from(left.x)).abs();
+    let dy = (i32::from(right.y) - i32::from(left.y)).abs();
+    dx.max(dy)
+}
+
+/// Pinned `Maths::EuclideanDistXY_584D0`: each coordinate delta narrows to a
+/// signed 16-bit value before the signed 32-bit square/add carrier is exposed
+/// as `uint32_t`.
+fn level2_nyphur_source_distance_xy_euclidean_sq(left: Position, right: Position) -> u32 {
+    let dx = i32::from(i16::from_ne_bytes(
+        right.x.wrapping_sub(left.x).to_ne_bytes(),
+    ));
+    let dy = i32::from(i16::from_ne_bytes(
+        right.y.wrapping_sub(left.y).to_ne_bytes(),
+    ));
+    dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32
+}
+
+/// Pinned `watcominitrandnext`: the source helper returns the address of its
+/// process-local 32-bit state. Passing the state explicitly keeps that same
+/// pointer contract without introducing a second global simulation stream.
+fn level2_nyphur_watcominitrandnext(state: &mut u32) -> &mut u32 {
+    state
+}
+
+/// Pinned Watcom `rand()` step used by the source AI closure. The state is a
+/// wrapping 32-bit carrier; the returned value is the source's 15-bit slice.
+fn level2_nyphur_watcomrand(state: &mut u32) -> u16 {
+    let state = level2_nyphur_watcominitrandnext(state);
+    *state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+    ((*state >> 16) & 0x7fff) as u16
+}
+
 /// Pinned `sub_583F0_distance_3d`: the three coordinate differences are
 /// signed 16-bit before the legacy integer square-root pass.
 fn level2_nyphur_source_distance_3d(left: Position, right: Position) -> u32 {
@@ -4910,10 +5167,11 @@ fn level2_nyphur_source_distance_3d(left: Position, right: Position) -> u32 {
         right.y.wrapping_sub(left.y).to_ne_bytes(),
     ));
     let dz = i32::from(right.z.wrapping_sub(left.z));
-    crate::legacy_sqrt(
-        u32::try_from(dx * dx + dy * dy + dz * dz)
-            .expect("source 16-bit coordinate distance fits the pinned uint32 carrier"),
-    )
+    let squared = dx
+        .wrapping_mul(dx)
+        .wrapping_add(dy.wrapping_mul(dy))
+        .wrapping_add(dz.wrapping_mul(dz));
+    crate::legacy_sqrt(squared as u32)
 }
 
 /// Pinned `sub_11CB0`: inspect the two source linked lists first, then the
@@ -5005,31 +5263,245 @@ impl Level2NyphurDispatcher {
         self.state_byte
     }
 
-    /// Apply the pinned `sub_12910` selector without executing a mode helper.
-    /// Mode helper bodies are owned by their separate Level 2 slices; this
-    /// common dispatcher records their exact source call and tail position.
-    #[must_use]
-    fn dispatch_trace(&self, pass: u8, source_slot: u16) -> Level2NyphurDispatchTrace {
-        Self::trace_for_state(self.state_byte, pass, source_slot)
-    }
-
-    fn step_common_upkeep(
+    /// Execute the production `sub_12910` carrier. The selected state is
+    /// latched after the common callback, exactly where the source switch
+    /// reads it; source case zero invokes the tail twice even if the first
+    /// tail call changes the next-turn state byte.
+    /// Mode helper bodies remain owned by their mode packets, but their exact
+    /// call position is retained in the returned trace.
+    fn step_dispatch(
         &mut self,
+        pass: u8,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
         move_speed_flag: u8,
         active_level_color_index: u8,
-    ) -> Result<Level2NyphurCommonUpkeepSnapshot> {
-        self.common_upkeep.step(
+    ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
+        let snapshot = self.common_upkeep.step(
             source_slot,
             entities,
             terrain,
             presentation,
             move_speed_flag,
             active_level_color_index,
-        )
+        )?;
+        // `sub_12910` reads byte 0x1C1 only after `sub_12A70` returns. The
+        // source-state latch therefore belongs between the common callback
+        // and the mode switch, not before the common callback.
+        let selected_state = self.state_byte;
+        let tail_calls = if selected_state == 0 { 2 } else { 1 };
+        for _ in 0..tail_calls {
+            self.step_sub_12e70(source_slot, entities, players)?;
+        }
+        Ok((
+            snapshot,
+            Self::trace_for_state(selected_state, pass, source_slot),
+        ))
+    }
+
+    /// Execute the common-tail selector owned by this packet. The qualified
+    /// frame-zero route has no family-2 holder and no castle damage branch;
+    /// when its source cadence gate is not due, the pinned helper is a true
+    /// no-op. At a due cadence the owned `sub_14530` selector either chooses
+    /// the exact class-5 target or the shared `sub_14630` state/relation
+    /// fall-through; later mode bodies are deliberately not reconstructed
+    /// here.
+    fn step_sub_12e70(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
+    ) -> Result<()> {
+        let source_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur tail source row is absent"))?;
+        let source_phase = entities[source_index].phase;
+        let period = self.common_upkeep.cadence_period();
+        if u16::from(source_phase) % period != 0 {
+            return Ok(());
+        }
+
+        // The selector bodies are owned by later mode packets. This gate is
+        // deliberately source-shaped rather than a generic fallback: it
+        // rejects the tail unless every earlier selector is mechanically
+        // absent for the current indexed Level 2 rows. The owned
+        // `sub_14530` selector runs immediately after this proof and before
+        // the shared `sub_14630` fall-through.
+        if !self.owned_tail_fallthrough_is_safe(&entities[source_index], entities, players) {
+            return Err(NativeWorldError::new(
+                "Level 2 Nyphur tail reached an unowned selector prerequisite",
+            ));
+        }
+        let source_snapshot = entities[source_index].clone();
+        if let Some(target_index) = self.sub_14530_target(&source_snapshot, entities) {
+            let target = entities
+                .get(usize::from(target_index))
+                .cloned()
+                .ok_or_else(|| NativeWorldError::new("Level 2 sub_14530 target row is absent"))?;
+            entities[source_index].set_source_relation(&target);
+            self.state_byte = 13;
+            return Ok(());
+        }
+        let castle = (self.common_upkeep.castle_entity_index != 0)
+            .then(|| entities.get(usize::from(self.common_upkeep.castle_entity_index)))
+            .flatten()
+            .cloned();
+        let state = self
+            .common_upkeep
+            .step_sub_14630(&mut entities[source_index], castle.as_ref());
+        self.state_byte = state;
+        Ok(())
+    }
+
+    /// Pinned `sub_14530` is the last owned selector before `sub_14630`.
+    /// `UpdateEntities_57730` rebuilds twenty-nine class-5 model buckets in
+    /// pool order; a strict source-order nearest search then stores both the
+    /// target slot and its `sub_14C40` identity. The later mode body remains
+    /// outside this packet, but the shared tail must select this target before
+    /// it can fall through.
+    fn sub_14530_target(
+        &self,
+        source: &EntitySnapshot,
+        entities: &[EntitySnapshot],
+    ) -> Option<u16> {
+        if !self.common_upkeep.sub_15e60() {
+            return None;
+        }
+        let anchor = if self.common_upkeep.castle_entity_index != 0 {
+            entities
+                .get(usize::from(self.common_upkeep.castle_entity_index))
+                .unwrap_or(source)
+        } else {
+            source
+        };
+        let mut best = None;
+        let mut best_distance = u32::MAX;
+        for candidate_index in level2_nyphur_class5_bucket_order(entities) {
+            let Some(candidate) = entities.get(usize::from(candidate_index)) else {
+                continue;
+            };
+            if candidate.source_id == source.source_id || candidate.mana <= 0 {
+                continue;
+            }
+            let distance =
+                level2_nyphur_source_distance_xy_euclidean_sq(anchor.position, candidate.position);
+            if distance < best_distance {
+                best = Some(candidate.index);
+                best_distance = distance;
+            }
+        }
+        best
+    }
+
+    /// Prove the fall-through branch of pinned `sub_12E70` without executing
+    /// any mode-owned selector. Each condition mirrors a source selector's
+    /// entry gate in source order; an unknown or newly live carrier fails
+    /// closed instead of being silently sent through the common tail.
+    fn owned_tail_fallthrough_is_safe(
+        &self,
+        source: &EntitySnapshot,
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+    ) -> bool {
+        // sub_13B00 and sub_13DC0/sub_13C50 are respectively the family-2
+        // arena search and Castle branches. The qualified reset has neither
+        // carrier; preserving this as a live predicate keeps changed data
+        // from becoming an accidental mode implementation.
+        if self.common_upkeep.source_spell_holder_slot(2).is_some()
+            || self.common_upkeep.castle_entity_index != 0
+            || self.common_upkeep.life < self.common_upkeep.max_life / 2
+        {
+            return false;
+        }
+
+        let source_order = level2_nyphur_class3_source_order(entities);
+        // sub_13E40 and sub_14250 scan the source class-3 list for model 2 and
+        // model 3 targets. They are not present in the qualified indexed
+        // list, so their mode packets cannot be selected here.
+        if source_order.iter().any(|index| {
+            entities
+                .get(usize::from(*index))
+                .is_some_and(|entity| matches!(entity.model, 2 | 3))
+        }) {
+            return false;
+        }
+
+        // sub_14030 can select a class-3 model 0/1 target. Evaluate its
+        // source threshold and family-2 carrier gates against the actual
+        // player rows instead of assuming that a model-shaped row is inert.
+        if self.common_upkeep.sub_15e60() {
+            for candidate in source_order.iter().filter_map(|index| {
+                entities.get(usize::from(*index)).filter(|candidate| {
+                    candidate.index != source.index
+                        && candidate.source_id != source.source_id
+                        && matches!(candidate.model, 0 | 1)
+                })
+            }) {
+                let Some(owner) = players
+                    .iter()
+                    .find(|player| player.entity_index == candidate.index)
+                else {
+                    return false;
+                };
+                let family_11_active = owner.enabled_spell_holders[11] != 0
+                    && entities
+                        .get(usize::from(owner.enabled_spell_holders[11]))
+                        .is_some_and(|holder| holder.active_value > 0);
+                if family_11_active {
+                    continue;
+                }
+                let color = usize::from(owner.player_color_index());
+                let threshold_index = 4 * color + 4;
+                let Some(threshold) = (threshold_index < self.common_upkeep.array_0x1fc.len())
+                    .then(|| self.common_upkeep.auxiliary_word(threshold_index))
+                else {
+                    return false;
+                };
+                if threshold == 1 {
+                    return false;
+                }
+                let pressure = 50_000_i32
+                    - candidate.max_mana / 10 * self.common_upkeep.word_0x242 as i32 / 255;
+                if pressure <= i32::from(threshold) {
+                    return false;
+                }
+                // The final sub_14030 alternative is gated by the candidate's
+                // family-2 holder. A nonzero relation is enough to reject the
+                // common fall-through; its mode packet owns the later action.
+                if owner.enabled_spell_holders[2] != 0 {
+                    return false;
+                }
+            }
+        }
+
+        // AI_HELPER-0075 (`sub_6DC40`) is mechanically excluded from this
+        // tail: the pinned source calls it only from `sub_6D9C0` at
+        // EventsFunctions.cpp:43950 and `sub_6DAD0` at :43998, the spell-level
+        // transition handlers. This indexed common-tail route has no such
+        // notification carrier, so it must not synthesize that later-mode
+        // side effect.
+        //
+        // sub_15FC0 needs the AI family-4 holder. sub_13CE0's sub_148E0
+        // search is limited to the source lists built from class-10 models
+        // 39/40/57 and the class-5 model-22 fallback. None of those indexed
+        // rows is present in the qualified Level 2 package; in particular,
+        // no model-57 row can consume the Watcom RNG on this route.
+        // `sub_14530` itself is the owned live selector here: its pinned
+        // definition at EventsFunctions.cpp:6341-6377 scans the class-5
+        // model buckets and writes the source relation for the nearest row.
+        if self.common_upkeep.source_spell_holder_slot(4).is_some()
+            || entities.iter().any(|entity| {
+                (entity.class == 10 && matches!(entity.model, 39 | 40 | 57))
+                    || (entity.class == 5 && entity.model == 22)
+            })
+        {
+            return false;
+        }
+        true
     }
 
     #[must_use]
@@ -22400,22 +22872,22 @@ impl Level2ResetSession {
                         .map_or(0, |effects| effects.move_speed_flag);
                     let active_level_color_index =
                         self.shared_spells.local_player.player_color_index();
-                    if let Err(error) = self.nyphur_dispatcher.step_common_upkeep(
+                    match self.nyphur_dispatcher.step_dispatch(
+                        pass,
                         source_slot,
                         &mut self.entities,
+                        &self.players,
                         &self.terrain,
                         &self.presentation,
                         move_speed_flag,
                         active_level_color_index,
                     ) {
-                        self.dispatch_events.push(Level2DispatchEvent::Error {
+                        Ok((_snapshot, trace)) => self.nyphur_dispatch_traces.push(trace),
+                        Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message: error.to_string(),
-                        });
-                    } else {
-                        let trace = self.nyphur_dispatcher.dispatch_trace(pass, source_slot);
-                        self.nyphur_dispatch_traces.push(trace);
+                        }),
                     }
                     // `ApplyEvents_498A0` advances byte_0x3E after every
                     // action callback, including the class-3/model-1 AI row.
@@ -45558,6 +46030,358 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn level_two_ai_shared_tail_owned_rows_are_exact() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 shared-tail production session");
+        let source = session.entities[112].clone();
+        let target = session.entities[111].clone();
+
+        // sub_14C40/sub_14C60 use the target's source id, model, and class at
+        // signed-16 width. A slot-only comparison or an unwrapped sum accepts
+        // the wrong target in these vectors.
+        let expected_identity = i16::from_le_bytes(
+            target
+                .source_id
+                .wrapping_add(u16::from(target.model))
+                .wrapping_add(u16::from(target.class).wrapping_shl(7))
+                .to_le_bytes(),
+        );
+        assert_eq!(level2_nyphur_source_identity(&target), expected_identity);
+        assert!(!level2_nyphur_source_identity_matches(&source, &target));
+        let mut relation = source.clone();
+        relation.set_source_relation(&target);
+        assert_eq!(relation.source_word_96(), target.index);
+        assert!(level2_nyphur_source_identity_matches(&relation, &target));
+        let mut wrong_identity = target.clone();
+        wrong_identity.model = wrong_identity.model.wrapping_add(1);
+        assert!(!level2_nyphur_source_identity_matches(
+            &relation,
+            &wrong_identity
+        ));
+
+        let mut wrapped_identity = target.clone();
+        wrapped_identity.source_id = u16::MAX;
+        wrapped_identity.model = u8::MAX;
+        wrapped_identity.class = u8::MAX;
+        let wrapped_sum = u16::MAX
+            .wrapping_add(u16::from(u8::MAX))
+            .wrapping_add(u16::from(u8::MAX).wrapping_shl(7));
+        assert_eq!(
+            level2_nyphur_source_identity(&wrapped_identity),
+            i16::from_le_bytes(wrapped_sum.to_le_bytes())
+        );
+
+        // sub_583B0 is non-wrapping Chebyshev X/Y, while sub_583F0 first
+        // narrows each coordinate delta to signed 16-bit.
+        assert_eq!(
+            level2_nyphur_source_distance_xy_max(
+                Position { x: 0, y: 7, z: 12 },
+                Position {
+                    x: u16::MAX,
+                    y: 3,
+                    z: -12,
+                },
+            ),
+            i32::from(u16::MAX)
+        );
+        assert_eq!(
+            level2_nyphur_source_distance_3d(
+                Position { x: 0, y: 0, z: 0 },
+                Position {
+                    x: u16::MAX,
+                    y: 0,
+                    z: 0
+                },
+            ),
+            1
+        );
+        let component = 32_767_i32 * 32_767_i32;
+        let wrapped_3d_sum = component.wrapping_add(component).wrapping_add(component) as u32;
+        assert_eq!(
+            level2_nyphur_source_distance_3d(
+                Position { x: 0, y: 0, z: 0 },
+                Position {
+                    x: 32_767,
+                    y: 32_767,
+                    z: 32_767,
+                },
+            ),
+            crate::legacy_sqrt(wrapped_3d_sum)
+        );
+
+        // sub_580E0 probes above-ground movement before applying the lower
+        // clamp. Equality at the lower boundary therefore advances, while a
+        // point below the ground is clamped directly.
+        let mut at_ground = Position { x: 0, y: 0, z: 100 };
+        level2_nyphur_sub_580e0(&mut at_ground, 100, 4, 2);
+        assert_eq!(at_ground.z, 104);
+        let mut at_lower_boundary = Position { x: 0, y: 0, z: 104 };
+        level2_nyphur_sub_580e0(&mut at_lower_boundary, 100, 4, 2);
+        assert_eq!(at_lower_boundary.z, 106);
+        let mut below_ground = Position { x: 0, y: 0, z: 90 };
+        level2_nyphur_sub_580e0(&mut below_ground, 100, 4, 2);
+        assert_eq!(below_ground.z, 104);
+
+        // watcominitrandnext/watcomrand retain a wrapping 32-bit state and
+        // expose only the source's 15-bit result.
+        let mut watcom_state = 1_u32;
+        assert_eq!(*level2_nyphur_watcominitrandnext(&mut watcom_state), 1);
+        assert_eq!(level2_nyphur_watcomrand(&mut watcom_state), 16_838);
+        assert_eq!(watcom_state, 1_103_527_590);
+        assert_eq!(level2_nyphur_watcomrand(&mut watcom_state), 5_758);
+        assert_eq!(watcom_state, 2_524_885_223);
+
+        let common = session.nyphur_dispatcher.common_upkeep.clone();
+        assert!(common.sub_15e60());
+        assert!(!common.sub_156f0(2, &session.entities));
+        assert!(!common.sub_156f0(26, &session.entities));
+        assert!(common.sub_15760(0, &session.entities).is_none());
+        let class5_order = level2_nyphur_class5_bucket_order(&session.entities);
+        assert_eq!(class5_order.first().copied(), Some(39));
+        assert_eq!(class5_order.last().copied(), Some(106));
+        // The source's strict distance arbitration selects row 70, not the
+        // first class-5 slot or an arbitrary vector-order entry.
+        assert_eq!(
+            session
+                .nyphur_dispatcher
+                .sub_14530_target(&source, &session.entities),
+            Some(70)
+        );
+        let mut active_holder_entities = session.entities.clone();
+        active_holder_entities[113].active_value = 1;
+        active_holder_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+        assert!(common.sub_15760(0, &active_holder_entities).is_some());
+
+        // The named common helpers keep their exact narrow writes and failure
+        // behavior even when exercised outside the live source turn.
+        let mut palette_probe = common.clone();
+        palette_probe.step_sub_5c800(1, 1);
+        assert_eq!(palette_probe.palette_sub_mod, 2);
+        palette_probe.step_sub_5c800(0, 1);
+        assert_eq!(palette_probe.palette_sub_mod, 2);
+
+        let mut timer_source = session.entities[111].clone();
+        timer_source.record[58..60].fill(0);
+        timer_source.apply_source_sub_5ef70();
+        assert_eq!(
+            i16::from_le_bytes([timer_source.record[58], timer_source.record[59]]),
+            100
+        );
+        let mut timer_non_source = session.entities[112].clone();
+        timer_non_source.record[58..60].fill(0);
+        timer_non_source.apply_source_sub_5ef70();
+        assert_eq!(timer_non_source.record[58..60], [0, 0]);
+
+        let mut visibility_probe = common.clone();
+        visibility_probe.owner_control_mode = 2;
+        let mut flags = 0x20_u32;
+        visibility_probe.step_sub_5f7e0(1, &mut flags);
+        assert_eq!(flags, 0x20);
+        visibility_probe.step_sub_5f7e0(0, &mut flags);
+        assert_eq!(flags, 0);
+        visibility_probe.owner_control_mode = 1;
+        let mut holder = session.entities[114].clone();
+        holder.activation_value = 3;
+        let mut activation_flags = 0x320_u32;
+        visibility_probe.step_sub_5f7b0(&mut holder, &mut activation_flags, 0x200);
+        assert_eq!(holder.active_value, 3);
+        assert_eq!(activation_flags, 0x200);
+
+        let mut direct_holder = session.entities[114].clone();
+        direct_holder.active_value = 1;
+        direct_holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+        direct_holder.byte_3c = 0;
+        direct_holder.record[64] = 0;
+        let mut direct_flags = 0x320_u32;
+        assert!(visibility_probe.step_sub_5f660(1, &mut direct_flags, &mut direct_holder, 0,));
+        assert_eq!(direct_holder.byte_3c, 1);
+        assert_eq!(direct_holder.record[64], 1);
+        assert_eq!(direct_flags, 0);
+
+        let mut non_success_holder = session.entities[114].clone();
+        non_success_holder.model = 4;
+        non_success_holder.record[68] = 4;
+        non_success_holder.active_value = 1;
+        non_success_holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+        let mut non_success_flags = 0x320_u32;
+        assert!(!visibility_probe.step_sub_5f660(
+            0,
+            &mut non_success_flags,
+            &mut non_success_holder,
+            0,
+        ));
+        assert_eq!(non_success_holder.active_value, 7);
+        assert_eq!(non_success_flags, 0x320);
+
+        let mut failed_holder = session.entities[114].clone();
+        failed_holder.active_value = 0;
+        failed_holder.max_mana = 1;
+        let mut failed_flags = 0x320_u32;
+        visibility_probe.mana = 0;
+        assert!(!visibility_probe.step_sub_5f660(0, &mut failed_flags, &mut failed_holder, 0,));
+        assert_eq!(failed_flags, 0x320);
+        assert_eq!(failed_holder.active_value, 0);
+
+        // A common tail must not silently absorb a newly live selector. These
+        // exact negatives exercise the source-order gates before sub_14630;
+        // a generic fall-through would incorrectly return true for each.
+        let mut family_two_live = session.nyphur_dispatcher.clone();
+        family_two_live.common_upkeep.spell_holder_indices[2] = 113;
+        assert!(!family_two_live.owned_tail_fallthrough_is_safe(
+            &source,
+            &session.entities,
+            &session.players,
+        ));
+        let mut model_two_live_entities = session.entities.clone();
+        model_two_live_entities[111].model = 2;
+        assert!(!session.nyphur_dispatcher.owned_tail_fallthrough_is_safe(
+            &source,
+            &model_two_live_entities,
+            &session.players
+        ));
+
+        // Baseline captures include the AI record, arena/economy stream,
+        // runtime bytes, terrain digest, typed event order, and hashes. The
+        // source row is discovered by the ordinary production cursor below;
+        // no selector/action field is written to make it live.
+        let baseline_common = session
+            .nyphur_common_upkeep()
+            .expect("baseline common carrier");
+        assert_eq!(baseline_common.source_list_model_zero, Some(111));
+        let baseline_campaign_hash = session.campaign_state_hash();
+        let baseline_terrain_hash = session.terrain_hash();
+        let baseline_dispatch_hash = session.dispatch_observability_hash();
+        let baseline_economy_hash = session.economy.reset_hash();
+        let baseline_economy_events = session.economy.events().to_vec();
+        let baseline_global_rng = session.economy.global_rng;
+        let baseline_runtime = session.runtime.clone();
+        let baseline_entities = session.entities.clone();
+        let baseline_dispatch_events = session.dispatch_events().to_vec();
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let first_trace = session
+            .nyphur_dispatch_traces()
+            .first()
+            .cloned()
+            .expect("ordinary source cursor emits Nyphur trace");
+        assert_eq!(
+            first_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Sub12e70,
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert_eq!(first_trace.state_byte, 0);
+        assert_eq!(first_trace.tail_call_count(), 2);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+
+        // The exact cadence gate is 55 at the qualified reflex value. The
+        // 53rd outer turn enters the pinned post-mode tail with the live
+        // class-5 mana rows; sub_14530 therefore selects row 70 and latches
+        // state 13 after the common callback. A generic one-tail dispatcher
+        // or slot-order mover does not reach this same state/target pair.
+        for _ in 1..53 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(session.nyphur_dispatch_state_byte(), 13);
+        let stepped_source = &session.entities[112];
+        assert_eq!(stepped_source.source_word_96(), 70);
+        assert!(level2_nyphur_source_identity_matches(
+            stepped_source,
+            &session.entities[70]
+        ));
+        let final_trace = session
+            .nyphur_dispatch_traces()
+            .first()
+            .cloned()
+            .expect("due-cadence source cursor emits Nyphur trace");
+        // The trace records the selector byte latched by `sub_12910` before
+        // its two source-case-0 tail calls. The post-tail state is asserted
+        // above on the production dispatcher itself.
+        assert_eq!(final_trace.state_byte, 0);
+        // The selector was latched as case 0 before the first tail changed
+        // the persistent state to 13, so the source still performs both
+        // case-0 tail calls on this dispatch.
+        assert_eq!(final_trace.tail_call_count(), 2);
+        assert_eq!(
+            final_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Sub12e70,
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+
+        let stepped_common = session
+            .nyphur_common_upkeep()
+            .expect("stepped common carrier");
+        let stepped_campaign_hash = session.campaign_state_hash();
+        let stepped_terrain_hash = session.terrain_hash();
+        let stepped_dispatch_hash = session.dispatch_observability_hash();
+        let stepped_economy_hash = session.economy.reset_hash();
+        let stepped_economy_events = session.economy.events().to_vec();
+        let stepped_global_rng = session.economy.global_rng;
+        let stepped_runtime = session.runtime.clone();
+        let stepped_entities = session.entities.clone();
+        let stepped_dispatch_events = session.dispatch_events().to_vec();
+        let stepped_traces = session.nyphur_dispatch_traces().to_vec();
+
+        session.reset();
+        assert_eq!(session.nyphur_common_upkeep().unwrap(), baseline_common);
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+        assert_eq!(session.terrain_hash(), baseline_terrain_hash);
+        assert_eq!(
+            session.dispatch_observability_hash(),
+            baseline_dispatch_hash
+        );
+        assert_eq!(session.economy.reset_hash(), baseline_economy_hash);
+        assert_eq!(session.economy.events(), baseline_economy_events.as_slice());
+        assert_eq!(session.economy.global_rng, baseline_global_rng);
+        assert_eq!(session.runtime, baseline_runtime);
+        assert_eq!(session.entities, baseline_entities);
+        assert_eq!(
+            session.dispatch_events(),
+            baseline_dispatch_events.as_slice()
+        );
+        assert!(session.nyphur_dispatch_traces().is_empty());
+
+        for _ in 0..53 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(session.nyphur_common_upkeep().unwrap(), stepped_common);
+        assert_eq!(session.campaign_state_hash(), stepped_campaign_hash);
+        assert_eq!(session.terrain_hash(), stepped_terrain_hash);
+        assert_eq!(session.dispatch_observability_hash(), stepped_dispatch_hash);
+        assert_eq!(session.economy.reset_hash(), stepped_economy_hash);
+        assert_eq!(session.economy.events(), stepped_economy_events.as_slice());
+        assert_eq!(session.economy.global_rng, stepped_global_rng);
+        assert_eq!(session.runtime, stepped_runtime);
+        assert_eq!(session.entities, stepped_entities);
+        assert_eq!(
+            session.dispatch_events(),
+            stepped_dispatch_events.as_slice()
+        );
+        assert_eq!(session.nyphur_dispatch_traces(), stepped_traces.as_slice());
     }
 
     #[test]
