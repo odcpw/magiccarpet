@@ -564,6 +564,11 @@ impl EntitySnapshot {
         self.record[32..34].copy_from_slice(&yaw.to_le_bytes());
     }
 
+    /// Raw source `roll_0x20_32`, kept separate from the exported fov word.
+    fn source_roll(&self) -> i16 {
+        i16::from_le_bytes([self.record[36], self.record[37]])
+    }
+
     /// Keep the source callback speed field in lockstep with its typed cache.
     fn set_actual_speed(&mut self, actual_speed: i16) {
         self.actual_speed = actual_speed;
@@ -593,6 +598,31 @@ impl EntitySnapshot {
     /// the AI cooldown carrier is active.
     fn source_upkeep_mailbox(&self) -> &[u8] {
         &self.record[98..134]
+    }
+
+    fn source_upkeep_word_7a(&self) -> u16 {
+        u16::from_le_bytes([self.record[126], self.record[127]])
+    }
+
+    fn source_upkeep_word_62(&self) -> u16 {
+        u16::from_le_bytes([self.record[102], self.record[103]])
+    }
+
+    fn source_upkeep_payload(&self) -> i32 {
+        i32::from_le_bytes([
+            self.record[98],
+            self.record[99],
+            self.record[100],
+            self.record[101],
+        ])
+    }
+
+    fn set_source_upkeep_payload(&mut self, value: i32) {
+        self.record[98..102].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn clear_source_upkeep_owner(&mut self) {
+        self.record[102..104].fill(0);
     }
 
     /// Apply the source `memset(str_0x5E_94, 0, 36)` operation.
@@ -679,6 +709,12 @@ impl EntitySnapshot {
     #[must_use]
     pub fn source_word_96(&self) -> u16 {
         u16::from_le_bytes([self.record[154], self.record[155]])
+    }
+
+    /// Apply the source relation clear used by `sub_5EFA0` when a previous
+    /// target is no longer a live contact.
+    fn clear_source_word_96(&mut self) {
+        self.record[154..156].fill(0);
     }
 
     /// Source `array_0x52_82.yaw`, distinct from the entity orientation yaw.
@@ -3691,18 +3727,33 @@ struct Level2NyphurCommonUpkeep {
     castle_entity_index: u16,
     speed: i16,
     strafe_speed: i16,
+    byte_0x45e: u8,
+    move_boost: i16,
+    move_speed: u8,
+    player_hit_frame_time: u8,
+    dword_0x18d: i32,
+    palette_sub_mod: u8,
+    palette_count: u16,
+    palette_modification_enabled: bool,
+    contact_target_entity: Option<u16>,
+    contact_distance: u32,
+    contact_word_0x14a: i16,
     word_0x1a2: i16,
     byte_0x154: u8,
     word_0x159: i16,
     life_regen: i16,
     dword_0x16d: i32,
     source_mailbox: [u8; 36],
-    // The pinned loop reaches words 32 and 33, which occupy the six-byte
-    // source padding immediately following the declared 32-word array.
-    array_0x1fc: [u16; 34],
+    /// The source declaration is exactly `int16_t[32]` at 0x1fc. The final
+    /// threshold guard reads two words from the six bytes of compiler
+    /// padding before word 0x242; carry those bytes separately instead of
+    /// inventing two array members.
+    array_0x1fc: [u16; 32],
+    padding_0x23c: [u8; 6],
     word_0x242: i16,
     word_0x244: i16,
     word_0x246: i16,
+    word_0x248: i16,
     word_0x24a: i16,
     word_0x24c: i16,
     spell_enabled: [i16; PLAYER_SPELL_COUNT],
@@ -3715,6 +3766,7 @@ struct Level2NyphurCommonUpkeep {
     map_angle_allowed: bool,
     cadence_eligible: bool,
     cadence_candidate: Option<u16>,
+    cadence_action: u8,
     return_value: i8,
 }
 
@@ -3731,16 +3783,29 @@ pub struct Level2NyphurCommonUpkeepSnapshot {
     pub phase: u8,
     pub speed: i16,
     pub strafe_speed: i16,
+    pub byte_0x45e: u8,
+    pub move_boost: i16,
+    pub move_speed: u8,
+    pub player_hit_frame_time: u8,
+    pub dword_0x18d: i32,
+    pub palette_sub_mod: u8,
+    pub palette_count: u16,
+    pub palette_modification_enabled: bool,
+    pub contact_target_entity: Option<u16>,
+    pub contact_distance: u32,
+    pub contact_word_0x14a: i16,
     pub word_0x1a2: i16,
     pub byte_0x154: u8,
     pub word_0x159: i16,
     pub life_regen: i16,
     pub dword_0x16d: i32,
     pub source_mailbox: [u8; 36],
-    pub array_0x1fc: [u16; 34],
+    pub array_0x1fc: [u16; 32],
+    pub padding_0x23c: [u8; 6],
     pub word_0x242: i16,
     pub word_0x244: i16,
     pub word_0x246: i16,
+    pub word_0x248: i16,
     pub word_0x24a: i16,
     pub word_0x24c: i16,
     pub spell_enabled: [i16; PLAYER_SPELL_COUNT],
@@ -3753,6 +3818,7 @@ pub struct Level2NyphurCommonUpkeepSnapshot {
     pub map_angle_allowed: bool,
     pub cadence_eligible: bool,
     pub cadence_candidate: Option<u16>,
+    pub cadence_action: u8,
     pub return_value: i8,
 }
 
@@ -3778,11 +3844,17 @@ impl Level2NyphurCommonUpkeep {
         let entity = entities
             .get(usize::from(participant.entity_index))
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur AI entity is absent"))?;
-        let mut array_0x1fc = [0_u16; 34];
+        let mut array_0x1fc = [0_u16; 32];
+        let mut padding_0x23c = [0_u8; 6];
         for index in 0..8 {
             // Model-1 reset writes the eight per-color source thresholds to
             // the exact uint16 sentinel consumed by sub_12A70.
-            array_0x1fc[4 * index + 4] = 24_607;
+            let threshold = 4 * index + 4;
+            if threshold < array_0x1fc.len() {
+                array_0x1fc[threshold] = 24_607;
+            } else {
+                padding_0x23c[..2].copy_from_slice(&24_607_u16.to_le_bytes());
+            }
         }
         let mut spell_enabled = [0_i16; PLAYER_SPELL_COUNT];
         spell_enabled[2] = i16::from(participant.color_index).wrapping_mul(4);
@@ -3800,14 +3872,24 @@ impl Level2NyphurCommonUpkeep {
             player_slot: player.slot,
             player_color_index: participant.color_index,
             source_slot: participant.entity_index,
-            source_list_model_zero: entities
-                .iter()
-                .filter(|candidate| candidate.active && candidate.model == 0)
-                .map(|candidate| candidate.index)
-                .next_back(),
+            source_list_model_zero: level2_nyphur_class3_source_order(entities)
+                .into_iter()
+                .filter(|index| entities[usize::from(*index)].model == 0)
+                .last(),
             castle_entity_index,
             speed: 0,
             strafe_speed: 0,
+            byte_0x45e: 0,
+            move_boost: 0,
+            move_speed: 0,
+            player_hit_frame_time: 0,
+            dword_0x18d: 0,
+            palette_sub_mod: 0,
+            palette_count: 256,
+            palette_modification_enabled: false,
+            contact_target_entity: None,
+            contact_distance: 0,
+            contact_word_0x14a: 0,
             word_0x1a2: 0,
             byte_0x154: 0,
             word_0x159: 100,
@@ -3815,9 +3897,11 @@ impl Level2NyphurCommonUpkeep {
             dword_0x16d: 2_000,
             source_mailbox,
             array_0x1fc,
+            padding_0x23c,
             word_0x242: settings.aggression,
             word_0x244: settings.perception,
             word_0x246: settings.reflexes,
+            word_0x248: 0,
             word_0x24a: if settings.life != 0 {
                 settings.life
             } else {
@@ -3834,7 +3918,8 @@ impl Level2NyphurCommonUpkeep {
             map_angle_allowed: false,
             cadence_eligible: false,
             cadence_candidate: None,
-            return_value: 1,
+            cadence_action: 0,
+            return_value: 0,
         })
     }
 
@@ -3848,6 +3933,17 @@ impl Level2NyphurCommonUpkeep {
             phase,
             speed: self.speed,
             strafe_speed: self.strafe_speed,
+            byte_0x45e: self.byte_0x45e,
+            move_boost: self.move_boost,
+            move_speed: self.move_speed,
+            player_hit_frame_time: self.player_hit_frame_time,
+            dword_0x18d: self.dword_0x18d,
+            palette_sub_mod: self.palette_sub_mod,
+            palette_count: self.palette_count,
+            palette_modification_enabled: self.palette_modification_enabled,
+            contact_target_entity: self.contact_target_entity,
+            contact_distance: self.contact_distance,
+            contact_word_0x14a: self.contact_word_0x14a,
             word_0x1a2: self.word_0x1a2,
             byte_0x154: self.byte_0x154,
             word_0x159: self.word_0x159,
@@ -3855,9 +3951,11 @@ impl Level2NyphurCommonUpkeep {
             dword_0x16d: self.dword_0x16d,
             source_mailbox: self.source_mailbox,
             array_0x1fc: self.array_0x1fc,
+            padding_0x23c: self.padding_0x23c,
             word_0x242: self.word_0x242,
             word_0x244: self.word_0x244,
             word_0x246: self.word_0x246,
+            word_0x248: self.word_0x248,
             word_0x24a: self.word_0x24a,
             word_0x24c: self.word_0x24c,
             spell_enabled: self.spell_enabled,
@@ -3870,6 +3968,7 @@ impl Level2NyphurCommonUpkeep {
             map_angle_allowed: self.map_angle_allowed,
             cadence_eligible: self.cadence_eligible,
             cadence_candidate: self.cadence_candidate,
+            cadence_action: self.cadence_action,
             return_value: self.return_value,
         }
     }
@@ -3896,6 +3995,22 @@ impl Level2NyphurCommonUpkeep {
         hasher.update(self.castle_entity_index.to_le_bytes());
         hasher.update(self.speed.to_le_bytes());
         hasher.update(self.strafe_speed.to_le_bytes());
+        hasher.update([self.byte_0x45e]);
+        hasher.update(self.move_boost.to_le_bytes());
+        hasher.update([self.move_speed, self.player_hit_frame_time]);
+        hasher.update(self.dword_0x18d.to_le_bytes());
+        hasher.update([self.palette_sub_mod]);
+        hasher.update(self.palette_count.to_le_bytes());
+        hasher.update([u8::from(self.palette_modification_enabled)]);
+        match self.contact_target_entity {
+            Some(index) => {
+                hasher.update([1]);
+                hasher.update(index.to_le_bytes());
+            }
+            None => hasher.update([0]),
+        }
+        hasher.update(self.contact_distance.to_le_bytes());
+        hasher.update(self.contact_word_0x14a.to_le_bytes());
         hasher.update(self.word_0x1a2.to_le_bytes());
         hasher.update([self.byte_0x154]);
         hasher.update(self.word_0x159.to_le_bytes());
@@ -3905,10 +4020,12 @@ impl Level2NyphurCommonUpkeep {
         for value in self.array_0x1fc {
             hasher.update(value.to_le_bytes());
         }
+        hasher.update(self.padding_0x23c);
         for value in [
             self.word_0x242,
             self.word_0x244,
             self.word_0x246,
+            self.word_0x248,
             self.word_0x24a,
             self.word_0x24c,
         ] {
@@ -3929,6 +4046,7 @@ impl Level2NyphurCommonUpkeep {
             }
             None => hasher.update([0]),
         }
+        hasher.update([self.cadence_action]);
     }
 
     fn cadence_period(&self) -> u16 {
@@ -3938,6 +4056,24 @@ impl Level2NyphurCommonUpkeep {
         u16::try_from(period).expect("qualified Nyphur reflexes produce a positive cadence")
     }
 
+    fn auxiliary_word(&self, index: usize) -> u16 {
+        if index < self.array_0x1fc.len() {
+            self.array_0x1fc[index]
+        } else {
+            let offset = (index - self.array_0x1fc.len()) * 2;
+            u16::from_le_bytes([self.padding_0x23c[offset], self.padding_0x23c[offset + 1]])
+        }
+    }
+
+    fn set_auxiliary_word(&mut self, index: usize, value: u16) {
+        if index < self.array_0x1fc.len() {
+            self.array_0x1fc[index] = value;
+        } else {
+            let offset = (index - self.array_0x1fc.len()) * 2;
+            self.padding_0x23c[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
     fn cadence_candidate(
         &self,
         source: &EntitySnapshot,
@@ -3945,19 +4081,21 @@ impl Level2NyphurCommonUpkeep {
     ) -> Option<u16> {
         let mut nearest = None;
         let mut nearest_distance = u32::MAX;
-        for candidate in entities.iter().filter(|candidate| {
-            candidate.active
-                && candidate.index != source.index
-                && candidate.source_word_96() == source.source_id
-        }) {
+        for candidate_index in level2_nyphur_class9_source_order(entities) {
+            let candidate = &entities[usize::from(candidate_index)];
+            if candidate.index == source.index || candidate.source_word_96() != source.source_id {
+                continue;
+            }
             let left_x = i16::from_le_bytes(source.position.x.to_le_bytes());
             let right_x = i16::from_le_bytes(candidate.position.x.to_le_bytes());
             let left_y = i16::from_le_bytes(source.position.y.to_le_bytes());
             let right_y = i16::from_le_bytes(candidate.position.y.to_le_bytes());
             let dx = i32::from(right_x.wrapping_sub(left_x));
             let dy = i32::from(right_y.wrapping_sub(left_y));
-            let distance = u32::try_from(dx * dx + dy * dy)
-                .expect("source XY distance fits the pinned uint32 carrier");
+            let distance = crate::legacy_sqrt(
+                u32::try_from(dx * dx + dy * dy)
+                    .expect("source XY distance fits the pinned uint32 carrier"),
+            );
             if distance < nearest_distance {
                 nearest_distance = distance;
                 nearest = Some(candidate.index);
@@ -3966,6 +4104,140 @@ impl Level2NyphurCommonUpkeep {
         (nearest_distance < 0x0190_0000)
             .then_some(nearest)
             .flatten()
+    }
+
+    fn cadence_action_for_candidate(
+        &self,
+        source: &EntitySnapshot,
+        candidate: &EntitySnapshot,
+    ) -> u8 {
+        let dx = i32::from(i16::from_ne_bytes(
+            candidate
+                .position
+                .x
+                .wrapping_sub(source.position.x)
+                .to_ne_bytes(),
+        ));
+        let dy = i32::from(i16::from_ne_bytes(
+            candidate
+                .position
+                .y
+                .wrapping_sub(source.position.y)
+                .to_ne_bytes(),
+        ));
+        let distance = crate::legacy_sqrt(
+            u32::try_from(dx * dx + dy * dy)
+                .expect("source XY distance fits the pinned uint32 carrier"),
+        );
+        if distance >= 0x0010_0000 {
+            return distance.to_le_bytes()[0];
+        }
+        match candidate.model {
+            0 => 0,
+            1..=2 => candidate.model,
+            // The qualified reset has no class-9 spell-index carrier. The
+            // source helper therefore returns its no-action result here;
+            // later mode work owns the spell-index/SetSpell projection.
+            3..=4 => 0,
+            _ => 0,
+        }
+    }
+
+    /// Execute the source `sub_5EFA0` mailbox consumer.  The owner mailbox is
+    /// part of the imported entity record; the remaining `Type_str_164`
+    /// fields are carried here so a contact cannot silently become a
+    /// local-player-only side effect.
+    fn step_sub_5efa0(
+        &mut self,
+        source: &mut EntitySnapshot,
+        previous_relation_live: bool,
+        contact_target: Option<(u16, Position)>,
+        attacker_target: Option<(Position, bool)>,
+    ) -> i8 {
+        source.record[42..44].fill(0);
+        self.return_value = 0;
+        if source.source_word_96() != 0 && !previous_relation_live {
+            source.clear_source_word_96();
+        }
+        if self.life < 0 {
+            self.return_value = 2;
+            source.action = 2;
+            source.record[73] = 2;
+            return self.return_value;
+        }
+
+        let contact_word = source.source_upkeep_word_7a();
+        if contact_word != 0 {
+            if let Some((target_index, target_position)) = contact_target {
+                self.contact_target_entity = Some(target_index);
+                self.contact_distance =
+                    level2_nyphur_source_distance_3d(source.position, target_position);
+                self.contact_word_0x14a =
+                    i16::from_le_bytes([source.record[122], source.record[123]]);
+            }
+            source.record[126..128].fill(0);
+            self.player_hit_frame_time = 4;
+            self.dword_0x18d = 16;
+            self.word_0x24c = 64;
+        }
+
+        // SetPaletteModification_5C830 is gated by the source global flag and
+        // only affects an owner whose color is the active level.  The
+        // qualified Level 2 reset carries the flag explicitly as false; the
+        // branch remains source-shaped for a later public producer to turn it
+        // on rather than silently applying a palette change every turn.
+        if self.move_speed != 0 && self.palette_modification_enabled {
+            self.palette_sub_mod = 3;
+            self.palette_count = u16::try_from(171_i32 * i32::from(self.move_speed) / 3 + 85)
+                .expect("source palette count fits its uint16 carrier");
+        }
+
+        let attacker = source.source_upkeep_word_62();
+        if attacker == 0 {
+            return self.return_value;
+        }
+        source.record[42..44].copy_from_slice(&attacker.to_le_bytes());
+        let mut control_flags = source.control_flags;
+        if control_flags & 0x0000_4000 != 0 || control_flags & 0x0040_0000 != 0 {
+            if control_flags & 0x0000_4000 != 0 {
+                let mana_delta = source.source_upkeep_payload() >> 2;
+                self.mana = self.mana.wrapping_sub(mana_delta);
+                source.set_source_upkeep_payload(mana_delta);
+                control_flags &= !0x0000_4000;
+            } else {
+                control_flags &= !0x0040_0000;
+                source.set_source_upkeep_payload(0);
+                control_flags |= 0x0000_4000;
+            }
+            source.set_control_flags(control_flags);
+        }
+        let damage = source.source_upkeep_payload();
+        self.life = self.life.wrapping_sub(damage);
+        self.move_boost = (damage / 10).clamp(0, 80) as i16;
+        if let Some((target_position, _)) = attacker_target {
+            source.set_yaw(
+                i16::try_from(heading_for_positions(target_position, source.position))
+                    .expect("source contact heading fits signed 16 bits"),
+            );
+        }
+        self.player_hit_frame_time = 4;
+        self.dword_0x18d = 16;
+        self.word_0x24c = 64;
+        mark_source_audio_call(SourceAudioCallTag::PlayerPain);
+        source.set_entity_rng(source.entity_rng.wrapping_mul(9_377).wrapping_add(9_439));
+        if self.life < 0 {
+            let killer = if attacker_target.is_some_and(|(_, model67)| model67) {
+                0
+            } else {
+                attacker
+            };
+            source.record[40..42].copy_from_slice(&killer.to_le_bytes());
+            self.return_value = 2;
+        } else {
+            source.clear_source_upkeep_owner();
+            self.return_value = 1;
+        }
+        self.return_value
     }
 
     fn step(
@@ -3984,15 +4256,15 @@ impl Level2NyphurCommonUpkeep {
                 "Level 2 Nyphur common source slot changed",
             ));
         }
-        let source_entity = entities[entity_index].clone();
+        let mut source_entity = entities[entity_index].clone();
 
         // sub_15EE0 runs before every other common-upkeep write and retains
-        // the last model-0 source encountered in the source-order walk.
-        self.source_list_model_zero = entities
-            .iter()
-            .filter(|candidate| candidate.active && candidate.model == 0)
-            .map(|candidate| candidate.index)
-            .next_back();
+        // the last model-0 source encountered in dword_38519, the rebuilt
+        // class-3 linked list. Pool order is not source order.
+        self.source_list_model_zero = level2_nyphur_class3_source_order(entities)
+            .into_iter()
+            .filter(|index| entities[usize::from(*index)].model == 0)
+            .last();
         if self.word_0x1a2 < 0 {
             self.word_0x1a2 = self.word_0x1a2.wrapping_add(1);
         }
@@ -4003,21 +4275,24 @@ impl Level2NyphurCommonUpkeep {
         }
         for index in 0..8 {
             let threshold = 4 * index + 4;
-            if self.array_0x1fc[threshold] < 0x601f {
-                let next = i32::from(self.word_0x242) + 1 + i32::from(self.array_0x1fc[4 * index]);
-                self.array_0x1fc[threshold] = next as u16;
-                if self.array_0x1fc[threshold] > 0x601f {
-                    self.array_0x1fc[threshold] = 0x601f;
+            if self.auxiliary_word(threshold) < 0x601f {
+                let next =
+                    i32::from(self.word_0x242) + 1 + i32::from(self.auxiliary_word(4 * index));
+                self.set_auxiliary_word(threshold, next as u16);
+                if self.auxiliary_word(threshold) > 0x601f {
+                    self.set_auxiliary_word(threshold, 0x601f);
                 }
             }
-            if self.array_0x1fc[threshold] > 0x601f {
-                if self.array_0x1fc[threshold + 1] == 0 {
+            if self.auxiliary_word(threshold) > 0x601f {
+                if self.auxiliary_word(threshold + 1) == 0 {
                     let decrement = (256_i32 - i32::from(self.word_0x242)) as u16;
-                    self.array_0x1fc[threshold] =
-                        self.array_0x1fc[threshold].wrapping_sub(decrement);
+                    self.set_auxiliary_word(
+                        threshold,
+                        self.auxiliary_word(threshold).wrapping_sub(decrement),
+                    );
                 }
-                if self.array_0x1fc[threshold] < 0x601f {
-                    self.array_0x1fc[threshold] = 0x601f;
+                if self.auxiliary_word(threshold) < 0x601f {
+                    self.set_auxiliary_word(threshold, 0x601f);
                 }
             }
         }
@@ -4036,27 +4311,101 @@ impl Level2NyphurCommonUpkeep {
             self.source_mailbox = [0; 36];
             self.word_0x159 = self.word_0x159.wrapping_sub(1);
         } else {
-            // sub_5EFA0 always clears word_0x26 before consuming its mailbox.
-            entities[entity_index].record[42..44].fill(0);
+            let relation_live = source_entity.source_word_96() == 0
+                || entities
+                    .get(usize::from(source_entity.source_word_96()))
+                    .is_some_and(|target| target.life > 0 && target.control_flags & 0x0400 == 0);
+            let contact_target = entities
+                .get(usize::from(source_entity.source_upkeep_word_7a()))
+                .filter(|_| source_entity.source_upkeep_word_7a() != 0)
+                .map(|target| (target.index, target.position));
+            let attacker_target = entities
+                .get(usize::from(source_entity.source_upkeep_word_62()))
+                .filter(|_| source_entity.source_upkeep_word_62() != 0)
+                .map(|target| (target.position, target.class == 10 && target.model == 67));
+            self.return_value = self.step_sub_5efa0(
+                &mut entities[entity_index],
+                relation_live,
+                contact_target,
+                attacker_target,
+            );
             self.source_mailbox
                 .copy_from_slice(entities[entity_index].source_upkeep_mailbox());
-            self.return_value = if self.life < 0 { 2 } else { 1 };
+            source_entity = entities[entity_index].clone();
             if self.return_value == 2 {
-                entities[entity_index].action = 2;
-                entities[entity_index].record[73] = 2;
                 return Ok(self.snapshot(source_entity.phase));
             }
         }
 
-        // sub_146F0's first branch clears the source movement latch.  The
-        // qualified row has no active latch, so its ordinary route preserves
-        // the imported position while still carrying the exact bit operation.
+        let parameter_index = source_entity.parameter_relation.ok_or_else(|| {
+            NativeWorldError::new("Level 2 Nyphur common source parameter is absent")
+        })?;
+        let parameter = presentation
+            .entity_parameters
+            .get(usize::from(parameter_index))
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur common parameter row is absent")
+            })?;
+
+        // Source sub_146F0 first consumes the movement latch. Otherwise it
+        // predicts forward and strafe movement, eases actual speed, then
+        // turns toward the source roll using the parameter row's 0x02/0x04
+        // limits. The imported row has zero speed, but keeping the complete
+        // carrier prevents a later source consumer from replacing this with
+        // a position-preserving shortcut.
         if entities[entity_index].control_flags & 0x0800 != 0 {
             let control_flags = entities[entity_index].control_flags & !0x0800;
             entities[entity_index].set_control_flags(control_flags);
+        } else {
+            let word_160_e = i16::from_le_bytes([parameter[14], parameter[15]]);
+            let lower_clearance = i16::from_le_bytes([parameter[12], parameter[13]]);
+            let subtype_160_2 = i16::from_le_bytes([parameter[2], parameter[3]]);
+            let word_160_4 = i16::from_le_bytes([parameter[4], parameter[5]]);
+            let mut predicted = entities[entity_index].position;
+            let ground = terrain.ground_height(predicted);
+            if predicted.z > ground {
+                predicted.z = predicted.z.wrapping_add(word_160_e);
+            }
+            if i32::from(predicted.z) <= i32::from(ground) + i32::from(lower_clearance) {
+                predicted.z = ground.wrapping_add(lower_clearance);
+            }
+            let yaw = entities[entity_index].yaw;
+            crate::move_entity(&mut predicted, yaw, 0, entities[entity_index].actual_speed);
+            crate::move_entity(&mut predicted, yaw.wrapping_add(512), 0, self.strafe_speed);
+            let strafe_sign = self.strafe_speed.signum();
+            self.strafe_speed = self.strafe_speed.wrapping_sub(strafe_sign.wrapping_mul(4));
+            entities[entity_index].set_position(predicted);
+
+            let speed_delta = self.speed.wrapping_sub(entities[entity_index].actual_speed);
+            if speed_delta != 0 {
+                entities[entity_index].set_actual_speed(
+                    entities[entity_index]
+                        .actual_speed
+                        .wrapping_add(speed_delta.signum().wrapping_mul(16)),
+                );
+            }
+            let roll = entities[entity_index].source_roll();
+            let angle = angle_distance(i32::from(yaw), i32::from(roll & 0x07ff));
+            let reflex_gap = 255_i32 - i32::from(self.word_0x246);
+            let reflex_sign = reflex_gap.signum();
+            let denominator = ((reflex_gap - (reflex_sign << 4) + reflex_sign) >> 4) + 8;
+            let turn = i32::from(angle) / denominator;
+            let turn = if turn <= i32::from(subtype_160_2) {
+                turn.max(i32::from(word_160_4))
+            } else {
+                i32::from(subtype_160_2)
+            };
+            let next_yaw = yaw.wrapping_add(level2_nyphur_turn_direction(yaw, roll).wrapping_mul(
+                i16::try_from(turn).expect("Nyphur turn carrier fits signed 16 bits"),
+            )) & 0x07ff;
+            let crossed_roll = (yaw.cast_unsigned() < roll.cast_unsigned()
+                && next_yaw.cast_unsigned() > roll.cast_unsigned())
+                || (yaw.cast_unsigned() > roll.cast_unsigned()
+                    && roll.cast_unsigned() > next_yaw.cast_unsigned());
+            entities[entity_index].set_yaw(if crossed_roll { roll } else { next_yaw });
         }
         self.map_angle_allowed =
-            level2_nyphur_map_angle_allowed(terrain, entities[entity_index].position);
+            level2_nyphur_map_angle_allowed(terrain, entities, entities[entity_index].position);
         if self.byte_0x154 < 200 {
             self.byte_0x154 += 1;
         }
@@ -4088,19 +4437,16 @@ impl Level2NyphurCommonUpkeep {
         } else {
             None
         };
-        if self.cadence_candidate.is_some() && self.strafe_speed == 0 {
-            self.strafe_speed = 80;
+        self.cadence_action = 0;
+        if let Some(candidate_index) = self.cadence_candidate {
+            if self.byte_0x45e == 0 {
+                self.strafe_speed = 80;
+            }
+            if let Some(candidate) = entities.get(usize::from(candidate_index)) {
+                self.cadence_action = self.cadence_action_for_candidate(&source_entity, candidate);
+            }
         }
 
-        let parameter_index = source_entity.parameter_relation.ok_or_else(|| {
-            NativeWorldError::new("Level 2 Nyphur common source parameter is absent")
-        })?;
-        let parameter = presentation
-            .entity_parameters
-            .get(usize::from(parameter_index))
-            .ok_or_else(|| {
-                NativeWorldError::new("Level 2 Nyphur common parameter row is absent")
-            })?;
         let upper_clearance = i16::from_le_bytes([parameter[10], parameter[11]]);
         let lower_clearance = i16::from_le_bytes([parameter[12], parameter[13]]);
         let ground = terrain.ground_height(entities[entity_index].position);
@@ -4142,11 +4488,132 @@ fn level2_nyphur_strict_overlap(left: &EntitySnapshot, right: &EntitySnapshot) -
         && dz < i32::from(left.array_fov()) + i32::from(right.array_fov())
 }
 
-fn level2_nyphur_map_angle_allowed(terrain: &SessionTerrain, position: Position) -> bool {
-    let x = position.x.to_be_bytes()[0];
-    let y = position.y.to_be_bytes()[0];
+fn level2_nyphur_linked_source_order(
+    entities: &[EntitySnapshot],
+    include: impl Fn(&EntitySnapshot) -> bool,
+) -> Vec<u16> {
+    let eligible = entities
+        .iter()
+        .filter(|entity| include(entity))
+        .map(|entity| entity.index)
+        .collect::<BTreeSet<_>>();
+    let linked = eligible
+        .iter()
+        .filter_map(|index| entities.get(usize::from(*index)))
+        .filter_map(|entity| entity.next_relation)
+        .filter(|index| eligible.contains(index))
+        .collect::<BTreeSet<_>>();
+    let Some(mut current) = eligible
+        .iter()
+        .copied()
+        .find(|index| !linked.contains(index))
+    else {
+        return Vec::new();
+    };
+    let mut visited = BTreeSet::new();
+    let mut order = Vec::with_capacity(eligible.len());
+    while current != 0 && visited.insert(current) {
+        let Some(entity) = entities.get(usize::from(current)) else {
+            break;
+        };
+        order.push(current);
+        current = entity.next_relation.unwrap_or(0);
+    }
+    order
+}
+
+fn level2_nyphur_class3_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
+    level2_nyphur_linked_source_order(entities, |entity| {
+        entity.active && entity.life >= 0 && entity.class == 3
+    })
+}
+
+fn level2_nyphur_class45_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
+    level2_nyphur_linked_source_order(entities, |entity| {
+        entity.active && entity.life >= 0 && entity.class == 10 && entity.model == 45
+    })
+}
+
+fn level2_nyphur_class9_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
+    level2_nyphur_linked_source_order(entities, |entity| {
+        entity.active && entity.life >= 0 && entity.class == 9
+    })
+}
+
+fn level2_nyphur_sub_11c80(terrain: &SessionTerrain, x: u8, y: u8) -> bool {
     let angle = i8::from_ne_bytes([terrain.planes.angles[terrain_index(x, y)]]);
     angle >= 0 && (terrain.map_type != MapType::Cave || angle & 8 == 0)
+}
+
+fn level2_nyphur_turn_direction(from: i16, to: i16) -> i16 {
+    let from = i32::from(from) & 0x07ff;
+    let to = i32::from(to) & 0x07ff;
+    let mut difference = to - from;
+    if difference.unsigned_abs() > 1_024 {
+        difference += if difference >= 0 { -2_048 } else { 2_048 };
+    }
+    difference.signum() as i16
+}
+
+/// Pinned `sub_583F0_distance_3d`: the three coordinate differences are
+/// signed 16-bit before the legacy integer square-root pass.
+fn level2_nyphur_source_distance_3d(left: Position, right: Position) -> u32 {
+    let dx = i32::from(i16::from_ne_bytes(
+        right.x.wrapping_sub(left.x).to_ne_bytes(),
+    ));
+    let dy = i32::from(i16::from_ne_bytes(
+        right.y.wrapping_sub(left.y).to_ne_bytes(),
+    ));
+    let dz = i32::from(right.z.wrapping_sub(left.z));
+    crate::legacy_sqrt(
+        u32::try_from(dx * dx + dy * dy + dz * dz)
+            .expect("source 16-bit coordinate distance fits the pinned uint32 carrier"),
+    )
+}
+
+/// Pinned `sub_11CB0`: inspect the two source linked lists first, then the
+/// eight-by-eight map-angle aperture. The source uses the lists rebuilt by
+/// `UpdateEntities_57730`; a vector-order sweep is a different operation.
+fn level2_nyphur_map_angle_allowed(
+    terrain: &SessionTerrain,
+    entities: &[EntitySnapshot],
+    position: Position,
+) -> bool {
+    let blocked_by = |candidate: &EntitySnapshot| {
+        let dx = i16::from_ne_bytes(candidate.position.x.wrapping_sub(position.x).to_ne_bytes());
+        let dy = i16::from_ne_bytes(candidate.position.y.wrapping_sub(position.y).to_ne_bytes());
+        i32::from(dx).abs() <= i32::from(candidate.array_pitch()) + 2_560
+            && i32::from(dy).abs() <= i32::from(candidate.array_roll()) + 2_560
+    };
+    if level2_nyphur_class3_source_order(entities)
+        .into_iter()
+        .filter_map(|index| entities.get(usize::from(index)))
+        .filter(|entity| entity.model == 2)
+        .any(blocked_by)
+    {
+        return false;
+    }
+    if level2_nyphur_class45_source_order(entities)
+        .into_iter()
+        .filter_map(|index| entities.get(usize::from(index)))
+        .any(blocked_by)
+    {
+        return false;
+    }
+    let start_x = position.x.to_be_bytes()[0].wrapping_sub(8);
+    let start_y = position.y.to_be_bytes()[0].wrapping_sub(8);
+    for row in 0..8_u8 {
+        for column in 0..8_u8 {
+            if !level2_nyphur_sub_11c80(
+                terrain,
+                start_x.wrapping_add(column),
+                start_y.wrapping_add(row),
+            ) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Production carrier for the source AI dispatch state byte and common
@@ -44732,6 +45199,7 @@ mod tests {
         assert_eq!(baseline.word_0x242, 243);
         assert_eq!(baseline.word_0x244, 90);
         assert_eq!(baseline.word_0x246, 39);
+        assert_eq!(baseline.word_0x248, 0);
         assert_eq!(baseline.word_0x24a, 79);
         assert_eq!(baseline.word_0x24c, 0);
         assert_eq!(baseline.spell_enabled[2], 4);
@@ -44742,9 +45210,13 @@ mod tests {
                 .enumerate()
                 .all(|(index, value)| { index == 2 && *value == 4 || index != 2 && *value == 0 })
         );
-        for index in 0..8 {
+        for index in 0..7 {
             assert_eq!(baseline.array_0x1fc[4 * index + 4], 24_607);
         }
+        assert_eq!(
+            u16::from_le_bytes([baseline.padding_0x23c[0], baseline.padding_0x23c[1]]),
+            24_607
+        );
         assert_eq!(baseline.mana_regen, 100);
         assert_eq!((baseline.mana, baseline.max_mana), (1_000, 1_000));
         assert_eq!((baseline.life, baseline.max_life), (3_085, 3_085));
@@ -44752,8 +45224,12 @@ mod tests {
         assert!(!baseline.map_angle_allowed);
         assert!(!baseline.cadence_eligible);
         assert_eq!(baseline.cadence_candidate, None);
-        assert_eq!(baseline.return_value, 1);
+        assert_eq!(baseline.return_value, 0);
         assert_eq!(baseline.source_mailbox, [0; 36]);
+        assert_eq!(baseline.player_hit_frame_time, 0);
+        assert_eq!(baseline.dword_0x18d, 0);
+        assert_eq!(baseline.palette_count, 256);
+        assert!(!baseline.palette_modification_enabled);
 
         let baseline_campaign_hash = session.campaign_state_hash();
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -44781,7 +45257,10 @@ mod tests {
         let stepped = session
             .nyphur_common_upkeep()
             .expect("stepped Nyphur common carrier");
-        assert_eq!(stepped.source_list_model_zero, Some(113));
+        // dword_38519 is the active class-3 linked list (111 -> 112), so
+        // sub_15EE0 retains 111. Vector order would incorrectly return the
+        // unrelated class-15/model-0 row 113.
+        assert_eq!(stepped.source_list_model_zero, Some(111));
         assert_eq!(stepped.phase, 114);
         assert_eq!(stepped.word_0x1a2, 0);
         assert_eq!(stepped.byte_0x154, 1);
@@ -44792,9 +45271,13 @@ mod tests {
         assert_eq!(stepped.word_0x244, 90);
         assert_eq!(stepped.word_0x246, 39);
         assert_eq!(stepped.spell_enabled[2], 3);
-        for index in 0..8 {
+        for index in 0..7 {
             assert_eq!(stepped.array_0x1fc[4 * index + 4], 24_607);
         }
+        assert_eq!(
+            u16::from_le_bytes([stepped.padding_0x23c[0], stepped.padding_0x23c[1]]),
+            24_607
+        );
         assert_eq!(stepped.mana_regen, 100);
         assert_eq!((stepped.mana, stepped.max_mana), (1_000, 1_000));
         assert_eq!((stepped.life, stepped.max_life), (3_085, 3_085));
@@ -44802,8 +45285,10 @@ mod tests {
         assert!(stepped.map_angle_allowed);
         assert!(!stepped.cadence_eligible);
         assert_eq!(stepped.cadence_candidate, None);
-        assert_eq!(stepped.return_value, 1);
+        assert_eq!(stepped.return_value, 0);
         assert_eq!(stepped.source_mailbox, [0; 36]);
+        assert_eq!(stepped.player_hit_frame_time, 0);
+        assert_eq!(stepped.dword_0x18d, 0);
         assert_eq!(session.nyphur_dispatch_traces().len(), 1);
         assert_eq!(session.nyphur_dispatch_traces()[0].state_byte, 0);
         assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
@@ -44825,6 +45310,44 @@ mod tests {
             stepped
         );
         assert_eq!(session.campaign_state_hash(), stepped_campaign_hash);
+
+        // The source keeps the mailbox dormant for word_0x159 turns and
+        // enters the common helper only after that countdown reaches zero.
+        // This public-route threshold proof rejects an implementation that
+        // runs the helper on the allocation/first-visit turn or that lets a
+        // local-player projection stand in for the authored AI row.
+        let mut threshold_session = inspection
+            .level2_reset_session()
+            .expect("threshold Nyphur common-upkeep production session");
+        for _ in 0..101 {
+            threshold_session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let threshold = threshold_session
+            .nyphur_common_upkeep()
+            .expect("threshold Nyphur common carrier");
+        assert_eq!(threshold.word_0x159, 0);
+        assert_eq!(threshold.return_value, 0);
+        assert_eq!(threshold.source_mailbox, [0; 36]);
+        assert_eq!(threshold_session.entities[112].word_26(), 0);
+        assert_eq!(threshold_session.nyphur_dispatch_traces().len(), 1);
+        let threshold_hash = threshold_session.campaign_state_hash();
+        threshold_session.reset();
+        assert_eq!(
+            threshold_session
+                .nyphur_common_upkeep()
+                .expect("reset threshold Nyphur common carrier"),
+            baseline
+        );
+        for _ in 0..101 {
+            threshold_session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(
+            threshold_session
+                .nyphur_common_upkeep()
+                .expect("replayed threshold Nyphur common carrier"),
+            threshold
+        );
+        assert_eq!(threshold_session.campaign_state_hash(), threshold_hash);
     }
 
     #[test]
