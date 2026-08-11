@@ -35068,6 +35068,19 @@ mod tests {
                 .set_level2_entity_position(111, strict_boundary)
                 .expect("hold public player input at strict boundary");
             session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                !session.dispatch_events().iter().any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
+                )),
+                "strict boundary must not activate group 28 on any cadence turn"
+            );
+            assert!(
+                (275_u16..=321).all(|authored_index| !session
+                    .level2_class14_activated
+                    .contains(&authored_index)),
+                "strict boundary must not persist group-28 activation rows"
+            );
         }
 
         assert!(!session.dispatch_events().iter().any(|event| matches!(
@@ -38897,7 +38910,11 @@ mod tests {
                 .expect("authored group-1 feature")
         };
 
-        session.state.position = feature(11).world_position(0);
+        let local_player = session.state.entity_index;
+        let row11_position = feature(11).world_position(0);
+        session
+            .set_level2_entity_position(local_player, row11_position)
+            .expect("public player-position input for row 11");
         session.step_outer_turn(PlayerCommand::default(), 0);
 
         let expected_group1_indices = (12_u16..=15)
@@ -38920,6 +38937,48 @@ mod tests {
             .find(|source| source.authored_index == 41)
             .copied()
             .expect("group 1 must materialize row 41");
+        let row16_source_slot = session
+            .economy()
+            .mana_attraction_fields()
+            .iter()
+            .find(|field| field.authored_index == 16)
+            .map(|field| field.source_entity_index)
+            .expect("group 1 must materialize row 16");
+        let row16_activation_seen = session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 1,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == [16]
+            )
+        });
+        let row16_dynamic_seen = session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaAttraction,
+                    ..
+                } if *source_slot == row16_source_slot
+            )
+        });
+        if !row41.fired {
+            for _ in 0..level_two_switch_turns_until_cadence(row41.phase) {
+                session
+                    .set_level2_entity_position(local_player, row11_position)
+                    .expect("public player-position input remains on row 11");
+                session.step_outer_turn(PlayerCommand::default(), 0);
+            }
+        }
+        let row41 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 41)
+            .copied()
+            .expect("group 1 row 41 remains live");
         assert_eq!(
             (
                 row41.source_class,
@@ -38943,10 +39002,8 @@ mod tests {
             )
         );
         assert!(row41.active);
-        // Model-1 uses the inverse-overlap callback: the newly materialized
-        // row is intentionally consumed in this same source pass because the
-        // player is not on its tile.  The constructor payload remains visible
-        // even though the callback has already set its cooldown/fired state.
+        // Model-1 uses the inverse-overlap callback: the player remains on
+        // row 11 while the live row-41 producer reaches its source cadence.
         assert!(row41.fired);
         assert_eq!(row41.cooldown, 10);
         assert!(row41.drawing_enabled);
@@ -38978,22 +39035,9 @@ mod tests {
                     .ground_height(authored_row16.world_position(0))
             )
         );
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                group: 1,
-                authored_indices,
-                ..
-            } if authored_indices.as_ref() == [16]
-        )));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::DynamicArena {
-                source_slot,
-                kind: Level2DynamicArenaKind::ManaAttraction,
-                ..
-            } if *source_slot == row16.source_entity_index
-        )));
+        assert!(row16_activation_seen);
+        assert_eq!(row16.source_entity_index, row16_source_slot);
+        assert!(row16_dynamic_seen);
 
         let class5_rows = session
             .economy()
@@ -39069,26 +39113,52 @@ mod tests {
         // Follow the real source walk into row 83: row 11 -> row 41 -> row
         // 42 -> row 64 -> row 65 -> row 83.  The player remains on row 65 so
         // the model-1 inverse-overlap callback can select group 6.
-        session.state.position = feature(11).world_position(0);
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        session.state.position = feature(42).world_position(0);
-        for _ in 0..8 {
+        let local_player = session.state.entity_index;
+        level_two_reach_row42(
+            &mut session,
+            local_player,
+            feature(11).world_position(0),
+            feature(42).world_position(0),
+        );
+        let row42_phase = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 42)
+            .map(|source| source.phase)
+            .expect("row 42 producer remains live before its cadence");
+        for _ in 0..level_two_switch_turns_until_cadence(row42_phase) {
+            session
+                .set_level2_entity_position(local_player, feature(42).world_position(0))
+                .expect("public player-position input remains on row 42");
             session.step_outer_turn(PlayerCommand::default(), 0);
         }
-        session.state.position = feature(65).world_position(0);
+        let row65_position = feature(65).world_position(0);
         let mut group6_activated = false;
-        for _ in 0..8 {
-            session.step_outer_turn(PlayerCommand::default(), 0);
-            group6_activated |= session.dispatch_events().iter().any(|event| {
-                matches!(
-                    event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
-                        group: 6,
-                        authored_indices,
-                        ..
-                    } if authored_indices.as_ref() == [84]
-                )
-            });
+        for source_index in [64_u16, 65, 83] {
+            let source_phase = session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == source_index)
+                .map(|source| source.phase)
+                .expect("group-6 producer remains live before its cadence");
+            for _ in 0..level_two_switch_turns_until_cadence(source_phase) {
+                session
+                    .set_level2_entity_position(local_player, row65_position)
+                    .expect("public player-position input remains on row 65");
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                group6_activated |= session.dispatch_events().iter().any(|event| {
+                    matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            group: 6,
+                            authored_indices,
+                            ..
+                        } if authored_indices.as_ref() == [84]
+                    )
+                });
+            }
         }
         assert!(
             group6_activated,
@@ -39397,10 +39467,24 @@ mod tests {
         // route. The test only mutates the typed row after production has
         // materialized it; all callbacks below still run through the live
         // dynamic cursor.
-        session.state.position = feature_position(11);
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        session.state.position = feature_position(42);
-        for _ in 0..8 {
+        let local_player = session.state.entity_index;
+        level_two_reach_row42(
+            &mut session,
+            local_player,
+            feature_position(11),
+            feature_position(42),
+        );
+        let row42_phase = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 42)
+            .map(|source| source.phase)
+            .expect("row 42 producer remains live before its cadence");
+        for _ in 0..level_two_switch_turns_until_cadence(row42_phase) {
+            session
+                .set_level2_entity_position(local_player, feature_position(42))
+                .expect("public player-position input remains on row 42");
             session.step_outer_turn(PlayerCommand::default(), 0);
             if session
                 .economy()
@@ -39664,13 +39748,17 @@ mod tests {
                 .expect("authored switch row")
                 .world_position(0)
         };
+        let local_player = session.state.entity_index;
+        let row11_position = feature_position(11);
 
         assert!(session.economy().authored_switch_producers().is_empty());
 
         // Frame zero already imports row 11 as source slot 23. Put the local
         // player on that switch so its normal callback fires, then let its
         // non-overlap successor row 41 fire through the same runagain walk.
-        session.state.position = feature_position(11);
+        session
+            .set_level2_entity_position(local_player, row11_position)
+            .expect("public player-position input for row 11");
         let owner_mana_global_before_group1 = session.economy().owner_mana_global();
         session.step_outer_turn(PlayerCommand::default(), 0);
         let expected_group1_indices = expected_group1_model39_indices
@@ -39740,6 +39828,26 @@ mod tests {
             .expect("imported row-11 entity");
         assert_eq!(imported_entity.phase, baseline_root_phase.wrapping_add(1));
         assert_eq!(imported_entity.source_word_10(), 10);
+        if !session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .any(|source| source.authored_index == 42)
+        {
+            let row41_phase = session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == 41)
+                .map(|source| source.phase)
+                .expect("row 41 producer remains live before its cadence");
+            for _ in 0..level_two_switch_turns_until_cadence(row41_phase) {
+                session
+                    .set_level2_entity_position(local_player, row11_position)
+                    .expect("public player-position input remains on row 11");
+                session.step_outer_turn(PlayerCommand::default(), 0);
+            }
+        }
         let switch_indices = session
             .economy()
             .authored_switch_producers()
@@ -39778,8 +39886,18 @@ mod tests {
         // Row 42 is the model-0 overlap gate for row 64; row 64 is the
         // model-1 inverse gate for row 65.  Both transitions are driven by
         // ordinary production turns, not direct allocator calls.
-        session.state.position = feature_position(42);
-        for _ in 0..8 {
+        let row42_position = feature_position(42);
+        let row42_phase = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 42)
+            .map(|source| source.phase)
+            .expect("row 42 producer remains live before its cadence");
+        for _ in 0..level_two_switch_turns_until_cadence(row42_phase) {
+            session
+                .set_level2_entity_position(local_player, row42_position)
+                .expect("public player-position input remains on row 42");
             session.step_outer_turn(PlayerCommand::default(), 0);
         }
         let switch_indices = session
@@ -39792,7 +39910,10 @@ mod tests {
 
         // Rows 42 and 64 share the authored tile: move away after firing
         // row 42 so row 64's inverse-overlap callback can select group 4.
-        session.state.position = feature_position(65);
+        let row65_position = feature_position(65);
+        session
+            .set_level2_entity_position(local_player, row65_position)
+            .expect("public player-position input for row 65");
         let expected_group5_indices = expected_group5_model39_indices
             .iter()
             .copied()
@@ -39805,50 +39926,161 @@ mod tests {
         let mut group7_owner_mana_global_before = None;
         let mut group7_owner_mana_global_after = None;
         let mut group4_bees_activated = false;
-        for _ in 0..8 {
-            let owner_global_before = session.economy().owner_mana_global();
-            session.step_outer_turn(PlayerCommand::default(), 0);
-            let activated_group5_this_turn = session.dispatch_events().iter().any(|event| {
-                matches!(
-                    event,
+        let mut mana_attraction_source_slots = BTreeSet::new();
+        let mut class5_source_slots = BTreeSet::new();
+        let mut row105_group_activated = false;
+        let mut group5_sphere_snapshot = None;
+        let mut group7_sphere_snapshot = None;
+        let classify_chain_events = |events: &[Level2DispatchEvent]| {
+            let mut group5_this_turn = false;
+            let mut group7_this_turn = false;
+            let mut row105_this_turn = false;
+            let mut group4_this_turn = false;
+            let mut mana_attraction_slots = BTreeSet::new();
+            let mut class5_slots = BTreeSet::new();
+            for event in events {
+                match event {
                     Level2DispatchEvent::AuthoredGroupActivated {
                         group,
                         authored_indices,
                         ..
-                    } if *group == 5 && authored_indices.as_ref() == expected_group5_indices.as_slice()
-                )
-            });
-            if activated_group5_this_turn {
-                group5_owner_mana_global_before = Some(owner_global_before);
-                group5_owner_mana_global_after = Some(session.economy().owner_mana_global());
-            }
-            group5_activated |= activated_group5_this_turn;
-            let activated_this_turn = session.dispatch_events().iter().any(|event| {
-                matches!(
-                    event,
+                    } if *group == 5
+                        && authored_indices.as_ref() == expected_group5_indices.as_slice() =>
+                    {
+                        group5_this_turn = true;
+                    }
                     Level2DispatchEvent::AuthoredGroupActivated {
                         group,
                         authored_indices,
                         ..
                     } if *group == 7
-                        && authored_indices.as_ref() == expected_group7_event_indices.as_slice()
-                )
-            });
-            if activated_this_turn {
-                group7_owner_mana_global_before = Some(owner_global_before);
-                group7_owner_mana_global_after = Some(session.economy().owner_mana_global());
-            }
-            group7_activated |= activated_this_turn;
-            group4_bees_activated |= session.dispatch_events().iter().any(|event| {
-                matches!(
-                    event,
+                        && authored_indices.as_ref()
+                            == expected_group7_event_indices.as_slice() =>
+                    {
+                        group7_this_turn = true;
+                    }
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 7,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == [105] => {
+                        row105_this_turn = true;
+                    }
                     Level2DispatchEvent::AuthoredGroupActivated {
                         group: 4,
                         authored_indices,
                         ..
-                    } if matches!(authored_indices.as_ref(), [210] | [211] | [212])
-                )
-            });
+                    } if matches!(authored_indices.as_ref(), [210] | [211] | [212]) => {
+                        group4_this_turn = true;
+                    }
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::ManaAttraction,
+                        ..
+                    } => {
+                        mana_attraction_slots.insert(*source_slot);
+                    }
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::AuthoredClass5,
+                        ..
+                    } => {
+                        class5_slots.insert(*source_slot);
+                    }
+                    _ => {}
+                }
+            }
+            (
+                group5_this_turn,
+                group7_this_turn,
+                row105_this_turn,
+                group4_this_turn,
+                mana_attraction_slots,
+                class5_slots,
+            )
+        };
+        let record_chain_turn =
+            |session: &Level2ResetSession,
+             owner_global_before: i32,
+             owner_global_after: i32,
+             group5_activated: &mut bool,
+             group5_owner_mana_global_before: &mut Option<i32>,
+             group5_owner_mana_global_after: &mut Option<i32>,
+             group7_activated: &mut bool,
+             group7_owner_mana_global_before: &mut Option<i32>,
+             group7_owner_mana_global_after: &mut Option<i32>,
+             row105_group_activated: &mut bool,
+             group4_bees_activated: &mut bool,
+             mana_attraction_source_slots: &mut BTreeSet<u16>,
+             class5_source_slots: &mut BTreeSet<u16>,
+             group5_sphere_snapshot: &mut Option<Vec<ManaSphere>>,
+             group7_sphere_snapshot: &mut Option<Vec<ManaSphere>>| {
+                let (
+                    group5_this_turn,
+                    group7_this_turn,
+                    row105_this_turn,
+                    group4_this_turn,
+                    mana_attraction_slots,
+                    class5_slots,
+                ) = classify_chain_events(session.dispatch_events());
+                if group5_this_turn {
+                    *group5_owner_mana_global_before = Some(owner_global_before);
+                    *group5_owner_mana_global_after = Some(owner_global_after);
+                }
+                if group7_this_turn {
+                    *group7_owner_mana_global_before = Some(owner_global_before);
+                    *group7_owner_mana_global_after = Some(owner_global_after);
+                }
+                *group5_activated |= group5_this_turn;
+                *group7_activated |= group7_this_turn;
+                *row105_group_activated |= row105_this_turn;
+                *group4_bees_activated |= group4_this_turn;
+                if group5_this_turn && group5_sphere_snapshot.is_none() {
+                    *group5_sphere_snapshot = Some(session.economy().spheres().to_vec());
+                }
+                if group7_this_turn && group7_sphere_snapshot.is_none() {
+                    *group7_sphere_snapshot = Some(session.economy().spheres().to_vec());
+                }
+                mana_attraction_source_slots.extend(mana_attraction_slots);
+                class5_source_slots.extend(class5_slots);
+            };
+        for source_index in [64_u16, 65, 83, 84] {
+            if (source_index == 65 && group5_activated)
+                || (matches!(source_index, 83 | 84) && group7_activated)
+            {
+                continue;
+            }
+            let source_phase = session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == source_index)
+                .map(|source| source.phase)
+                .expect("chain producer remains live before its cadence");
+            for _ in 0..level_two_switch_turns_until_cadence(source_phase) {
+                let owner_global_before = session.economy().owner_mana_global();
+                session
+                    .set_level2_entity_position(local_player, row65_position)
+                    .expect("public player-position input remains on row 65");
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                record_chain_turn(
+                    &session,
+                    owner_global_before,
+                    session.economy().owner_mana_global(),
+                    &mut group5_activated,
+                    &mut group5_owner_mana_global_before,
+                    &mut group5_owner_mana_global_after,
+                    &mut group7_activated,
+                    &mut group7_owner_mana_global_before,
+                    &mut group7_owner_mana_global_after,
+                    &mut row105_group_activated,
+                    &mut group4_bees_activated,
+                    &mut mana_attraction_source_slots,
+                    &mut class5_source_slots,
+                    &mut group5_sphere_snapshot,
+                    &mut group7_sphere_snapshot,
+                );
+            }
         }
         let switch_indices = session
             .economy()
@@ -39901,16 +40133,7 @@ mod tests {
         assert_eq!(row82.radius_squared, (64_u32 * 256).pow(2));
         assert_eq!(row82.max_life, 528);
         assert!(row82.active);
-        assert!(session.dispatch_events().iter().any(|event| {
-            matches!(
-                event,
-                Level2DispatchEvent::DynamicArena {
-                    source_slot,
-                    kind: Level2DynamicArenaKind::ManaAttraction,
-                    ..
-                } if *source_slot == row82.source_entity_index
-            )
-        }));
+        assert!(mana_attraction_source_slots.contains(&row82.source_entity_index));
         let class14_indices = session
             .economy()
             .authored_class14()
@@ -39940,14 +40163,7 @@ mod tests {
             assert_eq!(source.position.y, position.y);
             assert_eq!(source.position.z, session.terrain.ground_height(position));
             assert!(source.active && source.drawing_enabled);
-            assert!(session.dispatch_events().iter().any(|event| matches!(
-                event,
-                Level2DispatchEvent::DynamicArena {
-                    source_slot,
-                    kind: Level2DynamicArenaKind::AuthoredClass5,
-                    ..
-                } if *source_slot == source.source_entity_index
-            )));
+            assert!(class5_source_slots.contains(&source.source_entity_index));
         }
         let group7_class5 = session
             .economy()
@@ -40028,22 +40244,8 @@ mod tests {
             )
         );
         assert!(row105.active);
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                group: 7,
-                authored_indices,
-                ..
-            } if authored_indices.as_ref() == [105]
-        )));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::DynamicArena {
-                source_slot,
-                kind: Level2DynamicArenaKind::ManaAttraction,
-                ..
-            } if *source_slot == row105.source_entity_index
-        )));
+        assert!(row105_group_activated);
+        assert!(mana_attraction_source_slots.contains(&row105.source_entity_index));
         assert!(
             group5_activated,
             "row 65 must activate group 5 in production"
@@ -40066,9 +40268,13 @@ mod tests {
             .map(|position| (position.x, position.y))
             .collect::<BTreeSet<_>>();
         let mut actual_group5_position_counts = BTreeMap::new();
-        for sphere in session.economy().spheres().iter().filter(|sphere| {
-            expected_group5_position_set.contains(&(sphere.position.x, sphere.position.y))
-        }) {
+        for sphere in group5_sphere_snapshot
+            .expect("group 5 consumer snapshot captured on activation")
+            .iter()
+            .filter(|sphere| {
+                expected_group5_position_set.contains(&(sphere.position.x, sphere.position.y))
+            })
+        {
             *actual_group5_position_counts
                 .entry((sphere.position.x, sphere.position.y))
                 .or_insert(0usize) += 1;
@@ -40098,12 +40304,17 @@ mod tests {
             .map(|position| (position.x, position.y))
             .collect::<BTreeSet<_>>();
         let mut actual_group7_position_counts = BTreeMap::new();
-        for sphere in session.economy().spheres().iter().filter(|sphere| {
-            expected_group7_position_set.contains(&(sphere.position.x, sphere.position.y))
-        }) {
+        for sphere in group7_sphere_snapshot
+            .expect("group 7 consumer snapshot captured on activation")
+            .iter()
+            .filter(|sphere| {
+                expected_group7_position_set.contains(&(sphere.position.x, sphere.position.y))
+            })
+        {
             *actual_group7_position_counts
                 .entry((sphere.position.x, sphere.position.y))
                 .or_insert(0usize) += 1;
+            assert!(sphere.active);
             assert_eq!(sphere.mana, 512);
             assert_eq!(
                 (sphere.owner_entity_index, sphere.player_entity_index),
@@ -41608,6 +41819,7 @@ mod tests {
         // Reuse the real imported row-342 -> group-23 -> row-344 route. The
         // existing qualified root is the source authority; only its authored
         // position/target are rebound to the production route under test.
+        let local_player = session.state.entity_index;
         let root_position = feature(342).world_position(0);
         let root = session
             .level2_imported_switch_roots
@@ -41617,8 +41829,14 @@ mod tests {
         root.position = root_position;
         root.target_group = 23;
         root.cooldown = 0;
-        session.state.position = root_position;
-        for _ in 0..16 {
+        let root_phase = root.phase;
+        session
+            .set_level2_entity_position(local_player, root_position)
+            .expect("public player-position input for row 342");
+        for _ in 0..level_two_switch_turns_until_cadence(root_phase) {
+            session
+                .set_level2_entity_position(local_player, root_position)
+                .expect("public player-position input remains on row 342");
             session.step_outer_turn(PlayerCommand::default(), 0);
             if session
                 .economy()
@@ -41639,12 +41857,15 @@ mod tests {
 
         // Row 344's model-0 overlap activates group 24. The newly allocated
         // row 355 is model-1 at the adjacent authored tile, so its inverse
-        // overlap fires in the same source run and selects group 25/row 356.
-        session.state.position = feature(344).world_position(0);
+        // overlap fires at its live source cadence and selects group 25/row
+        // 356.
+        let row344_position = feature(344).world_position(0);
+        session
+            .set_level2_entity_position(local_player, row344_position)
+            .expect("public player-position input for row 344");
         let mut group25_activated = false;
-        for _ in 0..16 {
-            session.step_outer_turn(PlayerCommand::default(), 0);
-            group25_activated |= session.dispatch_events().iter().any(|event| {
+        let saw_group25_activation = |session: &Level2ResetSession| {
+            session.dispatch_events().iter().any(|event| {
                 matches!(
                     event,
                     Level2DispatchEvent::AuthoredGroupActivated {
@@ -41653,9 +41874,36 @@ mod tests {
                         ..
                     } if authored_indices.as_ref() == [356]
                 )
-            });
-            if group25_activated {
-                break;
+            })
+        };
+        let row344_phase = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 344)
+            .map(|source| source.phase)
+            .expect("row 344 producer remains live before its cadence");
+        for _ in 0..level_two_switch_turns_until_cadence(row344_phase) {
+            session
+                .set_level2_entity_position(local_player, row344_position)
+                .expect("public player-position input remains on row 344");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            group25_activated |= saw_group25_activation(&session);
+        }
+        if !group25_activated {
+            let row355_phase = session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == 355)
+                .map(|source| source.phase)
+                .expect("row 355 producer remains live before its cadence");
+            for _ in 0..level_two_switch_turns_until_cadence(row355_phase) {
+                session
+                    .set_level2_entity_position(local_player, row344_position)
+                    .expect("public player-position input remains on row 344");
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                group25_activated |= saw_group25_activation(&session);
             }
         }
         assert!(
@@ -41692,6 +41940,21 @@ mod tests {
             ),
             (11, 0, 0, 26, 12, 0)
         );
+        if row356.drawing_enabled {
+            for _ in 0..level_two_switch_turns_until_cadence(row356.phase) {
+                session
+                    .set_level2_entity_position(local_player, row344_position)
+                    .expect("public player-position input remains on row 344");
+                session.step_outer_turn(PlayerCommand::default(), 0);
+            }
+        }
+        let row356 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 356)
+            .copied()
+            .expect("group 25 row 356 remains live");
         let authored_row356 = feature(356);
         assert_eq!(
             (row356.position.x, row356.position.y, row356.position.z),
