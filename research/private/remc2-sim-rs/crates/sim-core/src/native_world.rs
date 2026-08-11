@@ -88,9 +88,9 @@ use crate::{
     spell_activation::{
         BEYOND_SIGHT_ACTIVE_ACTION, BEYOND_SIGHT_FAMILY, BeyondSightState, BeyondSightStep,
         INVISIBLE_ACTIVE_ACTION, INVISIBLE_STATUS_BIT, InvisibleState, InvisibleStep,
-        PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldDamage, ShieldState, ShieldStep,
-        SpellActivationHolder, SpellCasterState, SpellHolderAcquisitionOutcome,
-        SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
+        Level2SetSpellProfile, PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldDamage,
+        ShieldState, ShieldStep, SpellActivationHolder, SpellCasterState,
+        SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
         acquire_level2_spell_holder_with_return_side, activate_spell, level2_applied_tier,
         level2_set_spell_profile, physical_spell_action,
     },
@@ -114,6 +114,9 @@ use crate::mission_content::checked_in_level2_activation_plan;
 const MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v2";
 const CLOSURE_SCHEMA: &str = "mc2-level-asset-closure/v2";
 const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
+const LEVEL2_NYPHUR_SPELL_COOLDOWNS: [i16; PLAYER_SPELL_COUNT] = [
+    2, 10, 40, 32, 300, 1, 1, 1, 1, 4, 1, 1, 0, 0, 0, 0, 0, 0, 400, 600, 600, 400, 400, 0, 0, 0,
+];
 /// `NewEvent_4A050` defaults used by the Castle model-3/action-9 holder.
 /// `AddBallon_60AB0` multiplies this holder speed by the target Castle's
 /// `dword_0x10_16` stage scalar when deciding whether to transfer mana.
@@ -628,6 +631,46 @@ impl EntitySnapshot {
     /// Apply the source `memset(str_0x5E_94, 0, 36)` operation.
     fn clear_source_upkeep_mailbox(&mut self) {
         self.record[98..134].fill(0);
+    }
+
+    /// Apply the source `sub_5EF70` post-contact write.  The qualified
+    /// Nyphur row is model 1, so this is deliberately a typed source guard,
+    /// not a generic timer write on every AI entity.
+    fn apply_source_sub_5ef70(&mut self) {
+        if self.index != 0 && self.class == 3 && self.model == 0 {
+            self.record[58..60].copy_from_slice(&100_i16.to_le_bytes());
+        }
+    }
+
+    /// Apply the already-qualified `SetSpell_6D5E0` profile to an AI holder.
+    /// The active-holder branch only queues `tier + 1` in word 0x2C; the
+    /// cold branch carries the complete authored subspell/mana payload.
+    fn apply_nyphur_spell_profile(&mut self, profile: Level2SetSpellProfile, tier: u8) {
+        let active_word_2e = u16::from_le_bytes([self.record[50], self.record[51]]);
+        if active_word_2e != 0 {
+            self.record[48..50].copy_from_slice(&u16::from(tier + 1).to_le_bytes());
+            return;
+        }
+        self.subspell_index = profile.subspell_index;
+        self.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+        self.activation_value = profile.word_0x30;
+        self.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+        self.byte_3b = profile.byte_0x3b;
+        self.record[63] = profile.byte_0x3b;
+        self.byte_3c = 0;
+        self.record[64] = 0;
+        self.action_marker = 0;
+        self.record[65] = 0;
+        self.font_type_index = 0;
+        self.mana_regen = profile.mana_regen;
+        self.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+        self.max_mana = profile.max_mana;
+        self.mana_cost = profile.max_mana;
+        self.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+        self.mana = profile.mana;
+        self.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+        self.level_gate = tier.cast_signed();
+        self.record[74] = tier;
     }
 
     /// Keep the source entity RNG in lockstep with a callback draw.
@@ -3730,6 +3773,7 @@ struct Level2NyphurCommonUpkeep {
     byte_0x45e: u8,
     move_boost: i16,
     move_speed: u8,
+    move_speed_flag: u8,
     player_hit_frame_time: u8,
     dword_0x18d: i32,
     palette_sub_mod: u8,
@@ -3738,6 +3782,8 @@ struct Level2NyphurCommonUpkeep {
     contact_target_entity: Option<u16>,
     contact_distance: u32,
     contact_word_0x14a: i16,
+    yaw_0x1e_30: i16,
+    fov_0x22_34: i16,
     word_0x1a2: i16,
     byte_0x154: u8,
     word_0x159: i16,
@@ -3757,6 +3803,9 @@ struct Level2NyphurCommonUpkeep {
     word_0x24a: i16,
     word_0x24c: i16,
     spell_enabled: [i16; PLAYER_SPELL_COUNT],
+    spell_holder_indices: [u16; PLAYER_SPELL_COUNT],
+    spell_levels: [i8; PLAYER_SPELL_COUNT],
+    owner_control_mode: u8,
     mana_regen: i32,
     mana: i32,
     life: i32,
@@ -3786,6 +3835,7 @@ pub struct Level2NyphurCommonUpkeepSnapshot {
     pub byte_0x45e: u8,
     pub move_boost: i16,
     pub move_speed: u8,
+    pub move_speed_flag: u8,
     pub player_hit_frame_time: u8,
     pub dword_0x18d: i32,
     pub palette_sub_mod: u8,
@@ -3794,6 +3844,8 @@ pub struct Level2NyphurCommonUpkeepSnapshot {
     pub contact_target_entity: Option<u16>,
     pub contact_distance: u32,
     pub contact_word_0x14a: i16,
+    pub yaw_0x1e_30: i16,
+    pub fov_0x22_34: i16,
     pub word_0x1a2: i16,
     pub byte_0x154: u8,
     pub word_0x159: i16,
@@ -3809,6 +3861,9 @@ pub struct Level2NyphurCommonUpkeepSnapshot {
     pub word_0x24a: i16,
     pub word_0x24c: i16,
     pub spell_enabled: [i16; PLAYER_SPELL_COUNT],
+    pub spell_holder_indices: [u16; PLAYER_SPELL_COUNT],
+    pub spell_levels: [i8; PLAYER_SPELL_COUNT],
+    pub owner_control_mode: u8,
     pub mana_regen: i32,
     pub mana: i32,
     pub life: i32,
@@ -3858,6 +3913,8 @@ impl Level2NyphurCommonUpkeep {
         }
         let mut spell_enabled = [0_i16; PLAYER_SPELL_COUNT];
         spell_enabled[2] = i16::from(participant.color_index).wrapping_mul(4);
+        let spell_holder_indices = player.enabled_spell_holders;
+        let spell_levels = settings.spell_levels.map(u8::cast_signed);
         let castle_entity_index = entities
             .iter()
             .find(|candidate| {
@@ -3882,6 +3939,7 @@ impl Level2NyphurCommonUpkeep {
             byte_0x45e: 0,
             move_boost: 0,
             move_speed: 0,
+            move_speed_flag: 0,
             player_hit_frame_time: 0,
             dword_0x18d: 0,
             palette_sub_mod: 0,
@@ -3890,6 +3948,8 @@ impl Level2NyphurCommonUpkeep {
             contact_target_entity: None,
             contact_distance: 0,
             contact_word_0x14a: 0,
+            yaw_0x1e_30: 0,
+            fov_0x22_34: 0,
             word_0x1a2: 0,
             byte_0x154: 0,
             word_0x159: 100,
@@ -3909,6 +3969,9 @@ impl Level2NyphurCommonUpkeep {
             },
             word_0x24c: 0,
             spell_enabled,
+            spell_holder_indices,
+            spell_levels,
+            owner_control_mode: player.record_bytes()[447],
             mana_regen: entity.mana_regen,
             mana: entity.mana,
             life: entity.life,
@@ -3936,6 +3999,7 @@ impl Level2NyphurCommonUpkeep {
             byte_0x45e: self.byte_0x45e,
             move_boost: self.move_boost,
             move_speed: self.move_speed,
+            move_speed_flag: self.move_speed_flag,
             player_hit_frame_time: self.player_hit_frame_time,
             dword_0x18d: self.dword_0x18d,
             palette_sub_mod: self.palette_sub_mod,
@@ -3944,6 +4008,8 @@ impl Level2NyphurCommonUpkeep {
             contact_target_entity: self.contact_target_entity,
             contact_distance: self.contact_distance,
             contact_word_0x14a: self.contact_word_0x14a,
+            yaw_0x1e_30: self.yaw_0x1e_30,
+            fov_0x22_34: self.fov_0x22_34,
             word_0x1a2: self.word_0x1a2,
             byte_0x154: self.byte_0x154,
             word_0x159: self.word_0x159,
@@ -3959,6 +4025,9 @@ impl Level2NyphurCommonUpkeep {
             word_0x24a: self.word_0x24a,
             word_0x24c: self.word_0x24c,
             spell_enabled: self.spell_enabled,
+            spell_holder_indices: self.spell_holder_indices,
+            spell_levels: self.spell_levels,
+            owner_control_mode: self.owner_control_mode,
             mana_regen: self.mana_regen,
             mana: self.mana,
             life: self.life,
@@ -3997,7 +4066,11 @@ impl Level2NyphurCommonUpkeep {
         hasher.update(self.strafe_speed.to_le_bytes());
         hasher.update([self.byte_0x45e]);
         hasher.update(self.move_boost.to_le_bytes());
-        hasher.update([self.move_speed, self.player_hit_frame_time]);
+        hasher.update([
+            self.move_speed,
+            self.move_speed_flag,
+            self.player_hit_frame_time,
+        ]);
         hasher.update(self.dword_0x18d.to_le_bytes());
         hasher.update([self.palette_sub_mod]);
         hasher.update(self.palette_count.to_le_bytes());
@@ -4011,6 +4084,8 @@ impl Level2NyphurCommonUpkeep {
         }
         hasher.update(self.contact_distance.to_le_bytes());
         hasher.update(self.contact_word_0x14a.to_le_bytes());
+        hasher.update(self.yaw_0x1e_30.to_le_bytes());
+        hasher.update(self.fov_0x22_34.to_le_bytes());
         hasher.update(self.word_0x1a2.to_le_bytes());
         hasher.update([self.byte_0x154]);
         hasher.update(self.word_0x159.to_le_bytes());
@@ -4034,6 +4109,13 @@ impl Level2NyphurCommonUpkeep {
         for value in self.spell_enabled {
             hasher.update(value.to_le_bytes());
         }
+        for value in self.spell_holder_indices {
+            hasher.update(value.to_le_bytes());
+        }
+        for value in self.spell_levels {
+            hasher.update(value.to_le_bytes());
+        }
+        hasher.update([self.owner_control_mode]);
         hasher.update(self.mana_regen.to_le_bytes());
         hasher.update(self.mana.to_le_bytes());
         hasher.update(self.life.to_le_bytes());
@@ -4074,6 +4156,145 @@ impl Level2NyphurCommonUpkeep {
         }
     }
 
+    fn source_spell_holder_slot(&self, family: u8) -> Option<u16> {
+        self.spell_holder_indices
+            .get(usize::from(family))
+            .copied()
+            .filter(|slot| *slot != 0)
+    }
+
+    fn source_spell_profile(family: u8, raw_tier: i8) -> Option<(u8, Level2SetSpellProfile)> {
+        let tier = level2_applied_tier(raw_tier)?;
+        level2_set_spell_profile(family, tier).map(|profile| (tier, profile))
+    }
+
+    /// The source `sub_15170` availability predicate for the families whose
+    /// authored profile is present in the canonical sim-core spell table.
+    /// Families without that qualified table fail closed; they are not
+    /// coerced into a neighboring profile.
+    fn source_spell_available(
+        &self,
+        family: u8,
+        holder: &EntitySnapshot,
+        profile: Level2SetSpellProfile,
+    ) -> bool {
+        if self.max_mana < profile.max_mana
+            || self.mana < profile.mana
+            || self.spell_enabled[usize::from(family)] != 0
+            || self.mana < holder.max_mana
+        {
+            return false;
+        }
+        if matches!(family, 4 | 6 | 8 | 11) && holder.active_value != 0 {
+            return false;
+        }
+        true
+    }
+
+    /// Execute the source `sub_15F20`: SetSpell happens before the
+    /// availability check, including on the not-enough-mana result.
+    fn step_sub_15f20(&mut self, family: u8, raw_tier: i8, entities: &mut [EntitySnapshot]) -> i8 {
+        let Some(spell_level) = self.spell_levels.get(usize::from(family)).copied() else {
+            return 0;
+        };
+        if raw_tier < 0 || raw_tier >= spell_level {
+            return 0;
+        }
+        let Some(holder_slot) = self.source_spell_holder_slot(family) else {
+            return 0;
+        };
+        let Some((_, profile)) = Self::source_spell_profile(family, raw_tier) else {
+            return 0;
+        };
+        let Some(holder) = entities.get_mut(usize::from(holder_slot)) else {
+            return 0;
+        };
+        let tier = level2_applied_tier(raw_tier).expect("non-negative Nyphur spell tier");
+        holder.apply_nyphur_spell_profile(profile, tier);
+        let Some(holder) = entities.get(usize::from(holder_slot)) else {
+            return 0;
+        };
+        if !self.source_spell_available(family, holder, profile) {
+            return if self.max_mana < profile.max_mana || self.mana < profile.mana {
+                -1
+            } else {
+                0
+            };
+        }
+        family.cast_signed()
+    }
+
+    /// Execute `sub_5F660`/`sub_5F7B0`/`sub_5F7E0` for an AI holder.  The
+    /// source model is passed explicitly because these helpers modify the
+    /// owner control dword, not the local player projection.
+    fn step_sub_5f660(
+        &self,
+        source_model: u8,
+        source_control_flags: &mut u32,
+        holder: &mut EntitySnapshot,
+    ) -> bool {
+        if source_model != 1 {
+            return false;
+        }
+        if holder.model == 1 && holder.active_value > 0 {
+            holder.byte_3c = 1;
+            holder.record[64] = 1;
+        } else if holder.active_value == 0 {
+            if self.mana < holder.max_mana {
+                return false;
+            }
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        }
+        *source_control_flags &= !0x0000_0300;
+        if self.owner_control_mode < 2 || (self.owner_control_mode <= 2 && holder.model != 1) {
+            *source_control_flags &= !0x0000_0020;
+        }
+        true
+    }
+
+    /// Execute the source `sub_14E10` activation tail and install its exact
+    /// family cooldown.  No event/action is fabricated for an unsupported
+    /// spell table row.
+    fn step_sub_14e10(
+        &mut self,
+        family: u8,
+        source_model: u8,
+        source_control_flags: &mut u32,
+        entities: &mut [EntitySnapshot],
+    ) -> bool {
+        let Some(holder_slot) = self.source_spell_holder_slot(family) else {
+            return false;
+        };
+        let Some(holder_before) = entities.get(usize::from(holder_slot)) else {
+            return false;
+        };
+        let Some((_, profile)) = Self::source_spell_profile(family, holder_before.level_gate)
+        else {
+            return false;
+        };
+        if !self.source_spell_available(family, holder_before, profile) {
+            return false;
+        }
+        let Some(holder) = entities.get_mut(usize::from(holder_slot)) else {
+            return false;
+        };
+        if !self.step_sub_5f660(source_model, source_control_flags, holder) {
+            return false;
+        }
+        self.spell_enabled[usize::from(family)] =
+            LEVEL2_NYPHUR_SPELL_COOLDOWNS[usize::from(family)];
+        true
+    }
+
+    /// Source `sub_15D20`: cadence contact arms the fixed 80-unit strafe
+    /// only when the source latch is clear.
+    fn step_sub_15d20(&mut self) {
+        if self.byte_0x45e == 0 {
+            self.strafe_speed = 80;
+        }
+    }
+
     fn cadence_candidate(
         &self,
         source: &EntitySnapshot,
@@ -4106,10 +4327,13 @@ impl Level2NyphurCommonUpkeep {
             .flatten()
     }
 
-    fn cadence_action_for_candidate(
-        &self,
+    fn step_sub_15d40(
+        &mut self,
         source: &EntitySnapshot,
         candidate: &EntitySnapshot,
+        source_model: u8,
+        source_control_flags: &mut u32,
+        entities: &mut [EntitySnapshot],
     ) -> u8 {
         let dx = i32::from(i16::from_ne_bytes(
             candidate
@@ -4135,10 +4359,69 @@ impl Level2NyphurCommonUpkeep {
         match candidate.model {
             0 => 0,
             1..=2 => candidate.model,
-            // The qualified reset has no class-9 spell-index carrier. The
-            // source helper therefore returns its no-action result here;
-            // later mode work owns the spell-index/SetSpell projection.
-            3..=4 => 0,
+            4 => {
+                let mut result = distance.to_le_bytes()[0];
+                let mut tier = self.spell_levels[6];
+                while tier >= 0 {
+                    let attempt = self.step_sub_15f20(6, tier, entities);
+                    result = attempt.cast_unsigned();
+                    if attempt == 6 {
+                        result =
+                            if self.step_sub_14e10(6, source_model, source_control_flags, entities)
+                            {
+                                6
+                            } else {
+                                0
+                            };
+                        break;
+                    }
+                    tier -= 1;
+                }
+                result
+            }
+            3 => {
+                let mut result = distance.to_le_bytes()[0];
+                let mut tier = self.spell_levels[8];
+                let mut family_8_succeeded = false;
+                while tier >= 0 {
+                    let attempt = self.step_sub_15f20(8, tier, entities);
+                    result = attempt.cast_unsigned();
+                    if attempt == 8 {
+                        family_8_succeeded = true;
+                        result =
+                            if self.step_sub_14e10(8, source_model, source_control_flags, entities)
+                            {
+                                8
+                            } else {
+                                0
+                            };
+                        break;
+                    }
+                    tier -= 1;
+                }
+                if !family_8_succeeded {
+                    let mut tier = self.spell_levels[6];
+                    while tier >= 0 {
+                        let attempt = self.step_sub_15f20(6, tier, entities);
+                        result = attempt.cast_unsigned();
+                        if attempt == 6 {
+                            result = if self.step_sub_14e10(
+                                6,
+                                source_model,
+                                source_control_flags,
+                                entities,
+                            ) {
+                                6
+                            } else {
+                                0
+                            };
+                            break;
+                        }
+                        tier -= 1;
+                    }
+                }
+                result
+            }
             _ => 0,
         }
     }
@@ -4153,6 +4436,8 @@ impl Level2NyphurCommonUpkeep {
         previous_relation_live: bool,
         contact_target: Option<(u16, Position)>,
         attacker_target: Option<(Position, bool)>,
+        move_speed_flag: u8,
+        active_level_color_index: u8,
     ) -> i8 {
         source.record[42..44].fill(0);
         self.return_value = 0;
@@ -4179,14 +4464,19 @@ impl Level2NyphurCommonUpkeep {
             self.player_hit_frame_time = 4;
             self.dword_0x18d = 16;
             self.word_0x24c = 64;
+            source.apply_source_sub_5ef70();
         }
 
         // SetPaletteModification_5C830 is gated by the source global flag and
-        // only affects an owner whose color is the active level.  The
-        // qualified Level 2 reset carries the flag explicitly as false; the
-        // branch remains source-shaped for a later public producer to turn it
-        // on rather than silently applying a palette change every turn.
-        if self.move_speed != 0 && self.palette_modification_enabled {
+        // only affects an owner whose color is the active level.  Both inputs
+        // arrive from the ordinary session context; the AI does not borrow
+        // the local player's move-speed state as a shortcut.
+        self.move_speed_flag = move_speed_flag;
+        if self.move_speed != 0
+            && move_speed_flag != 0
+            && self.player_color_index == active_level_color_index
+        {
+            self.palette_modification_enabled = true;
             self.palette_sub_mod = 3;
             self.palette_count = u16::try_from(171_i32 * i32::from(self.move_speed) / 3 + 85)
                 .expect("source palette count fits its uint16 carrier");
@@ -4215,9 +4505,30 @@ impl Level2NyphurCommonUpkeep {
         self.life = self.life.wrapping_sub(damage);
         self.move_boost = (damage / 10).clamp(0, 80) as i16;
         if let Some((target_position, _)) = attacker_target {
-            source.set_yaw(
+            self.yaw_0x1e_30 =
                 i16::try_from(heading_for_positions(target_position, source.position))
-                    .expect("source contact heading fits signed 16 bits"),
+                    .expect("source contact heading fits signed 16 bits");
+            let dx = i32::from(i16::from_ne_bytes(
+                source
+                    .position
+                    .x
+                    .wrapping_sub(target_position.x)
+                    .to_ne_bytes(),
+            ));
+            let dy = i32::from(i16::from_ne_bytes(
+                source
+                    .position
+                    .y
+                    .wrapping_sub(target_position.y)
+                    .to_ne_bytes(),
+            ));
+            let horizontal = crate::legacy_sqrt(
+                u32::try_from(dx * dx + dy * dy)
+                    .expect("source contact horizontal distance fits uint32"),
+            );
+            self.fov_0x22_34 = crate::pitch_for_delta(
+                i32::try_from(horizontal).expect("source contact distance fits signed 32 bits"),
+                i32::from(source.position.z) - i32::from(target_position.z),
             );
         }
         self.player_hit_frame_time = 4;
@@ -4234,6 +4545,7 @@ impl Level2NyphurCommonUpkeep {
             source.record[40..42].copy_from_slice(&killer.to_le_bytes());
             self.return_value = 2;
         } else {
+            source.apply_source_sub_5ef70();
             source.clear_source_upkeep_owner();
             self.return_value = 1;
         }
@@ -4246,6 +4558,8 @@ impl Level2NyphurCommonUpkeep {
         entities: &mut [EntitySnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
+        move_speed_flag: u8,
+        active_level_color_index: u8,
     ) -> Result<Level2NyphurCommonUpkeepSnapshot> {
         let entity_index = entities
             .iter()
@@ -4328,6 +4642,8 @@ impl Level2NyphurCommonUpkeep {
                 relation_live,
                 contact_target,
                 attacker_target,
+                move_speed_flag,
+                active_level_color_index,
             );
             self.source_mailbox
                 .copy_from_slice(entities[entity_index].source_upkeep_mailbox());
@@ -4438,14 +4754,35 @@ impl Level2NyphurCommonUpkeep {
             None
         };
         self.cadence_action = 0;
+        let mut source_control_flags = entities[entity_index].control_flags;
         if let Some(candidate_index) = self.cadence_candidate {
-            if self.byte_0x45e == 0 {
-                self.strafe_speed = 80;
-            }
-            if let Some(candidate) = entities.get(usize::from(candidate_index)) {
-                self.cadence_action = self.cadence_action_for_candidate(&source_entity, candidate);
+            if let Some(candidate) = entities.get(usize::from(candidate_index)).cloned() {
+                self.step_sub_15d20();
+                self.cadence_action = self.step_sub_15d40(
+                    &source_entity,
+                    &candidate,
+                    source_entity.model,
+                    &mut source_control_flags,
+                    entities,
+                );
             }
         }
+        if self.cadence_eligible && self.life < self.max_life {
+            let mut tier = self.spell_levels[5];
+            while tier >= 0 {
+                if self.step_sub_15f20(5, tier, entities) == 5 {
+                    let _ = self.step_sub_14e10(
+                        5,
+                        source_entity.model,
+                        &mut source_control_flags,
+                        entities,
+                    );
+                    break;
+                }
+                tier -= 1;
+            }
+        }
+        entities[entity_index].set_control_flags(source_control_flags);
 
         let upper_clearance = i16::from_le_bytes([parameter[10], parameter[11]]);
         let lower_clearance = i16::from_le_bytes([parameter[12], parameter[13]]);
@@ -4465,6 +4802,10 @@ impl Level2NyphurCommonUpkeep {
         entities[entity_index].set_mana(self.mana);
         entities[entity_index].set_life(self.life);
         entities[entity_index].set_mana_regen(self.mana_regen);
+        // `sub_12A70` returns one after the complete common tail.  The
+        // mailbox helper's zero/one result is only an early-branch carrier;
+        // it must not replace the common helper's final return value.
+        self.return_value = 1;
         Ok(self.snapshot(entities[entity_index].phase))
     }
 }
@@ -4671,9 +5012,17 @@ impl Level2NyphurDispatcher {
         entities: &mut [EntitySnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
+        move_speed_flag: u8,
+        active_level_color_index: u8,
     ) -> Result<Level2NyphurCommonUpkeepSnapshot> {
-        self.common_upkeep
-            .step(source_slot, entities, terrain, presentation)
+        self.common_upkeep.step(
+            source_slot,
+            entities,
+            terrain,
+            presentation,
+            move_speed_flag,
+            active_level_color_index,
+        )
     }
 
     #[must_use]
@@ -22028,11 +22377,20 @@ impl Level2ResetSession {
                     });
                 }
                 10 => {
+                    let move_speed_flag = self
+                        .context
+                        .effects
+                        .as_ref()
+                        .map_or(0, |effects| effects.move_speed_flag);
+                    let active_level_color_index =
+                        self.shared_spells.local_player.player_color_index();
                     if let Err(error) = self.nyphur_dispatcher.step_common_upkeep(
                         source_slot,
                         &mut self.entities,
                         &self.terrain,
                         &self.presentation,
+                        move_speed_flag,
+                        active_level_color_index,
                     ) {
                         self.dispatch_events.push(Level2DispatchEvent::Error {
                             pass,
@@ -45210,6 +45568,16 @@ mod tests {
                 .enumerate()
                 .all(|(index, value)| { index == 2 && *value == 4 || index != 2 && *value == 0 })
         );
+        assert_eq!(&baseline.spell_holder_indices[..2], &[113, 114]);
+        assert!(
+            baseline.spell_holder_indices[2..]
+                .iter()
+                .all(|value| *value == 0)
+        );
+        assert_eq!(baseline.spell_levels, [0; PLAYER_SPELL_COUNT]);
+        assert_eq!(baseline.owner_control_mode, 1);
+        assert_eq!((baseline.yaw_0x1e_30, baseline.fov_0x22_34), (0, 0));
+        assert_eq!(baseline.move_speed_flag, 0);
         for index in 0..7 {
             assert_eq!(baseline.array_0x1fc[4 * index + 4], 24_607);
         }
@@ -45271,6 +45639,10 @@ mod tests {
         assert_eq!(stepped.word_0x244, 90);
         assert_eq!(stepped.word_0x246, 39);
         assert_eq!(stepped.spell_enabled[2], 3);
+        assert_eq!(&stepped.spell_holder_indices[..2], &[113, 114]);
+        assert_eq!(stepped.spell_levels, [0; PLAYER_SPELL_COUNT]);
+        assert_eq!((stepped.yaw_0x1e_30, stepped.fov_0x22_34), (0, 0));
+        assert_eq!(stepped.move_speed_flag, 0);
         for index in 0..7 {
             assert_eq!(stepped.array_0x1fc[4 * index + 4], 24_607);
         }
@@ -45285,7 +45657,7 @@ mod tests {
         assert!(stepped.map_angle_allowed);
         assert!(!stepped.cadence_eligible);
         assert_eq!(stepped.cadence_candidate, None);
-        assert_eq!(stepped.return_value, 0);
+        assert_eq!(stepped.return_value, 1);
         assert_eq!(stepped.source_mailbox, [0; 36]);
         assert_eq!(stepped.player_hit_frame_time, 0);
         assert_eq!(stepped.dword_0x18d, 0);
@@ -45326,7 +45698,7 @@ mod tests {
             .nyphur_common_upkeep()
             .expect("threshold Nyphur common carrier");
         assert_eq!(threshold.word_0x159, 0);
-        assert_eq!(threshold.return_value, 0);
+        assert_eq!(threshold.return_value, 1);
         assert_eq!(threshold.source_mailbox, [0; 36]);
         assert_eq!(threshold_session.entities[112].word_26(), 0);
         assert_eq!(threshold_session.nyphur_dispatch_traces().len(), 1);
