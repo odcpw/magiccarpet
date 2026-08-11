@@ -35574,7 +35574,10 @@ mod tests {
             .roll_0x155();
         session.step_outer_turn(PlayerCommand::default(), 0);
         let nonzero_model_target = &session.entities[usize::from(target_index)];
-        assert_eq!(nonzero_model_target.actual_speed, 17);
+        // Source-slot 112 runs Nyphur sub_12910/sub_12A70 before the later
+        // wind-parent callback: sub_12A70 changes 17 to 1, and nonzero-model
+        // sub_33340 preserves that combined full-turn value.
+        assert_eq!(nonzero_model_target.actual_speed, 1);
         assert_eq!(nonzero_model_target.yaw, 204);
         assert_ne!(nonzero_model_target.control_flags & 0x0000_0800, 0);
         assert_eq!(
