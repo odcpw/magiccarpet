@@ -367,6 +367,260 @@ namespace MagicCarpet.Native.Tests
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
         }
 
+        [Test]
+        public void Level2MinimapUsesAuthoritativeVisibilityAndSourceOrder()
+        {
+            var root = new GameObject("Level 2 authoritative minimap route");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
+
+                var initialState = runtime.Level2ProductionMinimapState;
+                var initialEntities = runtime.Level2ProductionMinimapEntities;
+                var initialMarks = runtime.Level2ProductionMinimapMarks;
+                Assert.That(runtime.Level2ProductionMinimapPresenterReady, Is.True);
+                Assert.That(initialEntities, Is.Not.Empty);
+                Assert.That(initialMarks, Is.Not.Empty);
+                Assert.That(initialState.visibilityFlags, Is.EqualTo(2u));
+                Assert.That(
+                    initialEntities.Any(row => row.subjectEntityIndex == 112),
+                    Is.False,
+                    "Invisible Nyphur is absent from the Rust-admitted stream");
+                Assert.That(
+                    initialMarks.Any(row => row.subjectEntityIndex == 112),
+                    Is.False,
+                    "the unrelated live-relation stage is not the current source mark");
+                Assert.That(initialMarks[0].kind, Is.EqualTo(2));
+                Assert.That(initialMarks[0].paletteIndex, Is.EqualTo(184));
+                Assert.That(initialMarks[0].helpSelector, Is.EqualTo(0x51));
+                var family4State = initialState;
+                family4State.visibilityFlags = 0x10;
+                Assert.DoesNotThrow(() =>
+                    NativeCampaignSession.ValidateMinimapState(
+                        family4State,
+                        initialState.generation,
+                        initialState.tick));
+                var unknownVisibilityState = initialState;
+                unknownVisibilityState.visibilityFlags = 0x20;
+                Assert.Throws<System.InvalidOperationException>(() =>
+                    NativeCampaignSession.ValidateMinimapState(
+                        unknownVisibilityState,
+                        initialState.generation,
+                        initialState.tick));
+                Assert.That(
+                    runtime.QualificationLevel2MinimapRowsRemainSourceOrdered(),
+                    Is.True);
+                Assert.That(
+                    runtime.QualificationLevel2MinimapApertureAdmits(-1, 64),
+                    Is.False,
+                    "off-map minimap coordinates fail closed at the owner aperture");
+                Assert.That(
+                    runtime.QualificationLevel2MinimapApertureAdmits(0, 0),
+                    Is.False,
+                    "an in-bounds masked minimap coordinate is rejected by the owner aperture");
+                Assert.That(
+                    runtime.QualificationLevel2MinimapApertureAdmits(64, 64),
+                    Is.True,
+                    "an in-bounds open minimap coordinate is admitted by the owner aperture");
+                Assert.That(
+                    runtime.QualificationHasLevel2MinimapSubject(ushort.MaxValue),
+                    Is.False,
+                    "unknown minimap subjects fail closed");
+                Assert.That(
+                    runtime.QualificationLevel2MinimapStaleBoundaryPreservesSentinel(),
+                    Is.True,
+                    "stale minimap generation/tick reads preserve boundary outputs");
+
+                runtime.QualificationDriveLevel2Frames(282);
+                var acquiredState = runtime.Level2ProductionMinimapState;
+                var acquiredEntities = runtime.Level2ProductionMinimapEntities;
+                var acquiredMarks = runtime.Level2ProductionMinimapMarks;
+                Assert.That(acquiredState.visibilityFlags, Is.EqualTo(6u));
+                Assert.That(acquiredMarks, Is.Not.Empty);
+                Assert.That(
+                    acquiredEntities.Any(row => row.subjectEntityIndex == 112),
+                    Is.False,
+                    "Beyond Sight Nyphur is not an entity blip");
+                Assert.That(
+                    acquiredMarks.Any(row => row.subjectEntityIndex == 112),
+                    Is.False,
+                    "the unrelated live-relation stage is not the current source mark");
+                Assert.That(acquiredMarks.Any(row => row.subjectEntityIndex == 0), Is.True);
+                Assert.That(
+                    acquiredEntities.Any(row => row.subjectEntityIndex == 0),
+                    Is.False);
+                Assert.That(
+                    runtime.QualificationHasLevel2MinimapSubject(
+                        acquiredEntities[0].subjectEntityIndex),
+                    Is.True);
+                Assert.That(
+                    runtime.QualificationHasLevel2MinimapSubject(ushort.MaxValue),
+                    Is.False);
+                Assert.That(
+                    runtime.QualificationLevel2MinimapRowsRemainSourceOrdered(),
+                    Is.True,
+                    "mark order is carried from Rust, never scene-object order");
+
+                var acquiredEntityIdentity = acquiredEntities
+                    .Select(row => (
+                        row.sourceOrder,
+                        row.subjectEntityIndex,
+                        row.selector,
+                        row.paletteIndex,
+                        row.kind,
+                        row.size,
+                        row.anchor,
+                        row.helpSelector,
+                        row.visible))
+                    .ToArray();
+                var acquiredMarkIdentity = acquiredMarks
+                    .Select(row => (
+                        row.sourceOrder,
+                        row.subjectEntityIndex,
+                        row.paletteIndex,
+                        row.kind,
+                        row.helpSelector,
+                        row.visible))
+                    .ToArray();
+
+                var presentationRoot = new GameObject("Level 2 minimap presentation objects");
+                presentationRoot.transform.SetParent(root.transform, false);
+                var presentationObjects = acquiredEntities
+                    .Select((row, index) =>
+                    {
+                        var node = new GameObject(
+                            $"Minimap entity {index} source {row.sourceOrder}");
+                        node.transform.SetParent(presentationRoot.transform, false);
+                        return node;
+                    })
+                    .Concat(acquiredMarks.Select((row, index) =>
+                    {
+                        var node = new GameObject(
+                            $"Minimap mark {index} source {row.sourceOrder}");
+                        node.transform.SetParent(presentationRoot.transform, false);
+                        return node;
+                    }))
+                    .ToArray();
+                for (var index = 0; index < presentationObjects.Length; index++)
+                {
+                    presentationObjects[index].transform.SetSiblingIndex(
+                        presentationObjects.Length - index - 1);
+                }
+
+                runtime.QualificationRefreshLevel2Minimap();
+                CollectionAssert.AreEqual(
+                    acquiredEntityIdentity,
+                    runtime.Level2ProductionMinimapEntities.Select(row => (
+                        row.sourceOrder,
+                        row.subjectEntityIndex,
+                        row.selector,
+                        row.paletteIndex,
+                        row.kind,
+                        row.size,
+                        row.anchor,
+                        row.helpSelector,
+                        row.visible)).ToArray(),
+                    "reversing minimap presentation siblings cannot reorder Rust entities");
+                CollectionAssert.AreEqual(
+                    acquiredMarkIdentity,
+                    runtime.Level2ProductionMinimapMarks.Select(row => (
+                        row.sourceOrder,
+                        row.subjectEntityIndex,
+                        row.paletteIndex,
+                        row.kind,
+                        row.helpSelector,
+                        row.visible)).ToArray(),
+                    "reversing minimap presentation siblings cannot reorder Rust marks");
+
+                runtime.QualificationDriveLevel2Frames(1);
+                CollectionAssert.AreEqual(
+                    acquiredEntityIdentity,
+                    runtime.Level2ProductionMinimapEntities.Select(row => (
+                        row.sourceOrder,
+                        row.subjectEntityIndex,
+                        row.selector,
+                        row.paletteIndex,
+                        row.kind,
+                        row.size,
+                        row.anchor,
+                        row.helpSelector,
+                        row.visible)).ToArray(),
+                    "ordinary refresh remains independent of GameObject sibling order");
+                CollectionAssert.AreEqual(
+                    acquiredMarkIdentity,
+                    runtime.Level2ProductionMinimapMarks.Select(row => (
+                        row.sourceOrder,
+                        row.subjectEntityIndex,
+                        row.paletteIndex,
+                        row.kind,
+                        row.helpSelector,
+                        row.visible)).ToArray(),
+                    "ordinary mark refresh remains independent of GameObject sibling order");
+
+                runtime.QualificationResetLevel2Production();
+                var resetState = runtime.Level2ProductionMinimapState;
+                var resetEntities = runtime.Level2ProductionMinimapEntities;
+                var resetMarks = runtime.Level2ProductionMinimapMarks;
+                Assert.That(resetState.visibilityFlags, Is.EqualTo(2u));
+                Assert.That(resetState.markCount, Is.EqualTo(initialState.markCount));
+                Assert.That(
+                    resetEntities.Any(row => row.subjectEntityIndex == 112),
+                    Is.False,
+                    "reset restores Invisible visibility");
+                Assert.That(resetMarks.Any(row => row.subjectEntityIndex == 112), Is.False);
+                Assert.That(
+                    resetState.entityHash,
+                    Is.EqualTo(initialState.entityHash));
+                Assert.That(
+                    resetState.markHash,
+                    Is.EqualTo(initialState.markHash));
+
+                runtime.QualificationDriveLevel2Frames(282);
+                var replayState = runtime.Level2ProductionMinimapState;
+                var replayEntities = runtime.Level2ProductionMinimapEntities;
+                var replayMarks = runtime.Level2ProductionMinimapMarks;
+                Assert.That(replayState.visibilityFlags, Is.EqualTo(acquiredState.visibilityFlags));
+                Assert.That(replayState.entityHash, Is.EqualTo(acquiredState.entityHash));
+                Assert.That(replayState.markHash, Is.EqualTo(acquiredState.markHash));
+                CollectionAssert.AreEqual(
+                    acquiredEntityIdentity,
+                    replayEntities.Select(row => (
+                        row.sourceOrder,
+                        row.subjectEntityIndex,
+                        row.selector,
+                        row.paletteIndex,
+                        row.kind,
+                        row.size,
+                        row.anchor,
+                        row.helpSelector,
+                        row.visible)).ToArray());
+                CollectionAssert.AreEqual(
+                    acquiredMarkIdentity,
+                    replayMarks.Select(row => (
+                        row.sourceOrder,
+                        row.subjectEntityIndex,
+                        row.paletteIndex,
+                        row.kind,
+                        row.helpSelector,
+                        row.visible)).ToArray());
+                Assert.That(
+                    runtime.QualificationLevel2MinimapRowsRemainSourceOrdered(),
+                    Is.True);
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
         private static void AssertDayHudEmpty(NativeSim.CampaignDayHudSpellSlot slot)
         {
             Assert.That(slot.rawSpellSelector, Is.LessThan(0));

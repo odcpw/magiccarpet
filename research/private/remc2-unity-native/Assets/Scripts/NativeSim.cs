@@ -658,6 +658,65 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignMinimapState
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ushort localPlayerEntityIndex;
+            internal ushort reserved0;
+            internal uint entityCount;
+            internal uint markCount;
+            internal ulong entityHash;
+            internal ulong markHash;
+            internal uint visibilityFlags;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignMinimapEntity
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ushort sourceOrder;
+            internal ushort subjectEntityIndex;
+            internal short x;
+            internal short y;
+            internal ushort selector;
+            internal byte paletteIndex;
+            internal byte kind;
+            internal byte size;
+            internal byte anchor;
+            internal byte helpSelector;
+            internal byte visible;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignMinimapMark
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ushort sourceOrder;
+            internal ushort subjectEntityIndex;
+            internal short x;
+            internal short y;
+            internal byte paletteIndex;
+            internal byte kind;
+            internal byte helpSelector;
+            internal byte visible;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct Command
         {
             internal uint abiVersion;
@@ -2097,6 +2156,36 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_minimap_state(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            ref CampaignMinimapState state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_minimap_entities_copy(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            uint startOrdinal,
+            [Out] CampaignMinimapEntity[] buffer,
+            uint capacity,
+            uint elementSize,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_minimap_marks_copy(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            uint startOrdinal,
+            [Out] CampaignMinimapMark[] buffer,
+            uint capacity,
+            uint elementSize,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_session_step(
             ulong handle,
             ref CampaignStepInput input,
@@ -2717,6 +2806,9 @@ namespace MagicCarpet.Native
             RequireSize<CampaignOpponentSnapshot>(104);
             RequireSize<CampaignDayHudSpellSlot>(48);
             RequireSize<CampaignDayHudSnapshot>(272);
+            RequireSize<CampaignMinimapState>(72);
+            RequireSize<CampaignMinimapEntity>(56);
+            RequireSize<CampaignMinimapMark>(48);
             RequireSize<Command>(32);
             RequireSize<CameraInput>(28);
             RequireSize<SessionSnapshot>(120);
@@ -2804,6 +2896,15 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.nyphur), 72);
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.left), 176);
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.right), 224);
+            RequireOffset<CampaignMinimapState>(nameof(CampaignMinimapState.entityCount), 28);
+            RequireOffset<CampaignMinimapState>(nameof(CampaignMinimapState.entityHash), 40);
+            RequireOffset<CampaignMinimapEntity>(nameof(CampaignMinimapEntity.sourceOrder), 24);
+            RequireOffset<CampaignMinimapEntity>(nameof(CampaignMinimapEntity.x), 28);
+            RequireOffset<CampaignMinimapEntity>(nameof(CampaignMinimapEntity.selector), 32);
+            RequireOffset<CampaignMinimapEntity>(nameof(CampaignMinimapEntity.helpSelector), 38);
+            RequireOffset<CampaignMinimapMark>(nameof(CampaignMinimapMark.sourceOrder), 24);
+            RequireOffset<CampaignMinimapMark>(nameof(CampaignMinimapMark.x), 28);
+            RequireOffset<CampaignMinimapMark>(nameof(CampaignMinimapMark.paletteIndex), 32);
             RequireOffset<Command>(nameof(Command.requestedSpell), 14);
             RequireOffset<CameraInput>(nameof(CameraInput.lookYaw), 8);
             RequireOffset<CameraInput>(nameof(CameraInput.reserved), 12);

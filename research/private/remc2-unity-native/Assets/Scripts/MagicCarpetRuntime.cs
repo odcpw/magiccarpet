@@ -526,6 +526,12 @@ namespace MagicCarpet.Native
         private NativeSim.CampaignDayHudSnapshot level2DayHud;
         private NativeSim.CampaignDayHudSnapshot level2PresentedDayHud;
         private bool level2DayHudPresenterReady;
+        private NativeSim.CampaignMinimapState level2MinimapState;
+        private NativeSim.CampaignMinimapEntity[] level2MinimapEntities =
+            Array.Empty<NativeSim.CampaignMinimapEntity>();
+        private NativeSim.CampaignMinimapMark[] level2MinimapMarks =
+            Array.Empty<NativeSim.CampaignMinimapMark>();
+        private bool level2MinimapPresenterReady;
         private OwnerAssetCache.Level2DayHudDescriptor level2DayHudDescriptor;
         private NativeSim.CampaignEvent[] level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
         private NativeSim.CampaignAuthoredGroupEvent[] level2AuthoredGroupEvents =
@@ -922,6 +928,18 @@ namespace MagicCarpet.Native
 
         internal bool Level2ProductionDayHudPresenterReady =>
             level2DayHudPresenterReady;
+
+        internal NativeSim.CampaignMinimapState Level2ProductionMinimapState =>
+            level2MinimapState;
+
+        internal NativeSim.CampaignMinimapEntity[] Level2ProductionMinimapEntities =>
+            level2MinimapEntities;
+
+        internal NativeSim.CampaignMinimapMark[] Level2ProductionMinimapMarks =>
+            level2MinimapMarks;
+
+        internal bool Level2ProductionMinimapPresenterReady =>
+            level2MinimapPresenterReady;
 
         internal NativeSim.CampaignEvent[] Level2ProductionStepEvents =>
             level2StepEvents;
@@ -2108,6 +2126,7 @@ namespace MagicCarpet.Native
             level2TerrainState = campaignSession.TerrainState();
             level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
             PresentLevel2DayHud(level2DayHud);
+            PresentLevel2Minimap(level2TerrainState.tick);
             level2StepInputX = result.snapshot.x;
             level2StepInputY = result.snapshot.y;
             level2StepInputZ = result.snapshot.z;
@@ -6989,6 +7008,10 @@ namespace MagicCarpet.Native
             Require(
                 ownerHudPaletteRgb8.Length == 256 * 3,
                 "Level 2 Day HUD PALD rgb8 extent");
+            var tablesd = ownerAssetCache.ReadOutput(
+                "components/material/palette/tablesd.u8");
+            ownerHudMinimapAperture =
+                DecodeLevel2DayMinimapAperture(tablesd);
 
             foreach (var row in hud.bitmap_assets)
             {
@@ -7114,6 +7137,63 @@ namespace MagicCarpet.Native
                 "complete Level 2 Day HUD materialization");
         }
 
+        private static byte[] DecodeLevel2DayMinimapAperture(byte[] tablesd)
+        {
+            const int side = 128;
+            const int half = side / 2;
+            const int tableOffset = 0x14300;
+            const int phaseStep = 0x1000000 / half;
+            const int expectedTableBytes = 83456;
+            Require(
+                tablesd != null && tablesd.Length == expectedTableBytes,
+                "Level 2 Day TABLESD extent");
+            var aperture = new byte[side * side];
+            for (var row = 0; row < half; row++)
+            {
+                var phase = row * phaseStep;
+                var tableIndex = tableOffset + (phase >> 16);
+                Require(
+                    tableIndex >= 0 && tableIndex < tablesd.Length,
+                    $"Level 2 Day TABLESD aperture index {tableIndex}");
+                var halfSpan = (half * tablesd[tableIndex]) >> 8;
+                var start = half - halfSpan;
+                var end = half + halfSpan;
+                for (var x = start; x < end; x++)
+                {
+                    aperture[(half + row) * side + x] = 1;
+                    aperture[(half - 1 - row) * side + x] = 1;
+                }
+            }
+
+            var opaquePixels = 0;
+            foreach (var value in aperture)
+            {
+                Require(value == 0 || value == 1, "binary Level 2 Day minimap aperture");
+                opaquePixels += value;
+            }
+            const int discriminatorRow = 1;
+            var discriminatorPhase = discriminatorRow * phaseStep;
+            var discriminatorTableIndex =
+                tableOffset + (discriminatorPhase >> 16);
+            var discriminatorHalfSpan =
+                (half * tablesd[discriminatorTableIndex]) >> 8;
+            var discriminatorStart = half - discriminatorHalfSpan;
+            var discriminatorEnd = half + discriminatorHalfSpan;
+            var discriminatorY = half + discriminatorRow;
+            Require(
+                opaquePixels == 12848 &&
+                aperture[0] == 0 &&
+                aperture[half * side + half] == 1 &&
+                aperture[discriminatorY * side + discriminatorStart] == 1 &&
+                aperture[discriminatorY * side + discriminatorEnd - 1] == 1 &&
+                (discriminatorStart == 0 ||
+                 aperture[discriminatorY * side + discriminatorStart - 1] == 0) &&
+                (discriminatorEnd == side ||
+                 aperture[discriminatorY * side + discriminatorEnd] == 0),
+                "Level 2 Day minimap aperture geometry");
+            return aperture;
+        }
+
         private void DestroyLevel2DayHudPresentation()
         {
             foreach (var texture in hudBitmapTextures.Values)
@@ -7139,6 +7219,7 @@ namespace MagicCarpet.Native
             ownerSpellTierTextures.Clear();
             level2DayHudTierRows.Clear();
             ownerHudPaletteRgb8 = null;
+            ownerHudMinimapAperture = null;
             level2DayHudDescriptor = null;
         }
 
@@ -8026,6 +8107,7 @@ namespace MagicCarpet.Native
             level2LastStepInputZ = 0;
             level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
             PresentLevel2DayHud(level2DayHud);
+            PresentLevel2Minimap(level2TerrainState.tick);
         }
 
         internal void QualificationDisposeNativeOwners()
@@ -10208,6 +10290,178 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void PresentLevel2Minimap(ulong expectedTick)
+        {
+            Require(
+                campaignSession != null && level2Mode,
+                "Level 2 minimap presentation has a campaign owner");
+            var state = campaignSession.MinimapState(expectedTick);
+            var entities = campaignSession.MinimapEntities(expectedTick, state);
+            var marks = campaignSession.MinimapMarks(expectedTick, state);
+            Require(
+                state.generation == campaignSession.Generation &&
+                state.tick == expectedTick,
+                "Level 2 minimap generation/tick presentation binding");
+            level2MinimapState = state;
+            level2MinimapEntities = entities;
+            level2MinimapMarks = marks;
+            level2MinimapPresenterReady = true;
+        }
+
+        internal bool QualificationHasLevel2MinimapSubject(ushort subjectEntityIndex)
+        {
+            if (!level2MinimapPresenterReady || subjectEntityIndex == 0)
+            {
+                return false;
+            }
+            foreach (var row in level2MinimapEntities)
+            {
+                if (row.subjectEntityIndex == subjectEntityIndex)
+                {
+                    return true;
+                }
+            }
+            foreach (var row in level2MinimapMarks)
+            {
+                if (row.subjectEntityIndex == subjectEntityIndex)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        internal bool QualificationLevel2MinimapRowsRemainSourceOrdered()
+        {
+            if (!level2MinimapPresenterReady)
+            {
+                return false;
+            }
+            var previous = -1;
+            foreach (var row in level2MinimapEntities)
+            {
+                if (row.sourceOrder <= previous)
+                {
+                    return false;
+                }
+                previous = row.sourceOrder;
+            }
+            previous = -1;
+            foreach (var row in level2MinimapMarks)
+            {
+                if (row.sourceOrder <= previous)
+                {
+                    return false;
+                }
+                previous = row.sourceOrder;
+            }
+            return true;
+        }
+
+        internal bool QualificationLevel2MinimapStaleBoundaryPreservesSentinel()
+        {
+            if (campaignSession == null || !level2MinimapPresenterReady)
+            {
+                return false;
+            }
+            var expectedGeneration = campaignSession.Generation;
+            var expectedTick = level2MinimapState.tick;
+            var state = new NativeSim.CampaignMinimapState
+            {
+                abiVersion = 0xA1B2_C3D4u,
+                generation = 0x1122_3344_5566_7788UL,
+                tick = 0x8877_6655_4433_2211UL,
+                entityCount = 0x1357_9BDFu,
+                markCount = 0x2468_ACE0u,
+                entityHash = 0x0123_4567_89AB_CDEFUL,
+                markHash = 0xFEDC_BA98_7654_3210UL,
+                reserved = new uint[3]
+            };
+            var originalState = state;
+            var status = NativeSim.mc_native_campaign_minimap_state(
+                campaignSession.Handle,
+                expectedGeneration + 1,
+                expectedTick,
+                ref state,
+                72);
+            if (status != NativeSim.GenerationMismatch ||
+                state.abiVersion != originalState.abiVersion ||
+                state.generation != originalState.generation ||
+                state.tick != originalState.tick ||
+                state.entityCount != originalState.entityCount ||
+                state.markCount != originalState.markCount ||
+                state.entityHash != originalState.entityHash ||
+                state.markHash != originalState.markHash)
+            {
+                return false;
+            }
+            status = NativeSim.mc_native_campaign_minimap_state(
+                campaignSession.Handle,
+                expectedGeneration,
+                expectedTick + 1,
+                ref state,
+                72);
+            if (status != NativeSim.GenerationMismatch ||
+                state.abiVersion != originalState.abiVersion ||
+                state.generation != originalState.generation ||
+                state.tick != originalState.tick ||
+                state.entityCount != originalState.entityCount ||
+                state.markCount != originalState.markCount ||
+                state.entityHash != originalState.entityHash ||
+                state.markHash != originalState.markHash)
+            {
+                return false;
+            }
+
+            var row = new NativeSim.CampaignMinimapEntity
+            {
+                sourceOrder = 0x1234,
+                subjectEntityIndex = 0xBEEF,
+                reserved = new uint[3]
+            };
+            var originalRow = row;
+            var rows = new[] { row };
+            status = NativeSim.mc_native_campaign_minimap_entities_copy(
+                campaignSession.Handle,
+                expectedGeneration + 1,
+                expectedTick,
+                0,
+                rows,
+                1,
+                56,
+                out _);
+            return status == NativeSim.GenerationMismatch &&
+                rows[0].sourceOrder == originalRow.sourceOrder &&
+                rows[0].subjectEntityIndex == originalRow.subjectEntityIndex;
+        }
+
+        internal void QualificationRefreshLevel2Minimap()
+        {
+            Require(
+                campaignSession != null &&
+                level2Mode &&
+                level2MinimapPresenterReady,
+                "Level 2 minimap refresh requires the live production route");
+            PresentLevel2Minimap(level2TerrainState.tick);
+        }
+
+        private bool OwnerLevel2MinimapEntityInsideAperture(short x, short y)
+        {
+            const int side = 128;
+            return ownerHudMinimapAperture != null &&
+                ownerHudMinimapAperture.Length == side * side &&
+                x >= 0 &&
+                y >= 0 &&
+                x < side &&
+                y < side &&
+                ownerHudMinimapAperture[y * side + x] != 0;
+        }
+
+        internal bool QualificationLevel2MinimapApertureAdmits(short x, short y)
+        {
+            return OwnerLevel2MinimapEntityInsideAperture(x, y);
+        }
+
         private int Level2DayHudRuntimeWidth(int selector)
         {
             Require(
@@ -10399,11 +10653,12 @@ namespace MagicCarpet.Native
             GUI.color = Color.white;
             try
             {
+                TryDrawLevel2DayHudSprite(hud.minimapPanelSelector, 2, 2);
+                DrawLevel2MinimapRows(hud.minimapPanelSelector, 2, 2);
                 DrawLevel2DayHudSpellSlot(hud.left, 510, 2);
                 DrawLevel2DayHudSpellSlot(hud.right, 574, 2);
                 var (castleX, balloonX, playerX) =
                     ComputeLevel2DayHudTopBarLayout(hud);
-                TryDrawLevel2DayHudSprite(hud.minimapPanelSelector, 2, 2);
                 TryDrawLevel2DayHudSprite(hud.castlePanelSelector, castleX, 2);
                 TryDrawLevel2DayHudSprite(hud.balloonPanelSelector, balloonX, 2);
                 TryDrawLevel2DayHudSprite(hud.playerPanelSelector, playerX, 2);
@@ -10445,6 +10700,68 @@ namespace MagicCarpet.Native
                 GUI.matrix = priorMatrix;
                 GUI.color = priorColour;
             }
+        }
+
+        private void DrawLevel2MinimapRows(int selector, int x, int y)
+        {
+            if (!level2MinimapPresenterReady ||
+                !hudBitmapDescriptors.TryGetValue(selector, out var minimap))
+            {
+                return;
+            }
+            var prior = GUI.color;
+            var scale = minimap.runtime_width / 128f;
+            foreach (var row in level2MinimapEntities)
+            {
+                if (row.visible == 0 ||
+                    !OwnerLevel2MinimapEntityInsideAperture(row.x, row.y))
+                    continue;
+                var pointX = x + row.x * scale;
+                var pointY = y + row.y * scale;
+                if (row.kind == 2)
+                {
+                    if (!hudBitmapDescriptors.TryGetValue(row.selector, out var bitmap) ||
+                        !hudBitmapTextures.TryGetValue(row.selector, out var texture) ||
+                        texture == null)
+                        continue;
+                    var textureWidth = bitmap.runtime_width * scale;
+                    var textureHeight = bitmap.runtime_height * scale;
+                    var left = row.anchor == 3 ? pointX - textureWidth * 0.5f : pointX;
+                    GUI.DrawTexture(
+                        new Rect(left, pointY - textureHeight, textureWidth, textureHeight),
+                        texture,
+                        ScaleMode.StretchToFill,
+                        true);
+                    continue;
+                }
+                GUI.color = PaletteColour(ownerHudPaletteRgb8, row.paletteIndex);
+                var dot = Math.Max(1f, row.size * scale);
+                GUI.DrawTexture(
+                    new Rect(pointX, pointY, dot, dot),
+                    Texture2D.whiteTexture,
+                    ScaleMode.StretchToFill,
+                    true);
+            }
+            foreach (var row in level2MinimapMarks)
+            {
+                if (row.visible == 0 ||
+                    !OwnerMinimapMarkInsideAperture(row.x, row.y, 128))
+                    continue;
+                GUI.color = PaletteColour(ownerHudPaletteRgb8, row.paletteIndex);
+                var markX = x + row.x * scale;
+                var markY = y + row.y * scale;
+                GUI.DrawTexture(
+                    new Rect(markX - 3f, markY - 1f, 7f, 2f),
+                    Texture2D.whiteTexture,
+                    ScaleMode.StretchToFill,
+                    true);
+                GUI.DrawTexture(
+                    new Rect(markX - 1f, markY - 3f, 2f, 7f),
+                    Texture2D.whiteTexture,
+                    ScaleMode.StretchToFill,
+                    true);
+            }
+            GUI.color = prior;
         }
 
         private void DrawLevel2DayHudSpellSlot(
@@ -11354,6 +11671,7 @@ namespace MagicCarpet.Native
                     "Level 2 256x256 terrain profile");
                 level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
                 PresentLevel2DayHud(level2DayHud);
+                PresentLevel2Minimap(level2TerrainState.tick);
                 Require(
                     NativeCampaignSession.ActiveSessionCount == 1,
                     "exactly one authoritative Level 2 campaign handle");
@@ -11771,6 +12089,10 @@ namespace MagicCarpet.Native
             level2DayHud = default;
             level2PresentedDayHud = default;
             level2DayHudPresenterReady = false;
+            level2MinimapState = default;
+            level2MinimapEntities = Array.Empty<NativeSim.CampaignMinimapEntity>();
+            level2MinimapMarks = Array.Empty<NativeSim.CampaignMinimapMark>();
+            level2MinimapPresenterReady = false;
             level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
             level2AuthoredGroupEvents = Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
             level2StepInputX = 0;

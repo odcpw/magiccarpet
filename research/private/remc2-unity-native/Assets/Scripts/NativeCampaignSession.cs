@@ -302,6 +302,149 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal NativeSim.CampaignMinimapState MinimapState(ulong expectedTick)
+        {
+            var state = default(NativeSim.CampaignMinimapState);
+            var status = NativeSim.mc_native_campaign_minimap_state(
+                Handle,
+                generation,
+                expectedTick,
+                ref state,
+                72);
+            NativeSession.Check(status, "read Level 2 minimap state");
+            ValidateMinimapState(state, generation, expectedTick);
+            return state;
+        }
+
+        internal NativeSim.CampaignMinimapEntity[] MinimapEntities(
+            ulong expectedTick,
+            NativeSim.CampaignMinimapState state)
+        {
+            ValidateMinimapState(state, generation, expectedTick);
+            var count = checked((int)state.entityCount);
+            var rows = new NativeSim.CampaignMinimapEntity[count];
+            var status = NativeSim.mc_native_campaign_minimap_entities_copy(
+                Handle,
+                generation,
+                expectedTick,
+                0,
+                rows,
+                state.entityCount,
+                56,
+                out var written);
+            NativeSession.Check(status, "read Level 2 minimap entities");
+            if (written != state.entityCount)
+            {
+                throw new InvalidOperationException(
+                    $"Level 2 minimap entity copy wrote {written}, expected {state.entityCount}");
+            }
+            ValidateMinimapEntities(rows, generation, expectedTick);
+            return rows;
+        }
+
+        internal NativeSim.CampaignMinimapMark[] MinimapMarks(
+            ulong expectedTick,
+            NativeSim.CampaignMinimapState state)
+        {
+            ValidateMinimapState(state, generation, expectedTick);
+            var count = checked((int)state.markCount);
+            var rows = new NativeSim.CampaignMinimapMark[count];
+            var status = NativeSim.mc_native_campaign_minimap_marks_copy(
+                Handle,
+                generation,
+                expectedTick,
+                0,
+                rows,
+                state.markCount,
+                48,
+                out var written);
+            NativeSession.Check(status, "read Level 2 minimap marks");
+            if (written != state.markCount)
+            {
+                throw new InvalidOperationException(
+                    $"Level 2 minimap mark copy wrote {written}, expected {state.markCount}");
+            }
+            ValidateMinimapMarks(rows, generation, expectedTick);
+            return rows;
+        }
+
+        internal static void ValidateMinimapState(
+            NativeSim.CampaignMinimapState state,
+            ulong expectedGeneration,
+            ulong expectedTick)
+        {
+            if (
+                state.abiVersion != NativeSim.AbiVersion ||
+                state.structSize != 72 ||
+                state.generation != expectedGeneration ||
+                state.tick != expectedTick ||
+                state.entityCount > 1000 ||
+                state.markCount > 64 ||
+                (state.visibilityFlags & ~0x1Fu) != 0 ||
+                state.reserved0 != 0 ||
+                !AllZero(state.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native Level 2 minimap state returned invalid ABI, generation/tick, " +
+                    "counts, visibility, or reserved state");
+            }
+        }
+
+        private static void ValidateMinimapEntities(
+            NativeSim.CampaignMinimapEntity[] rows,
+            ulong expectedGeneration,
+            ulong expectedTick)
+        {
+            var previousOrder = -1;
+            foreach (var row in rows)
+            {
+                if (
+                    row.abiVersion != NativeSim.AbiVersion ||
+                    row.structSize != 56 ||
+                    row.generation != expectedGeneration ||
+                    row.tick != expectedTick ||
+                    row.sourceOrder <= previousOrder ||
+                    row.subjectEntityIndex == 0 ||
+                    row.visible != 1 ||
+                    row.kind == 0 ||
+                    row.size == 0 ||
+                    !AllZero(row.reserved))
+                {
+                    throw new InvalidOperationException(
+                        "native Level 2 minimap entity rows are not source-ordered " +
+                        "qualified rows");
+                }
+                previousOrder = row.sourceOrder;
+            }
+        }
+
+        private static void ValidateMinimapMarks(
+            NativeSim.CampaignMinimapMark[] rows,
+            ulong expectedGeneration,
+            ulong expectedTick)
+        {
+            var previousOrder = -1;
+            foreach (var row in rows)
+            {
+                if (
+                    row.abiVersion != NativeSim.AbiVersion ||
+                    row.structSize != 48 ||
+                    row.generation != expectedGeneration ||
+                    row.tick != expectedTick ||
+                    row.sourceOrder <= previousOrder ||
+                    (row.subjectEntityIndex == 0 && row.kind != 2) ||
+                    row.visible != 1 ||
+                    row.kind == 0 ||
+                    !AllZero(row.reserved))
+                {
+                    throw new InvalidOperationException(
+                        "native Level 2 minimap mark rows are not source-ordered " +
+                        "qualified rows");
+                }
+                previousOrder = row.sourceOrder;
+            }
+        }
+
         internal NativeSim.CampaignObjectiveStageSnapshot ObjectiveStageState(
             byte objectiveSlot = 0,
             byte stageSlot = 3)

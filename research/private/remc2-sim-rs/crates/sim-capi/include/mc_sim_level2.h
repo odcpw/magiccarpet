@@ -463,6 +463,59 @@ typedef struct McCampaignDayHudSnapshotV2 {
     McCampaignDayHudSpellSlotV2 right;
 } McCampaignDayHudSnapshotV2;
 
+/* Generation/tick-bound Rust-owned Level 2 minimap projection summary. */
+typedef struct McCampaignMinimapStateV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint16_t local_player_entity_index;
+    uint16_t reserved_0;
+    uint32_t entity_count;
+    uint32_t mark_count;
+    uint64_t entity_hash;
+    uint64_t mark_hash;
+    uint32_t visibility_flags;
+    uint32_t reserved[3];
+} McCampaignMinimapStateV2;
+
+/* One source-ordered admitted Level 2 minimap entity. */
+typedef struct McCampaignMinimapEntityV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint16_t source_order;
+    uint16_t subject_entity_index;
+    int16_t x;
+    int16_t y;
+    uint16_t selector;
+    uint8_t palette_index;
+    uint8_t kind;
+    uint8_t size;
+    uint8_t anchor;
+    uint8_t help_selector;
+    uint8_t visible;
+    uint32_t reserved[3];
+} McCampaignMinimapEntityV2;
+
+/* One source-ordered admitted Level 2 minimap mark. */
+typedef struct McCampaignMinimapMarkV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint16_t source_order;
+    uint16_t subject_entity_index;
+    int16_t x;
+    int16_t y;
+    uint8_t palette_index;
+    uint8_t kind;
+    uint8_t help_selector;
+    uint8_t visible;
+    uint32_t reserved[3];
+} McCampaignMinimapMarkV2;
+
 /* Kind 10 is additive; existing McCampaignEventV2 rows are unchanged. */
 enum {
     MC_CAMPAIGN_EVENT_ECONOMY = 10
@@ -593,6 +646,17 @@ int32_t mc_native_campaign_opponent_state(
 int32_t mc_native_campaign_day_hud_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignDayHudSnapshotV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_minimap_state(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McCampaignMinimapStateV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_minimap_entities_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t start_ordinal, McCampaignMinimapEntityV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_campaign_minimap_marks_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t start_ordinal, McCampaignMinimapMarkV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
 int32_t mc_native_campaign_session_step(
     uint64_t handle, const McCampaignStepInputV2 *input,
     McCampaignStepSnapshotV2 *out_snapshot, uint32_t out_snapshot_size,

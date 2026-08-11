@@ -143,9 +143,9 @@ use sim_core::{
 };
 
 use crate::presentation_bridge::{
-    LIVE_MENU_AUTH_ALL, LIVE_MENU_AUTH_DEBUG_METRICS, Level1PresentationLive, LiveDebugEntity,
-    LiveHud, LiveMenuState, LiveSpellMenu, LiveSpellSlot, PresentationBridgeQuery,
-    build_level1_final_main,
+    LIVE_MENU_AUTH_ALL, LIVE_MENU_AUTH_DEBUG_METRICS, Level1PresentationLive, Level2MinimapEntity,
+    Level2MinimapMark, Level2MinimapPlan, LiveDebugEntity, LiveHud, LiveMenuState, LiveSpellMenu,
+    LiveSpellSlot, PresentationBridgeQuery, build_level1_final_main, level2_minimap_plan,
 };
 
 #[cfg(test)]
@@ -1023,6 +1023,67 @@ pub struct McCampaignDayHudSnapshotV2 {
     pub nyphur: McCampaignOpponentSnapshotV2,
     pub left: McCampaignDayHudSpellSlotV2,
     pub right: McCampaignDayHudSpellSlotV2,
+}
+
+/// Generation/tick-bound summary of the authoritative Level 2 minimap
+/// projection. Entity and mark rows are copied through the two typed bulk
+/// functions below; this record binds both arrays to one Rust plan.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignMinimapStateV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub local_player_entity_index: u16,
+    pub reserved_0: u16,
+    pub entity_count: u32,
+    pub mark_count: u32,
+    pub entity_hash: u64,
+    pub mark_hash: u64,
+    pub visibility_flags: u32,
+    pub reserved: [u32; 3],
+}
+
+/// One source-ordered entity admitted to the Level 2 minimap.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignMinimapEntityV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub source_order: u16,
+    pub subject_entity_index: u16,
+    pub x: i16,
+    pub y: i16,
+    pub selector: u16,
+    pub palette_index: u8,
+    pub kind: u8,
+    pub size: u8,
+    pub anchor: u8,
+    pub help_selector: u8,
+    pub visible: u8,
+    pub reserved: [u32; 3],
+}
+
+/// One source-ordered objective/entity mark admitted to the Level 2 minimap.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignMinimapMarkV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub source_order: u16,
+    pub subject_entity_index: u16,
+    pub x: i16,
+    pub y: i16,
+    pub palette_index: u8,
+    pub kind: u8,
+    pub help_selector: u8,
+    pub visible: u8,
+    pub reserved: [u32; 3],
 }
 
 /// Additive Rust-owned Level 1 Goat row. The existing 52-byte entity snapshot
@@ -8450,6 +8511,277 @@ pub extern "C" fn mc_native_campaign_day_hud_state(
                 )
             })?;
             Ok(campaign_day_hud_snapshot(session.generation, snapshot))
+        })
+    })
+}
+
+fn campaign_minimap_projection(
+    session: &CampaignSessionRecord,
+    generation: u64,
+    expected_tick: u64,
+) -> AbiResult<(Level2MinimapPlan, u16)> {
+    let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "campaign minimap projection requires a Level 2 campaign session",
+        ));
+    };
+    if generation != session.generation {
+        return Err(AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            format!(
+                "campaign minimap generation {generation} does not match {}",
+                session.generation
+            ),
+        ));
+    }
+    if expected_tick != reset.state.tick {
+        return Err(AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            format!(
+                "campaign minimap tick {expected_tick} does not match {}",
+                reset.state.tick
+            ),
+        ));
+    }
+    let local_player_slot = usize::from(reset.runtime().local_player_slot);
+    let local_player_entity_index = reset
+        .players()
+        .get(local_player_slot)
+        .ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "campaign minimap local player slot is unavailable",
+            )
+        })?
+        .entity_index;
+    let plan = level2_minimap_plan(reset).map_err(|error| {
+        AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            format!("campaign minimap projection is invalid: {error}"),
+        )
+    })?;
+    Ok((plan, local_player_entity_index))
+}
+
+fn minimap_hash_update(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update(bytes);
+}
+
+fn level2_minimap_entity_hash(rows: &[Level2MinimapEntity]) -> u64 {
+    let mut hasher = Sha256::new();
+    for row in rows {
+        minimap_hash_update(&mut hasher, &row.source_order.to_le_bytes());
+        minimap_hash_update(&mut hasher, &row.subject_entity_index.to_le_bytes());
+        minimap_hash_update(&mut hasher, &row.x.to_le_bytes());
+        minimap_hash_update(&mut hasher, &row.y.to_le_bytes());
+        minimap_hash_update(&mut hasher, &row.selector.to_le_bytes());
+        minimap_hash_update(
+            &mut hasher,
+            &[
+                row.palette_index,
+                row.kind,
+                row.size,
+                row.anchor,
+                row.help_selector,
+                row.visible,
+            ],
+        );
+    }
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("sha256 has eight bytes"))
+}
+
+fn level2_minimap_mark_hash(rows: &[Level2MinimapMark]) -> u64 {
+    let mut hasher = Sha256::new();
+    for row in rows {
+        minimap_hash_update(&mut hasher, &row.source_order.to_le_bytes());
+        minimap_hash_update(&mut hasher, &row.subject_entity_index.to_le_bytes());
+        minimap_hash_update(&mut hasher, &row.x.to_le_bytes());
+        minimap_hash_update(&mut hasher, &row.y.to_le_bytes());
+        minimap_hash_update(
+            &mut hasher,
+            &[row.palette_index, row.kind, row.help_selector, row.visible],
+        );
+    }
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("sha256 has eight bytes"))
+}
+
+fn campaign_minimap_state_snapshot(
+    generation: u64,
+    tick: u64,
+    local_player_entity_index: u16,
+    plan: &Level2MinimapPlan,
+) -> McCampaignMinimapStateV2 {
+    McCampaignMinimapStateV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignMinimapStateV2>(),
+        generation,
+        tick,
+        local_player_entity_index,
+        entity_count: u32::try_from(plan.entities.len()).expect("minimap entity count fits u32"),
+        mark_count: u32::try_from(plan.marks.len()).expect("minimap mark count fits u32"),
+        entity_hash: level2_minimap_entity_hash(&plan.entities),
+        mark_hash: level2_minimap_mark_hash(&plan.marks),
+        visibility_flags: plan.visibility_flags,
+        ..McCampaignMinimapStateV2::default()
+    }
+}
+
+fn campaign_minimap_entity_snapshot(
+    generation: u64,
+    tick: u64,
+    row: Level2MinimapEntity,
+) -> McCampaignMinimapEntityV2 {
+    McCampaignMinimapEntityV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignMinimapEntityV2>(),
+        generation,
+        tick,
+        source_order: row.source_order,
+        subject_entity_index: row.subject_entity_index,
+        x: row.x,
+        y: row.y,
+        selector: row.selector,
+        palette_index: row.palette_index,
+        kind: row.kind,
+        size: row.size,
+        anchor: row.anchor,
+        help_selector: row.help_selector,
+        visible: row.visible,
+        ..McCampaignMinimapEntityV2::default()
+    }
+}
+
+fn campaign_minimap_mark_snapshot(
+    generation: u64,
+    tick: u64,
+    row: Level2MinimapMark,
+) -> McCampaignMinimapMarkV2 {
+    McCampaignMinimapMarkV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignMinimapMarkV2>(),
+        generation,
+        tick,
+        source_order: row.source_order,
+        subject_entity_index: row.subject_entity_index,
+        x: row.x,
+        y: row.y,
+        palette_index: row.palette_index,
+        kind: row.kind,
+        help_selector: row.help_selector,
+        visible: row.visible,
+        ..McCampaignMinimapMarkV2::default()
+    }
+}
+
+fn copy_minimap_rows<T: Copy>(
+    rows: &[T],
+    start_ordinal: u32,
+    buffer: *mut T,
+    capacity: u32,
+    out_written: *mut u32,
+) -> AbiResult<()> {
+    let start = usize::try_from(start_ordinal)
+        .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "minimap start ordinal exceeds usize"))?;
+    if start > rows.len() {
+        return Err(AbiError::new(
+            MC_STATUS_BOUNDS,
+            format!("minimap start ordinal {start} exceeds {}", rows.len()),
+        ));
+    }
+    let capacity = usize::try_from(capacity)
+        .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "minimap capacity exceeds usize"))?;
+    let count = rows.len().saturating_sub(start).min(capacity);
+    if count != 0 && buffer.is_null() {
+        return Err(AbiError::new(
+            MC_STATUS_NULL_POINTER,
+            "minimap row output buffer is null",
+        ));
+    }
+    // SAFETY: count is bounded by the caller's capacity and the immutable
+    // source slice; the native ABI owns no alias of the destination.
+    unsafe { buffer.copy_from_nonoverlapping(rows[start..].as_ptr(), count) };
+    write_output(
+        out_written,
+        u32::try_from(count).expect("minimap row count fits u32"),
+    );
+    Ok(())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_minimap_state(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    out_state: *mut McCampaignMinimapStateV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session(handle, |session| {
+            let (plan, local_player_entity_index) =
+                campaign_minimap_projection(session, generation, expected_tick)?;
+            Ok(campaign_minimap_state_snapshot(
+                generation,
+                expected_tick,
+                local_player_entity_index,
+                &plan,
+            ))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_minimap_entities_copy(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    start_ordinal: u32,
+    buffer: *mut McCampaignMinimapEntityV2,
+    capacity: u32,
+    element_size: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_element_size::<McCampaignMinimapEntityV2>(element_size, "campaign minimap entity")?;
+        require_output(out_written, "minimap entity count")?;
+        with_campaign_session(handle, |session| {
+            let (plan, _) = campaign_minimap_projection(session, generation, expected_tick)?;
+            let rows = plan
+                .entities
+                .iter()
+                .copied()
+                .map(|row| campaign_minimap_entity_snapshot(generation, expected_tick, row))
+                .collect::<Vec<_>>();
+            copy_minimap_rows(&rows, start_ordinal, buffer, capacity, out_written)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_minimap_marks_copy(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    start_ordinal: u32,
+    buffer: *mut McCampaignMinimapMarkV2,
+    capacity: u32,
+    element_size: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_element_size::<McCampaignMinimapMarkV2>(element_size, "campaign minimap mark")?;
+        require_output(out_written, "minimap mark count")?;
+        with_campaign_session(handle, |session| {
+            let (plan, _) = campaign_minimap_projection(session, generation, expected_tick)?;
+            let rows = plan
+                .marks
+                .iter()
+                .copied()
+                .map(|row| campaign_minimap_mark_snapshot(generation, expected_tick, row))
+                .collect::<Vec<_>>();
+            copy_minimap_rows(&rows, start_ordinal, buffer, capacity, out_written)
         })
     })
 }
@@ -18091,6 +18423,35 @@ mod tests {
         assert_eq!(size_of::<McCampaignOpponentSnapshotV2>(), 104);
         assert_eq!(size_of::<McCampaignDayHudSpellSlotV2>(), 48);
         assert_eq!(size_of::<McCampaignDayHudSnapshotV2>(), 272);
+        assert_eq!(size_of::<McCampaignMinimapStateV2>(), 72);
+        assert_eq!(size_of::<McCampaignMinimapEntityV2>(), 56);
+        assert_eq!(size_of::<McCampaignMinimapMarkV2>(), 48);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignMinimapStateV2, entity_count),
+            28
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignMinimapStateV2, entity_hash),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignMinimapEntityV2, source_order),
+            24
+        );
+        assert_eq!(std::mem::offset_of!(McCampaignMinimapEntityV2, x), 28);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignMinimapEntityV2, selector),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignMinimapEntityV2, help_selector),
+            38
+        );
+        assert_eq!(std::mem::offset_of!(McCampaignMinimapMarkV2, x), 28);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignMinimapMarkV2, palette_index),
+            32
+        );
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McCampaignGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McCampaignSpellPickupSnapshotV2>(), 64);
@@ -20847,6 +21208,419 @@ mod tests {
     }
 
     #[test]
+    fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        let open_status = mc_native_campaign_session_open(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            &raw const selection,
+            &raw mut handle,
+        );
+        assert_eq!(
+            open_status,
+            MC_STATUS_OK,
+            "minimap fixture open failed: {}",
+            LAST_ERROR.with(|error| error.borrow().clone())
+        );
+
+        let mut terrain = McCampaignTerrainStateV2::default();
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                0,
+                &raw mut terrain,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut initial_state = McCampaignMinimapStateV2::default();
+        assert_eq!(
+            mc_native_campaign_minimap_state(
+                handle,
+                0,
+                terrain.tick,
+                &raw mut initial_state,
+                struct_size::<McCampaignMinimapStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(initial_state.visibility_flags, 2);
+        assert!(initial_state.entity_count > 0);
+        assert_eq!(initial_state.mark_count, 1);
+
+        let mut initial_entities =
+            vec![McCampaignMinimapEntityV2::default(); initial_state.entity_count as usize];
+        let mut initial_entity_count = 0;
+        assert_eq!(
+            mc_native_campaign_minimap_entities_copy(
+                handle,
+                0,
+                terrain.tick,
+                0,
+                initial_entities.as_mut_ptr(),
+                initial_entities.len() as u32,
+                struct_size::<McCampaignMinimapEntityV2>(),
+                &raw mut initial_entity_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(initial_entity_count, initial_state.entity_count);
+        assert!(initial_entities.windows(2).all(|rows| {
+            rows[0].source_order < rows[1].source_order
+                && rows[0].generation == 0
+                && rows[0].tick == terrain.tick
+        }));
+        assert!(
+            !initial_entities
+                .iter()
+                .any(|row| row.subject_entity_index == 112),
+            "Invisible Nyphur does not reach the minimap entity stream"
+        );
+
+        let mut initial_marks =
+            vec![McCampaignMinimapMarkV2::default(); initial_state.mark_count as usize];
+        let mut initial_mark_count = 0;
+        assert_eq!(
+            mc_native_campaign_minimap_marks_copy(
+                handle,
+                0,
+                terrain.tick,
+                0,
+                initial_marks.as_mut_ptr(),
+                initial_marks.len() as u32,
+                struct_size::<McCampaignMinimapMarkV2>(),
+                &raw mut initial_mark_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(initial_mark_count, initial_state.mark_count);
+        assert_eq!(initial_marks[0].subject_entity_index, 0);
+        assert_eq!(initial_marks[0].kind, 2);
+        assert_eq!(initial_marks[0].palette_index, 184);
+        assert_eq!(initial_marks[0].help_selector, 0x51);
+        assert!(
+            !initial_marks
+                .iter()
+                .any(|row| row.subject_entity_index == 112)
+        );
+        assert!(initial_marks.windows(2).all(|rows| {
+            rows[0].source_order < rows[1].source_order
+                && rows[0].generation == 0
+                && rows[0].tick == terrain.tick
+        }));
+
+        let mut stale_state = McCampaignMinimapStateV2 {
+            abi_version: 0xA1B2_C3D4,
+            generation: 0x1122_3344_5566_7788,
+            tick: 0x8877_6655_4433_2211,
+            entity_count: 0x1357_9BDF,
+            mark_count: 0x2468_ACE0,
+            entity_hash: 0x0123_4567_89AB_CDEF,
+            mark_hash: 0xFEDC_BA98_7654_3210,
+            ..McCampaignMinimapStateV2::default()
+        };
+        let unchanged_state = stale_state;
+        assert_eq!(
+            mc_native_campaign_minimap_state(
+                handle,
+                1,
+                terrain.tick,
+                &raw mut stale_state,
+                struct_size::<McCampaignMinimapStateV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(stale_state, unchanged_state);
+        assert_eq!(
+            mc_native_campaign_minimap_state(
+                handle,
+                0,
+                terrain.tick.wrapping_add(1),
+                &raw mut stale_state,
+                struct_size::<McCampaignMinimapStateV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(stale_state, unchanged_state);
+
+        let mut stale_entity = McCampaignMinimapEntityV2 {
+            subject_entity_index: 0xBEEF,
+            source_order: 0x1234,
+            ..McCampaignMinimapEntityV2::default()
+        };
+        let unchanged_entity = stale_entity;
+        let mut stale_written = 99;
+        assert_eq!(
+            mc_native_campaign_minimap_entities_copy(
+                handle,
+                1,
+                terrain.tick,
+                0,
+                &raw mut stale_entity,
+                1,
+                struct_size::<McCampaignMinimapEntityV2>(),
+                &raw mut stale_written,
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(stale_entity, unchanged_entity);
+        assert_eq!(
+            mc_native_campaign_minimap_entities_copy(
+                handle,
+                0,
+                terrain.tick,
+                u32::MAX,
+                &raw mut stale_entity,
+                1,
+                struct_size::<McCampaignMinimapEntityV2>(),
+                &raw mut stale_written,
+            ),
+            MC_STATUS_BOUNDS
+        );
+        assert_eq!(stale_entity, unchanged_entity);
+
+        let command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command,
+            player_slot: 0,
+            speed_index: 0,
+            player_x: 384,
+            player_y: 62_080,
+            player_z: 256,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count = 0;
+        for _ in 0..282 {
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+            input.player_x = snapshot.x;
+            input.player_y = snapshot.y;
+            input.player_z = snapshot.z;
+        }
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                0,
+                &raw mut terrain,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut acquired_state = McCampaignMinimapStateV2::default();
+        assert_eq!(
+            mc_native_campaign_minimap_state(
+                handle,
+                0,
+                terrain.tick,
+                &raw mut acquired_state,
+                struct_size::<McCampaignMinimapStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(acquired_state.visibility_flags, 6);
+        assert_eq!(acquired_state.mark_count, 1);
+        let mut acquired_entities =
+            vec![McCampaignMinimapEntityV2::default(); acquired_state.entity_count as usize];
+        let mut acquired_entity_count = 0;
+        assert_eq!(
+            mc_native_campaign_minimap_entities_copy(
+                handle,
+                0,
+                terrain.tick,
+                0,
+                acquired_entities.as_mut_ptr(),
+                acquired_entities.len() as u32,
+                struct_size::<McCampaignMinimapEntityV2>(),
+                &raw mut acquired_entity_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(acquired_entity_count, acquired_state.entity_count);
+        assert!(
+            !acquired_entities
+                .iter()
+                .any(|row| row.subject_entity_index == 112)
+        );
+        assert!(acquired_entities.windows(2).all(|rows| {
+            rows[0].source_order < rows[1].source_order
+                && rows[0].generation == 0
+                && rows[0].tick == terrain.tick
+        }));
+        assert_eq!(
+            acquired_state.entity_hash,
+            level2_minimap_entity_hash(
+                &acquired_entities
+                    .iter()
+                    .map(|row| Level2MinimapEntity {
+                        source_order: row.source_order,
+                        subject_entity_index: row.subject_entity_index,
+                        x: row.x,
+                        y: row.y,
+                        selector: row.selector,
+                        palette_index: row.palette_index,
+                        kind: row.kind,
+                        size: row.size,
+                        anchor: row.anchor,
+                        help_selector: row.help_selector,
+                        visible: row.visible,
+                    })
+                    .collect::<Vec<_>>()
+            )
+        );
+
+        let mut acquired_marks =
+            vec![McCampaignMinimapMarkV2::default(); acquired_state.mark_count as usize];
+        let mut acquired_mark_count = 0;
+        assert_eq!(
+            mc_native_campaign_minimap_marks_copy(
+                handle,
+                0,
+                terrain.tick,
+                0,
+                acquired_marks.as_mut_ptr(),
+                acquired_marks.len() as u32,
+                struct_size::<McCampaignMinimapMarkV2>(),
+                &raw mut acquired_mark_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(acquired_mark_count, acquired_state.mark_count);
+        assert_eq!(acquired_marks[0].subject_entity_index, 0);
+        assert_eq!(acquired_marks[0].kind, 2);
+        assert_eq!(acquired_marks[0].palette_index, 184);
+        assert_eq!(acquired_marks[0].help_selector, 0x51);
+        assert!(
+            !acquired_marks
+                .iter()
+                .any(|row| row.subject_entity_index == 112)
+        );
+        assert!(acquired_marks.windows(2).all(|rows| {
+            rows[0].source_order < rows[1].source_order
+                && rows[0].generation == 0
+                && rows[0].tick == terrain.tick
+        }));
+        assert_eq!(
+            acquired_state.mark_hash,
+            level2_minimap_mark_hash(
+                &acquired_marks
+                    .iter()
+                    .map(|row| Level2MinimapMark {
+                        source_order: row.source_order,
+                        subject_entity_index: row.subject_entity_index,
+                        x: row.x,
+                        y: row.y,
+                        palette_index: row.palette_index,
+                        kind: row.kind,
+                        help_selector: row.help_selector,
+                        visible: row.visible,
+                    })
+                    .collect::<Vec<_>>()
+            )
+        );
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        let mut reset_state = McCampaignMinimapStateV2::default();
+        assert_eq!(
+            mc_native_campaign_minimap_state(
+                handle,
+                1,
+                0,
+                &raw mut reset_state,
+                struct_size::<McCampaignMinimapStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(reset_state.visibility_flags, initial_state.visibility_flags);
+        assert_eq!(reset_state.mark_count, initial_state.mark_count);
+        assert_eq!(reset_state.entity_hash, initial_state.entity_hash);
+        assert_eq!(reset_state.mark_hash, initial_state.mark_hash);
+        input.generation = 1;
+        input.player_x = 384;
+        input.player_y = 62_080;
+        input.player_z = 256;
+        for _ in 0..282 {
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+            input.player_x = snapshot.x;
+            input.player_y = snapshot.y;
+            input.player_z = snapshot.z;
+        }
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                1,
+                &raw mut terrain,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut replay_state = McCampaignMinimapStateV2::default();
+        assert_eq!(
+            mc_native_campaign_minimap_state(
+                handle,
+                1,
+                terrain.tick,
+                &raw mut replay_state,
+                struct_size::<McCampaignMinimapStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(replay_state.entity_hash, acquired_state.entity_hash);
+        assert_eq!(replay_state.mark_hash, acquired_state.mark_hash);
+        assert_eq!(
+            replay_state.visibility_flags,
+            acquired_state.visibility_flags
+        );
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn level2_campaign_invisible_state_and_activation_guard_are_cabi_reachable() {
         let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/l2-debug3.fJ3PaM/level2");
@@ -22325,6 +23099,17 @@ _Static_assert(sizeof(McCampaignBeyondSightSnapshotV2) == 80, "McCampaignBeyondS
 _Static_assert(sizeof(McCampaignOpponentSnapshotV2) == 104, "McCampaignOpponentSnapshotV2 size");
 _Static_assert(sizeof(McCampaignDayHudSpellSlotV2) == 48, "McCampaignDayHudSpellSlotV2 size");
 _Static_assert(sizeof(McCampaignDayHudSnapshotV2) == 272, "McCampaignDayHudSnapshotV2 size");
+_Static_assert(sizeof(McCampaignMinimapStateV2) == 72, "McCampaignMinimapStateV2 size");
+_Static_assert(sizeof(McCampaignMinimapEntityV2) == 56, "McCampaignMinimapEntityV2 size");
+_Static_assert(sizeof(McCampaignMinimapMarkV2) == 48, "McCampaignMinimapMarkV2 size");
+_Static_assert(offsetof(McCampaignMinimapStateV2, entity_count) == 28, "campaign minimap entity count offset");
+_Static_assert(offsetof(McCampaignMinimapStateV2, entity_hash) == 40, "campaign minimap entity hash offset");
+_Static_assert(offsetof(McCampaignMinimapEntityV2, source_order) == 24, "campaign minimap entity order offset");
+_Static_assert(offsetof(McCampaignMinimapEntityV2, x) == 28, "campaign minimap entity x offset");
+_Static_assert(offsetof(McCampaignMinimapEntityV2, selector) == 32, "campaign minimap entity selector offset");
+_Static_assert(offsetof(McCampaignMinimapEntityV2, help_selector) == 38, "campaign minimap entity help offset");
+_Static_assert(offsetof(McCampaignMinimapMarkV2, x) == 28, "campaign minimap mark x offset");
+_Static_assert(offsetof(McCampaignMinimapMarkV2, palette_index) == 32, "campaign minimap mark palette offset");
 _Static_assert(offsetof(McCampaignBeyondSightSnapshotV2, experience_awarded) == 52, "campaign Beyond Sight experience offset");
 _Static_assert(offsetof(McCampaignOpponentSnapshotV2, entity_control_flags) == 36, "campaign opponent control flags offset");
 _Static_assert(offsetof(McCampaignOpponentSnapshotV2, objective_relation_value) == 76, "campaign opponent objective relation offset");
