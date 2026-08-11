@@ -35056,6 +35056,19 @@ mod tests {
             .expect("move model-zero target to strict boundary");
 
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let switch_phase = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 274)
+            .map(|source| source.phase)
+            .expect("row 274 runtime producer remains live at strict boundary");
+        for _ in 0..level_two_switch_turns_until_cadence(switch_phase) {
+            session
+                .set_level2_entity_position(111, strict_boundary)
+                .expect("hold public player input at strict boundary");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
 
         assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
