@@ -34,6 +34,7 @@ use sim_core::{
         FIREBALL_PAYLOAD_SHA256, FireballTmapClock, POSSESSION_PAYLOAD_SHA256, PossessionTmapClock,
     },
     conformance_hash, conformance_hash_v2,
+    day_indexed_frame::{DayIndexedFrame, DayIndexedFrameAssets, DayIndexedFrameState},
     dynamic_lighting::DynamicLightingExecutionReceipt,
     economy_tmap::{
         CASTLE_ROOT_PAYLOAD_BYTES, CASTLE_ROOT_PAYLOAD_SHA256, CastleTmapClock, EconomyTmapBank,
@@ -769,6 +770,32 @@ pub struct McCampaignTerrainStateV2 {
     pub hash_schema: u8,
     pub authority: u8,
     pub reserved_0: u8,
+    pub reserved: [u32; 4],
+}
+
+/// Generation/tick-bound qualified Level 2 Day indexed world-frame metadata.
+/// The two SHA-256 fields bind the returned bytes to the validated package and
+/// Day material cache; the remaining hashes bind the deterministic render
+/// inputs and output without exposing a second renderer to managed callers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignDayIndexedFrameInfoV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub width: u16,
+    pub height: u16,
+    pub stride: u16,
+    pub reserved_0: u16,
+    pub index_bytes: u32,
+    pub palette_bytes: u32,
+    pub index_hash: u64,
+    pub palette_hash: u64,
+    pub terrain_input_hash: u64,
+    pub terrain_command_hash: u64,
+    pub package_sha256: [u8; 32],
+    pub cache_content_sha256: [u8; 32],
     pub reserved: [u32; 4],
 }
 
@@ -7893,6 +7920,8 @@ enum CampaignSessionKind {
     Level2 {
         inspection: Arc<NativeWorldInspection>,
         reset: Level2ResetSession,
+        day_frame_assets: Option<DayIndexedFrameAssets>,
+        day_frame_state: DayIndexedFrameState,
     },
 }
 
@@ -8051,64 +8080,117 @@ pub extern "C" fn mc_native_campaign_session_open(
     out_handle: *mut u64,
 ) -> i32 {
     boundary(|| {
-        require_output(out_handle, "out_handle")?;
-        write_output(out_handle, 0);
-        let selection = read_versioned_input(selection, "campaign selection")?;
-        validate_reserved(&selection.reserved, "campaign selection")?;
-        if selection.reserved_0 != 0 {
-            return Err(AbiError::new(
-                MC_STATUS_RESERVED_NONZERO,
-                "campaign selection reserved_0 must be zero",
-            ));
+        open_campaign_session(
+            package_dir,
+            package_dir_len,
+            closure_path,
+            closure_path_len,
+            None,
+            selection,
+            out_handle,
+        )
+    })
+}
+
+/// Open a campaign session with an explicit qualified owner-cache root.  The
+/// additive entry point keeps the legacy environment-bound open intact while
+/// letting managed callers bind the Day cache to this handle without relying
+/// on process-global state.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_session_open_with_asset_cache(
+    package_dir: *const u8,
+    package_dir_len: u32,
+    closure_path: *const u8,
+    closure_path_len: u32,
+    asset_cache_path: *const u8,
+    asset_cache_path_len: u32,
+    selection: *const McCampaignSelectionV2,
+    out_handle: *mut u64,
+) -> i32 {
+    boundary(|| {
+        let asset_cache_path =
+            utf8_input(asset_cache_path, asset_cache_path_len, "asset_cache_path")?;
+        open_campaign_session(
+            package_dir,
+            package_dir_len,
+            closure_path,
+            closure_path_len,
+            (!asset_cache_path.is_empty()).then_some(asset_cache_path),
+            selection,
+            out_handle,
+        )
+    })
+}
+
+fn open_campaign_session(
+    package_dir: *const u8,
+    package_dir_len: u32,
+    closure_path: *const u8,
+    closure_path_len: u32,
+    asset_cache_path: Option<String>,
+    selection: *const McCampaignSelectionV2,
+    out_handle: *mut u64,
+) -> AbiResult<()> {
+    require_output(out_handle, "out_handle")?;
+    write_output(out_handle, 0);
+    let selection = read_versioned_input(selection, "campaign selection")?;
+    validate_reserved(&selection.reserved, "campaign selection")?;
+    if selection.reserved_0 != 0 {
+        return Err(AbiError::new(
+            MC_STATUS_RESERVED_NONZERO,
+            "campaign selection reserved_0 must be zero",
+        ));
+    }
+    let package = utf8_input(package_dir, package_dir_len, "package_dir")?;
+    if package.is_empty() {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "package_dir must be non-empty",
+        ));
+    }
+    let expected = sim_core::mission_content::MissionContentProfile::from_metadata(
+        selection.external_level,
+        selection.internal_level,
+        selection.map_type,
+    )
+    .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+    let session = if expected.is_level2() {
+        let inspection = NativeWorld::inspect_level2(&package)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+        let mut reset = inspection
+            .level2_reset_session()
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+        reset.select_level2_campaign_entry_stage();
+        let day_frame_assets = load_optional_level2_day_frame_assets(asset_cache_path.as_deref())?;
+        CampaignSessionRecord {
+            kind: CampaignSessionKind::Level2 {
+                inspection: Arc::new(inspection),
+                reset,
+                day_frame_assets,
+                day_frame_state: DayIndexedFrameState::new(0),
+            },
+            generation: 0,
         }
-        let package = utf8_input(package_dir, package_dir_len, "package_dir")?;
-        if package.is_empty() {
+    } else {
+        let closure = utf8_input(closure_path, closure_path_len, "closure_path")?;
+        if closure.is_empty() {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
-                "package_dir must be non-empty",
+                "Level 1 campaign sessions require closure_path",
             ));
         }
-        let expected = sim_core::mission_content::MissionContentProfile::from_metadata(
-            selection.external_level,
-            selection.internal_level,
-            selection.map_type,
-        )
-        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-        let session = if expected.is_level2() {
-            let inspection = NativeWorld::inspect_level2(&package)
-                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-            let mut reset = inspection
-                .level2_reset_session()
-                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-            reset.select_level2_campaign_entry_stage();
-            CampaignSessionRecord {
-                kind: CampaignSessionKind::Level2 {
-                    inspection: Arc::new(inspection),
-                    reset,
-                },
-                generation: 0,
-            }
-        } else {
-            let closure = utf8_input(closure_path, closure_path_len, "closure_path")?;
-            if closure.is_empty() {
-                return Err(AbiError::new(
-                    MC_STATUS_INVALID_ARGUMENT,
-                    "Level 1 campaign sessions require closure_path",
-                ));
-            }
-            let world = NativeWorld::load(&package, &closure)
-                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-            CampaignSessionRecord {
-                kind: CampaignSessionKind::Level1 {
-                    world: Arc::new(world),
-                },
-                generation: 0,
-            }
-        };
-        let handle = with_campaign_registry_mut(|registry| registry.insert(session))?;
-        write_output(out_handle, handle);
-        Ok(())
-    })
+        let world = NativeWorld::load(&package, &closure)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+        CampaignSessionRecord {
+            kind: CampaignSessionKind::Level1 {
+                world: Arc::new(world),
+            },
+            generation: 0,
+        }
+    };
+    let handle = with_campaign_registry_mut(|registry| registry.insert(session))?;
+    write_output(out_handle, handle);
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -8130,9 +8212,15 @@ pub extern "C" fn mc_native_campaign_session_destroy(handle: u64) -> i32 {
 pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
     boundary(|| {
         with_campaign_session_mut(handle, |session| {
-            if let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind {
+            if let CampaignSessionKind::Level2 {
+                reset,
+                day_frame_state,
+                ..
+            } = &mut session.kind
+            {
                 reset.reset();
                 session.generation = session.generation.wrapping_add(1);
+                day_frame_state.reset(session.generation);
             }
             Ok(())
         })
@@ -9103,7 +9191,9 @@ pub extern "C" fn mc_native_campaign_world_info(
                         world.runtime().objectives.len(),
                         state_hash(world.reset_state()),
                     ),
-                    CampaignSessionKind::Level2 { inspection, reset } => (
+                    CampaignSessionKind::Level2 {
+                        inspection, reset, ..
+                    } => (
                         inspection.metadata(),
                         inspection.entities().len(),
                         inspection
@@ -9132,6 +9222,203 @@ pub extern "C" fn mc_native_campaign_world_info(
                 terrain_height: 256,
                 reset_state_hash: hash,
                 reserved: [0; 4],
+            })
+        })
+    })
+}
+
+fn campaign_day_indexed_frame_info(frame: &DayIndexedFrame) -> McCampaignDayIndexedFrameInfoV2 {
+    McCampaignDayIndexedFrameInfoV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+        generation: frame.generation,
+        tick: frame.tick,
+        width: frame.width,
+        height: frame.height,
+        stride: frame.width,
+        reserved_0: 0,
+        index_bytes: u32::try_from(frame.indices.len()).expect("Day frame index extent fits u32"),
+        palette_bytes: u32::try_from(frame.palette_rgb8.len())
+            .expect("Day frame palette extent fits u32"),
+        index_hash: frame.index_hash,
+        palette_hash: byte_hash(&frame.palette_rgb8),
+        terrain_input_hash: frame.terrain_input_hash,
+        terrain_command_hash: frame.terrain_command_hash,
+        package_sha256: decode_sha256_hex(&frame.package_sha256),
+        cache_content_sha256: decode_sha256_hex(&frame.cache_content_sha256),
+        reserved: [0; 4],
+    }
+}
+
+fn with_level2_campaign_day_frame<T>(
+    session: &CampaignSessionRecord,
+    generation: u64,
+    expected_tick: u64,
+    operation: impl FnOnce(&DayIndexedFrame) -> AbiResult<T>,
+) -> AbiResult<T> {
+    if generation != session.generation {
+        return Err(AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            format!(
+                "campaign Day indexed frame generation {generation} does not match {}",
+                session.generation
+            ),
+        ));
+    }
+    let CampaignSessionKind::Level2 {
+        reset,
+        day_frame_state,
+        ..
+    } = &session.kind
+    else {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "campaign Day indexed frame requires a Level 2 campaign session",
+        ));
+    };
+    if expected_tick != reset.state.tick {
+        return Err(AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            format!(
+                "campaign Day indexed frame tick {expected_tick} does not match {}",
+                reset.state.tick
+            ),
+        ));
+    }
+    let frame = day_frame_state.current_frame().ok_or_else(|| {
+        AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "campaign Day indexed frame must be rendered before copying",
+        )
+    })?;
+    if frame.generation != generation || frame.tick != expected_tick {
+        return Err(AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            "campaign Day indexed frame is not bound to the requested generation/tick",
+        ));
+    }
+    operation(frame)
+}
+
+/// Render and commit the current qualified Level 2 Day indexed frame.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_day_indexed_frame_render(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    out_info: *mut McCampaignDayIndexedFrameInfoV2,
+    out_info_size: u32,
+) -> i32 {
+    boundary_value(out_info, out_info_size, || {
+        with_campaign_session_mut(handle, |session| {
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Day indexed frame generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let CampaignSessionKind::Level2 {
+                inspection,
+                reset,
+                day_frame_assets,
+                day_frame_state,
+            } = &mut session.kind
+            else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Day indexed frame requires a Level 2 campaign session",
+                ));
+            };
+            if expected_tick != reset.state.tick {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Day indexed frame tick {expected_tick} does not match {}",
+                        reset.state.tick
+                    ),
+                ));
+            }
+            if let Some(frame) = day_frame_state.current_frame()
+                && frame.generation == generation
+                && frame.tick == expected_tick
+            {
+                return Ok(campaign_day_indexed_frame_info(frame));
+            }
+            let assets = day_frame_assets.as_ref().ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_VALIDATION_FAILED,
+                    "campaign Day indexed frame requires a qualified owner cache",
+                )
+            })?;
+            let frame = day_frame_state
+                .render(inspection, reset, assets, generation)
+                .map_err(|error| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        format!("campaign Day indexed frame render failed: {error}"),
+                    )
+                })?;
+            Ok(campaign_day_indexed_frame_info(&frame))
+        })
+    })
+}
+
+/// Copy the complete committed Day indexed frame.  Rendering and copying are
+/// separate so a pre-render or stale-generation request cannot expose an old
+/// frame as current.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_day_indexed_frame_copy(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    index_buffer: *mut u8,
+    index_capacity: u32,
+    palette_buffer: *mut u8,
+    palette_capacity: u32,
+    out_index_written: *mut u32,
+    out_palette_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_index_written, "Day indexed frame index count")?;
+        require_output(out_palette_written, "Day indexed frame palette count")?;
+        write_output(out_index_written, 0);
+        write_output(out_palette_written, 0);
+        with_campaign_session(handle, |session| {
+            with_level2_campaign_day_frame(session, generation, expected_tick, |frame| {
+                let index_required =
+                    u32::try_from(frame.indices.len()).expect("Day frame index extent fits u32");
+                let palette_required = u32::try_from(frame.palette_rgb8.len())
+                    .expect("Day frame palette extent fits u32");
+                if index_capacity < index_required || palette_capacity < palette_required {
+                    return Err(AbiError::new(
+                        MC_STATUS_BUFFER_TOO_SMALL,
+                        format!(
+                            "Day indexed frame requires {index_required} index and {palette_required} palette bytes, got {index_capacity} and {palette_capacity}"
+                        ),
+                    ));
+                }
+                if index_buffer.is_null() || palette_buffer.is_null() {
+                    return Err(AbiError::new(
+                        MC_STATUS_NULL_POINTER,
+                        "Day indexed frame index and palette buffers must be non-null",
+                    ));
+                }
+                // SAFETY: both caller buffers are non-null and have the exact
+                // required capacities checked above; frame storage is immutable.
+                unsafe {
+                    index_buffer
+                        .copy_from_nonoverlapping(frame.indices.as_ptr(), frame.indices.len());
+                    palette_buffer.copy_from_nonoverlapping(
+                        frame.palette_rgb8.as_ptr(),
+                        frame.palette_rgb8.len(),
+                    );
+                }
+                write_output(out_index_written, index_required);
+                write_output(out_palette_written, palette_required);
+                Ok(())
             })
         })
     })
@@ -14779,6 +15066,30 @@ fn load_optional_terrain_frame_assets() -> AbiResult<Option<TerrainFrameAssets>>
     load_terrain_frame_assets(&PathBuf::from(root)).map(Some)
 }
 
+fn load_optional_level2_day_frame_assets(
+    explicit_root: Option<&str>,
+) -> AbiResult<Option<DayIndexedFrameAssets>> {
+    let root = explicit_root
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("MC_ASSET_CACHE_PATH").map(PathBuf::from));
+    let Some(root) = root else {
+        return Ok(None);
+    };
+    let material_root = if root.join("components/material/manifest.json").is_file() {
+        root.join("components/material")
+    } else {
+        root
+    };
+    DayIndexedFrameAssets::load(material_root)
+        .map(Some)
+        .map_err(|error| {
+            AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                format!("cannot load qualified Level 2 Day indexed-frame cache: {error}"),
+            )
+        })
+}
+
 fn load_terrain_frame_assets(root: &Path) -> AbiResult<TerrainFrameAssets> {
     let terrain_atlas = read_qualified_cache_file(
         root,
@@ -18308,6 +18619,56 @@ mod tests {
         handle
     }
 
+    fn qualified_level2_day_owner_cache() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/level2-day-owner-cache")
+    }
+
+    fn open_level2_campaign_handle_with_asset_cache(cache: &Path) -> u64 {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let cache = cache.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open_with_asset_cache(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                cache.as_ptr(),
+                cache.len() as u32,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+        handle
+    }
+
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("create temporary cache directory");
+        for entry in fs::read_dir(source).expect("read source cache directory") {
+            let entry = entry.expect("read source cache entry");
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            let metadata = fs::symlink_metadata(&source_path).expect("inspect source cache entry");
+            if metadata.is_dir() {
+                copy_tree(&source_path, &destination_path);
+            } else {
+                assert!(metadata.is_file(), "source cache contains a special entry");
+                fs::copy(&source_path, &destination_path).expect("copy source cache file");
+            }
+        }
+    }
+
     fn step_level2_campaign_once(
         handle: u64,
         generation: u64,
@@ -18423,6 +18784,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignOpponentSnapshotV2>(), 104);
         assert_eq!(size_of::<McCampaignDayHudSpellSlotV2>(), 48);
         assert_eq!(size_of::<McCampaignDayHudSnapshotV2>(), 272);
+        assert_eq!(size_of::<McCampaignDayIndexedFrameInfoV2>(), 152);
         assert_eq!(size_of::<McCampaignMinimapStateV2>(), 72);
         assert_eq!(size_of::<McCampaignMinimapEntityV2>(), 56);
         assert_eq!(size_of::<McCampaignMinimapMarkV2>(), 48);
@@ -18583,6 +18945,26 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(McCampaignDayHudSpellSlotV2, max_mana),
             20
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayIndexedFrameInfoV2, index_bytes),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayIndexedFrameInfoV2, index_hash),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayIndexedFrameInfoV2, package_sha256),
+            72
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayIndexedFrameInfoV2, cache_content_sha256),
+            104
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignDayIndexedFrameInfoV2, reserved),
+            136
         );
         assert_eq!(
             std::mem::offset_of!(McCampaignDayHudSpellSlotV2, draw_admitted),
@@ -19834,6 +20216,440 @@ mod tests {
             MC_STATUS_GENERATION_MISMATCH
         );
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn campaign_day_indexed_frame_is_generation_bound_complete_and_fail_closed() {
+        const INDEX_BYTES: usize = 320 * 200;
+        const PALETTE_BYTES: usize = 256 * 3;
+
+        let cache = qualified_level2_day_owner_cache();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let handle = open_level2_campaign_handle_with_asset_cache(&cache);
+
+        let mut pre_render_indices = vec![0xa5; INDEX_BYTES];
+        let mut pre_render_palette = vec![0x5a; PALETTE_BYTES];
+        let mut pre_render_index_written = 7;
+        let mut pre_render_palette_written = 9;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_copy(
+                handle,
+                0,
+                0,
+                pre_render_indices.as_mut_ptr(),
+                INDEX_BYTES as u32,
+                pre_render_palette.as_mut_ptr(),
+                PALETTE_BYTES as u32,
+                &raw mut pre_render_index_written,
+                &raw mut pre_render_palette_written,
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(pre_render_indices, vec![0xa5; INDEX_BYTES]);
+        assert_eq!(pre_render_palette, vec![0x5a; PALETTE_BYTES]);
+        assert_eq!(
+            (pre_render_index_written, pre_render_palette_written),
+            (0, 0)
+        );
+
+        let mut skipped_initial = McCampaignDayIndexedFrameInfoV2 {
+            abi_version: 0x1234_5678,
+            struct_size: 152,
+            generation: 0x0102_0304_0506_0708,
+            tick: 0x1112_1314_1516_1718,
+            package_sha256: [0xa5; 32],
+            cache_content_sha256: [0x5a; 32],
+            reserved: [0x2468_ace0; 4],
+            ..McCampaignDayIndexedFrameInfoV2::default()
+        };
+        let skipped_initial_before = skipped_initial;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                0,
+                1,
+                &raw mut skipped_initial,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(skipped_initial, skipped_initial_before);
+
+        let mut first_info = McCampaignDayIndexedFrameInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                0,
+                0,
+                &raw mut first_info,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (
+                first_info.abi_version,
+                first_info.struct_size,
+                first_info.generation,
+                first_info.tick,
+                first_info.width,
+                first_info.height,
+                first_info.stride,
+                first_info.reserved_0,
+                first_info.index_bytes,
+                first_info.palette_bytes,
+            ),
+            (
+                MC_NATIVE_ABI_VERSION,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+                0,
+                0,
+                320,
+                200,
+                320,
+                0,
+                INDEX_BYTES as u32,
+                PALETTE_BYTES as u32,
+            )
+        );
+        assert_ne!(first_info.index_hash, 0);
+        assert_ne!(first_info.palette_hash, 0);
+        assert_ne!(first_info.terrain_input_hash, 0);
+        assert_ne!(first_info.terrain_command_hash, 0);
+        assert_ne!(first_info.package_sha256, [0; 32]);
+        assert_ne!(first_info.cache_content_sha256, [0; 32]);
+        assert_eq!(first_info.reserved, [0; 4]);
+
+        let mut first_indices = vec![0; INDEX_BYTES];
+        let mut first_palette = vec![0; PALETTE_BYTES];
+        let mut first_index_written = 0;
+        let mut first_palette_written = 0;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_copy(
+                handle,
+                0,
+                0,
+                first_indices.as_mut_ptr(),
+                INDEX_BYTES as u32,
+                first_palette.as_mut_ptr(),
+                PALETTE_BYTES as u32,
+                &raw mut first_index_written,
+                &raw mut first_palette_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (first_index_written, first_palette_written),
+            (INDEX_BYTES as u32, PALETTE_BYTES as u32)
+        );
+        assert_eq!(byte_hash(&first_indices), first_info.index_hash);
+        assert_eq!(byte_hash(&first_palette), first_info.palette_hash);
+        assert!(first_indices.iter().any(|value| *value != 0));
+
+        let mut repeated_info = McCampaignDayIndexedFrameInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                0,
+                0,
+                &raw mut repeated_info,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(repeated_info, first_info);
+        let mut repeated_indices = vec![0; INDEX_BYTES];
+        let mut repeated_palette = vec![0; PALETTE_BYTES];
+        let mut repeated_index_written = 0;
+        let mut repeated_palette_written = 0;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_copy(
+                handle,
+                0,
+                0,
+                repeated_indices.as_mut_ptr(),
+                INDEX_BYTES as u32,
+                repeated_palette.as_mut_ptr(),
+                PALETTE_BYTES as u32,
+                &raw mut repeated_index_written,
+                &raw mut repeated_palette_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(repeated_indices, first_indices);
+        assert_eq!(repeated_palette, first_palette);
+
+        let stale_before = skipped_initial;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                1,
+                0,
+                &raw mut skipped_initial,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(skipped_initial, stale_before);
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                0,
+                1,
+                &raw mut skipped_initial,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(skipped_initial, stale_before);
+
+        let (first_step, _, _) = step_level2_campaign_once(handle, 0);
+        assert_eq!((first_step.generation, first_step.revision), (0, 1));
+        let mut second_info = McCampaignDayIndexedFrameInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                0,
+                1,
+                &raw mut second_info,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!((second_info.generation, second_info.tick), (0, 1));
+
+        let (second_step, _, _) = step_level2_campaign_once(handle, 0);
+        let (third_step, _, _) = step_level2_campaign_once(handle, 0);
+        assert_eq!((second_step.generation, second_step.revision), (0, 2));
+        assert_eq!((third_step.generation, third_step.revision), (0, 3));
+        let skipped_after = skipped_initial;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                0,
+                3,
+                &raw mut skipped_initial,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(skipped_initial, skipped_after);
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                0,
+                0,
+                &raw mut skipped_initial,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(skipped_initial, skipped_after);
+
+        let mut reset_pre_indices = vec![0x11; INDEX_BYTES];
+        let mut reset_pre_palette = vec![0x22; PALETTE_BYTES];
+        let mut reset_pre_index_written = 4;
+        let mut reset_pre_palette_written = 5;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_copy(
+                handle,
+                1,
+                0,
+                reset_pre_indices.as_mut_ptr(),
+                INDEX_BYTES as u32,
+                reset_pre_palette.as_mut_ptr(),
+                PALETTE_BYTES as u32,
+                &raw mut reset_pre_index_written,
+                &raw mut reset_pre_palette_written,
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(reset_pre_indices, vec![0x11; INDEX_BYTES]);
+        assert_eq!(reset_pre_palette, vec![0x22; PALETTE_BYTES]);
+        assert_eq!((reset_pre_index_written, reset_pre_palette_written), (0, 0));
+
+        let mut replay_info = McCampaignDayIndexedFrameInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                1,
+                0,
+                &raw mut replay_info,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(replay_info.generation, 1);
+        assert_eq!(replay_info.tick, 0);
+        assert_eq!(replay_info.index_hash, first_info.index_hash);
+        assert_eq!(replay_info.palette_hash, first_info.palette_hash);
+        let mut replay_indices = vec![0; INDEX_BYTES];
+        let mut replay_palette = vec![0; PALETTE_BYTES];
+        let mut replay_index_written = 0;
+        let mut replay_palette_written = 0;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_copy(
+                handle,
+                1,
+                0,
+                replay_indices.as_mut_ptr(),
+                INDEX_BYTES as u32,
+                replay_palette.as_mut_ptr(),
+                PALETTE_BYTES as u32,
+                &raw mut replay_index_written,
+                &raw mut replay_palette_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(replay_indices, first_indices);
+        assert_eq!(replay_palette, first_palette);
+
+        let mut short_indices = vec![0x33; INDEX_BYTES - 1];
+        let mut short_palette = vec![0x44; PALETTE_BYTES];
+        let mut short_index_written = 6;
+        let mut short_palette_written = 7;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_copy(
+                handle,
+                1,
+                0,
+                short_indices.as_mut_ptr(),
+                short_indices.len() as u32,
+                short_palette.as_mut_ptr(),
+                PALETTE_BYTES as u32,
+                &raw mut short_index_written,
+                &raw mut short_palette_written,
+            ),
+            MC_STATUS_BUFFER_TOO_SMALL
+        );
+        assert_eq!(short_indices, vec![0x33; INDEX_BYTES - 1]);
+        assert_eq!(short_palette, vec![0x44; PALETTE_BYTES]);
+        assert_eq!((short_index_written, short_palette_written), (0, 0));
+
+        let mut null_palette = vec![0x55; PALETTE_BYTES];
+        let mut null_index_written = 8;
+        let mut null_palette_written = 9;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_copy(
+                handle,
+                1,
+                0,
+                std::ptr::null_mut(),
+                INDEX_BYTES as u32,
+                null_palette.as_mut_ptr(),
+                PALETTE_BYTES as u32,
+                &raw mut null_index_written,
+                &raw mut null_palette_written,
+            ),
+            MC_STATUS_NULL_POINTER
+        );
+        assert_eq!(null_palette, vec![0x55; PALETTE_BYTES]);
+        assert_eq!((null_index_written, null_palette_written), (0, 0));
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+
+        let open_with_cache = |cache: &Path, requested_selection: &McCampaignSelectionV2| {
+            let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/l2-debug3.fJ3PaM/level2");
+            let package = level2_package.to_string_lossy();
+            let cache = cache.to_string_lossy();
+            let mut opened_handle = 99;
+            let status = mc_native_campaign_session_open_with_asset_cache(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                cache.as_ptr(),
+                cache.len() as u32,
+                requested_selection,
+                &raw mut opened_handle,
+            );
+            (status, opened_handle)
+        };
+
+        let missing_cache =
+            std::env::temp_dir().join(format!("mc-exzm3-missing-day-cache-{}", std::process::id()));
+        if missing_cache.exists() {
+            fs::remove_dir_all(&missing_cache).expect("remove stale focused-test cache path");
+        }
+        let (missing_status, missing_handle) = open_with_cache(&missing_cache, &selection);
+        assert_eq!(missing_status, MC_STATUS_VALIDATION_FAILED);
+        assert_eq!(missing_handle, 0);
+
+        let unknown_selection = McCampaignSelectionV2 {
+            external_level: 99,
+            internal_level: 99,
+            map_type: 99,
+            ..selection
+        };
+        let (unknown_status, unknown_handle) = open_with_cache(&cache, &unknown_selection);
+        assert_eq!(unknown_status, MC_STATUS_VALIDATION_FAILED);
+        assert_eq!(unknown_handle, 0);
+
+        let tampered_cache = std::env::temp_dir().join(format!(
+            "mc-exzm3-tampered-day-cache-{}",
+            std::process::id()
+        ));
+        if tampered_cache.exists() {
+            fs::remove_dir_all(&tampered_cache).expect("remove stale tampered cache path");
+        }
+        copy_tree(&cache.join("components/material"), &tampered_cache);
+        let tampered_sky_path = tampered_cache.join("sky/skyd.indices.u8");
+        let mut tampered_sky = fs::read(&tampered_sky_path).expect("read copied Day sky");
+        tampered_sky[0] ^= 1;
+        fs::write(&tampered_sky_path, tampered_sky).expect("write tampered Day sky");
+        let (tampered_status, tampered_handle) = open_with_cache(&tampered_cache, &selection);
+        assert_eq!(tampered_status, MC_STATUS_VALIDATION_FAILED);
+        assert_eq!(tampered_handle, 0);
+        fs::remove_dir_all(&tampered_cache).expect("remove tampered focused-test cache");
+
+        let (level1_package, level1_closure) = fixture_paths();
+        let level1_package = level1_package.to_string_lossy();
+        let level1_closure = level1_closure.to_string_lossy();
+        let level1_selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 1,
+            internal_level: 0,
+            map_type: 1,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut level1_handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                level1_package.as_ptr(),
+                level1_package.len() as u32,
+                level1_closure.as_ptr(),
+                level1_closure.len() as u32,
+                &raw const level1_selection,
+                &raw mut level1_handle,
+            ),
+            MC_STATUS_OK
+        );
+        let non_level2_before = skipped_initial;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                level1_handle,
+                0,
+                0,
+                &raw mut skipped_initial,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(skipped_initial, non_level2_before);
+        assert_eq!(
+            mc_native_campaign_session_destroy(level1_handle),
+            MC_STATUS_OK
+        );
     }
 
     #[test]
@@ -23224,6 +24040,12 @@ _Static_assert(offsetof(McCampaignGoatEventV2, asset_ref_index) == 52, "campaign
 _Static_assert(offsetof(McCampaignStepSnapshotV2, dispatch_hash) == 40, "campaign step hash offset");
 _Static_assert(sizeof(McCampaignWorldInfoV2) == 64, "McCampaignWorldInfoV2 size");
 _Static_assert(sizeof(McCampaignTerrainStateV2) == 64, "McCampaignTerrainStateV2 size");
+_Static_assert(sizeof(McCampaignDayIndexedFrameInfoV2) == 152, "McCampaignDayIndexedFrameInfoV2 size");
+_Static_assert(offsetof(McCampaignDayIndexedFrameInfoV2, index_bytes) == 32, "Day indexed frame bytes offset");
+_Static_assert(offsetof(McCampaignDayIndexedFrameInfoV2, index_hash) == 40, "Day indexed frame index hash offset");
+_Static_assert(offsetof(McCampaignDayIndexedFrameInfoV2, package_sha256) == 72, "Day indexed frame package hash offset");
+_Static_assert(offsetof(McCampaignDayIndexedFrameInfoV2, cache_content_sha256) == 104, "Day indexed frame cache hash offset");
+_Static_assert(offsetof(McCampaignDayIndexedFrameInfoV2, reserved) == 136, "Day indexed frame reserved offset");
 _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapshotV2 size");
 _Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapshotV2 size");
 _Static_assert(sizeof(McCampaignShieldSnapshotV2) == 72, "McCampaignShieldSnapshotV2 size");

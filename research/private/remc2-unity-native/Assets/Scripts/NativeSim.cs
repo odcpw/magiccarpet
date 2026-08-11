@@ -149,6 +149,11 @@ namespace MagicCarpet.Native
         internal const int TerrainFrameWidth = 320;
         internal const int TerrainFrameHeight = 200;
         internal const int TerrainFramePixels = TerrainFrameWidth * TerrainFrameHeight;
+        internal const int DayIndexedFrameWidth = 320;
+        internal const int DayIndexedFrameHeight = 200;
+        internal const int DayIndexedFrameIndexBytes =
+            DayIndexedFrameWidth * DayIndexedFrameHeight;
+        internal const int DayIndexedFramePaletteBytes = 256 * 3;
         internal const int ReflectionEyeZLimit = 4_096;
         internal const int NoRequestedSpell = -1;
 
@@ -390,6 +395,31 @@ namespace MagicCarpet.Native
             internal byte hashSchema;
             internal byte authority;
             internal byte reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignDayIndexedFrameInfo
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ushort width;
+            internal ushort height;
+            internal ushort stride;
+            internal ushort reserved0;
+            internal uint indexBytes;
+            internal uint paletteBytes;
+            internal ulong indexHash;
+            internal ulong paletteHash;
+            internal ulong terrainInputHash;
+            internal ulong terrainCommandHash;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+            internal byte[] packageSha256;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+            internal byte[] cacheContentSha256;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal uint[] reserved;
         }
@@ -2079,6 +2109,17 @@ namespace MagicCarpet.Native
             out ulong handle);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_session_open_with_asset_cache(
+            byte[] packageDir,
+            uint packageDirLength,
+            byte[] closurePath,
+            uint closurePathLength,
+            byte[] assetCachePath,
+            uint assetCachePathLength,
+            ref CampaignSelection selection,
+            out ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_session_destroy(ulong handle);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
@@ -2232,6 +2273,26 @@ namespace MagicCarpet.Native
             ulong generation,
             out CampaignTerrainState state,
             uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_day_indexed_frame_render(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            ref CampaignDayIndexedFrameInfo info,
+            uint infoSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_day_indexed_frame_copy(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            [Out] byte[] indexBuffer,
+            uint indexCapacity,
+            [Out] byte[] paletteBuffer,
+            uint paletteCapacity,
+            out uint indexWritten,
+            out uint paletteWritten);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_terrain_plane_length(
@@ -2797,6 +2858,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignStepSnapshot>(112);
             RequireSize<CampaignWorldInfo>(64);
             RequireSize<CampaignTerrainState>(64);
+            RequireSize<CampaignDayIndexedFrameInfo>(152);
             RequireSize<CampaignObjectiveStageSnapshot>(48);
             RequireSize<CampaignPlayerSnapshot>(48);
             RequireSize<CampaignEntitySnapshot>(52);
@@ -2871,6 +2933,16 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.mutationSequence), 24);
             RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.width), 40);
             RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.reserved), 48);
+            RequireOffset<CampaignDayIndexedFrameInfo>(
+                nameof(CampaignDayIndexedFrameInfo.indexBytes), 32);
+            RequireOffset<CampaignDayIndexedFrameInfo>(
+                nameof(CampaignDayIndexedFrameInfo.indexHash), 40);
+            RequireOffset<CampaignDayIndexedFrameInfo>(
+                nameof(CampaignDayIndexedFrameInfo.packageSha256), 72);
+            RequireOffset<CampaignDayIndexedFrameInfo>(
+                nameof(CampaignDayIndexedFrameInfo.cacheContentSha256), 104);
+            RequireOffset<CampaignDayIndexedFrameInfo>(
+                nameof(CampaignDayIndexedFrameInfo.reserved), 136);
             RequireOffset<CampaignObjectiveStageSnapshot>(
                 nameof(CampaignObjectiveStageSnapshot.axisX), 24);
             RequireOffset<CampaignObjectiveStageSnapshot>(

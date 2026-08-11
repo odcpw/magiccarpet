@@ -79,6 +79,13 @@ namespace MagicCarpet.Native
 
         internal static NativeCampaignSession OpenLevel2(string packagePath)
         {
+            return OpenLevel2(packagePath, null);
+        }
+
+        internal static NativeCampaignSession OpenLevel2(
+            string packagePath,
+            string assetCachePath)
+        {
             if (string.IsNullOrWhiteSpace(packagePath))
             {
                 throw new InvalidDataException(
@@ -96,13 +103,23 @@ namespace MagicCarpet.Native
             var package = Encoding.UTF8.GetBytes(packagePath);
             var closure = Array.Empty<byte>();
             var selection = NativeSim.CampaignSelection.Level2Day();
-            var status = NativeSim.mc_native_campaign_session_open(
-                package,
-                checked((uint)package.Length),
-                closure,
-                0,
-                ref selection,
-                out var handle);
+            var overrideCachePath = !string.IsNullOrWhiteSpace(assetCachePath);
+            int status;
+            ulong handle;
+            if (overrideCachePath)
+            {
+                var cachePath = Encoding.UTF8.GetBytes(Path.GetFullPath(assetCachePath));
+                status = NativeSim.mc_native_campaign_session_open_with_asset_cache(
+                    package, checked((uint)package.Length), closure, 0,
+                    cachePath, checked((uint)cachePath.Length), ref selection,
+                    out handle);
+            }
+            else
+            {
+                status = NativeSim.mc_native_campaign_session_open(
+                    package, checked((uint)package.Length), closure, 0,
+                    ref selection, out handle);
+            }
             NativeSession.Check(status, "open Level 2 campaign session");
             if (handle == 0)
             {
@@ -169,6 +186,79 @@ namespace MagicCarpet.Native
             NativeSession.Check(status, "read Level 2 campaign terrain state");
             ValidateTerrainState(state, generation);
             return state;
+        }
+
+        internal NativeSim.CampaignDayIndexedFrameInfo RenderDayIndexedFrame(
+            ulong expectedTick)
+        {
+            var info = default(NativeSim.CampaignDayIndexedFrameInfo);
+            var status = NativeSim.mc_native_campaign_day_indexed_frame_render(
+                Handle,
+                generation,
+                expectedTick,
+                ref info,
+                152);
+            NativeSession.Check(status, "render Level 2 Day indexed frame");
+            ValidateDayIndexedFrameInfo(info, generation, expectedTick);
+            return info;
+        }
+
+        internal (NativeSim.CampaignDayIndexedFrameInfo info,
+            byte[] indices,
+            byte[] palette) DayIndexedFrame(ulong expectedTick)
+        {
+            var info = RenderDayIndexedFrame(expectedTick);
+            var indices = new byte[NativeSim.DayIndexedFrameIndexBytes];
+            var palette = new byte[NativeSim.DayIndexedFramePaletteBytes];
+            var status = NativeSim.mc_native_campaign_day_indexed_frame_copy(
+                Handle,
+                generation,
+                expectedTick,
+                indices,
+                checked((uint)indices.Length),
+                palette,
+                checked((uint)palette.Length),
+                out var indexWritten,
+                out var paletteWritten);
+            NativeSession.Check(status, "copy Level 2 Day indexed frame");
+            if (
+                indexWritten != (uint)indices.Length ||
+                paletteWritten != (uint)palette.Length)
+            {
+                throw new InvalidOperationException(
+                    "Level 2 Day indexed frame copy returned incomplete buffers");
+            }
+            return (info, indices, palette);
+        }
+
+        internal static void ValidateDayIndexedFrameInfo(
+            NativeSim.CampaignDayIndexedFrameInfo info,
+            ulong expectedGeneration,
+            ulong expectedTick)
+        {
+            if (
+                info.abiVersion != NativeSim.AbiVersion ||
+                info.structSize != 152 ||
+                info.generation != expectedGeneration ||
+                info.tick != expectedTick ||
+                info.width != NativeSim.DayIndexedFrameWidth ||
+                info.height != NativeSim.DayIndexedFrameHeight ||
+                info.stride != NativeSim.DayIndexedFrameWidth ||
+                info.reserved0 != 0 ||
+                info.indexBytes != NativeSim.DayIndexedFrameIndexBytes ||
+                info.paletteBytes != NativeSim.DayIndexedFramePaletteBytes ||
+                info.indexHash == 0 ||
+                info.paletteHash == 0 ||
+                info.terrainInputHash == 0 ||
+                info.terrainCommandHash == 0 ||
+                AllZero(info.packageSha256) ||
+                AllZero(info.cacheContentSha256) ||
+                !AllZero(info.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native Level 2 Day indexed frame returned invalid ABI, " +
+                    "generation/tick, dimensions, hashes, or reserved state");
+            }
         }
 
         internal static void ValidateTerrainState(

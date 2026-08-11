@@ -152,6 +152,30 @@ typedef struct McCampaignTerrainStateV2 {
     uint32_t reserved[4];
 } McCampaignTerrainStateV2;
 
+/* Generation/tick-bound metadata for one qualified Level 2 Day indexed
+ * 320x200 frame.  The SHA-256 fields bind the bytes to the validated package
+ * and material cache; the remaining hashes bind deterministic render inputs
+ * and output. */
+typedef struct McCampaignDayIndexedFrameInfoV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint16_t width;
+    uint16_t height;
+    uint16_t stride;
+    uint16_t reserved_0;
+    uint32_t index_bytes;
+    uint32_t palette_bytes;
+    uint64_t index_hash;
+    uint64_t palette_hash;
+    uint64_t terrain_input_hash;
+    uint64_t terrain_command_hash;
+    uint8_t package_sha256[32];
+    uint8_t cache_content_sha256[32];
+    uint32_t reserved[4];
+} McCampaignDayIndexedFrameInfoV2;
+
 /* Generation-bound mutable objective stage state.  This is additive to the
  * frozen-observed McObjectiveSnapshotV2 contract and carries the authored
  * stage axes consumed by the Level 2 source route. */
@@ -614,6 +638,11 @@ int32_t mc_native_campaign_session_open(
     const uint8_t *package_dir, uint32_t package_dir_len,
     const uint8_t *closure_path, uint32_t closure_path_len,
     const McCampaignSelectionV2 *selection, uint64_t *out_handle);
+int32_t mc_native_campaign_session_open_with_asset_cache(
+    const uint8_t *package_dir, uint32_t package_dir_len,
+    const uint8_t *closure_path, uint32_t closure_path_len,
+    const uint8_t *asset_cache_path, uint32_t asset_cache_path_len,
+    const McCampaignSelectionV2 *selection, uint64_t *out_handle);
 int32_t mc_native_campaign_session_destroy(uint64_t handle);
 int32_t mc_native_campaign_session_reset(uint64_t handle);
 int32_t mc_native_campaign_shield_state(
@@ -646,6 +675,14 @@ int32_t mc_native_campaign_opponent_state(
 int32_t mc_native_campaign_day_hud_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignDayHudSnapshotV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_day_indexed_frame_render(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McCampaignDayIndexedFrameInfoV2 *out_info, uint32_t out_info_size);
+int32_t mc_native_campaign_day_indexed_frame_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *index_buffer, uint32_t index_capacity,
+    uint8_t *palette_buffer, uint32_t palette_capacity,
+    uint32_t *out_index_written, uint32_t *out_palette_written);
 int32_t mc_native_campaign_minimap_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignMinimapStateV2 *out_state, uint32_t out_state_size);
