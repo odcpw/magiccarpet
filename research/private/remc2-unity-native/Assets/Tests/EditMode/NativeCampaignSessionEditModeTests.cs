@@ -57,6 +57,241 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2IndexedWorldRendersFromCampaignFrame()
+        {
+            var root = new GameObject("Level 2 indexed frame production route");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
+
+                Assert.That(runtime.Level2ProductionStartupReady, Is.True);
+                Assert.That(runtime.Level2ProductionIndexedFrameLive, Is.True);
+                var initialObject = runtime.Level2ProductionIndexedFrameObject;
+                var initialRenderer = runtime.Level2ProductionIndexedFrameRenderer;
+                var initialTexture = runtime.Level2ProductionIndexedFrameTexture;
+                var initialPaletteTexture =
+                    runtime.Level2ProductionIndexedFramePaletteTexture;
+                var initialMaterial = runtime.Level2ProductionIndexedFrameMaterial;
+                var initialIndices = runtime.Level2ProductionIndexedFrameIndices;
+                var initialPalette = runtime.Level2ProductionIndexedFramePalette;
+                var initialInfo = runtime.Level2ProductionIndexedFrameInfo;
+                Assert.That(initialObject, Is.Not.Null);
+                Assert.That(initialRenderer, Is.Not.Null);
+                Assert.That(initialRenderer.enabled, Is.True);
+                Assert.That(initialTexture, Is.Not.Null);
+                Assert.That(initialPaletteTexture, Is.Not.Null);
+                Assert.That(initialMaterial, Is.Not.Null);
+                Assert.That(initialMaterial.GetTexture("_Indices"), Is.SameAs(initialTexture));
+                Assert.That(
+                    initialMaterial.GetTexture("_Palette"),
+                    Is.SameAs(initialPaletteTexture));
+                Assert.That(initialTexture.width, Is.EqualTo(320));
+                Assert.That(initialTexture.height, Is.EqualTo(200));
+                Assert.That(initialPaletteTexture.width, Is.EqualTo(256));
+                Assert.That(initialPaletteTexture.height, Is.EqualTo(1));
+                Assert.That(initialInfo.generation, Is.Zero);
+                Assert.That(initialInfo.tick, Is.Zero);
+                Assert.That(initialInfo.indexBytes, Is.EqualTo(64000));
+                Assert.That(initialInfo.paletteBytes, Is.EqualTo(768));
+                Assert.That(initialInfo.indexHash, Is.Not.Zero);
+                Assert.That(initialInfo.paletteHash, Is.Not.Zero);
+                Assert.That(initialInfo.terrainInputHash, Is.Not.Zero);
+                Assert.That(initialInfo.terrainCommandHash, Is.Not.Zero);
+                Assert.That(initialIndices, Has.Length.EqualTo(64000));
+                Assert.That(initialPalette, Has.Length.EqualTo(768));
+                AssertTextureBytes(initialTexture, initialIndices);
+                AssertTextureBytes(initialPaletteTexture, initialPalette);
+
+                var resetIndices = (byte[])initialIndices.Clone();
+                var resetPalette = (byte[])initialPalette.Clone();
+                var resetInfo = initialInfo;
+                var initialUploadCount =
+                    runtime.Level2ProductionIndexedFrameUploadCount;
+
+                runtime.QualificationDriveLevel2Frames(1);
+                var steppedInfo = runtime.Level2ProductionIndexedFrameInfo;
+                var steppedIndices = runtime.Level2ProductionIndexedFrameIndices;
+                var steppedPalette = runtime.Level2ProductionIndexedFramePalette;
+                var steppedIndexBytes = (byte[])steppedIndices.Clone();
+                var steppedPaletteBytes = (byte[])steppedPalette.Clone();
+                Assert.That(runtime.Level2ProductionIndexedFrameLive, Is.True);
+                Assert.That(steppedInfo.generation, Is.EqualTo(
+                    runtime.Level2ProductionTerrainState.generation));
+                Assert.That(steppedInfo.tick, Is.EqualTo(
+                    runtime.Level2ProductionTerrainState.tick));
+                Assert.That(steppedInfo.tick, Is.GreaterThan(initialInfo.tick));
+                Assert.That(steppedInfo.indexBytes, Is.EqualTo(64000));
+                Assert.That(steppedInfo.paletteBytes, Is.EqualTo(768));
+                Assert.That(steppedInfo.indexHash, Is.Not.Zero);
+                Assert.That(steppedInfo.paletteHash, Is.Not.Zero);
+                Assert.That(steppedInfo.terrainInputHash, Is.Not.Zero);
+                Assert.That(steppedInfo.terrainCommandHash, Is.Not.Zero);
+                Assert.That(steppedIndices, Is.SameAs(initialIndices));
+                Assert.That(steppedPalette, Is.SameAs(initialPalette));
+                Assert.That(
+                    runtime.Level2ProductionIndexedFrameObject,
+                    Is.SameAs(initialObject));
+                Assert.That(
+                    runtime.Level2ProductionIndexedFrameRenderer,
+                    Is.SameAs(initialRenderer));
+                Assert.That(
+                    runtime.Level2ProductionIndexedFrameTexture,
+                    Is.SameAs(initialTexture));
+                Assert.That(
+                    runtime.Level2ProductionIndexedFramePaletteTexture,
+                    Is.SameAs(initialPaletteTexture));
+                Assert.That(
+                    runtime.Level2ProductionIndexedFrameMaterial,
+                    Is.SameAs(initialMaterial));
+                Assert.That(
+                    runtime.Level2ProductionIndexedFrameUploadCount,
+                    Is.EqualTo(initialUploadCount + 1));
+                AssertTextureBytes(initialTexture, steppedIndices);
+                AssertTextureBytes(initialPaletteTexture, steppedPalette);
+
+                using (var staleSession = NativeCampaignSession.OpenLevel2(
+                    Level2Package,
+                    Level2DayCache))
+                {
+                    var staleFrame = staleSession.DayIndexedFrame(0);
+                    var staleIndices = (byte[])staleFrame.indices.Clone();
+                    var stalePalette = (byte[])staleFrame.palette.Clone();
+                    var staleStatus =
+                        NativeSim.mc_native_campaign_day_indexed_frame_copy(
+                            staleSession.Handle,
+                            staleSession.Generation + 1,
+                            0,
+                            staleSession.DayIndexedFrameIndices,
+                            64000,
+                            staleSession.DayIndexedFramePalette,
+                            768,
+                            out _,
+                            out _);
+                    Assert.That(
+                        staleStatus,
+                        Is.EqualTo(NativeSim.GenerationMismatch));
+                    CollectionAssert.AreEqual(
+                        staleIndices,
+                        staleSession.DayIndexedFrameIndices,
+                        "stale generation leaves the reusable index buffer untouched");
+                    CollectionAssert.AreEqual(
+                        stalePalette,
+                        staleSession.DayIndexedFramePalette,
+                        "stale generation leaves the reusable palette buffer untouched");
+                    var staleTickStatus =
+                        NativeSim.mc_native_campaign_day_indexed_frame_copy(
+                            staleSession.Handle,
+                            staleSession.Generation,
+                            1,
+                            staleSession.DayIndexedFrameIndices,
+                            64000,
+                            staleSession.DayIndexedFramePalette,
+                            768,
+                            out _,
+                            out _);
+                    Assert.That(
+                        staleTickStatus,
+                        Is.EqualTo(NativeSim.GenerationMismatch));
+                    CollectionAssert.AreEqual(
+                        staleIndices,
+                        staleSession.DayIndexedFrameIndices,
+                        "stale tick leaves the reusable index buffer untouched");
+                    CollectionAssert.AreEqual(
+                        stalePalette,
+                        staleSession.DayIndexedFramePalette,
+                        "stale tick leaves the reusable palette buffer untouched");
+                }
+
+                runtime.QualificationResetLevel2Production();
+                Assert.That(initialObject == null, Is.True);
+                Assert.That(initialRenderer == null, Is.True);
+                Assert.That(runtime.Level2ProductionIndexedFrameLive, Is.True);
+                var reboundObject = runtime.Level2ProductionIndexedFrameObject;
+                var reboundRenderer = runtime.Level2ProductionIndexedFrameRenderer;
+                var reboundInfo = runtime.Level2ProductionIndexedFrameInfo;
+                Assert.That(reboundObject, Is.Not.Null);
+                Assert.That(reboundRenderer, Is.Not.Null);
+                Assert.That(reboundObject, Is.Not.SameAs(initialObject));
+                Assert.That(reboundRenderer, Is.Not.SameAs(initialRenderer));
+                Assert.That(reboundInfo.generation, Is.EqualTo(1));
+                Assert.That(reboundInfo.tick, Is.Zero);
+                Assert.That(reboundInfo.indexHash, Is.EqualTo(resetInfo.indexHash));
+                Assert.That(
+                    reboundInfo.paletteHash,
+                    Is.EqualTo(resetInfo.paletteHash));
+                Assert.That(
+                    reboundInfo.terrainInputHash,
+                    Is.EqualTo(resetInfo.terrainInputHash));
+                Assert.That(
+                    reboundInfo.terrainCommandHash,
+                    Is.EqualTo(resetInfo.terrainCommandHash));
+                Assert.That(
+                    runtime.Level2ProductionIndexedFrameIndices,
+                    Is.SameAs(initialIndices));
+                Assert.That(
+                    runtime.Level2ProductionIndexedFramePalette,
+                    Is.SameAs(initialPalette));
+                CollectionAssert.AreEqual(
+                    resetIndices,
+                    runtime.Level2ProductionIndexedFrameIndices);
+                CollectionAssert.AreEqual(
+                    resetPalette,
+                    runtime.Level2ProductionIndexedFramePalette);
+                AssertTextureBytes(
+                    runtime.Level2ProductionIndexedFrameTexture,
+                    runtime.Level2ProductionIndexedFrameIndices);
+                AssertTextureBytes(
+                    runtime.Level2ProductionIndexedFramePaletteTexture,
+                    runtime.Level2ProductionIndexedFramePalette);
+
+                runtime.QualificationDriveLevel2Frames(1);
+                var replayInfo = runtime.Level2ProductionIndexedFrameInfo;
+                Assert.That(replayInfo.generation, Is.EqualTo(1));
+                Assert.That(replayInfo.tick, Is.EqualTo(steppedInfo.tick));
+                Assert.That(replayInfo.indexHash, Is.EqualTo(steppedInfo.indexHash));
+                Assert.That(
+                    replayInfo.paletteHash,
+                    Is.EqualTo(steppedInfo.paletteHash));
+                CollectionAssert.AreEqual(
+                    steppedIndexBytes,
+                    runtime.Level2ProductionIndexedFrameIndices);
+                CollectionAssert.AreEqual(
+                    steppedPaletteBytes,
+                    runtime.Level2ProductionIndexedFramePalette);
+
+                runtime.QualificationDisposeNativeOwners();
+                Assert.That(runtime.Level2ProductionIndexedFrameObject, Is.Null);
+                Assert.That(runtime.Level2ProductionIndexedFrameRenderer, Is.Null);
+                Assert.That(
+                    root.GetComponentsInChildren<Renderer>(true),
+                    Is.Empty,
+                    "teardown removes the visible Level 2 world frame");
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        private static void AssertTextureBytes(Texture2D texture, byte[] expected)
+        {
+            var observed = texture.GetRawTextureData<byte>();
+            Assert.That(observed.Length, Is.EqualTo(expected.Length));
+            for (var index = 0; index < observed.Length; index++)
+            {
+                Assert.That(observed[index], Is.EqualTo(expected[index]));
+            }
+        }
+
+        [Test]
         public void Level2ProductionStartupRejectsCrossLevelInputsBeforeRendering()
         {
             var root = new GameObject("Level 2 cross-level startup");

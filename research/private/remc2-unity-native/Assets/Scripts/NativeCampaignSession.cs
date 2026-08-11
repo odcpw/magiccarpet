@@ -52,6 +52,10 @@ namespace MagicCarpet.Native
         private static int activeSessionCount;
         private long handleBits;
         private ulong generation;
+        private readonly byte[] dayIndexedFrameIndices =
+            new byte[NativeSim.DayIndexedFrameIndexBytes];
+        private readonly byte[] dayIndexedFramePalette =
+            new byte[NativeSim.DayIndexedFramePaletteBytes];
 
         private NativeCampaignSession(ulong handle)
         {
@@ -76,6 +80,10 @@ namespace MagicCarpet.Native
         }
 
         internal ulong Generation => generation;
+
+        internal byte[] DayIndexedFrameIndices => dayIndexedFrameIndices;
+
+        internal byte[] DayIndexedFramePalette => dayIndexedFramePalette;
 
         internal static NativeCampaignSession OpenLevel2(string packagePath)
         {
@@ -203,32 +211,37 @@ namespace MagicCarpet.Native
             return info;
         }
 
-        internal (NativeSim.CampaignDayIndexedFrameInfo info,
-            byte[] indices,
-            byte[] palette) DayIndexedFrame(ulong expectedTick)
+        internal NativeSim.CampaignDayIndexedFrameInfo CopyDayIndexedFrame(
+            ulong expectedTick)
         {
             var info = RenderDayIndexedFrame(expectedTick);
-            var indices = new byte[NativeSim.DayIndexedFrameIndexBytes];
-            var palette = new byte[NativeSim.DayIndexedFramePaletteBytes];
             var status = NativeSim.mc_native_campaign_day_indexed_frame_copy(
                 Handle,
                 generation,
                 expectedTick,
-                indices,
-                checked((uint)indices.Length),
-                palette,
-                checked((uint)palette.Length),
+                dayIndexedFrameIndices,
+                checked((uint)dayIndexedFrameIndices.Length),
+                dayIndexedFramePalette,
+                checked((uint)dayIndexedFramePalette.Length),
                 out var indexWritten,
                 out var paletteWritten);
             NativeSession.Check(status, "copy Level 2 Day indexed frame");
             if (
-                indexWritten != (uint)indices.Length ||
-                paletteWritten != (uint)palette.Length)
+                indexWritten != (uint)dayIndexedFrameIndices.Length ||
+                paletteWritten != (uint)dayIndexedFramePalette.Length)
             {
                 throw new InvalidOperationException(
                     "Level 2 Day indexed frame copy returned incomplete buffers");
             }
-            return (info, indices, palette);
+            return info;
+        }
+
+        internal (NativeSim.CampaignDayIndexedFrameInfo info,
+            byte[] indices,
+            byte[] palette) DayIndexedFrame(ulong expectedTick)
+        {
+            var info = CopyDayIndexedFrame(expectedTick);
+            return (info, dayIndexedFrameIndices, dayIndexedFramePalette);
         }
 
         internal static void ValidateDayIndexedFrameInfo(

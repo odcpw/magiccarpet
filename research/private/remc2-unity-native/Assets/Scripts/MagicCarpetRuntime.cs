@@ -544,6 +544,16 @@ namespace MagicCarpet.Native
         private short level2LastStepInputZ;
         private bool level2Mode;
         private bool level2StartupReady;
+        private GameObject level2IndexedFrameObject;
+        private Camera level2IndexedFrameCamera;
+        private Mesh level2IndexedFrameMesh;
+        private MeshRenderer level2IndexedFrameRenderer;
+        private Texture2D level2IndexedFrameIndexTexture;
+        private Texture2D level2IndexedFramePaletteTexture;
+        private Material level2IndexedFrameMaterial;
+        private NativeSim.CampaignDayIndexedFrameInfo level2IndexedFrameInfo;
+        private bool level2IndexedFrameLive;
+        private int level2IndexedFrameUploadCount;
         private PlaythroughRecorder playthroughRecorder;
         private OwnerAssetCache ownerAssetCache;
         private OwnerAudioPresentation ownerAudio;
@@ -954,6 +964,38 @@ namespace MagicCarpet.Native
             (level2StepInputX, level2StepInputY, level2StepInputZ);
 
         internal string Level2ProductionFatalError => fatalError;
+
+        internal GameObject Level2ProductionIndexedFrameObject =>
+            level2IndexedFrameObject;
+
+        internal Renderer Level2ProductionIndexedFrameRenderer =>
+            level2IndexedFrameRenderer;
+
+        internal Texture2D Level2ProductionIndexedFrameTexture =>
+            level2IndexedFrameIndexTexture;
+
+        internal Texture2D Level2ProductionIndexedFramePaletteTexture =>
+            level2IndexedFramePaletteTexture;
+
+        internal Material Level2ProductionIndexedFrameMaterial =>
+            level2IndexedFrameMaterial;
+
+        internal NativeSim.CampaignDayIndexedFrameInfo Level2ProductionIndexedFrameInfo =>
+            level2IndexedFrameInfo;
+
+        internal byte[] Level2ProductionIndexedFrameIndices =>
+            campaignSession?.DayIndexedFrameIndices;
+
+        internal byte[] Level2ProductionIndexedFramePalette =>
+            campaignSession?.DayIndexedFramePalette;
+
+        internal bool Level2ProductionIndexedFrameLive =>
+            level2IndexedFrameLive &&
+            level2IndexedFrameRenderer != null &&
+            level2IndexedFrameRenderer.enabled;
+
+        internal int Level2ProductionIndexedFrameUploadCount =>
+            level2IndexedFrameUploadCount;
 
         internal ulong QualificationNativeTick => snapshot.tick;
         internal int QualificationSpellMenuState => spellMenuController.MenuState;
@@ -2124,6 +2166,7 @@ namespace MagicCarpet.Native
             level2StepEvents = result.events;
             level2AuthoredGroupEvents = campaignSession.AuthoredGroupEvents();
             level2TerrainState = campaignSession.TerrainState();
+            UpdateLevel2IndexedFrame(level2TerrainState.tick);
             level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
             PresentLevel2DayHud(level2DayHud);
             ProjectLevel2Minimap(level2TerrainState.tick);
@@ -3905,6 +3948,152 @@ namespace MagicCarpet.Native
                 Require(renderer != null, $"terrain depth renderer {tile.name}");
                 renderer.sharedMaterial = terrainDepthOnlyMaterial;
             }
+        }
+
+        private void EnsureLevel2IndexedFramePresentation()
+        {
+            Require(
+                level2Mode && campaignSession != null,
+                "Level 2 indexed frame presentation has a campaign owner");
+            if (level2IndexedFrameRenderer != null)
+            {
+                return;
+            }
+
+            Require(
+                SystemInfo.SupportsTextureFormat(TextureFormat.R8),
+                "Level 2 indexed frame R8 texture support");
+            Require(
+                SystemInfo.SupportsTextureFormat(TextureFormat.RGB24),
+                "Level 2 indexed frame RGB8 palette texture support");
+            var shader = Resources.Load<Shader>("TerrainIndexedFrame");
+            Require(shader != null, "Level 2 indexed frame palette shader");
+
+            level2IndexedFrameObject = new GameObject(
+                "Level 2 Day Rust indexed frame presentation");
+            level2IndexedFrameObject.transform.SetParent(transform, false);
+            level2IndexedFrameObject.transform.localPosition = Vector3.zero;
+            level2IndexedFrameObject.transform.localScale =
+                new Vector3(3.2f, 2f, 1f);
+            var filter = level2IndexedFrameObject.AddComponent<MeshFilter>();
+            level2IndexedFrameMesh = CreateLevel2IndexedFrameQuad();
+            filter.sharedMesh = level2IndexedFrameMesh;
+            level2IndexedFrameRenderer =
+                level2IndexedFrameObject.AddComponent<MeshRenderer>();
+            level2IndexedFrameRenderer.shadowCastingMode =
+                UnityEngine.Rendering.ShadowCastingMode.Off;
+            level2IndexedFrameRenderer.receiveShadows = false;
+
+            level2IndexedFrameIndexTexture = new Texture2D(
+                NativeSim.DayIndexedFrameWidth,
+                NativeSim.DayIndexedFrameHeight,
+                TextureFormat.R8,
+                false,
+                true)
+            {
+                name = "Level 2 Day Rust indexed frame indices",
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            level2IndexedFramePaletteTexture = new Texture2D(
+                256,
+                1,
+                TextureFormat.RGB24,
+                false,
+                false)
+            {
+                name = "Level 2 Day Rust indexed frame RGB8 palette",
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            level2IndexedFrameMaterial = new Material(shader)
+            {
+                name = "Level 2 Day Rust indexed frame palette material"
+            };
+            level2IndexedFrameMaterial.SetTexture(
+                "_Indices", level2IndexedFrameIndexTexture);
+            level2IndexedFrameMaterial.SetTexture(
+                "_Coverage", Texture2D.whiteTexture);
+            level2IndexedFrameMaterial.SetTexture(
+                "_Palette", level2IndexedFramePaletteTexture);
+            level2IndexedFrameRenderer.sharedMaterial = level2IndexedFrameMaterial;
+            level2IndexedFrameRenderer.enabled = false;
+
+            level2IndexedFrameCamera = new GameObject(
+                    "Level 2 Day indexed frame presentation camera")
+                .AddComponent<Camera>();
+            level2IndexedFrameCamera.transform.SetParent(transform, false);
+            level2IndexedFrameCamera.transform.localPosition =
+                new Vector3(0f, 0f, -1f);
+            level2IndexedFrameCamera.transform.localRotation = Quaternion.identity;
+            level2IndexedFrameCamera.clearFlags = CameraClearFlags.SolidColor;
+            level2IndexedFrameCamera.backgroundColor = Color.black;
+            level2IndexedFrameCamera.orthographic = true;
+            level2IndexedFrameCamera.orthographicSize = 1f;
+            level2IndexedFrameCamera.aspect = 1.6f;
+            level2IndexedFrameCamera.nearClipPlane = 0.01f;
+            level2IndexedFrameCamera.farClipPlane = 10f;
+            level2IndexedFrameCamera.cullingMask =
+                1 << level2IndexedFrameObject.layer;
+            level2IndexedFrameCamera.depth = -100f;
+        }
+
+        private static Mesh CreateLevel2IndexedFrameQuad()
+        {
+            var mesh = new Mesh
+            {
+                name = "Level 2 Day Rust indexed frame quad"
+            };
+            mesh.vertices = new[]
+            {
+                new Vector3(-0.5f, -0.5f, 0f),
+                new Vector3(0.5f, -0.5f, 0f),
+                new Vector3(-0.5f, 0.5f, 0f),
+                new Vector3(0.5f, 0.5f, 0f)
+            };
+            // The native frame is top-to-bottom, while Unity samples raw
+            // texture row zero at v=0. Keep the native bytes intact and map
+            // the top vertices to v=0 so the source order is preserved.
+            mesh.uv = new[]
+            {
+                new Vector2(0f, 1f),
+                new Vector2(1f, 1f),
+                new Vector2(0f, 0f),
+                new Vector2(1f, 0f)
+            };
+            mesh.triangles = new[] { 0, 2, 1, 2, 3, 1 };
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        private void UpdateLevel2IndexedFrame(ulong expectedTick)
+        {
+            EnsureLevel2IndexedFramePresentation();
+            level2IndexedFrameRenderer.enabled = false;
+            level2IndexedFrameLive = false;
+            level2IndexedFrameInfo = default;
+
+            // The copy is generation/tick-bound in the native carrier. Do not
+            // touch either Unity texture until the complete copy succeeds;
+            // stale requests therefore cannot re-present prior bytes.
+            var info = campaignSession.CopyDayIndexedFrame(expectedTick);
+            var indices = campaignSession.DayIndexedFrameIndices;
+            var palette = campaignSession.DayIndexedFramePalette;
+            Require(
+                info.generation == campaignSession.Generation &&
+                info.tick == expectedTick &&
+                info.indexBytes == (uint)indices.Length &&
+                info.paletteBytes == (uint)palette.Length,
+                "Level 2 indexed frame generation/tick and byte binding");
+
+            level2IndexedFrameIndexTexture.LoadRawTextureData(indices);
+            level2IndexedFrameIndexTexture.Apply(false, false);
+            level2IndexedFramePaletteTexture.LoadRawTextureData(palette);
+            level2IndexedFramePaletteTexture.Apply(false, false);
+            level2IndexedFrameInfo = info;
+            level2IndexedFrameRenderer.enabled = true;
+            level2IndexedFrameLive = true;
+            level2IndexedFrameUploadCount++;
         }
 
         private void DisableTerrainMeshRenderers()
@@ -7132,6 +7321,67 @@ namespace MagicCarpet.Native
                 "complete Level 2 Day HUD materialization");
         }
 
+        private void DestroyLevel2IndexedFramePresentation()
+        {
+            if (level2IndexedFrameRenderer != null)
+            {
+                level2IndexedFrameRenderer.enabled = false;
+            }
+
+            if (level2IndexedFrameObject != null)
+            {
+                if (Application.isPlaying)
+                    Destroy(level2IndexedFrameObject);
+                else
+                    DestroyImmediate(level2IndexedFrameObject);
+            }
+            if (level2IndexedFrameCamera != null)
+            {
+                if (Application.isPlaying)
+                    Destroy(level2IndexedFrameCamera.gameObject);
+                else
+                    DestroyImmediate(level2IndexedFrameCamera.gameObject);
+            }
+            if (level2IndexedFrameMaterial != null)
+            {
+                if (Application.isPlaying)
+                    Destroy(level2IndexedFrameMaterial);
+                else
+                    DestroyImmediate(level2IndexedFrameMaterial);
+            }
+            if (level2IndexedFrameIndexTexture != null)
+            {
+                if (Application.isPlaying)
+                    Destroy(level2IndexedFrameIndexTexture);
+                else
+                    DestroyImmediate(level2IndexedFrameIndexTexture);
+            }
+            if (level2IndexedFramePaletteTexture != null)
+            {
+                if (Application.isPlaying)
+                    Destroy(level2IndexedFramePaletteTexture);
+                else
+                    DestroyImmediate(level2IndexedFramePaletteTexture);
+            }
+            if (level2IndexedFrameMesh != null)
+            {
+                if (Application.isPlaying)
+                    Destroy(level2IndexedFrameMesh);
+                else
+                    DestroyImmediate(level2IndexedFrameMesh);
+            }
+
+            level2IndexedFrameObject = null;
+            level2IndexedFrameCamera = null;
+            level2IndexedFrameMesh = null;
+            level2IndexedFrameRenderer = null;
+            level2IndexedFrameIndexTexture = null;
+            level2IndexedFramePaletteTexture = null;
+            level2IndexedFrameMaterial = null;
+            level2IndexedFrameInfo = default;
+            level2IndexedFrameLive = false;
+        }
+
         private void DestroyLevel2DayHudPresentation()
         {
             foreach (var texture in hudBitmapTextures.Values)
@@ -8032,6 +8282,7 @@ namespace MagicCarpet.Native
                 level2StartupReady &&
                 campaignSession != null,
                 "Level 2 reset route requires a validated campaign session");
+            DestroyLevel2IndexedFramePresentation();
             campaignSession.Reset();
             level2StepSnapshot = default;
             level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
@@ -8045,6 +8296,7 @@ namespace MagicCarpet.Native
             level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
             PresentLevel2DayHud(level2DayHud);
             ProjectLevel2Minimap(level2TerrainState.tick);
+            UpdateLevel2IndexedFrame(level2TerrainState.tick);
         }
 
         internal void QualificationDisposeNativeOwners()
@@ -11363,7 +11615,9 @@ namespace MagicCarpet.Native
             ownerAssetCache = OwnerAssetCache.OpenAndValidateLevel2(assetCachePath);
             level2DayHudDescriptor = ownerAssetCache.DayHud;
             MaterializeLevel2DayHud();
-            campaignSession = NativeCampaignSession.OpenLevel2(packagePath);
+            campaignSession = NativeCampaignSession.OpenLevel2(
+                packagePath,
+                assetCachePath);
             try
             {
                 campaignWorldInfo = campaignSession.WorldInfo();
@@ -11395,6 +11649,8 @@ namespace MagicCarpet.Native
                 Require(
                     NativeCampaignSession.ActiveSessionCount == 1,
                     "exactly one authoritative Level 2 campaign handle");
+                EnsureLevel2IndexedFramePresentation();
+                UpdateLevel2IndexedFrame(level2TerrainState.tick);
                 level2StartupReady = true;
                 Debug.Log(
                     $"MC_LEVEL2_STARTUP VERIFIED profile=2/1/Day " +
@@ -11406,6 +11662,7 @@ namespace MagicCarpet.Native
             }
             catch
             {
+                DestroyLevel2IndexedFramePresentation();
                 campaignSession.Dispose();
                 campaignSession = null;
                 throw;
@@ -11797,6 +12054,7 @@ namespace MagicCarpet.Native
             ownerAudio = null;
             if (wasLevel2)
             {
+                DestroyLevel2IndexedFramePresentation();
                 DestroyLevel2DayHudPresentation();
                 ownerAssetCache = null;
             }
