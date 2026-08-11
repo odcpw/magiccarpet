@@ -20715,34 +20715,40 @@ impl Level2ResetSession {
         // boundary's capacity just like remc2.
         self.economy.rebuild_owner_max_mana_projection();
         self.synchronize_level2_terrain();
-        let preexisting_class14_model5_slots = self
+        self.step_level2_imported_switch_roots(pass);
+        self.activate_level2_authored_group8(pass);
+        self.activate_level2_authored_group31(pass);
+        let preexisting_group31_model5_slots = self
             .economy
             .authored_class14()
             .iter()
             .filter(|source| source.active && source.model == 5)
             .map(|source| source.source_entity_index)
             .collect::<BTreeSet<_>>();
-        self.step_level2_imported_switch_roots(pass);
-        self.activate_level2_authored_group8(pass);
-        self.activate_level2_authored_group31(pass);
         self.step_level2_group31_switch28(pass);
+        let deferred_group31_model5_slots = self
+            .level2_group31_switch28
+            .map(|switch| {
+                self.economy
+                    .authored_class14()
+                    .iter()
+                    .filter(|source| {
+                        source.active
+                            && source.model == 5
+                            && source.source_entity_index < switch.authored_index
+                            && !preexisting_group31_model5_slots
+                                .contains(&source.source_entity_index)
+                    })
+                    .map(|source| source.source_entity_index)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
         self.step_level2_group10_switch25(pass);
         self.activate_level2_authored_bees(pass);
         self.activate_level2_authored_model13(pass);
         self.activate_level2_authored_model76(pass);
         self.activate_level2_authored_class14(pass);
         self.sync_level2_model76_targets_from_entities();
-        let deferred_class14_model5_slots = self
-            .economy
-            .authored_class14()
-            .iter()
-            .filter(|source| {
-                source.active
-                    && source.model == 5
-                    && !preexisting_class14_model5_slots.contains(&source.source_entity_index)
-            })
-            .map(|source| source.source_entity_index)
-            .collect::<BTreeSet<_>>();
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
         for event in self.goats.begin_source_turn(&goat_players) {
             let source_slot = match event {
@@ -20801,7 +20807,7 @@ impl Level2ResetSession {
             .economy
             .live_arena_cursor_rows()
             .into_iter()
-            .filter(|row| !deferred_class14_model5_slots.contains(&row.source_slot))
+            .filter(|row| !deferred_group31_model5_slots.contains(&row.source_slot))
             .filter(|row| !routes.iter().any(|(known, _)| known == &row.source_slot))
             .map(|row| (row.source_slot, row))
             .collect::<BTreeMap<_, _>>();
@@ -20816,7 +20822,7 @@ impl Level2ResetSession {
             .economy
             .live_arena_cursor_rows()
             .into_iter()
-            .filter(|row| deferred_class14_model5_slots.contains(&row.source_slot))
+            .filter(|row| deferred_group31_model5_slots.contains(&row.source_slot))
             .map(|row| (row.source_slot, row.generation))
             .collect::<BTreeSet<_>>();
         for (source_slot, kind) in routes {
@@ -34847,6 +34853,132 @@ mod tests {
 
     fn level_two_group31_switch274_activation_turns(phase: u8) -> usize {
         1 + usize::from((8_u8.wrapping_sub(phase & 7)) & 7)
+    }
+
+    fn step_group31_with_cursor_slots(
+        higher_than_producer: bool,
+    ) -> (Level2ResetSession, Vec<u16>, Vec<u16>) {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-31 cursor session");
+        let row_274 = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 274)
+            .copied()
+            .expect("group-31 row-274 switch");
+        let group28_indices = session
+            .mission()
+            .authored_features()
+            .iter()
+            .filter(|feature| {
+                feature.activation_group == 28 && feature.kind == 14 && feature.subtype == 5
+            })
+            .map(|feature| feature.index)
+            .collect::<Vec<_>>();
+        assert!(!group28_indices.is_empty());
+        let required_cursor_slots = group28_indices.len() + 2;
+        let cursor_slots = session
+            .economy
+            .free_slots
+            .iter()
+            .copied()
+            .filter(|slot| {
+                if higher_than_producer {
+                    *slot > 274
+                } else {
+                    *slot < 274
+                }
+            })
+            .take(required_cursor_slots)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cursor_slots.len(),
+            required_cursor_slots,
+            "fixture must provide enough controlled cursor slots"
+        );
+        session.economy.free_slots = cursor_slots.clone();
+        let switch_seed = session.level2_class11_model0_constructor_phase;
+        session.runtime.set_level2_is_level_end(1);
+        session
+            .set_level2_entity_position(111, row_274.world_position(0))
+            .expect("move model-zero overlap target");
+
+        for _ in 0..level_two_group31_switch274_activation_turns(switch_seed) {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+
+        (session, cursor_slots, group28_indices)
+    }
+
+    #[test]
+    fn level_two_group31_higher_cursor_slots_dispatch_in_same_pass() {
+        let (session, cursor_slots, group28_indices) = step_group31_with_cursor_slots(true);
+        assert!(cursor_slots.iter().all(|slot| *slot > 274));
+        let group28_slots = &cursor_slots[2..];
+        assert_eq!(group28_slots.len(), group28_indices.len());
+        assert!(group28_slots.iter().all(|source_slot| {
+            session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena { source_slot: event_slot, .. }
+                        if event_slot == source_slot
+                )
+            }) || session.economy().free_slots.contains(source_slot)
+        }));
+        assert!(group28_slots.iter().any(|source_slot| {
+            session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena { source_slot: event_slot, .. }
+                        if event_slot == source_slot
+                )
+            })
+        }));
+        assert!(group28_indices.iter().any(|authored_index| {
+            !session
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|row| row.authored_index == *authored_index)
+        }));
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Error { message, .. }
+                if message.contains("runagain cap")
+        )));
+    }
+
+    #[test]
+    fn level_two_group31_lower_cursor_slots_defer_to_next_pass() {
+        let (mut session, cursor_slots, group28_indices) = step_group31_with_cursor_slots(false);
+        assert!(cursor_slots.iter().all(|slot| *slot < 274));
+        let deferred_slots = session
+            .economy()
+            .authored_class14()
+            .iter()
+            .filter(|row| group28_indices.contains(&row.authored_index))
+            .map(|row| row.source_entity_index)
+            .collect::<Vec<_>>();
+        assert_eq!(deferred_slots.len(), group28_indices.len());
+        assert!(deferred_slots.iter().all(|slot| *slot < 274));
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena { source_slot, .. }
+                if deferred_slots.contains(source_slot)
+        )));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(group28_indices.iter().all(|authored_index| {
+            !session
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|row| row.authored_index == *authored_index)
+        }));
     }
 
     #[test]
