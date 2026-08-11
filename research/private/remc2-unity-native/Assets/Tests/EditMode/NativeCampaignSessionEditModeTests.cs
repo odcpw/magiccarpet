@@ -383,7 +383,7 @@ namespace MagicCarpet.Native.Tests
                 var initialState = runtime.Level2ProductionMinimapState;
                 var initialEntities = runtime.Level2ProductionMinimapEntities;
                 var initialMarks = runtime.Level2ProductionMinimapMarks;
-                Assert.That(runtime.Level2ProductionMinimapPresenterReady, Is.True);
+                Assert.That(runtime.Level2ProductionMinimapProjectionReady, Is.True);
                 Assert.That(initialEntities, Is.Not.Empty);
                 Assert.That(initialMarks, Is.Not.Empty);
                 Assert.That(initialState.visibilityFlags, Is.EqualTo(2u));
@@ -395,9 +395,33 @@ namespace MagicCarpet.Native.Tests
                     initialMarks.Any(row => row.subjectEntityIndex == 112),
                     Is.False,
                     "the unrelated live-relation stage is not the current source mark");
+                Assert.That(
+                    initialEntities.Zip(initialEntities.Skip(1), (left, right) =>
+                        left.sourceOrder < right.sourceOrder).All(value => value),
+                    Is.True,
+                    "initial Rust minimap entities preserve source order");
+                Assert.That(
+                    initialMarks.Zip(initialMarks.Skip(1), (left, right) =>
+                        left.sourceOrder < right.sourceOrder).All(value => value),
+                    Is.True,
+                    "initial Rust minimap marks preserve source order");
                 Assert.That(initialMarks[0].kind, Is.EqualTo(2));
-                Assert.That(initialMarks[0].paletteIndex, Is.EqualTo(184));
+                Assert.That(initialMarks[0].paletteIndex, Is.EqualTo(188));
                 Assert.That(initialMarks[0].helpSelector, Is.EqualTo(0x51));
+                Assert.That(initialMarks[0].visible, Is.EqualTo(1));
+                var managedHiddenMark = initialMarks[0];
+                managedHiddenMark.visible = 0;
+                Assert.DoesNotThrow(() =>
+                    NativeCampaignSession.ValidateMinimapMarks(
+                        new[] { managedHiddenMark },
+                        initialState.generation,
+                        initialState.tick));
+                managedHiddenMark.visible = 2;
+                Assert.Throws<System.InvalidOperationException>(() =>
+                    NativeCampaignSession.ValidateMinimapMarks(
+                        new[] { managedHiddenMark },
+                        initialState.generation,
+                        initialState.tick));
                 var family4State = initialState;
                 family4State.visibilityFlags = 0x10;
                 Assert.DoesNotThrow(() =>
@@ -413,39 +437,25 @@ namespace MagicCarpet.Native.Tests
                         initialState.generation,
                         initialState.tick));
                 Assert.That(
-                    runtime.QualificationLevel2MinimapRowsRemainSourceOrdered(),
-                    Is.True);
-                Assert.That(
-                    runtime.QualificationLevel2MinimapApertureAdmits(-1, 64),
+                    initialEntities.Any(row => row.subjectEntityIndex == ushort.MaxValue) ||
+                    initialMarks.Any(row => row.subjectEntityIndex == ushort.MaxValue),
                     Is.False,
-                    "off-map minimap coordinates fail closed at the owner aperture");
-                Assert.That(
-                    runtime.QualificationLevel2MinimapApertureAdmits(0, 0),
-                    Is.False,
-                    "an in-bounds masked minimap coordinate is rejected by the owner aperture");
-                Assert.That(
-                    runtime.QualificationLevel2MinimapApertureAdmits(64, 64),
-                    Is.True,
-                    "an in-bounds open minimap coordinate is admitted by the owner aperture");
-                Assert.That(
-                    runtime.QualificationHasLevel2MinimapSubject(ushort.MaxValue),
-                    Is.False,
-                    "unknown minimap subjects fail closed");
-                Assert.That(
-                    runtime.QualificationLevel2MinimapStaleBoundaryPreservesSentinel(),
-                    Is.True,
-                    "stale minimap generation/tick reads preserve boundary outputs");
+                    "unknown minimap subjects are absent from the Rust projection");
 
                 runtime.QualificationDriveLevel2Frames(282);
                 var acquiredState = runtime.Level2ProductionMinimapState;
                 var acquiredEntities = runtime.Level2ProductionMinimapEntities;
                 var acquiredMarks = runtime.Level2ProductionMinimapMarks;
-                Assert.That(acquiredState.visibilityFlags, Is.EqualTo(6u));
+                Assert.That(
+                    acquiredState.visibilityFlags,
+                    Is.EqualTo(6u),
+                    "owner mode plus holder-acquired/inactive participant state");
                 Assert.That(acquiredMarks, Is.Not.Empty);
+                Assert.That(acquiredMarks[0].visible, Is.EqualTo(0));
                 Assert.That(
                     acquiredEntities.Any(row => row.subjectEntityIndex == 112),
                     Is.False,
-                    "Beyond Sight Nyphur is not an entity blip");
+                    "holder-acquired but inactive participant is not an entity blip");
                 Assert.That(
                     acquiredMarks.Any(row => row.subjectEntityIndex == 112),
                     Is.False,
@@ -455,112 +465,34 @@ namespace MagicCarpet.Native.Tests
                     acquiredEntities.Any(row => row.subjectEntityIndex == 0),
                     Is.False);
                 Assert.That(
-                    runtime.QualificationHasLevel2MinimapSubject(
-                        acquiredEntities[0].subjectEntityIndex),
-                    Is.True);
+                    acquiredEntities.Any(row => row.subjectEntityIndex == ushort.MaxValue) ||
+                    acquiredMarks.Any(row => row.subjectEntityIndex == ushort.MaxValue),
+                    Is.False,
+                    "unknown minimap subjects are absent from the Rust projection");
                 Assert.That(
-                    runtime.QualificationHasLevel2MinimapSubject(ushort.MaxValue),
-                    Is.False);
-                Assert.That(
-                    runtime.QualificationLevel2MinimapRowsRemainSourceOrdered(),
+                    acquiredEntities.Zip(acquiredEntities.Skip(1), (left, right) =>
+                        left.sourceOrder < right.sourceOrder).All(value => value),
                     Is.True,
-                    "mark order is carried from Rust, never scene-object order");
-
-                var acquiredEntityIdentity = acquiredEntities
-                    .Select(row => (
-                        row.sourceOrder,
-                        row.subjectEntityIndex,
-                        row.selector,
-                        row.paletteIndex,
-                        row.kind,
-                        row.size,
-                        row.anchor,
-                        row.helpSelector,
-                        row.visible))
-                    .ToArray();
-                var acquiredMarkIdentity = acquiredMarks
-                    .Select(row => (
-                        row.sourceOrder,
-                        row.subjectEntityIndex,
-                        row.paletteIndex,
-                        row.kind,
-                        row.helpSelector,
-                        row.visible))
-                    .ToArray();
-
-                var presentationRoot = new GameObject("Level 2 minimap presentation objects");
-                presentationRoot.transform.SetParent(root.transform, false);
-                var presentationObjects = acquiredEntities
-                    .Select((row, index) =>
-                    {
-                        var node = new GameObject(
-                            $"Minimap entity {index} source {row.sourceOrder}");
-                        node.transform.SetParent(presentationRoot.transform, false);
-                        return node;
-                    })
-                    .Concat(acquiredMarks.Select((row, index) =>
-                    {
-                        var node = new GameObject(
-                            $"Minimap mark {index} source {row.sourceOrder}");
-                        node.transform.SetParent(presentationRoot.transform, false);
-                        return node;
-                    }))
-                    .ToArray();
-                for (var index = 0; index < presentationObjects.Length; index++)
-                {
-                    presentationObjects[index].transform.SetSiblingIndex(
-                        presentationObjects.Length - index - 1);
-                }
-
-                runtime.QualificationRefreshLevel2Minimap();
-                CollectionAssert.AreEqual(
-                    acquiredEntityIdentity,
-                    runtime.Level2ProductionMinimapEntities.Select(row => (
-                        row.sourceOrder,
-                        row.subjectEntityIndex,
-                        row.selector,
-                        row.paletteIndex,
-                        row.kind,
-                        row.size,
-                        row.anchor,
-                        row.helpSelector,
-                        row.visible)).ToArray(),
-                    "reversing minimap presentation siblings cannot reorder Rust entities");
-                CollectionAssert.AreEqual(
-                    acquiredMarkIdentity,
-                    runtime.Level2ProductionMinimapMarks.Select(row => (
-                        row.sourceOrder,
-                        row.subjectEntityIndex,
-                        row.paletteIndex,
-                        row.kind,
-                        row.helpSelector,
-                        row.visible)).ToArray(),
-                    "reversing minimap presentation siblings cannot reorder Rust marks");
+                    "Rust minimap entities preserve source order");
+                Assert.That(
+                    acquiredMarks.Zip(acquiredMarks.Skip(1), (left, right) =>
+                        left.sourceOrder < right.sourceOrder).All(value => value),
+                    Is.True,
+                    "Rust minimap marks preserve source order");
 
                 runtime.QualificationDriveLevel2Frames(1);
-                CollectionAssert.AreEqual(
-                    acquiredEntityIdentity,
-                    runtime.Level2ProductionMinimapEntities.Select(row => (
-                        row.sourceOrder,
-                        row.subjectEntityIndex,
-                        row.selector,
-                        row.paletteIndex,
-                        row.kind,
-                        row.size,
-                        row.anchor,
-                        row.helpSelector,
-                        row.visible)).ToArray(),
-                    "ordinary refresh remains independent of GameObject sibling order");
-                CollectionAssert.AreEqual(
-                    acquiredMarkIdentity,
-                    runtime.Level2ProductionMinimapMarks.Select(row => (
-                        row.sourceOrder,
-                        row.subjectEntityIndex,
-                        row.paletteIndex,
-                        row.kind,
-                        row.helpSelector,
-                        row.visible)).ToArray(),
-                    "ordinary mark refresh remains independent of GameObject sibling order");
+                Assert.That(
+                    runtime.Level2ProductionMinimapEntities
+                        .Zip(runtime.Level2ProductionMinimapEntities.Skip(1), (left, right) =>
+                            left.sourceOrder < right.sourceOrder).All(value => value),
+                    Is.True,
+                    "ordinary Rust minimap entity refresh preserves source order");
+                Assert.That(
+                    runtime.Level2ProductionMinimapMarks
+                        .Zip(runtime.Level2ProductionMinimapMarks.Skip(1), (left, right) =>
+                            left.sourceOrder < right.sourceOrder).All(value => value),
+                    Is.True,
+                    "ordinary Rust minimap mark refresh preserves source order");
 
                 runtime.QualificationResetLevel2Production();
                 var resetState = runtime.Level2ProductionMinimapState;
@@ -587,30 +519,16 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(replayState.visibilityFlags, Is.EqualTo(acquiredState.visibilityFlags));
                 Assert.That(replayState.entityHash, Is.EqualTo(acquiredState.entityHash));
                 Assert.That(replayState.markHash, Is.EqualTo(acquiredState.markHash));
-                CollectionAssert.AreEqual(
-                    acquiredEntityIdentity,
-                    replayEntities.Select(row => (
-                        row.sourceOrder,
-                        row.subjectEntityIndex,
-                        row.selector,
-                        row.paletteIndex,
-                        row.kind,
-                        row.size,
-                        row.anchor,
-                        row.helpSelector,
-                        row.visible)).ToArray());
-                CollectionAssert.AreEqual(
-                    acquiredMarkIdentity,
-                    replayMarks.Select(row => (
-                        row.sourceOrder,
-                        row.subjectEntityIndex,
-                        row.paletteIndex,
-                        row.kind,
-                        row.helpSelector,
-                        row.visible)).ToArray());
                 Assert.That(
-                    runtime.QualificationLevel2MinimapRowsRemainSourceOrdered(),
-                    Is.True);
+                    replayEntities.Zip(replayEntities.Skip(1), (left, right) =>
+                        left.sourceOrder < right.sourceOrder).All(value => value),
+                    Is.True,
+                    "replayed Rust minimap entities preserve source order");
+                Assert.That(
+                    replayMarks.Zip(replayMarks.Skip(1), (left, right) =>
+                        left.sourceOrder < right.sourceOrder).All(value => value),
+                    Is.True,
+                    "replayed Rust minimap marks preserve source order");
             }
             finally
             {

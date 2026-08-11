@@ -65,6 +65,15 @@ pub(crate) struct Level2MinimapPlan {
 
 const LEVEL2_MINIMAP_SIDE: i32 = 128;
 const LEVEL2_MINIMAP_KIND_FIXED_MARK: u8 = 2;
+const LEVEL2_DAY_CLRD_GENERIC_ENTITY: u8 = 12;
+const LEVEL2_DAY_CLRD_CIVILIANS: u8 = 90;
+const LEVEL2_DAY_CLRD_MARKER_STONE: u8 = 101;
+const LEVEL2_DAY_CLRD_UNPOSSESSED_BUILDING: u8 = 98;
+const LEVEL2_DAY_CLRD_SPELLS: u8 = 123;
+const LEVEL2_DAY_CLRD_UNPOSSESSED_BUILDING_2: u8 = 209;
+const LEVEL2_DAY_CLRD_CREATURE: u8 = 224;
+const LEVEL2_DAY_V90: u8 = 0x1C;
+const LEVEL2_DAY_V91: u8 = 0xE8;
 
 // `playersColors_E88E0x` in the pinned Day GameUI source.  The first two
 // columns are the source's primary/secondary minimap colours; the third HUD
@@ -80,7 +89,7 @@ const LEVEL2_DAY_PLAYER_COLOURS: [[u8; 2]; 8] = [
     [0x3D, 0x3A],
 ];
 
-fn level2_day_true_wizard_number(source_colour: u8) -> Option<usize> {
+fn level2_day_selector_player_index(source_colour: u8) -> Option<usize> {
     // TransformPlayerColorIndex_616D0's single-player mapping.  The Level 2
     // campaign route is the qualified single-player route; multiplayer's
     // lobby permutation is not a carrier in Level2ResetSession.
@@ -97,6 +106,10 @@ fn level2_day_true_wizard_number(source_colour: u8) -> Option<usize> {
     })
 }
 
+fn level2_day_palette_player_index(source_colour: u8) -> Option<usize> {
+    (source_colour < 8).then_some(usize::from(source_colour))
+}
+
 fn level2_day_player_colour(
     session: &Level2ResetSession,
     entity_index: u16,
@@ -106,8 +119,8 @@ fn level2_day_player_colour(
         .players()
         .iter()
         .find(|player| player.entity_index == entity_index)?;
-    let wizard = level2_day_true_wizard_number(player.player_color_index())?;
-    Some(LEVEL2_DAY_PLAYER_COLOURS[wizard][usize::from(secondary)])
+    let palette_player = level2_day_palette_player_index(player.player_color_index())?;
+    Some(LEVEL2_DAY_PLAYER_COLOURS[palette_player][usize::from(secondary)])
 }
 
 fn level2_source_u16(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -121,8 +134,9 @@ fn level2_minimap_input(
     session: &Level2ResetSession,
     entity: &sim_core::native_world::EntitySnapshot,
     local_entity_index: u16,
-) -> Option<Level1MinimapEntityInput> {
+) -> Option<(Level1MinimapEntityInput, u8)> {
     let bytes = entity.record_bytes();
+    let parameter_record_index = *bytes.get(0x4A)?;
     let player_link = entity.source_player_entity_index();
     let relation_is_player = |entity_index: u16| {
         session
@@ -131,25 +145,116 @@ fn level2_minimap_input(
             .find(|candidate| candidate.index == entity_index)
             .is_some_and(|candidate| candidate.active && candidate.class == 3)
     };
-    Some(Level1MinimapEntityInput {
-        source_slot: entity.index,
-        class: entity.class,
-        model: entity.model,
-        action: entity.action,
-        phase: entity.phase,
-        control_flags: entity.control_flags,
-        source_id: entity.source_id,
-        source_id_is_player: relation_is_player(entity.source_id),
-        source_id_is_local_player: entity.source_id == local_entity_index,
-        player_link,
-        player_link_is_player: relation_is_player(player_link),
-        player_link_is_local_player: player_link == local_entity_index,
-        parent_id: level2_source_u16(bytes, 0x28)?,
-        stage_var_2: *bytes.get(0x49)? as i8,
-        word_32: level2_source_u16(bytes, 0x32)?,
-        position: entity.position,
-        active: entity.active && !entity.drawing_disabled(),
-    })
+    Some((
+        Level1MinimapEntityInput {
+            source_slot: entity.index,
+            class: entity.class,
+            model: entity.model,
+            action: entity.action,
+            phase: entity.phase,
+            control_flags: entity.control_flags,
+            source_id: entity.source_id,
+            source_id_is_player: relation_is_player(entity.source_id),
+            source_id_is_local_player: entity.source_id == local_entity_index,
+            player_link,
+            player_link_is_player: relation_is_player(player_link),
+            player_link_is_local_player: player_link == local_entity_index,
+            parent_id: level2_source_u16(bytes, 0x28)?,
+            stage_var_2: *bytes.get(0x49)? as i8,
+            word_32: level2_source_u16(bytes, 0x32)?,
+            position: entity.position,
+            active: entity.active && !entity.drawing_disabled(),
+        },
+        parameter_record_index,
+    ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Level2DayPaletteSelection {
+    Fixed(u8),
+    Player { entity_index: u16, secondary: bool },
+}
+
+fn level2_day_class10_palette_selection(
+    input: Level1MinimapEntityInput,
+    phase_3: bool,
+) -> Option<Level2DayPaletteSelection> {
+    match input.model {
+        39 | 57 => Some(if input.player_link_is_player {
+            Level2DayPaletteSelection::Player {
+                entity_index: input.player_link,
+                secondary: !phase_3,
+            }
+        } else {
+            Level2DayPaletteSelection::Fixed(LEVEL2_DAY_V91)
+        }),
+        45 => Some(if input.player_link_is_player {
+            Level2DayPaletteSelection::Player {
+                entity_index: input.player_link,
+                secondary: !phase_3,
+            }
+        } else if input.source_id_is_player {
+            Level2DayPaletteSelection::Player {
+                entity_index: input.source_id,
+                secondary: false,
+            }
+        } else {
+            Level2DayPaletteSelection::Fixed(LEVEL2_DAY_CLRD_UNPOSSESSED_BUILDING_2)
+        }),
+        _ => None,
+    }
+}
+
+fn level2_day_fixed_palette_for_entity(
+    input: Level1MinimapEntityInput,
+    phase_2: bool,
+    phase_3: bool,
+) -> Option<u8> {
+    match input.class {
+        2 => Some(match input.model {
+            0 => LEVEL2_DAY_V90,
+            1 => LEVEL2_DAY_CLRD_MARKER_STONE,
+            2 if phase_2 => LEVEL2_DAY_CLRD_UNPOSSESSED_BUILDING,
+            2 => LEVEL2_DAY_V90,
+            _ => LEVEL2_DAY_V90,
+        }),
+        5 => {
+            if input.source_id != input.source_slot && input.source_id_is_player {
+                None
+            } else if (12..=14).contains(&input.model) {
+                Some(LEVEL2_DAY_CLRD_CIVILIANS)
+            } else {
+                Some(LEVEL2_DAY_CLRD_GENERIC_ENTITY)
+            }
+        }
+        9 => (!input.source_id_is_player).then_some(LEVEL2_DAY_CLRD_UNPOSSESSED_BUILDING_2),
+        10 => {
+            if input.model == 78 || input.source_id_is_player {
+                None
+            } else {
+                Some(LEVEL2_DAY_CLRD_UNPOSSESSED_BUILDING_2)
+            }
+        }
+        12 | 15 => Some(LEVEL2_DAY_CLRD_SPELLS),
+        14 if input.model == 5 => Some(if phase_3 {
+            LEVEL2_DAY_CLRD_SPELLS
+        } else {
+            LEVEL2_DAY_CLRD_CREATURE
+        }),
+        _ => None,
+    }
+}
+
+fn level2_day_model45_help_selector(
+    session: &Level2ResetSession,
+    input: Level1MinimapEntityInput,
+    parameter_record_index: u8,
+) -> Option<u8> {
+    debug_assert_eq!(input.class, 10);
+    debug_assert_eq!(input.model, 45);
+    debug_assert!(!input.player_link_is_player);
+    let flags = session.level2_entity_parameter_flags(parameter_record_index)?;
+    Some(if flags & 0x08 == 0 { 21 } else { 0 })
 }
 
 fn level2_day_palette_for_entity(
@@ -170,115 +275,135 @@ fn level2_day_palette_for_entity(
             .and_then(|entity_index| level2_day_player_colour(session, entity_index, secondary))
     };
 
-    let palette = match input.class {
-        2 => match input.model {
-            0 => 0x1C,
-            1 => 23,
-            2 => {
-                if phase_2 {
-                    177
-                } else {
-                    0x1C
-                }
-            }
-            _ => 0x1C,
-        },
-        5 => {
-            if input.source_id != input.source_slot && input.source_id_is_player {
-                player_colour(true)?
-            } else if (12..=14).contains(&input.model) {
-                23
-            } else {
-                // DrawMinimapEntities uses colorPalette[0] for the Day
-                // generic/entity branch.  PALD's qualified entry zero is the
-                // direct zero palette index, not a generated fallback.
-                0
-            }
+    if input.class == 10
+        && let Some(selection) = level2_day_class10_palette_selection(input, phase_3)
+    {
+        return Some(match selection {
+            Level2DayPaletteSelection::Fixed(palette) => palette,
+            Level2DayPaletteSelection::Player {
+                entity_index,
+                secondary,
+            } => level2_day_player_colour(session, entity_index, secondary)?,
+        });
+    }
+
+    if let Some(palette) = level2_day_fixed_palette_for_entity(input, phase_2, phase_3) {
+        return Some(palette);
+    }
+
+    Some(match input.class {
+        5 => player_colour(true)?,
+        9 => player_colour(false)?,
+        10 if input.model == 78 => {
+            level2_day_player_colour(session, session.state.entity_index, !phase_3)?
         }
-        9 => {
-            if input.source_id_is_player {
-                player_colour(false)?
-            } else {
-                215
-            }
-        }
-        10 => match input.model {
-            39 | 57 | 45 => {
-                if input.player_link_is_player {
-                    player_colour(!phase_3)?
-                } else {
-                    0xE8
-                }
-            }
-            78 => level2_day_player_colour(session, session.state.entity_index, !phase_3)?,
-            _ => {
-                if input.source_id_is_player {
-                    player_colour(false)?
-                } else {
-                    215
-                }
-            }
-        },
-        12 | 15 => 119,
-        14 if input.model == 5 => {
-            if phase_3 {
-                119
-            } else {
-                176
-            }
-        }
+        10 => player_colour(false)?,
         _ => return None,
-    };
-    Some(palette)
+    })
+}
+
+fn level2_day_static_palette_override(input: Level1MinimapEntityInput) -> Option<u8> {
+    match (input.class, input.model) {
+        (2, 0) => Some(0x1C),
+        (11, 12 | 31) => Some(0),
+        _ => None,
+    }
+}
+
+fn level2_day_minimap_input_for_source(
+    input: Level1MinimapEntityInput,
+    family12_enabled: bool,
+) -> Option<Level1MinimapEntityInput> {
+    if input.class == 3 && !matches!(input.model, 2 | 3) {
+        return None;
+    }
+    if input.class == 2 && input.model == 0 && input.action == 2 {
+        return None;
+    }
+
+    let classified_input = input;
+    if input.class == 3 && input.model == 3 {
+        let local_player = input.source_id_is_local_player;
+        if !local_player && !family12_enabled {
+            return None;
+        }
+    }
+    Some(classified_input)
+}
+
+fn level2_day_minimap_help_selector(
+    input: Level1MinimapEntityInput,
+    source_help_selector: u8,
+) -> u8 {
+    if input.class == 3 && input.model == 3 {
+        let local_player = input.source_id_is_local_player;
+        if !local_player {
+            return 26;
+        }
+    }
+    source_help_selector
 }
 
 fn level2_day_minimap_command(
     session: &Level2ResetSession,
     input: Level1MinimapEntityInput,
     family12_enabled: bool,
+    parameter_record_index: u8,
 ) -> Option<Level1MinimapEntityCommand> {
-    // DrawMinimapEntities_B_61A00 has no class-3/model-1 entity branch.  The
-    // Day Nyphur row is admitted by DrawMinimapMarks_644F0 instead.
-    if input.class == 3 && !matches!(input.model, 2 | 3) {
-        return None;
-    }
-    // Day's model-0 class-2 branch is admitted only for action 2; the old
-    // Level 1 classifier intentionally did not need this Day action gate.
-    if input.class == 2 && input.model == 0 && input.action != 2 {
-        return None;
-    }
-
-    // The pinned source's v83 is the non-zero local family-12 holder word.
-    // The typed player projection exposes the authoritative enabled holder;
-    // this keeps the model-3 player branch fail-closed when it is absent.
-    let mut classified_input = input;
-    if input.class == 3
-        && input.model == 3
-        && family12_enabled
-        && !input.player_link_is_local_player
-    {
-        classified_input.player_link_is_local_player = true;
+    // DrawMinimapEntities_B_61A00 excludes class-3/model-1 Nyphur.  A
+    // separate active objective carrier would be required to represent that
+    // participant through DrawMinimapMarks_644F0; this entity adapter does not
+    // synthesize one.
+    let classified_input = level2_day_minimap_input_for_source(input, family12_enabled)?;
+    if input.class == 3 && input.model == 3 {
+        if !input.source_id_is_player {
+            return None;
+        }
+        let selector_player = level2_day_selector_player_index(
+            session
+                .players()
+                .iter()
+                .find(|player| player.entity_index == input.source_id)?
+                .player_color_index(),
+        )?;
+        let (x, y) =
+            level1_minimap_project(&session.state, input.position, LEVEL2_MINIMAP_SIDE, 256);
+        return Some(Level1MinimapEntityCommand {
+            source_slot: input.source_slot,
+            x,
+            y,
+            selector: 66_u16.checked_add(u16::try_from(selector_player).ok()?)?,
+            kind: LEVEL1_MINIMAP_COMMAND_SPRITE,
+            palette_index: 0,
+            size: 1,
+            anchor: LEVEL1_MINIMAP_ANCHOR_BOTTOM_CENTER,
+            help_selector: level2_day_minimap_help_selector(input, 23),
+        });
     }
     let mut command = level1_minimap_entity_command(&session.state, classified_input)?;
     if input.class == 3 {
         let source_player = if input.source_id_is_player {
             input.source_id
-        } else if input.player_link_is_player {
-            input.player_link
         } else {
             return None;
         };
-        let wizard = level2_day_true_wizard_number(
+        let selector_player = level2_day_selector_player_index(
             session
                 .players()
                 .iter()
                 .find(|player| player.entity_index == source_player)?
                 .player_color_index(),
         )?;
-        command.selector = command.selector.checked_add(wizard as u16)?;
+        command.selector = command.selector.checked_add(selector_player as u16)?;
+        command.help_selector = level2_day_minimap_help_selector(input, command.help_selector);
         command.palette_index = 0;
     } else {
-        command.palette_index = level2_day_palette_for_entity(session, input)?;
+        command.palette_index = level2_day_static_palette_override(input)
+            .or_else(|| level2_day_palette_for_entity(session, input))?;
+        if input.class == 10 && input.model == 45 && !input.player_link_is_player {
+            command.help_selector =
+                level2_day_model45_help_selector(session, input, parameter_record_index)?;
+        }
     }
     Some(command)
 }
@@ -318,13 +443,15 @@ pub(crate) fn level2_minimap_plan(
         if is_nyphur && !visibility.visible_to_local_player {
             continue;
         }
-        let input = level2_minimap_input(session, entity, local_entity_index).ok_or_else(|| {
-            format!(
-                "level2 minimap entity {} record is incomplete",
-                entity.index
-            )
-        })?;
-        let command = level2_day_minimap_command(session, input, family12_enabled);
+        let (input, parameter_record_index) =
+            level2_minimap_input(session, entity, local_entity_index).ok_or_else(|| {
+                format!(
+                    "level2 minimap entity {} record is incomplete",
+                    entity.index
+                )
+            })?;
+        let command =
+            level2_day_minimap_command(session, input, family12_enabled, parameter_record_index);
         let Some(command) = command else {
             continue;
         };
@@ -343,11 +470,10 @@ pub(crate) fn level2_minimap_plan(
         });
     }
 
-    let objective_index = usize::from(local_player.player_color_index());
     let objective = session
         .runtime()
         .objectives
-        .get(objective_index)
+        .get(local_player_slot)
         .ok_or_else(|| "level2 minimap local objective is unavailable".to_owned())?;
     let stage_index = usize::from(objective.text_selector);
     let stage = session
@@ -373,10 +499,10 @@ pub(crate) fn level2_minimap_plan(
             subject_entity_index: 0,
             x,
             y,
-            palette_index: 184,
+            palette_index: 188,
             kind: LEVEL2_MINIMAP_KIND_FIXED_MARK,
             help_selector: 0x51,
-            visible: 1,
+            visible: u8::from(session.state.tick & 3 == 0),
         });
     }
 
@@ -3169,6 +3295,13 @@ mod ability_notification_tests {
 
 #[cfg(test)]
 mod level2_minimap_projection_tests {
+    use super::{
+        LEVEL1_MINIMAP_COMMAND_DOT, LEVEL1_MINIMAP_COMMAND_SPRITE, Level2DayPaletteSelection,
+        level2_day_class10_palette_selection, level2_day_fixed_palette_for_entity,
+        level2_day_minimap_help_selector, level2_day_minimap_input_for_source,
+        level2_day_palette_player_index, level2_day_selector_player_index,
+        level2_day_static_palette_override,
+    };
     use sim_core::{
         FlightState, Position,
         level1_mission::{
@@ -3224,5 +3357,296 @@ mod level2_minimap_projection_tests {
             256,
         );
         assert!(off_map.0 >= 128 || off_map.0 < 0 || off_map.1 >= 128 || off_map.1 < 0);
+    }
+
+    #[test]
+    fn level2_day_adapter_matches_pinned_entity_help_palette_and_objective_branches() {
+        let player = FlightState {
+            position: Position {
+                x: 1_000,
+                y: 1_000,
+                z: 0,
+            },
+            ..FlightState::default()
+        };
+        let class2_model0_action2 = Level1MinimapEntityInput {
+            source_slot: 1,
+            class: 2,
+            model: 0,
+            action: 2,
+            position: Position {
+                x: 1_128,
+                y: 1_000,
+                z: 0,
+            },
+            active: true,
+            ..Level1MinimapEntityInput::default()
+        };
+        assert!(
+            level2_day_minimap_input_for_source(class2_model0_action2, true).is_none(),
+            "pinned class-2/model-0 action 2 is excluded"
+        );
+
+        let class2_model0_other_action = Level1MinimapEntityInput {
+            action: 1,
+            ..class2_model0_action2
+        };
+        let classified = level2_day_minimap_input_for_source(class2_model0_other_action, true)
+            .expect("non-2 class-2/model-0 action remains admitted");
+        let generic_dot = level1_minimap_entity_command(&player, classified)
+            .expect("admitted class-2/model-0 action remains a source dot");
+        assert_eq!(generic_dot.kind, LEVEL1_MINIMAP_COMMAND_DOT);
+        assert_eq!(
+            level2_day_static_palette_override(class2_model0_other_action),
+            Some(0x1C)
+        );
+
+        let class3_model3_nonlocal = Level1MinimapEntityInput {
+            source_slot: 2,
+            class: 3,
+            model: 3,
+            source_id: 200,
+            source_id_is_player: true,
+            player_link: 200,
+            player_link_is_player: true,
+            position: Position {
+                x: 1_128,
+                y: 1_000,
+                z: 0,
+            },
+            active: true,
+            ..Level1MinimapEntityInput::default()
+        };
+        assert!(
+            level2_day_minimap_input_for_source(class3_model3_nonlocal, false).is_none(),
+            "nonlocal class-3/model-3 requires family 12"
+        );
+        let classified = level2_day_minimap_input_for_source(class3_model3_nonlocal, true)
+            .expect("family 12 admits nonlocal class-3/model-3");
+        assert_eq!(level2_day_minimap_help_selector(classified, 23), 26);
+
+        let class3_model3_player_link_only_local = Level1MinimapEntityInput {
+            source_id_is_local_player: false,
+            player_link: 0,
+            player_link_is_local_player: true,
+            ..class3_model3_nonlocal
+        };
+        assert!(
+            level2_day_minimap_input_for_source(class3_model3_player_link_only_local, false)
+                .is_none(),
+            "class-3/model-3 local admission compares source_id only"
+        );
+        assert_eq!(
+            level2_day_minimap_help_selector(class3_model3_player_link_only_local, 23,),
+            26
+        );
+
+        let class3_model3_local = Level1MinimapEntityInput {
+            source_id: 0,
+            source_id_is_local_player: true,
+            player_link: 0,
+            player_link_is_player: true,
+            player_link_is_local_player: true,
+            ..class3_model3_nonlocal
+        };
+        let local_classified = level2_day_minimap_input_for_source(class3_model3_local, false)
+            .expect("local class-3/model-3 remains admitted without family 12");
+        let local_sprite = level1_minimap_entity_command(&player, local_classified)
+            .expect("local class-3/model-3 remains the source sprite");
+        assert_eq!(
+            level2_day_minimap_help_selector(class3_model3_local, local_sprite.help_selector,),
+            23
+        );
+
+        for (model, selector) in [(12, 83), (31, 84)] {
+            let source_sprite_input = Level1MinimapEntityInput {
+                source_slot: 3,
+                class: 11,
+                model,
+                position: Position {
+                    x: 1_128,
+                    y: 1_000,
+                    z: 0,
+                },
+                active: true,
+                ..Level1MinimapEntityInput::default()
+            };
+            let source_sprite = level1_minimap_entity_command(&player, source_sprite_input)
+                .expect("pinned class-11 sprite row remains source-admitted");
+            assert_eq!(source_sprite.kind, LEVEL1_MINIMAP_COMMAND_SPRITE);
+            assert_eq!(source_sprite.selector, selector);
+            assert_eq!(
+                level2_day_static_palette_override(source_sprite_input),
+                Some(0),
+                "Day preserves the source sprite row with palette zero"
+            );
+        }
+
+        for (input, phase_2, phase_3, expected) in [
+            (
+                Level1MinimapEntityInput {
+                    source_slot: 4,
+                    class: 5,
+                    model: 1,
+                    ..Level1MinimapEntityInput::default()
+                },
+                false,
+                false,
+                12,
+            ),
+            (
+                Level1MinimapEntityInput {
+                    source_slot: 5,
+                    class: 5,
+                    model: 13,
+                    ..Level1MinimapEntityInput::default()
+                },
+                false,
+                false,
+                90,
+            ),
+            (
+                Level1MinimapEntityInput {
+                    source_slot: 6,
+                    class: 2,
+                    model: 1,
+                    ..Level1MinimapEntityInput::default()
+                },
+                false,
+                false,
+                101,
+            ),
+            (
+                Level1MinimapEntityInput {
+                    source_slot: 7,
+                    class: 2,
+                    model: 2,
+                    ..Level1MinimapEntityInput::default()
+                },
+                true,
+                false,
+                98,
+            ),
+            (
+                Level1MinimapEntityInput {
+                    source_slot: 8,
+                    class: 12,
+                    ..Level1MinimapEntityInput::default()
+                },
+                false,
+                false,
+                123,
+            ),
+            (
+                Level1MinimapEntityInput {
+                    source_slot: 9,
+                    class: 9,
+                    ..Level1MinimapEntityInput::default()
+                },
+                false,
+                false,
+                209,
+            ),
+            (
+                Level1MinimapEntityInput {
+                    source_slot: 10,
+                    class: 14,
+                    model: 5,
+                    ..Level1MinimapEntityInput::default()
+                },
+                false,
+                false,
+                224,
+            ),
+            (
+                Level1MinimapEntityInput {
+                    source_slot: 11,
+                    class: 14,
+                    model: 5,
+                    ..Level1MinimapEntityInput::default()
+                },
+                false,
+                true,
+                123,
+            ),
+        ] {
+            assert_eq!(
+                level2_day_fixed_palette_for_entity(input, phase_2, phase_3),
+                Some(expected),
+                "Day CLRD branch must not reuse the Night index"
+            );
+        }
+
+        let both_relations = Level1MinimapEntityInput {
+            source_slot: 12,
+            class: 10,
+            model: 39,
+            source_id: 101,
+            source_id_is_player: true,
+            player_link: 202,
+            player_link_is_player: true,
+            ..Level1MinimapEntityInput::default()
+        };
+        assert_eq!(
+            level2_day_class10_palette_selection(both_relations, false),
+            Some(Level2DayPaletteSelection::Player {
+                entity_index: 202,
+                secondary: true,
+            })
+        );
+        let both_model45 = Level1MinimapEntityInput {
+            model: 45,
+            ..both_relations
+        };
+        assert_eq!(
+            level2_day_class10_palette_selection(both_model45, false),
+            Some(Level2DayPaletteSelection::Player {
+                entity_index: 202,
+                secondary: true,
+            })
+        );
+        let source_only_model45 = Level1MinimapEntityInput {
+            model: 45,
+            player_link_is_player: false,
+            ..both_relations
+        };
+        assert_eq!(
+            level2_day_class10_palette_selection(source_only_model45, false),
+            Some(Level2DayPaletteSelection::Player {
+                entity_index: 101,
+                secondary: false,
+            })
+        );
+        let unlinked_model39 = Level1MinimapEntityInput {
+            model: 39,
+            source_id_is_player: false,
+            player_link_is_player: false,
+            ..both_relations
+        };
+        assert_eq!(
+            level2_day_class10_palette_selection(unlinked_model39, false),
+            Some(Level2DayPaletteSelection::Fixed(0xE8))
+        );
+        let unlinked_model45 = Level1MinimapEntityInput {
+            model: 45,
+            ..unlinked_model39
+        };
+        assert_eq!(
+            level2_day_class10_palette_selection(unlinked_model45, false),
+            Some(Level2DayPaletteSelection::Fixed(209))
+        );
+
+        for (source_colour, selector_index, palette_index) in
+            [(2, 4, 2), (4, 2, 4), (6, 7, 6), (7, 6, 7)]
+        {
+            assert_eq!(
+                level2_day_selector_player_index(source_colour),
+                Some(selector_index)
+            );
+            assert_eq!(
+                level2_day_palette_player_index(source_colour),
+                Some(palette_index)
+            );
+        }
     }
 }

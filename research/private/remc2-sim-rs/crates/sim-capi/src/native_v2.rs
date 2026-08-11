@@ -21261,6 +21261,43 @@ mod tests {
         assert!(initial_state.entity_count > 0);
         assert_eq!(initial_state.mark_count, 1);
 
+        let (local_player_slot, local_objective, live_player) =
+            with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                    unreachable!("campaign fixture opened as Level 2")
+                };
+                let local_player_slot = reset.runtime().local_player_slot;
+                let local_objective = reset.runtime().objectives[usize::from(local_player_slot)];
+                Ok((local_player_slot, local_objective, reset.state))
+            })
+            .expect("read live Level 2 minimap local player state");
+        let mut selected_stage = McCampaignObjectiveStageSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                local_player_slot,
+                local_objective.text_selector,
+                &raw mut selected_stage,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(selected_stage.stage_kind, 5);
+        let project_live_mark = |player: &FlightState| {
+            sim_core::level1_mission::level1_minimap_project(
+                player,
+                Position {
+                    x: selected_stage.axis_x as u16,
+                    y: selected_stage.axis_y as u16,
+                    z: 0,
+                },
+                128,
+                256,
+            )
+        };
+        let initial_expected_mark_xy = project_live_mark(&live_player);
+
         let mut initial_entities =
             vec![McCampaignMinimapEntityV2::default(); initial_state.entity_count as usize];
         let mut initial_entity_count = 0;
@@ -21283,6 +21320,31 @@ mod tests {
                 && rows[0].generation == 0
                 && rows[0].tick == terrain.tick
         }));
+        let initial_palette = |subject_entity_index| {
+            initial_entities
+                .iter()
+                .find(|row| row.subject_entity_index == subject_entity_index)
+                .unwrap_or_else(|| {
+                    panic!("expected live initial minimap subject {subject_entity_index}")
+                })
+                .palette_index
+        };
+        assert_eq!(initial_palette(1), 209);
+        assert_eq!(initial_palette(39), 12);
+        assert_eq!(initial_palette(77), 90);
+        assert_eq!(initial_palette(108), 0x1C);
+        assert_eq!(initial_palette(38), 123);
+        let initial_help = |subject_entity_index| {
+            initial_entities
+                .iter()
+                .find(|row| row.subject_entity_index == subject_entity_index)
+                .unwrap_or_else(|| {
+                    panic!("expected live initial model-45 subject {subject_entity_index}")
+                })
+                .help_selector
+        };
+        assert_eq!(initial_help(1), 21);
+        assert_eq!(initial_help(2), 0);
         assert!(
             !initial_entities
                 .iter()
@@ -21309,8 +21371,17 @@ mod tests {
         assert_eq!(initial_mark_count, initial_state.mark_count);
         assert_eq!(initial_marks[0].subject_entity_index, 0);
         assert_eq!(initial_marks[0].kind, 2);
-        assert_eq!(initial_marks[0].palette_index, 184);
+        assert_eq!(
+            initial_marks[0].source_order,
+            u16::from(local_objective.text_selector)
+        );
+        assert_eq!(
+            (initial_marks[0].x, initial_marks[0].y),
+            initial_expected_mark_xy
+        );
+        assert_eq!(initial_marks[0].palette_index, 188);
         assert_eq!(initial_marks[0].help_selector, 0x51);
+        assert_eq!(initial_marks[0].visible, 1);
         assert!(
             !initial_marks
                 .iter()
@@ -21471,11 +21542,24 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(acquired_entity_count, acquired_state.entity_count);
+        let acquired_live_player = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset.state)
+        })
+        .expect("read live acquired Level 2 minimap player state");
+        let acquired_expected_mark_xy = project_live_mark(&acquired_live_player);
         assert!(
             !acquired_entities
                 .iter()
                 .any(|row| row.subject_entity_index == 112)
         );
+        let acquired_subject_108 = acquired_entities
+            .iter()
+            .find(|row| row.subject_entity_index == 108)
+            .expect("live acquired class-2/model-2 subject 108 remains admitted");
+        assert_eq!(acquired_subject_108.palette_index, 98);
         assert!(acquired_entities.windows(2).all(|rows| {
             rows[0].source_order < rows[1].source_order
                 && rows[0].generation == 0
@@ -21522,8 +21606,17 @@ mod tests {
         assert_eq!(acquired_mark_count, acquired_state.mark_count);
         assert_eq!(acquired_marks[0].subject_entity_index, 0);
         assert_eq!(acquired_marks[0].kind, 2);
-        assert_eq!(acquired_marks[0].palette_index, 184);
+        assert_eq!(
+            acquired_marks[0].source_order,
+            u16::from(local_objective.text_selector)
+        );
+        assert_eq!(
+            (acquired_marks[0].x, acquired_marks[0].y),
+            acquired_expected_mark_xy
+        );
+        assert_eq!(acquired_marks[0].palette_index, 188);
         assert_eq!(acquired_marks[0].help_selector, 0x51);
+        assert_eq!(acquired_marks[0].visible, 0);
         assert!(
             !acquired_marks
                 .iter()
@@ -21569,6 +21662,24 @@ mod tests {
         assert_eq!(reset_state.mark_count, initial_state.mark_count);
         assert_eq!(reset_state.entity_hash, initial_state.entity_hash);
         assert_eq!(reset_state.mark_hash, initial_state.mark_hash);
+        let mut reset_marks =
+            vec![McCampaignMinimapMarkV2::default(); reset_state.mark_count as usize];
+        let mut reset_mark_count = 0;
+        assert_eq!(
+            mc_native_campaign_minimap_marks_copy(
+                handle,
+                1,
+                0,
+                0,
+                reset_marks.as_mut_ptr(),
+                reset_marks.len() as u32,
+                struct_size::<McCampaignMinimapMarkV2>(),
+                &raw mut reset_mark_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(reset_mark_count, reset_state.mark_count);
+        assert_eq!(reset_marks[0].visible, 1);
         input.generation = 1;
         input.player_x = 384;
         input.player_y = 62_080;
@@ -21616,6 +21727,28 @@ mod tests {
         assert_eq!(
             replay_state.visibility_flags,
             acquired_state.visibility_flags
+        );
+        let mut replay_marks =
+            vec![McCampaignMinimapMarkV2::default(); replay_state.mark_count as usize];
+        let mut replay_mark_count = 0;
+        assert_eq!(
+            mc_native_campaign_minimap_marks_copy(
+                handle,
+                1,
+                terrain.tick,
+                0,
+                replay_marks.as_mut_ptr(),
+                replay_marks.len() as u32,
+                struct_size::<McCampaignMinimapMarkV2>(),
+                &raw mut replay_mark_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(replay_mark_count, replay_state.mark_count);
+        assert_eq!(replay_marks[0].visible, 0);
+        assert_eq!(
+            replay_marks[0].palette_index,
+            acquired_marks[0].palette_index
         );
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }

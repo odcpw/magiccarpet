@@ -418,7 +418,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        private static void ValidateMinimapMarks(
+        internal static void ValidateMinimapMarks(
             NativeSim.CampaignMinimapMark[] rows,
             ulong expectedGeneration,
             ulong expectedTick)
@@ -433,7 +433,7 @@ namespace MagicCarpet.Native
                     row.tick != expectedTick ||
                     row.sourceOrder <= previousOrder ||
                     (row.subjectEntityIndex == 0 && row.kind != 2) ||
-                    row.visible != 1 ||
+                    row.visible > 1 ||
                     row.kind == 0 ||
                     !AllZero(row.reserved))
                 {

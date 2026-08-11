@@ -18129,6 +18129,19 @@ impl Level2ResetSession {
         &self.entities
     }
 
+    /// Return the source `str_D93C0` byte-2 flags for one entity-parameter
+    /// selector. Level 2 presentation carries the selector from the raw
+    /// entity record's byte 74; consumers need this single source-owned byte
+    /// for model-45 help admission and must not inspect the table or
+    /// substitute an entity-pool slot.
+    #[must_use]
+    pub fn level2_entity_parameter_flags(&self, selector: u8) -> Option<u8> {
+        self.presentation
+            .entity_parameters
+            .get(usize::from(selector))
+            .map(|record| record[2])
+    }
+
     #[must_use]
     pub fn players(&self) -> &[PlayerSnapshot] {
         &self.players
