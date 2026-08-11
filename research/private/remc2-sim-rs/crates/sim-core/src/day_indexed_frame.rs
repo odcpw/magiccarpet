@@ -59,65 +59,6 @@ const DAY_FRAME_WIDTH: u16 = 320;
 const DAY_FRAME_HEIGHT: u16 = 200;
 const DAY_SOURCE_FOV: i16 = 128;
 const DAY_TERRAIN_PROVENANCE: u8 = 1;
-const TERRAIN_SOURCE_SHA256: &str =
-    "de3b6f5b3fa332aea832a0a48bb13c82920bbb66a98f1a154be537b39bbde5e9";
-
-/// The seven reachable Terrain.cpp expressions owned by this indexed-frame
-/// slice.  The source bindings are part of the frame product so a consumer
-/// can distinguish the qualified terrain topology path from a generic tile
-/// renderer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DayTerrainReference {
-    pub id: &'static str,
-    pub symbol: &'static str,
-    pub line: u32,
-    pub expression: &'static str,
-}
-
-pub const DAY_TERRAIN_REFERENCES: [DayTerrainReference; 7] = [
-    DayTerrainReference {
-        id: "PRESENTATION-REF-L2-0926",
-        symbol: "sub_44580",
-        line: 1105,
-        expression: "building_F2CD0x[index][0] = actBufPos[1];",
-    },
-    DayTerrainReference {
-        id: "PRESENTATION-REF-L2-0927",
-        symbol: "sub_44580",
-        line: 1106,
-        expression: "building_F2CD0x[index][1] = actBufPos[13];",
-    },
-    DayTerrainReference {
-        id: "PRESENTATION-REF-L2-0928",
-        symbol: "sub_44580",
-        line: 1110,
-        expression: "building_F2CD0x[index][0] = 1;",
-    },
-    DayTerrainReference {
-        id: "PRESENTATION-REF-L2-0929",
-        symbol: "sub_44580",
-        line: 1111,
-        expression: "building_F2CD0x[index][1] = 0;",
-    },
-    DayTerrainReference {
-        id: "PRESENTATION-REF-L2-0930",
-        symbol: "sub_462A0",
-        line: 1986,
-        expression: "mapTerrainType_10B4E0[tempAxis.word] = building_F2CD0x[terModIndex][0];",
-    },
-    DayTerrainReference {
-        id: "PRESENTATION-REF-L2-0931",
-        symbol: "sub_462A0",
-        line: 1987,
-        expression: "if (building_F2CD0x[terModIndex][0] >= 8u)",
-    },
-    DayTerrainReference {
-        id: "PRESENTATION-REF-L2-0932",
-        symbol: "sub_462A0",
-        line: 1989,
-        expression: "nextAngle = building_F2CD0x[terModIndex][1] + (mapAngle_13B4E0[tempAxis.word] & 0x87);",
-    },
-];
 
 /// The validated owner-data profile carried by [`DayIndexedFrameAssets`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -470,7 +411,6 @@ pub struct DayIndexedFrame {
     pub terrain_command_hash: u64,
     pub cache_content_sha256: String,
     pub package_sha256: String,
-    pub terrain_references: Box<[DayTerrainReference]>,
 }
 
 /// Transactional generation/tick carrier for the frame producer.
@@ -520,7 +460,6 @@ impl DayIndexedFrameState {
         session: &Level2ResetSession,
         assets: &DayIndexedFrameAssets,
         generation: u64,
-        tick: u64,
     ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
         if generation != self.generation {
             return Err(DayIndexedFrameError::new(format!(
@@ -534,12 +473,13 @@ impl DayIndexedFrameState {
                 .ok_or_else(|| DayIndexedFrameError::new("Day indexed frame tick overflow"))?,
             None => 0,
         };
+        let tick = session.state.tick;
         if tick != expected_tick {
             return Err(DayIndexedFrameError::new(format!(
                 "Day indexed frame tick {tick} is out of order; expected {expected_tick}"
             )));
         }
-        let frame = render_level2_day_indexed_frame(inspection, session, assets, generation, tick)?;
+        let frame = render_level2_day_indexed_frame(inspection, session, assets, generation)?;
         self.current_tick = Some(tick);
         self.current_frame = Some(frame.clone());
         Ok(frame)
@@ -552,10 +492,9 @@ pub fn render_level2_day_indexed_frame(
     session: &Level2ResetSession,
     assets: &DayIndexedFrameAssets,
     generation: u64,
-    tick: u64,
 ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
     validate_level2_route(inspection, session, assets)?;
-    validate_terrain_references()?;
+    let tick = session.state.tick;
     let camera = camera_from_state(&session.state)?;
     let profile = ClassicHdRenderProfile::compatibility_320x200();
     let planes = session.terrain.planes();
@@ -630,7 +569,6 @@ pub fn render_level2_day_indexed_frame(
         terrain_command_hash: terrain.command_hash,
         cache_content_sha256: assets.cache_content_sha256.clone(),
         package_sha256: assets.package_sha256.clone(),
-        terrain_references: DAY_TERRAIN_REFERENCES.into_iter().collect(),
     })
 }
 
@@ -684,26 +622,6 @@ fn validate_terrain_planes(
                 plane.len()
             )));
         }
-    }
-    Ok(())
-}
-
-fn validate_terrain_references() -> Result<(), DayIndexedFrameError> {
-    if DAY_TERRAIN_REFERENCES.len() != 7
-        || DAY_TERRAIN_REFERENCES
-            .windows(2)
-            .any(|references| references[0].id == references[1].id)
-        || DAY_TERRAIN_REFERENCES
-            .iter()
-            .any(|reference| reference.id.is_empty() || reference.line == 0)
-        || TERRAIN_SOURCE_SHA256.len() != 64
-        || !TERRAIN_SOURCE_SHA256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(DayIndexedFrameError::new(
-            "qualified Level 2 Day Terrain reference set is malformed",
-        ));
     }
     Ok(())
 }
@@ -1122,7 +1040,7 @@ mod tests {
             .expect("ordinary Level 2 reset session");
         let mut frame_state = DayIndexedFrameState::new(41);
         let first = frame_state
-            .render(&inspection, &session, &assets, 41, 0)
+            .render(&inspection, &session, &assets, 41)
             .expect("ordinary Level 2 Day indexed frame");
         assert_eq!(first.width, DAY_FRAME_WIDTH);
         assert_eq!(first.height, DAY_FRAME_HEIGHT);
@@ -1133,8 +1051,7 @@ mod tests {
         assert_eq!(first.palette_rgb8.len(), PALETTE_RGB8_BYTES);
         assert!(first.indices.iter().any(|index| *index != 0));
         assert_eq!(first.index_hash, byte_hash(&first.indices));
-        assert_eq!(first.terrain_references.as_ref(), &DAY_TERRAIN_REFERENCES);
-        assert_eq!(first.terrain_references.len(), 7);
+        assert_eq!(first.tick, session.state.tick);
         assert_eq!(frame_state.current_tick(), Some(0));
         assert_eq!(frame_state.current_frame(), Some(&first));
 
@@ -1143,7 +1060,7 @@ mod tests {
             .expect("replay Level 2 reset session");
         let mut replay_state = DayIndexedFrameState::new(41);
         let replay = replay_state
-            .render(&inspection, &replay_session, &assets, 41, 0)
+            .render(&inspection, &replay_session, &assets, 41)
             .expect("replay Day indexed frame");
         assert_eq!(first.indices, replay.indices);
         assert_eq!(first.index_hash, replay.index_hash);
@@ -1180,7 +1097,6 @@ mod tests {
                 &inspection.level2_reset_session().expect("reset session"),
                 &assets,
                 9,
-                0,
             )
             .expect("first frame");
         let stale_generation = state
@@ -1189,7 +1105,6 @@ mod tests {
                 &inspection.level2_reset_session().expect("reset session"),
                 &assets,
                 10,
-                1,
             )
             .expect_err("stale generation must fail closed");
         assert!(stale_generation.to_string().contains("generation"));
@@ -1202,7 +1117,6 @@ mod tests {
                 &inspection.level2_reset_session().expect("reset session"),
                 &assets,
                 9,
-                2,
             )
             .expect_err("out-of-order tick must fail closed");
         assert!(stale_tick.to_string().contains("out of order"));
@@ -1211,17 +1125,13 @@ mod tests {
         state.reset(12);
         assert_eq!(state.current_tick(), None);
         assert_eq!(state.current_frame(), None);
+        let reset_session = inspection.level2_reset_session().expect("reset session");
         let after_reset = state
-            .render(
-                &inspection,
-                &inspection.level2_reset_session().expect("reset session"),
-                &assets,
-                12,
-                0,
-            )
+            .render(&inspection, &reset_session, &assets, 12)
             .expect("reset frame");
         assert_eq!(after_reset.indices, first.indices);
         assert_eq!(after_reset.generation, 12);
         assert_eq!(after_reset.tick, 0);
+        assert_eq!(after_reset.tick, reset_session.state.tick);
     }
 }
