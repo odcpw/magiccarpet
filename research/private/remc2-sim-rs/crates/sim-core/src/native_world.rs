@@ -117,6 +117,10 @@ const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
 const LEVEL2_NYPHUR_SPELL_COOLDOWNS: [i16; PLAYER_SPELL_COUNT] = [
     2, 10, 40, 32, 300, 1, 1, 1, 1, 4, 1, 1, 0, 0, 0, 0, 0, 0, 400, 600, 600, 400, 400, 0, 0, 0,
 ];
+/// Pinned `Spells.cpp` initializes byte_0 of every `SPELLS_BEGIN_BUFFER_str`
+/// family row to 0x03.  `sub_15F20` compares the caller's starting tier with
+/// that source-table bound; it does not use the AI's SpellIndex as a limit.
+const LEVEL2_NYPHUR_SOURCE_SPELL_TIER_COUNT: i8 = 3;
 /// `NewEvent_4A050` defaults used by the Castle model-3/action-9 holder.
 /// `AddBallon_60AB0` multiplies this holder speed by the target Castle's
 /// `dword_0x10_16` stage scalar when deciding whether to transfer mana.
@@ -4194,10 +4198,10 @@ impl Level2NyphurCommonUpkeep {
     /// Execute the source `sub_15F20`: SetSpell happens before the
     /// availability check, including on the not-enough-mana result.
     fn step_sub_15f20(&mut self, family: u8, raw_tier: i8, entities: &mut [EntitySnapshot]) -> i8 {
-        let Some(spell_level) = self.spell_levels.get(usize::from(family)).copied() else {
+        if usize::from(family) >= PLAYER_SPELL_COUNT {
             return 0;
-        };
-        if raw_tier < 0 || raw_tier >= spell_level {
+        }
+        if !(0..LEVEL2_NYPHUR_SOURCE_SPELL_TIER_COUNT).contains(&raw_tier) {
             return 0;
         }
         let Some(holder_slot) = self.source_spell_holder_slot(family) else {
@@ -45554,6 +45558,7 @@ mod tests {
         assert_eq!(baseline.word_0x159, 100);
         assert_eq!(baseline.life_regen, 0);
         assert_eq!(baseline.dword_0x16d, 2_000);
+        assert_eq!(baseline.move_speed, 0);
         assert_eq!(baseline.word_0x242, 243);
         assert_eq!(baseline.word_0x244, 90);
         assert_eq!(baseline.word_0x246, 39);
@@ -45575,6 +45580,11 @@ mod tests {
                 .all(|value| *value == 0)
         );
         assert_eq!(baseline.spell_levels, [0; PLAYER_SPELL_COUNT]);
+        for family in [5_usize, 6, 8] {
+            assert_eq!(baseline.spell_holder_indices[family], 0);
+            assert_eq!(baseline.spell_levels[family], 0);
+            assert_eq!(baseline.spell_enabled[family], 0);
+        }
         assert_eq!(baseline.owner_control_mode, 1);
         assert_eq!((baseline.yaw_0x1e_30, baseline.fov_0x22_34), (0, 0));
         assert_eq!(baseline.move_speed_flag, 0);
@@ -45600,6 +45610,7 @@ mod tests {
         assert!(!baseline.palette_modification_enabled);
 
         let baseline_campaign_hash = session.campaign_state_hash();
+        let nyphur_before = session.entities[112].clone();
         session.step_outer_turn(PlayerCommand::default(), 0);
         let local_player_after = &session.entities[usize::from(session.state.entity_index)];
         // Common upkeep belongs to the discovered AI row, not the local
@@ -45635,12 +45646,18 @@ mod tests {
         assert_eq!(stepped.word_0x159, 99);
         assert_eq!(stepped.life_regen, 6);
         assert_eq!(stepped.dword_0x16d, 1_999);
+        assert_eq!(stepped.move_speed, 0);
         assert_eq!(stepped.word_0x242, 243);
         assert_eq!(stepped.word_0x244, 90);
         assert_eq!(stepped.word_0x246, 39);
         assert_eq!(stepped.spell_enabled[2], 3);
         assert_eq!(&stepped.spell_holder_indices[..2], &[113, 114]);
         assert_eq!(stepped.spell_levels, [0; PLAYER_SPELL_COUNT]);
+        for family in [5_usize, 6, 8] {
+            assert_eq!(stepped.spell_holder_indices[family], 0);
+            assert_eq!(stepped.spell_levels[family], 0);
+            assert_eq!(stepped.spell_enabled[family], 0);
+        }
         assert_eq!((stepped.yaw_0x1e_30, stepped.fov_0x22_34), (0, 0));
         assert_eq!(stepped.move_speed_flag, 0);
         for index in 0..7 {
@@ -45661,6 +45678,26 @@ mod tests {
         assert_eq!(stepped.source_mailbox, [0; 36]);
         assert_eq!(stepped.player_hit_frame_time, 0);
         assert_eq!(stepped.dword_0x18d, 0);
+        assert_eq!(stepped.palette_count, 256);
+        assert!(!stepped.palette_modification_enabled);
+        // sub_146C0 can only activate a family through its authored holder
+        // relation.  The qualified reset has no family-5/6/8 holder, and the
+        // only pinned move-speed producer (sub_38E70) is not on this Nyphur
+        // source route.  The ordinary route still performs its source
+        // movement/clamp, so assert the unrelated source carrier fields rather
+        // than treating movement as a forbidden mutation.
+        let nyphur_after = &session.entities[112];
+        assert_eq!(nyphur_after.action, nyphur_before.action);
+        assert_eq!(nyphur_after.control_flags, nyphur_before.control_flags);
+        assert_eq!(nyphur_after.subspell_index, nyphur_before.subspell_index);
+        assert_eq!(nyphur_after.byte_3b, nyphur_before.byte_3b);
+        assert_eq!(nyphur_after.byte_3c, nyphur_before.byte_3c);
+        assert_eq!(nyphur_after.active_value, nyphur_before.active_value);
+        assert_eq!(
+            nyphur_after.activation_value,
+            nyphur_before.activation_value
+        );
+        assert_eq!(nyphur_after.record[42..66], nyphur_before.record[42..66]);
         assert_eq!(session.nyphur_dispatch_traces().len(), 1);
         assert_eq!(session.nyphur_dispatch_traces()[0].state_byte, 0);
         assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
