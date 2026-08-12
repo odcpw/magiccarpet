@@ -1505,6 +1505,24 @@ fn level2_nyphur_axis_position(source: &EntitySnapshot) -> Result<Position> {
     })
 }
 
+/// Keep the source `axis_0x9A_154x` triple in the lossless entity record.
+/// The typed entity projection has no duplicate axis cache, so this is the
+/// single authoritative write used by the `sub_13B00` selector.
+fn level2_nyphur_set_axis_position(source: &mut EntitySnapshot, axis: Position) {
+    source.record[158..160].copy_from_slice(&axis.x.to_le_bytes());
+    source.record[160..162].copy_from_slice(&axis.y.to_le_bytes());
+    source.record[162..164].copy_from_slice(&axis.z.to_le_bytes());
+}
+
+/// Pinned signed-grid quotient used by `sub_13B00`.  The recovered source
+/// applies `my_sign16` before shifting, so the unsigned world coordinate must
+/// first be reinterpreted at its original signed 16-bit width.
+fn level2_nyphur_sub_13b00_grid_quadrant(coordinate: u16) -> u8 {
+    let coordinate = i32::from(i16::from_ne_bytes(coordinate.to_ne_bytes()));
+    let sign = if coordinate < 0 { -1_i32 } else { 0_i32 };
+    ((coordinate - (sign << 14) - sign) >> 14) as u8
+}
+
 /// Pinned `sub_580E0`. The fourth source argument is intentionally absent:
 /// the recovered helper never reads it. The Z write and comparison retain the
 /// source `i16` carrier at both boundaries.
@@ -1519,7 +1537,6 @@ fn level2_nyphur_sub_580e0(position: &mut Position, ground: i16, lower: i16, ste
 
 /// Pinned `sub_583B0`: a non-wrapping Chebyshev distance over X/Y. This is a
 /// separate probe from the signed-16 Euclidean helper below.
-#[cfg(test)]
 fn level2_nyphur_source_distance_xy_max(left: Position, right: Position) -> i32 {
     let dx = (i32::from(right.x) - i32::from(left.x)).abs();
     let dy = (i32::from(right.y) - i32::from(left.y)).abs();
@@ -2327,6 +2344,17 @@ impl Level2NyphurDispatcher {
             .iter()
             .position(|entity| entity.index == source_slot)
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur tail source row is absent"))?;
+
+        // sub_13B00 is the first selector in sub_12E70 and is intentionally
+        // outside the cadence gate.  On success the source writes state 3,
+        // skips every later selector, and returns through the common result.
+        let source_snapshot = entities[source_index].clone();
+        if let Some(axis) = self.sub_13b00_axis(&source_snapshot, entities) {
+            level2_nyphur_set_axis_position(&mut entities[source_index], axis);
+            self.state_byte = 3;
+            return Ok(());
+        }
+
         let source_phase = entities[source_index].phase;
         let period = self.common_upkeep.cadence_period();
         if u16::from(source_phase) % period != 0 {
@@ -2363,6 +2391,61 @@ impl Level2NyphurDispatcher {
             .step_sub_14630(&mut entities[source_index], castle.as_ref());
         self.state_byte = state;
         Ok(())
+    }
+
+    /// Pinned `sub_13B00`: when the AI has no Castle and its family-2 holder
+    /// is affordable, scan the four-by-four wrapped arena in source order.
+    /// Each cell is accepted only when the nearest live class-3/model-2 row
+    /// with a different source id is absent or strictly farther than 0x3000
+    /// by `sub_583B0`'s Chebyshev distance.
+    fn sub_13b00_axis(
+        &self,
+        source: &EntitySnapshot,
+        entities: &[EntitySnapshot],
+    ) -> Option<Position> {
+        if self.common_upkeep.castle_entity_index != 0 {
+            return None;
+        }
+        let holder_slot = self.common_upkeep.source_spell_holder_slot(2)?;
+        let holder = entities.get(usize::from(holder_slot))?;
+        if source.max_mana < holder.max_mana {
+            return None;
+        }
+
+        let sentinel_z = entities.first()?.position.z;
+        let start_x = level2_nyphur_sub_13b00_grid_quadrant(source.position.x);
+        let start_y = level2_nyphur_sub_13b00_grid_quadrant(source.position.y);
+        let model_two = level2_nyphur_class3_source_order(entities)
+            .into_iter()
+            .filter_map(|index| entities.get(usize::from(index)))
+            .filter(|candidate| candidate.source_id != source.source_id && candidate.model == 2)
+            .collect::<Vec<_>>();
+
+        for row in 0..4_u8 {
+            for column in 0..4_u8 {
+                let position = Position {
+                    x: u16::from(start_x.wrapping_add(column) & 3) << 14,
+                    y: u16::from(start_y.wrapping_add(row) & 3) << 14,
+                    z: sentinel_z,
+                };
+                let mut nearest = None;
+                let mut nearest_distance = u32::MAX;
+                for candidate in &model_two {
+                    let distance =
+                        level2_nyphur_source_distance_xy_euclidean_sq(position, candidate.position);
+                    if distance < nearest_distance {
+                        nearest = Some(*candidate);
+                        nearest_distance = distance;
+                    }
+                }
+                if nearest.is_none_or(|candidate| {
+                    level2_nyphur_source_distance_xy_max(candidate.position, position) > 0x3000
+                }) {
+                    return Some(position);
+                }
+            }
+        }
+        None
     }
 
     /// Pinned `sub_14530` is the last owned selector before `sub_14630`.
@@ -2415,12 +2498,12 @@ impl Level2NyphurDispatcher {
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
     ) -> bool {
-        // sub_13B00 and sub_13DC0/sub_13C50 are respectively the family-2
-        // arena search and Castle branches. The qualified reset has neither
-        // carrier; preserving this as a live predicate keeps changed data
-        // from becoming an accidental mode implementation.
-        if self.common_upkeep.source_spell_holder_slot(2).is_some()
-            || self.common_upkeep.castle_entity_index != 0
+        // sub_13DC0/sub_13C50 are the still-unowned Castle branches. The
+        // family-2 arena search is handled above by sub_13B00 in exact source
+        // order. The qualified reset has no Castle carrier; preserving these
+        // remaining predicates keeps changed data from becoming an accidental
+        // mode implementation.
+        if self.common_upkeep.castle_entity_index != 0
             || self.common_upkeep.life < self.common_upkeep.max_life / 2
         {
             return false;
@@ -3162,6 +3245,93 @@ mod tests {
             "the qualified cursor currently reaches only default and the earlier state-13 selector"
         );
 
+        // sub_13B00 is a production selector, not a test-only state setter.
+        // Supply its exact missing family-2 player relation while leaving the
+        // dispatcher state/action untouched, then prove that the ordinary
+        // source cursor writes the arena axis and latches mode 3 for the next
+        // callback. The qualified package itself has no such holder relation,
+        // so this is selector coverage rather than a natural-acquisition claim.
+        let mut selector = ordinary.clone();
+        assert_eq!(selector.nyphur_dispatch_state_byte(), 0);
+        selector
+            .nyphur_dispatcher
+            .common_upkeep
+            .spell_holder_indices[2] = 113;
+        let selector_source = selector.entities[112].clone();
+        let expected_axis = selector
+            .nyphur_dispatcher
+            .sub_13b00_axis(&selector_source, &selector.entities)
+            .expect("family-2 selector has a free arena cell");
+        selector.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(selector.nyphur_dispatch_state_byte(), 3);
+        assert_eq!(
+            level2_nyphur_axis_position(&selector.entities[112]).unwrap(),
+            expected_axis
+        );
+        assert_eq!(
+            selector
+                .nyphur_dispatch_traces()
+                .last()
+                .expect("selector source trace")
+                .state_byte,
+            0,
+            "sub_12910 latches the old byte before sub_12E70 selects mode 3"
+        );
+        selector.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            selector
+                .nyphur_dispatch_traces()
+                .last()
+                .expect("mode-3 source trace")
+                .state_byte,
+            3
+        );
+
+        // sub_583B0's threshold is strict: equality blocks the first cell,
+        // while one unit beyond it selects that cell. A generic nearest/free
+        // test with a non-strict comparison fails this pair.
+        let mut threshold_equal = ordinary.clone();
+        threshold_equal
+            .nyphur_dispatcher
+            .common_upkeep
+            .spell_holder_indices[2] = 113;
+        threshold_equal.entities[111].model = 2;
+        threshold_equal.entities[111].position = Position {
+            x: expected_axis.x.wrapping_add(0x3000),
+            y: expected_axis.y,
+            z: expected_axis.z,
+        };
+        assert_ne!(
+            threshold_equal
+                .nyphur_dispatcher
+                .sub_13b00_axis(&threshold_equal.entities[112], &threshold_equal.entities),
+            Some(expected_axis)
+        );
+        let mut threshold_beyond = threshold_equal.clone();
+        threshold_beyond.entities[111].position.x = expected_axis.x.wrapping_add(0x3001);
+        assert_eq!(
+            threshold_beyond
+                .nyphur_dispatcher
+                .sub_13b00_axis(&threshold_beyond.entities[112], &threshold_beyond.entities),
+            Some(expected_axis)
+        );
+        let mut unaffordable = ordinary.clone();
+        unaffordable
+            .nyphur_dispatcher
+            .common_upkeep
+            .spell_holder_indices[2] = 113;
+        unaffordable.entities[113].max_mana = unaffordable.entities[112].max_mana + 1;
+        assert_eq!(
+            unaffordable
+                .nyphur_dispatcher
+                .sub_13b00_axis(&unaffordable.entities[112], &unaffordable.entities),
+            None
+        );
+        assert_eq!(level2_nyphur_sub_13b00_grid_quadrant(0), 0);
+        assert_eq!(level2_nyphur_sub_13b00_grid_quadrant(0x4000), 1);
+        assert_eq!(level2_nyphur_sub_13b00_grid_quadrant(0x8000), u8::MAX);
+        assert_eq!(level2_nyphur_sub_13b00_grid_quadrant(0xffff), 1);
+
         // The mode map is the source switch, including signed-byte default
         // fallthrough. The helper bodies below are body-level vectors on
         // production entity carriers. They select the private state byte
@@ -3673,16 +3843,17 @@ mod tests {
         assert_eq!(failed_flags, 0x320);
         assert_eq!(failed_holder.active_value, 0);
 
-        // A common tail must not silently absorb a newly live selector. These
-        // exact negatives exercise the source-order gates before sub_14630;
-        // a generic fall-through would incorrectly return true for each.
+        // A common tail must not silently absorb a newly live selector. The
+        // now-owned family-2 branch must produce its source axis before the
+        // remaining fail-closed gates are considered; the still-unowned
+        // model-2 branch remains a rejection here.
         let mut family_two_live = session.nyphur_dispatcher.clone();
         family_two_live.common_upkeep.spell_holder_indices[2] = 113;
-        assert!(!family_two_live.owned_tail_fallthrough_is_safe(
-            &source,
-            &session.entities,
-            &session.players,
-        ));
+        assert!(
+            family_two_live
+                .sub_13b00_axis(&source, &session.entities)
+                .is_some()
+        );
         let mut model_two_live_entities = session.entities.clone();
         model_two_live_entities[111].model = 2;
         assert!(!session.nyphur_dispatcher.owned_tail_fallthrough_is_safe(
