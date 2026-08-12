@@ -6112,6 +6112,13 @@ pub struct Level2SharedSpellResetSession {
     /// 11, and 12.  Family-specific active lifecycles remain separate.
     baseline_acquisitions: Box<[SpellHolderAcquisitionState]>,
     acquisitions: Box<[SpellHolderAcquisitionState]>,
+    /// Source `OptionsSettingFlag_24 & 0x20`. `PlayerEvents_51BB0` toggles
+    /// this session-global bit before the entity passes; cold
+    /// `SetSpell_6D5E0` projections then force mana regeneration to zero and
+    /// the holder's current mana to one. The option is runtime input, not an
+    /// owner-package field.
+    baseline_free_spell_usage: bool,
+    free_spell_usage: bool,
     baseline_spell_experience: [i32; PLAYER_SPELL_COUNT],
     spell_experience: [i32; PLAYER_SPELL_COUNT],
     baseline_spell_levels: [i8; PLAYER_SPELL_COUNT],
@@ -16853,6 +16860,8 @@ impl Level2SharedSpellResetSession {
             },
             baseline_acquisitions: acquisitions.clone(),
             acquisitions,
+            baseline_free_spell_usage: false,
+            free_spell_usage: false,
             baseline_spell_experience: [0; PLAYER_SPELL_COUNT],
             spell_experience: [0; PLAYER_SPELL_COUNT],
             baseline_spell_levels: [0; PLAYER_SPELL_COUNT],
@@ -18146,6 +18155,13 @@ impl Level2SharedSpellResetSession {
             state.mana_regen = previous.mana_regen;
             state.max_mana = previous.max_mana;
             state.mana = previous.mana;
+        } else if self.free_spell_usage {
+            // Cold `SetSpell_6D5E0` applies the global free-spell option only
+            // after calculating the ordinary profile. `max_mana` remains the
+            // source mana-cost result; only these two fields are overridden.
+            let state = &mut self.acquisitions[index];
+            state.mana_regen = 0;
+            state.mana = 1;
         }
         let state = self.acquisitions[index];
         let owner_entity_index = self.players[owner_index].entity_index;
@@ -19070,6 +19086,14 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.beyond_sight_auxiliary.next_entity.to_le_bytes());
         hasher.update(self.beyond_sight_auxiliary.entity_index2.to_le_bytes());
         hasher.update([self.beyond_sight_auxiliary.effect_parameter]);
+        // Preserve the established false-state hash while still binding the
+        // newly reachable true state. No prior valid session could carry the
+        // source option, so the tagged true branch is collision-free with the
+        // old state space without needlessly invalidating existing baselines.
+        if self.free_spell_usage {
+            hasher.update(b"level2-free-spell-usage-v1");
+            hasher.update([1]);
+        }
         for state in &self.acquisitions {
             hasher.update([state.family]);
             hasher.update(state.source_slot.to_le_bytes());
@@ -19143,6 +19167,7 @@ impl Level2SharedSpellResetSession {
         self.beyond_sight_pulse_pending = self.baseline_beyond_sight_pulse_pending;
         self.beyond_sight_auxiliary = self.baseline_beyond_sight_auxiliary;
         self.acquisitions.clone_from(&self.baseline_acquisitions);
+        self.free_spell_usage = self.baseline_free_spell_usage;
         self.persistent_acquisitions
             .clone_from(&self.baseline_persistent_acquisitions);
         self.spell_experience = self.baseline_spell_experience;
@@ -25104,6 +25129,13 @@ impl Level2ResetSession {
         self.dispatch_events.clear();
         self.nyphur_dispatch_traces.clear();
         self.economy_event_cursor = self.economy.events().len();
+        // `PlayerEvents_51BB0` handles cheat command 0x1e/9 before
+        // `UpdateEntities_57730`: toggle the same session-global bit before
+        // any source-pass SetSpell callback can observe it. Other 0x1e
+        // subcommands remain outside this bounded packet.
+        if command.opcode == 0x1e && command.argument_1 == 9 {
+            self.shared_spells.free_spell_usage = !self.shared_spells.free_spell_usage;
+        }
         self.shared_spells.set_beyond_sight_player_input(
             self.state.entity_index,
             command.argument_6,
@@ -48224,6 +48256,184 @@ mod tests {
         session.reset();
         assert_eq!(session.shared_spells().players[0].record_bytes()[540], 0);
         assert_eq!(session.shared_spells().pickups()[0].record_bytes()[74], 0);
+    }
+
+    #[test]
+    fn level_two_setspell_options_tier_and_hand_state_are_exact() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 SetSpell options session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // Drive two otherwise identical zero-pass outer-turn sequences so
+        // the option bit is the only shared-spell state difference. This
+        // proves both hash binding and the source's second-command OFF
+        // transition without manufacturing an options setter.
+        let mut option_control = inspection
+            .level2_reset_session()
+            .expect("Level 2 SetSpell option control session");
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 0x1e,
+                argument_1: 9,
+                ..PlayerCommand::default()
+            },
+            u8::MAX,
+        );
+        option_control.step_outer_turn(PlayerCommand::default(), u8::MAX);
+        assert!(session.shared_spells.free_spell_usage);
+        assert_ne!(
+            session.shared_spells().reset_hash(),
+            option_control.shared_spells().reset_hash()
+        );
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 0x1e,
+                argument_1: 9,
+                ..PlayerCommand::default()
+            },
+            u8::MAX,
+        );
+        option_control.step_outer_turn(PlayerCommand::default(), u8::MAX);
+        assert!(!session.shared_spells.free_spell_usage);
+        assert_eq!(
+            session.shared_spells().reset_hash(),
+            option_control.shared_spells().reset_hash()
+        );
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+
+        // Tier 7 and the independent UI cursor are authoritative prestate
+        // discriminators: the Level 2 input contract cannot legally create
+        // a tier above two before this unowned family is collected. The
+        // behavior under test still enters only through PlayerCommand and
+        // the ordinary source cursor; there is no test-only production hook.
+        let configure_cold_pickup = |session: &mut Level2ResetSession| {
+            let pickup_position = session.shared_spells().pickups()[0].position;
+            let player = &mut session.shared_spells_mut().players[0];
+            player.family_selected_tiers[12] = 7;
+            player.record[528 + 12] = 7;
+            player.selected_spell_ui_index = 24;
+            player.selected_subspell_index = 2;
+            player.record[561] = 24;
+            player.record[562] = 2;
+            session.shared_spells_mut().pickups[0].phase = 0;
+            session.shared_spells_mut().pickups[0].record[66] = 0;
+            session.state.position = pickup_position;
+        };
+
+        configure_cold_pickup(&mut session);
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 0x1e,
+                argument_1: 9,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert!(session.shared_spells.free_spell_usage);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::SpellAcquisition {
+                source_slot: 38,
+                family: 12,
+                result: Some(_),
+                ..
+            }
+        )));
+        let state = session
+            .shared_spells()
+            .acquisition_states()
+            .iter()
+            .find(|state| state.family == 12)
+            .expect("family-12 SetSpell state");
+        let pickup = &session.shared_spells().pickups()[0];
+        let player = &session.shared_spells().players[0];
+        assert_eq!((state.learned, state.eligibility), (1, 1));
+        assert_eq!(state.selected_tier, 7);
+        assert_eq!(
+            (player.left_spell_slot_raw, player.left_subspell_index),
+            (12, 7)
+        );
+        assert_eq!(
+            (
+                player.selected_spell_ui_index,
+                player.selected_subspell_index
+            ),
+            (24, 2)
+        );
+        assert_eq!(pickup.level_gate, 2);
+        assert_eq!(pickup.mana_regen, 0);
+        assert_eq!(pickup.max_mana, 5_000);
+        assert_eq!(pickup.mana, 1);
+        assert_eq!(pickup.record_bytes()[140..144], 0_i32.to_le_bytes());
+        assert_eq!(pickup.record_bytes()[144..148], 5_000_i32.to_le_bytes());
+        assert_eq!(pickup.record_bytes()[148..152], 1_i32.to_le_bytes());
+        let first_events = session.dispatch_events().to_vec();
+        let first_hash = session.campaign_state_hash();
+
+        session.reset();
+        assert!(!session.shared_spells.free_spell_usage);
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        configure_cold_pickup(&mut session);
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 0x1e,
+                argument_1: 9,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert_eq!(session.dispatch_events(), first_events.as_slice());
+        assert_eq!(session.campaign_state_hash(), first_hash);
+
+        // With the option clear, the same source-ordered production route
+        // retains the pinned family-12 tier-2 mana fields. This near-identical
+        // negative prevents the free-spell values from becoming a hard-coded
+        // SetSpell profile.
+        session.reset();
+        configure_cold_pickup(&mut session);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let ordinary = &session.shared_spells().pickups()[0];
+        assert!(!session.shared_spells.free_spell_usage);
+        assert_eq!(ordinary.max_mana, 5_000);
+        assert_eq!(ordinary.mana_regen, 10_000);
+        assert_eq!(ordinary.mana, 13);
+
+        // The source active-holder branch only queues word 0x2c. Even while
+        // free-spell usage is enabled it must not rewrite the retained cold
+        // payload.
+        let mut active = inspection
+            .level2_reset_session()
+            .expect("Level 2 active SetSpell option session");
+        configure_cold_pickup(&mut active);
+        active.shared_spells_mut().pickups[0].record[50..52].copy_from_slice(&7_u16.to_le_bytes());
+        let active_payload_before =
+            active.shared_spells().pickups()[0].record_bytes()[52..152].to_vec();
+        active.step_outer_turn(
+            PlayerCommand {
+                opcode: 0x1e,
+                argument_1: 9,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert!(active.shared_spells.free_spell_usage);
+        assert!(active.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::SpellAcquisition {
+                source_slot: 38,
+                family: 12,
+                result: Some(_),
+                ..
+            }
+        )));
+        let active_record = active.shared_spells().pickups()[0].record_bytes();
+        assert_eq!(active_record[52..54], active_payload_before[0..2]);
+        assert_eq!(active_record[63..66], active_payload_before[11..14]);
+        assert_eq!(active_record[140..152], active_payload_before[88..100]);
     }
 
     #[test]
