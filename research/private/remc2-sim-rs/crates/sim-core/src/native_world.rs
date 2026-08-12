@@ -50141,7 +50141,7 @@ mod tests {
     }
 
     #[test]
-    fn level_two_goat_death_routes_mana_and_burst_through_live_arena() {
+    fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
@@ -50357,6 +50357,84 @@ mod tests {
         assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
         assert!(session.economy().death_bursts().is_empty());
         assert!(session.economy().spheres().is_empty());
+
+        // DSP-L2-178 binds action 105/sub_23340 to the ordinary Villager
+        // route, not to a dynamic HouseResident row. Prove that the same
+        // production cursor dispatches the qualified source row and that
+        // reset/replay restores its exact state without inventing a dynamic
+        // allocation for this callback.
+        let villager_slot = LEVEL_TWO_VILLAGER_INDICES[0];
+        let baseline_villager = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .find(|villager| villager.entity_index == villager_slot)
+            .cloned()
+            .expect("qualified action-105 Villager source row");
+        assert_eq!(baseline_villager.action, 105);
+        let baseline_ordinary_hash = session.ordinary().reset_hash();
+        let baseline_campaign_hash = session.campaign_state_hash();
+        let baseline_live_arena = session.economy().live_arena_slots();
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Villager {
+                pass: 0,
+                source_slot,
+                ..
+            } if *source_slot == villager_slot
+        )));
+        let stepped_villager = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .find(|villager| villager.entity_index == villager_slot)
+            .cloned()
+            .expect("action-105 Villager after outer dispatch");
+        assert_eq!(stepped_villager.action, 105);
+        assert_eq!(
+            stepped_villager.phase,
+            baseline_villager.phase.wrapping_add(1)
+        );
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena { source_slot, .. }
+                if *source_slot == villager_slot
+        )));
+        let stepped_ordinary_hash = session.ordinary().reset_hash();
+
+        session.reset();
+        assert_eq!(session.ordinary().reset_hash(), baseline_ordinary_hash);
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+        assert_eq!(session.economy().live_arena_slots(), baseline_live_arena);
+        assert_eq!(
+            session
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == villager_slot),
+            Some(&baseline_villager)
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.ordinary().reset_hash(), stepped_ordinary_hash);
+        assert_eq!(
+            session
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == villager_slot),
+            Some(&stepped_villager)
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Villager {
+                pass: 0,
+                source_slot,
+                ..
+            } if *source_slot == villager_slot
+        )));
     }
 
     #[test]
