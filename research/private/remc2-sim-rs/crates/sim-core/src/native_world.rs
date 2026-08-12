@@ -7964,6 +7964,28 @@ impl Level2EconomyState {
             .sort_unstable_by(|left, right| right.cmp(left));
     }
 
+    /// Rebuild the source free-arena sidecars using the validated reset pool
+    /// and the currently live typed rows.  This is the bounded equivalent of
+    /// `sub_49F90`: reclaim rows already marked inactive, then retry the
+    /// allocator from descending source-slot order without inventing a new
+    /// pool or changing any live relation.
+    fn rebuild_free_arena(&mut self) {
+        self.reclaim_inactive_slots();
+        let occupied = self
+            .live_arena_cursor_rows()
+            .into_iter()
+            .map(|row| row.source_slot)
+            .collect::<BTreeSet<_>>();
+        self.free_slots = self
+            .baseline_free_slots
+            .iter()
+            .copied()
+            .filter(|slot| !occupied.contains(slot))
+            .collect();
+        self.free_slots
+            .sort_unstable_by(|left, right| right.cmp(left));
+    }
+
     #[must_use]
     pub fn spheres(&self) -> &[ManaSphere] {
         &self.spheres
@@ -13604,6 +13626,58 @@ impl Level2EconomyState {
             .expect("Castle child source slot fits the map chain");
     }
 
+    /// Retire the source `word_0x34_52` controller chain by following each
+    /// model-79 child's `word_0x34_52` successor.  `sub_613D0` does not use
+    /// `parentId` as a release set: defenders, model-15 auxiliaries, and any
+    /// other source-owned rows remain for the following `sub_5FF50` walk.
+    fn retire_castle_controller_chain(&mut self, castle_slot: u16) {
+        let mut current_slot = self
+            .castle
+            .filter(|castle| castle.source_entity_index == castle_slot)
+            .map_or(0, |castle| castle.controller_chain_head);
+        let mut visited = BTreeSet::new();
+        while current_slot != 0 && visited.insert(current_slot) {
+            let Some(child) = self
+                .castle_children
+                .iter()
+                .find(|child| {
+                    child.source_entity_index == current_slot
+                        && child.source_class == 10
+                        && child.model == 79
+                })
+                .copied()
+            else {
+                break;
+            };
+            current_slot = child.chain_next_slot;
+            if !child.active {
+                continue;
+            }
+            if let Some(installed) = self
+                .castle_children
+                .iter_mut()
+                .find(|installed| installed.source_entity_index == child.source_entity_index)
+            {
+                installed.active = false;
+            }
+            self.sync_castle_child_map(Level2CastleChild {
+                active: false,
+                ..child
+            });
+            self.release_slot(child.source_entity_index, None);
+        }
+        if let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.source_entity_index == castle_slot)
+        {
+            castle.controller_chain_slots = [0; 8];
+            castle.controller_chain_count = 0;
+            castle.controller_chain_head = 0;
+            castle.controller_chain_tail = 0;
+        }
+    }
+
     fn install_owner_mana_row(
         &mut self,
         source_entity_index: u16,
@@ -13690,6 +13764,9 @@ impl Level2EconomyState {
             return;
         }
         let fraction = (release / 1_000).clamp(1, 32);
+        if self.free_slots.is_empty() {
+            self.rebuild_free_arena();
+        }
         let sphere_count = fraction.min(i32::try_from(self.free_slots.len()).unwrap_or(i32::MAX));
         if sphere_count == 0 {
             return;
@@ -14220,32 +14297,7 @@ impl Level2EconomyState {
                     i32::try_from((i64::from(base_life) * i64::from(stage_coefficient)) >> 8)
                         .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
                 let (shift_pitch, shift_roll) = level2_castle_shift_axes(next_level);
-                let stale_stage_children = self
-                    .castle_children
-                    .iter()
-                    .filter(|child| {
-                        child.active
-                            && child.parent_entity_index == snapshot.source_entity_index
-                            && child.model == 79
-                    })
-                    .copied()
-                    .collect::<Vec<_>>();
-                for stale_child in stale_stage_children {
-                    if let Some(child) = self
-                        .castle_children
-                        .iter_mut()
-                        .find(|child| child.source_entity_index == stale_child.source_entity_index)
-                    {
-                        child.active = false;
-                    }
-                    self.sync_castle_child_map(Level2CastleChild {
-                        active: false,
-                        ..stale_child
-                    });
-                    // `sub_57F20` returns the disabled controller to the
-                    // source free arena after unlinking it from the map.
-                    self.release_slot(stale_child.source_entity_index, None);
-                }
+                self.retire_castle_controller_chain(snapshot.source_entity_index);
                 let construction_child = Level2CastleChild {
                     source_entity_index: child_slot,
                     entity_rng: self.new_event_rng(child_slot),
@@ -14597,6 +14649,9 @@ impl Level2EconomyState {
                     {
                         castle.action = 4;
                     }
+                    // `ApplyEvents_498A0` advances byte 0x3E after
+                    // `sub_5FCA0`, including this no-free callback path.
+                    self.advance_castle_phase(castle_slot);
                     return true;
                 }
                 // Keep the source order: reduce capacity and release
@@ -14638,42 +14693,11 @@ impl Level2EconomyState {
                             .insert(snapshot.source_entity_index, final_source_rng);
                     }
                 }
-                let construction_slot = snapshot.construction_slot;
-                let defense_slot = snapshot.defense_slot;
-                if construction_slot != 0 {
-                    self.release_slot(construction_slot, None);
-                }
-                if defense_slot != 0 {
-                    self.release_slot(defense_slot, None);
-                }
-                let child_slots = self
-                    .castle_children
-                    .iter()
-                    .filter(|child| {
-                        child.active && child.parent_entity_index == snapshot.source_entity_index
-                    })
-                    .map(|child| child.source_entity_index)
-                    .collect::<Vec<_>>();
-                for child_slot in child_slots {
-                    self.release_slot(child_slot, None);
-                }
-                let teardown_children = self
-                    .castle_children
-                    .iter()
-                    .filter(|child| child.parent_entity_index == snapshot.source_entity_index)
-                    .copied()
-                    .collect::<Vec<_>>();
-                for child in teardown_children {
-                    if let Some(installed) = self.castle_children.iter_mut().find(|installed| {
-                        installed.source_entity_index == child.source_entity_index
-                    }) {
-                        installed.active = false;
-                    }
-                    self.sync_castle_child_map(Level2CastleChild {
-                        active: false,
-                        ..child
-                    });
-                }
+                // `sub_613D0` retires only the old controller chain.  The
+                // source-owned defender and model-15 arrays are consumed by
+                // the following `sub_5FF50` maintenance, so parent identity
+                // is deliberately not a teardown release criterion.
+                self.retire_castle_controller_chain(snapshot.source_entity_index);
                 let next_level = snapshot.level.saturating_sub(1);
                 let (base_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
                 let stage_coefficient = self
@@ -14733,6 +14757,16 @@ impl Level2EconomyState {
                 castle.shift_fov = 0x4000;
                 castle.source_word_2e = 0;
                 castle.source_word_30 = 0;
+                // `sub_605E0` leaves the source auxiliary array intact;
+                // `sub_5FF50` only walks the lower stage bound, so tail rows
+                // remain source-owned even when the Castle downgrades.
+                castle.auxiliary_slots = snapshot.auxiliary_slots;
+                castle.auxiliary_count = snapshot.auxiliary_count;
+                castle.auxiliary_cooldown = snapshot.auxiliary_cooldown;
+                castle.auxiliary_positions = snapshot.auxiliary_positions;
+                castle.auxiliary_yaws = snapshot.auxiliary_yaws;
+                castle.auxiliary_rolls = snapshot.auxiliary_rolls;
+                castle.auxiliary_player_entity_indices = snapshot.auxiliary_player_entity_indices;
                 castle.construction_child_active = false;
                 castle.defense_child_active = false;
                 castle.timer = 5;
@@ -34625,6 +34659,245 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, Level2EconomyEvent::CastleStageDestroyed { .. }))
         );
+    }
+
+    #[test]
+    fn level_two_castle_teardown_and_allocator_failure_are_exact() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("no-free teardown session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("no-free teardown Castle");
+        let before_ground = session.economy().terrain.planes.ground_heights.clone();
+        let before_rng = session
+            .economy()
+            .source_rng
+            .get(&castle_slot)
+            .copied()
+            .expect("live Castle source RNG");
+        let before_phase = session.economy().castle().expect("Castle").phase;
+        {
+            let economy = session.economy_mut();
+            economy.free_slots.clear();
+            let castle = economy.castle.as_mut().expect("no-free teardown Castle");
+            castle.action = 6;
+            castle.level = 2;
+        }
+        session.economy_mut().begin_turn();
+        assert!(session.economy_mut().step_castle_action(castle_slot));
+        let castle = session.economy().castle().expect("gated Castle");
+        assert_eq!((castle.action, castle.level), (4, 2));
+        assert_eq!(castle.phase, before_phase.wrapping_add(1));
+        assert_eq!(
+            session.economy().source_rng.get(&castle_slot).copied(),
+            Some(before_rng)
+        );
+        assert_eq!(
+            session.economy().terrain.planes.ground_heights,
+            before_ground
+        );
+        assert!(session.economy().events().is_empty());
+
+        // `sub_49F90` rebuilds the free arena when an inactive typed row was
+        // omitted from the fast free stack.  The retry must reuse that row,
+        // keep the live Castle distinct, and leave exactly one committed
+        // overflow sphere rather than leaking or colliding with a slot.
+        let mut rebuild = inspection
+            .level2_reset_session()
+            .expect("allocator-rebuild session");
+        let rebuild_castle_slot = rebuild
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("allocator-rebuild Castle");
+        let stale_slot = {
+            let economy = rebuild.economy_mut();
+            let stale_id = economy
+                .spawn_mana_sphere_from_death(52, Position::default(), 0, 0x9876, 1, 111)
+                .expect("stale typed sphere");
+            let stale_slot = u16::try_from(stale_id).expect("stale sphere source slot");
+            let stale = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == stale_slot)
+                .expect("stale typed sphere row");
+            stale.active = false;
+            let stale_position = stale.position;
+            economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: stale_slot,
+                    active: false,
+                    x: stale_position.x,
+                    y: stale_position.y,
+                })
+                .expect("unlink stale typed sphere");
+            stale_slot
+        };
+        {
+            let economy = rebuild.economy_mut();
+            economy.free_slots.clear();
+            let castle = economy.castle.as_mut().expect("allocator-rebuild Castle");
+            castle.mana = 2_000;
+            castle.mana_capacity = 1_000;
+            castle.action = 4;
+            castle.phase = 0;
+        }
+        rebuild
+            .economy_mut()
+            .release_castle_excess_mana(rebuild_castle_slot);
+        assert_ne!(stale_slot, rebuild_castle_slot);
+        assert!(
+            rebuild
+                .economy()
+                .spheres
+                .iter()
+                .any(|sphere| sphere.active && sphere.source_entity_index == stale_slot)
+        );
+        assert!(!rebuild.economy().free_slots.contains(&stale_slot));
+        assert!(!rebuild.economy().free_slots.contains(&rebuild_castle_slot));
+        assert_eq!(
+            rebuild
+                .economy()
+                .spheres
+                .iter()
+                .filter(|sphere| sphere.active && sphere.source_entity_index == stale_slot)
+                .count(),
+            1
+        );
+
+        // `sub_613D0` follows only the old controller successor chain.  A
+        // planted defender and an auxiliary tail row with the same parent
+        // must survive into the existing post-downgrade maintenance walk.
+        let mut chain = inspection
+            .level2_reset_session()
+            .expect("controller-chain teardown session");
+        let baseline_hash = chain.campaign_state_hash();
+        let chain_castle_slot = chain
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("controller-chain Castle");
+        let (old_head, old_tail, defender_slot, auxiliary_slot) = {
+            let economy = chain.economy_mut();
+            let add_child = |economy: &mut Level2EconomyState,
+                             source_class: u8,
+                             model: u8,
+                             action: u8,
+                             previous: u16,
+                             next: u16,
+                             source_word_4a: u16| {
+                let source_entity_index = economy.allocate_slot().expect("Castle child slot");
+                let child = Level2CastleChild {
+                    source_entity_index,
+                    entity_rng: economy.new_event_rng(source_entity_index),
+                    id_entity_index: 111,
+                    source_class,
+                    parent_entity_index: chain_castle_slot,
+                    owner_entity_index: 111,
+                    player_entity_index: 111,
+                    position: Position::default(),
+                    model,
+                    action,
+                    mana: 0,
+                    max_mana: if model == 3 {
+                        LEVEL2_CASTLE_DEFENDER_MAX_MANA
+                    } else {
+                        0
+                    },
+                    life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                    max_life: if model == 3 {
+                        LEVEL2_CASTLE_DEFENDER_MAX_LIFE
+                    } else {
+                        LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE
+                    },
+                    speed: if model == 3 {
+                        LEVEL2_CASTLE_DEFENDER_SPEED
+                    } else {
+                        LEVEL2_CASTLE_CHILD_DEFAULT_SPEED
+                    },
+                    target_sphere_slot: 0,
+                    source_byte_3e: source_entity_index as u8,
+                    cave_collision_cooldown: 0,
+                    yaw: if model == 15 { 512 } else { 0 },
+                    roll: if model == 15 { 512 } else { 0 },
+                    control_flags: 0,
+                    chain_previous_slot: previous,
+                    chain_next_slot: next,
+                    source_byte_43: 1,
+                    source_word_4a,
+                    active: true,
+                };
+                economy.sync_castle_child_map(child);
+                economy.castle_children.push(child);
+                source_entity_index
+            };
+            let old_head = add_child(economy, 10, 79, 0, chain_castle_slot, 0, 2);
+            let old_tail = add_child(economy, 10, 79, 0, old_head, 0, 2);
+            economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == old_head)
+                .expect("controller-chain head")
+                .chain_next_slot = old_tail;
+            let defender_slot = add_child(economy, 3, 3, 9, 0, 0, 0);
+            let auxiliary_slot = add_child(economy, 5, 15, 121, 0, 0, 0);
+            let castle = economy.castle.as_mut().expect("controller-chain Castle");
+            castle.action = 6;
+            castle.level = 2;
+            castle.life = -1;
+            castle.controller_chain_slots = [old_head, old_tail, 0, 0, 0, 0, 0, 0];
+            castle.controller_chain_count = 2;
+            castle.controller_chain_head = old_head;
+            castle.controller_chain_tail = old_tail;
+            castle.defender_slots = [defender_slot, 0, 0];
+            castle.defender_count = 1;
+            castle.auxiliary_slots[0] = auxiliary_slot;
+            castle.auxiliary_count = 1;
+            (old_head, old_tail, defender_slot, auxiliary_slot)
+        };
+        chain.economy_mut().begin_turn();
+        assert!(chain.economy_mut().step_castle_action(chain_castle_slot));
+        let castle = chain.economy().castle().expect("downgraded Castle");
+        assert_eq!(castle.level, 1);
+        assert_eq!(castle.controller_chain_count, 1);
+        assert_eq!(castle.auxiliary_slots[0], auxiliary_slot);
+        assert_eq!(castle.defender_slots[0], defender_slot);
+        assert!(chain.economy().castle_children.iter().any(|child| {
+            child.active && child.source_entity_index == defender_slot && child.model == 3
+        }));
+        assert!(chain.economy().castle_children.iter().any(|child| {
+            child.active && child.source_entity_index == auxiliary_slot && child.model == 15
+        }));
+        assert!(
+            !chain
+                .economy()
+                .castle_children
+                .iter()
+                .any(|child| { child.active && child.model == 79 && child.source_word_4a == 2 })
+        );
+        assert!(chain.economy().castle_children.iter().any(|child| {
+            child.active
+                && child.model == 79
+                && child.source_word_4a == 1
+                && child.chain_previous_slot == chain_castle_slot
+                && child.chain_next_slot == 0
+        }));
+        for old_slot in [old_head, old_tail] {
+            assert!(
+                chain.economy().free_slots.contains(&old_slot)
+                    || chain.economy().castle_children.iter().any(|child| {
+                        child.active && child.source_entity_index == old_slot && child.model == 79
+                    })
+            );
+        }
+        assert!(chain.economy().map_chains().is_linked(defender_slot));
+        assert!(chain.economy().map_chains().is_linked(auxiliary_slot));
+        assert_ne!(chain.campaign_state_hash(), baseline_hash);
+        chain.reset();
+        assert_eq!(chain.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
