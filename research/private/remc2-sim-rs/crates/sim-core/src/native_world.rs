@@ -269,6 +269,12 @@ const LEVEL2_QUALIFIED_CATALOG_FILE_SHA256: &str =
     "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44";
 const LEVEL2_QUALIFIED_CATALOG_SHA256: &str =
     "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e";
+const LEVEL2_QUALIFIED_BUILD_DAT_SHA256: &str =
+    "3db5d9a763dedafbe3077eeeef47431da0b5d397e311f6ee46719a0fc51e8e5d";
+const LEVEL2_QUALIFIED_BUILD_DAT_BYTES: u64 = 80_064;
+const LEVEL2_QUALIFIED_BUILD_TAB_SHA256: &str =
+    "e064a1520e96f65c13fde9a05918d240ee4f708ab6aefc793ec8b391f220c05e";
+const LEVEL2_QUALIFIED_BUILD_TAB_BYTES: u64 = 462;
 const LEVEL2_BAD_STONE_SLOTS: [u16; 4] = [33, 34, 35, 36];
 const LEVEL2_BAD_STONE_PARAMETER: u16 = 60;
 const LEVEL2_BAD_STONE_PARTICLE: u16 = 270;
@@ -29246,8 +29252,36 @@ fn load_level2_castle_stage_footprints(
         }
         Ok(bytes)
     };
-    let tab = read_output("gameplay/DATA_BUILD0-0.TAB.bin")?;
-    let dat = read_output("gameplay/DATA_BUILD0-0.DAT.bin")?;
+    let read_qualified_build_output =
+        |path: &str, qualified_hash: &str, qualified_bytes: u64| -> Result<Vec<u8>> {
+            let (declared_hash, declared_bytes) = outputs.get(path).ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Level 2 qualified BUILD output is undeclared: {path}"
+                ))
+            })?;
+            if declared_hash != qualified_hash || *declared_bytes != qualified_bytes {
+                return Err(NativeWorldError::new(format!(
+                    "Level 2 qualified BUILD output declaration mismatch: {path}"
+                )));
+            }
+            let bytes = read_output(path)?;
+            if bytes.len() as u64 != qualified_bytes || sha256_hex(&bytes) != qualified_hash {
+                return Err(NativeWorldError::new(format!(
+                    "Level 2 qualified BUILD output identity mismatch: {path}"
+                )));
+            }
+            Ok(bytes)
+        };
+    let tab = read_qualified_build_output(
+        "gameplay/DATA_BUILD0-0.TAB.bin",
+        LEVEL2_QUALIFIED_BUILD_TAB_SHA256,
+        LEVEL2_QUALIFIED_BUILD_TAB_BYTES,
+    )?;
+    let dat = read_qualified_build_output(
+        "gameplay/DATA_BUILD0-0.DAT.bin",
+        LEVEL2_QUALIFIED_BUILD_DAT_SHA256,
+        LEVEL2_QUALIFIED_BUILD_DAT_BYTES,
+    )?;
     let mut footprints = BTreeMap::new();
     let mut previous_end = None;
     for stage in 1_u8..=7 {
@@ -32572,6 +32606,92 @@ mod tests {
         .expect("write binding-tampered manifest");
         assert!(NativeWorld::inspect_level2_with_owner_cache(&package, &tampered_root).is_err());
         fs::remove_dir_all(tampered_root).expect("remove test tamper cache");
+
+        // Refresh the DAT declaration, component content identity, and
+        // canonical manifest payload after changing a consumed BUILD byte.
+        // The immutable qualified BUILD-root pin must still reject it.
+        let dat_tampered_root = std::env::temp_dir().join(format!(
+            "mc-bvihb1-gameplay-dat-tamper-{}",
+            std::process::id()
+        ));
+        if dat_tampered_root.exists() {
+            fs::remove_dir_all(&dat_tampered_root).expect("remove stale DAT tamper cache");
+        }
+        fs::create_dir_all(dat_tampered_root.join("gameplay")).expect("create DAT tamper cache");
+        fs::copy(
+            gameplay_cache.join("manifest.json"),
+            dat_tampered_root.join("manifest.json"),
+        )
+        .expect("copy DAT tamper manifest");
+        fs::copy(
+            gameplay_cache.join("gameplay/DATA_BUILD0-0.TAB.bin"),
+            dat_tampered_root.join("gameplay/DATA_BUILD0-0.TAB.bin"),
+        )
+        .expect("copy DAT tamper TAB");
+        let dat_path = dat_tampered_root.join("gameplay/DATA_BUILD0-0.DAT.bin");
+        fs::copy(
+            gameplay_cache.join("gameplay/DATA_BUILD0-0.DAT.bin"),
+            &dat_path,
+        )
+        .expect("copy DAT tamper DAT");
+        let mut dat = fs::read(&dat_path).expect("read DAT tamper DAT");
+        assert_eq!(dat.first(), Some(&255));
+        dat[0] = 254;
+        fs::write(&dat_path, &dat).expect("write DAT tamper DAT");
+        let dat_sha256 = sha256_hex(&dat);
+        let dat_manifest_path = dat_tampered_root.join("manifest.json");
+        let mut dat_manifest: Value = serde_json::from_slice(
+            &fs::read(&dat_manifest_path).expect("read DAT tamper manifest"),
+        )
+        .expect("parse DAT tamper manifest");
+        let outputs = dat_manifest["outputs"]
+            .as_array_mut()
+            .expect("DAT tamper manifest outputs");
+        let mut replaced_dat_declaration = false;
+        for output in outputs {
+            if output["path"] == json!("gameplay/DATA_BUILD0-0.DAT.bin") {
+                output["sha256"] = json!(dat_sha256);
+                replaced_dat_declaration = true;
+            }
+        }
+        assert!(replaced_dat_declaration);
+        let mut content_identity = String::new();
+        {
+            use std::fmt::Write as _;
+            for output in dat_manifest["outputs"]
+                .as_array()
+                .expect("DAT tamper manifest outputs")
+            {
+                writeln!(
+                    &mut content_identity,
+                    "{}\0{}\0{}",
+                    output["path"].as_str().expect("DAT tamper output path"),
+                    output["sha256"].as_str().expect("DAT tamper output hash"),
+                    output["bytes"].as_u64().expect("DAT tamper output bytes")
+                )
+                .expect("write DAT tamper content identity");
+            }
+        }
+        dat_manifest["cache_content_sha256"] = json!(sha256_hex(content_identity.as_bytes()));
+        let mut unsigned_dat_manifest = dat_manifest.clone();
+        unsigned_dat_manifest
+            .as_object_mut()
+            .expect("DAT tamper manifest object")
+            .remove("manifest_payload_sha256");
+        let canonical_dat_manifest = serde_json::to_string_pretty(&unsigned_dat_manifest)
+            .expect("encode DAT tamper manifest canonically")
+            + "\n";
+        dat_manifest["manifest_payload_sha256"] =
+            json!(sha256_hex(canonical_dat_manifest.as_bytes()));
+        fs::write(
+            &dat_manifest_path,
+            serde_json::to_vec_pretty(&dat_manifest).expect("encode DAT tamper manifest"),
+        )
+        .expect("write DAT tamper manifest");
+        assert!(
+            NativeWorld::inspect_level2_with_owner_cache(&package, &dat_tampered_root).is_err()
+        );
+        fs::remove_dir_all(dat_tampered_root).expect("remove DAT tamper cache");
     }
 
     #[test]
