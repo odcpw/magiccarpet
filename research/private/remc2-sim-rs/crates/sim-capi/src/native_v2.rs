@@ -8157,8 +8157,21 @@ fn open_campaign_session(
     )
     .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
     let session = if expected.is_level2() {
-        let inspection = NativeWorld::inspect_level2(&package)
-            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+        let inspection = match asset_cache_path.as_deref() {
+            Some(cache_root) => {
+                let root = Path::new(cache_root);
+                if root.join("components/gameplay/manifest.json").is_file() {
+                    NativeWorld::inspect_level2_with_owner_cache(
+                        &package,
+                        root.join("components/gameplay"),
+                    )
+                } else {
+                    NativeWorld::inspect_level2(&package)
+                }
+            }
+            None => NativeWorld::inspect_level2(&package),
+        }
+        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
         let mut reset = inspection
             .level2_reset_session()
             .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
@@ -20218,6 +20231,63 @@ mod tests {
             MC_STATUS_GENERATION_MISMATCH
         );
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn campaign_level2_gameplay_cache_tamper_is_rejected() {
+        let cache = qualified_level2_day_owner_cache();
+        let tampered_root = std::env::temp_dir().join(format!(
+            "mc-bvihb1-capi-gameplay-tamper-{}",
+            std::process::id()
+        ));
+        if tampered_root.exists() {
+            fs::remove_dir_all(&tampered_root).expect("remove stale CAPI tamper cache");
+        }
+        fs::create_dir_all(tampered_root.join("components/gameplay/gameplay"))
+            .expect("create CAPI tamper cache");
+        fs::copy(
+            cache.join("components/gameplay/manifest.json"),
+            tampered_root.join("components/gameplay/manifest.json"),
+        )
+        .expect("copy gameplay manifest");
+        let gameplay_tab = tampered_root.join("components/gameplay/gameplay/DATA_BUILD0-0.TAB.bin");
+        fs::copy(
+            cache.join("components/gameplay/gameplay/DATA_BUILD0-0.TAB.bin"),
+            &gameplay_tab,
+        )
+        .expect("copy gameplay TAB");
+        let mut bytes = fs::read(&gameplay_tab).expect("read gameplay TAB");
+        bytes[0] ^= 0x01;
+        fs::write(&gameplay_tab, bytes).expect("write tampered gameplay TAB");
+
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let cache_path = tampered_root.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0x1111_2222_3333_4444;
+        assert_eq!(
+            mc_native_campaign_session_open_with_asset_cache(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                cache_path.as_ptr(),
+                cache_path.len() as u32,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(handle, 0);
+        fs::remove_dir_all(tampered_root).expect("remove CAPI tamper cache");
     }
 
     #[test]

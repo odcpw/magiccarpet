@@ -119,6 +119,7 @@ const LEVEL2_MANIFEST_SCHEMA_V3: &str = "mc2-owner-level-export/v3";
 const LEVEL2_MANIFEST_SCHEMA_V4: &str = "mc2-owner-level-export/v4";
 const CLOSURE_SCHEMA: &str = "mc2-level-asset-closure/v2";
 const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
+const LEVEL2_GAMEPLAY_CACHE_SCHEMA: &str = "mc2-level2-day-gameplay-cache/v1";
 const LEVEL2_NYPHUR_SPELL_COOLDOWNS: [i16; PLAYER_SPELL_COUNT] = [
     2, 10, 40, 32, 300, 1, 1, 1, 1, 4, 1, 1, 0, 0, 0, 0, 0, 0, 400, 600, 600, 400, 400, 0, 0, 0,
 ];
@@ -262,6 +263,12 @@ const LEVEL2_SPELL_TIER_THRESHOLDS: [[i32; 3]; PLAYER_SPELL_COUNT] = [
 const FRAME_ASSET_COUNT: usize = 76;
 const LEVEL_ONE_CONTROL_MODE_SEAM_DEFAULT: u8 = 0;
 const LEVEL2_UPSTREAM_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
+const LEVEL2_QUALIFIED_CLOSURE_SHA256: &str =
+    "a4a7a3d4086c09404294fb90d53e7f34e05d58a406fb025e15f032cca18793f1";
+const LEVEL2_QUALIFIED_CATALOG_FILE_SHA256: &str =
+    "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44";
+const LEVEL2_QUALIFIED_CATALOG_SHA256: &str =
+    "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e";
 const LEVEL2_BAD_STONE_SLOTS: [u16; 4] = [33, 34, 35, 36];
 const LEVEL2_BAD_STONE_PARAMETER: u16 = 60;
 const LEVEL2_BAD_STONE_PARTICLE: u16 = 270;
@@ -3458,6 +3465,7 @@ pub struct NativeWorldInspection {
     reset_state: Option<FlightState>,
     authored_level: Box<[u8]>,
     collision_masks: Option<CollisionMaskBank>,
+    level2_castle_stage_footprints: BTreeMap<u8, CastleBuildFootprint>,
 }
 
 impl NativeWorldInspection {
@@ -3620,7 +3628,7 @@ impl NativeWorldInspection {
         let goats =
             GoatFamily::from_level_two_entities(&self.entities, GOAT_STAGE_POINT, goat_config)
                 .map_err(NativeWorldError::new)?;
-        let economy = Level2EconomyState::from_parts(
+        let economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
             SessionTerrain::from_inspection(self),
             &self.entities,
             self.entities[usize::from(self.players[0].entity_index)].mana,
@@ -3628,6 +3636,7 @@ impl NativeWorldInspection {
             0,
             self.players[0].enabled_spell_holders[2],
             self.runtime.random_state,
+            self.level2_castle_stage_footprints.clone(),
         )?;
         let nyphur_dispatcher = Level2NyphurDispatcher::from_qualified_reset(
             &self.players,
@@ -7670,6 +7679,7 @@ pub struct Level2EconomyState {
 }
 
 impl Level2EconomyState {
+    #[cfg(test)]
     fn from_parts(
         terrain: SessionTerrain,
         entities: &[EntitySnapshot],
@@ -7678,6 +7688,28 @@ impl Level2EconomyState {
         player_terrain_flags: u8,
         player_spell_slot_2: u16,
         global_rng: u32,
+    ) -> Result<Self> {
+        Self::from_parts_with_castle_stage_footprints(
+            terrain,
+            entities,
+            player_mana,
+            player_model,
+            player_terrain_flags,
+            player_spell_slot_2,
+            global_rng,
+            BTreeMap::new(),
+        )
+    }
+
+    fn from_parts_with_castle_stage_footprints(
+        terrain: SessionTerrain,
+        entities: &[EntitySnapshot],
+        player_mana: i32,
+        player_model: u8,
+        player_terrain_flags: u8,
+        player_spell_slot_2: u16,
+        global_rng: u32,
+        castle_stage_footprints: BTreeMap<u8, CastleBuildFootprint>,
     ) -> Result<Self> {
         let mut free_slots = entities
             .iter()
@@ -7855,8 +7887,8 @@ impl Level2EconomyState {
             castle_children: Vec::new(),
             baseline_castle_footprint: None,
             castle_footprint: None,
-            baseline_castle_stage_footprints: BTreeMap::new(),
-            castle_stage_footprints: BTreeMap::new(),
+            baseline_castle_stage_footprints: castle_stage_footprints.clone(),
+            castle_stage_footprints,
             baseline_map_chains: map_chains.clone(),
             map_chains,
             baseline_player_mana: player_mana,
@@ -14516,6 +14548,7 @@ impl Level2EconomyState {
                     castle.position.z = self.terrain.ground_height(castle.position);
                 }
                 self.release_castle_excess_mana(castle_slot);
+                self.maintain_castle_defenders(castle_slot);
                 let Some(castle) = self.castle else {
                     self.advance_castle_phase(castle_slot);
                     return false;
@@ -25043,13 +25076,36 @@ impl NativeWorld {
     /// all package members, typed relations, reset state, and Day metadata
     /// are validated before the explicit unsupported-mission boundary.
     pub fn inspect_level2(package_dir: impl AsRef<Path>) -> Result<NativeWorldInspection> {
-        let package_dir = package_dir.as_ref();
+        Self::inspect_level2_internal(package_dir.as_ref(), None)
+    }
+
+    /// Decode the Level 2 package and bind the explicit qualified gameplay
+    /// component cache used by the production campaign C API. The component
+    /// manifest carries the closure identity because the Level 2 C API does
+    /// not consume a closure path.
+    pub fn inspect_level2_with_owner_cache(
+        package_dir: impl AsRef<Path>,
+        owner_cache: impl AsRef<Path>,
+    ) -> Result<NativeWorldInspection> {
+        Self::inspect_level2_internal(package_dir.as_ref(), Some(owner_cache.as_ref()))
+    }
+
+    fn inspect_level2_internal(
+        package_dir: &Path,
+        owner_cache: Option<&Path>,
+    ) -> Result<NativeWorldInspection> {
         let manifest_path = package_dir.join("manifest.json");
         let manifest_bytes = read_file(&manifest_path)?;
         let manifest: Value = serde_json::from_slice(&manifest_bytes)
             .map_err(|error| NativeWorldError::new(format!("invalid manifest JSON: {error}")))?;
         let object = as_object(&manifest, "manifest")?;
         let common = parse_common_package(package_dir, object, OwnerPackageProfile::Level2)?;
+        let level2_castle_stage_footprints = owner_cache
+            .map(|owner_cache| {
+                load_level2_castle_stage_footprints(owner_cache, &common.package.package_sha256)
+            })
+            .transpose()?
+            .unwrap_or_default();
         Ok(NativeWorldInspection {
             profile: OwnerPackageProfile::Level2,
             schema: common.package.schema,
@@ -25065,6 +25121,7 @@ impl NativeWorld {
             reset_state: common.reset_state,
             authored_level: common.authored.into_boxed_slice(),
             collision_masks: common.collision_masks,
+            level2_castle_stage_footprints,
         })
     }
 
@@ -29026,6 +29083,219 @@ impl QualifiedOwnerCacheReader {
     }
 }
 
+/// Load the seven Castle stage BUILD rows from one explicitly selected
+/// Level 2 gameplay component.  The C API resolves an aggregate owner cache
+/// to this component before calling the core, so this reader never interprets
+/// an aggregate manifest.
+fn load_level2_castle_stage_footprints(
+    root: &Path,
+    package_sha256: &str,
+) -> Result<BTreeMap<u8, CastleBuildFootprint>> {
+    let manifest_bytes = read_owner_cache_output(root, "manifest.json")?;
+    let manifest_value: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+        NativeWorldError::new(format!(
+            "invalid Level 2 gameplay cache manifest JSON: {error}"
+        ))
+    })?;
+    let claimed_manifest_sha256 = require_hash_string(
+        as_object(&manifest_value, "Level 2 gameplay cache manifest")?,
+        "manifest_payload_sha256",
+        "Level 2 gameplay cache manifest",
+    )?;
+    let mut unsigned_manifest = manifest_value.clone();
+    as_object_mut(&mut unsigned_manifest, "Level 2 gameplay cache manifest")?
+        .remove("manifest_payload_sha256");
+    let canonical_manifest = serde_json::to_string_pretty(&unsigned_manifest).map_err(|error| {
+        NativeWorldError::new(format!(
+            "cannot encode Level 2 gameplay cache manifest canonically: {error}"
+        ))
+    })? + "\n";
+    if sha256_hex(canonical_manifest.as_bytes()) != claimed_manifest_sha256 {
+        return Err(NativeWorldError::new(
+            "Level 2 gameplay cache manifest metadata hash mismatch",
+        ));
+    }
+    let manifest = as_object(&manifest_value, "Level 2 gameplay cache manifest")?;
+    if require_string(manifest, "schema", "Level 2 gameplay cache manifest")?
+        != LEVEL2_GAMEPLAY_CACHE_SCHEMA
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 owner cache is not a gameplay component",
+        ));
+    }
+    let content_sha256 = require_hash_string(
+        manifest,
+        "cache_content_sha256",
+        "Level 2 gameplay cache manifest",
+    )?;
+    let bindings = require_object(manifest, "bindings", "Level 2 gameplay cache manifest")?;
+    if require_hash_string(
+        bindings,
+        "level_export_package_sha256",
+        "Level 2 gameplay cache bindings",
+    )? != package_sha256
+        || require_string(bindings, "remc2_commit", "Level 2 gameplay cache bindings")?
+            != LEVEL2_UPSTREAM_COMMIT
+        || require_hash_string(
+            bindings,
+            "level_asset_closure_sha256",
+            "Level 2 gameplay cache bindings",
+        )? != LEVEL2_QUALIFIED_CLOSURE_SHA256
+        || require_hash_string(
+            bindings,
+            "owner_catalog_file_sha256",
+            "Level 2 gameplay cache bindings",
+        )? != LEVEL2_QUALIFIED_CATALOG_FILE_SHA256
+        || require_hash_string(
+            bindings,
+            "owner_catalog_sha256",
+            "Level 2 gameplay cache bindings",
+        )? != LEVEL2_QUALIFIED_CATALOG_SHA256
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 gameplay cache package or remc2 binding mismatch",
+        ));
+    }
+    let closure_sha256 = require_hash_string(
+        bindings,
+        "level_asset_closure_sha256",
+        "Level 2 gameplay cache bindings",
+    )?;
+    let profile = require_object(manifest, "profile", "Level 2 gameplay cache manifest")?;
+    if require_string(profile, "name", "Level 2 gameplay cache profile")? != "level2-day"
+        || require_exact_u64(
+            profile,
+            "external_level",
+            2,
+            "Level 2 gameplay cache profile",
+        )
+        .is_err()
+        || require_exact_u64(
+            profile,
+            "internal_level",
+            1,
+            "Level 2 gameplay cache profile",
+        )
+        .is_err()
+        || require_hash_string(profile, "package_sha256", "Level 2 gameplay cache profile")?
+            != package_sha256
+        || require_hash_string(profile, "closure_sha256", "Level 2 gameplay cache profile")?
+            != closure_sha256
+        || require_hash_string(profile, "closure_sha256", "Level 2 gameplay cache profile")?
+            != LEVEL2_QUALIFIED_CLOSURE_SHA256
+        || require_hash_string(
+            profile,
+            "catalog_file_sha256",
+            "Level 2 gameplay cache profile",
+        )? != LEVEL2_QUALIFIED_CATALOG_FILE_SHA256
+        || require_hash_string(profile, "catalog_sha256", "Level 2 gameplay cache profile")?
+            != LEVEL2_QUALIFIED_CATALOG_SHA256
+        || require_string(profile, "spec_commit", "Level 2 gameplay cache profile")?
+            != LEVEL2_UPSTREAM_COMMIT
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 gameplay cache profile binding mismatch",
+        ));
+    }
+    let map_type = require_object(profile, "map_type", "Level 2 gameplay cache profile")?;
+    if require_exact_u64(map_type, "id", 0, "Level 2 gameplay cache map type").is_err()
+        || require_string(map_type, "name", "Level 2 gameplay cache map type")? != "Day"
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 gameplay cache map profile mismatch",
+        ));
+    }
+
+    let mut outputs = BTreeMap::<String, (String, u64)>::new();
+    let mut content_identity = String::new();
+    for output in require_array(manifest, "outputs", "Level 2 gameplay cache manifest")? {
+        let output = as_object(output, "Level 2 gameplay cache output")?;
+        let path = require_string(output, "path", "Level 2 gameplay cache output")?.to_owned();
+        let hash =
+            require_hash_string(output, "sha256", "Level 2 gameplay cache output")?.to_owned();
+        let bytes = require_value(output, "bytes", "Level 2 gameplay cache output")?
+            .as_u64()
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 gameplay cache output size is not u64")
+            })?;
+        use std::fmt::Write as _;
+        writeln!(&mut content_identity, "{path}\0{hash}\0{bytes}")
+            .expect("writing to a String cannot fail");
+        if outputs.insert(path, (hash, bytes)).is_some() {
+            return Err(NativeWorldError::new(
+                "Level 2 gameplay cache manifest has duplicate output paths",
+            ));
+        }
+    }
+    if sha256_hex(content_identity.as_bytes()) != content_sha256 {
+        return Err(NativeWorldError::new(
+            "Level 2 gameplay cache output identity mismatch",
+        ));
+    }
+    let read_output = |path: &str| -> Result<Vec<u8>> {
+        let (expected_hash, expected_bytes) = outputs.get(path).ok_or_else(|| {
+            NativeWorldError::new(format!(
+                "Level 2 gameplay cache output is undeclared: {path}"
+            ))
+        })?;
+        let bytes = read_owner_cache_output(root, path)?;
+        if bytes.len() as u64 != *expected_bytes || sha256_hex(&bytes) != *expected_hash {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 gameplay cache output hash/size mismatch: {path}"
+            )));
+        }
+        Ok(bytes)
+    };
+    let tab = read_output("gameplay/DATA_BUILD0-0.TAB.bin")?;
+    let dat = read_output("gameplay/DATA_BUILD0-0.DAT.bin")?;
+    let mut footprints = BTreeMap::new();
+    let mut previous_end = None;
+    for stage in 1_u8..=7 {
+        let record_offset = usize::from(stage) * 6;
+        let data_offset = usize::try_from(read_u32(
+            &tab,
+            record_offset,
+            "Level 2 Castle BUILD TAB offset",
+        )?)
+        .map_err(|_| NativeWorldError::new("Level 2 Castle BUILD TAB offset exceeds usize"))?;
+        let width = read_u8(&tab, record_offset + 4, "Level 2 Castle BUILD TAB width")?;
+        let height = read_u8(&tab, record_offset + 5, "Level 2 Castle BUILD TAB height")?;
+        let expected_dimensions = level2_castle_removal_dimensions(stage);
+        if (width, height) != expected_dimensions {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 Castle BUILD stage {stage} dimensions changed: {width}x{height}"
+            )));
+        }
+        if previous_end.is_some_and(|end| data_offset != end) {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 Castle BUILD stage {stage} is not contiguous in DATA_BUILD0-0.DAT"
+            )));
+        }
+        let payload_bytes = usize::from(width)
+            .checked_mul(usize::from(height))
+            .and_then(|cells| cells.checked_mul(2))
+            .ok_or_else(|| NativeWorldError::new("Level 2 Castle BUILD payload size overflow"))?;
+        let data_end = data_offset
+            .checked_add(payload_bytes)
+            .filter(|end| *end <= dat.len())
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Level 2 Castle BUILD stage {stage} escapes DATA_BUILD0-0.DAT"
+                ))
+            })?;
+        let footprint = CastleBuildFootprint::from_owner_cells(
+            stage,
+            width,
+            height,
+            &dat[data_offset..data_end],
+        )
+        .map_err(NativeWorldError::new)?;
+        footprints.insert(stage, footprint);
+        previous_end = Some(data_end);
+    }
+    Ok(footprints)
+}
+
 #[derive(Debug, Default)]
 struct LevelOneCacheAssets {
     sound_asset_refs: BTreeMap<u16, u32>,
@@ -32068,6 +32338,240 @@ mod tests {
         let blocked_castle = blocked.economy().castle().expect("blocked Castle");
         assert_eq!((blocked_castle.action, blocked_castle.level), (4, 1));
         assert!(blocked.economy().events().is_empty());
+    }
+
+    #[test]
+    fn level_two_castle_stage_controller_matches_source() {
+        let package = level_two_fixture_path();
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+            .expect("qualified Level 2 gameplay component");
+        let expected_dimensions = [
+            (1, (8, 8)),
+            (2, (21, 21)),
+            (3, (21, 21)),
+            (4, (35, 35)),
+            (5, (35, 35)),
+            (6, (48, 48)),
+            (7, (48, 48)),
+        ];
+        assert_eq!(inspection.level2_castle_stage_footprints.len(), 7);
+        for (stage, (width, height)) in expected_dimensions {
+            let footprint = inspection
+                .level2_castle_stage_footprints
+                .get(&stage)
+                .expect("every Castle stage footprint is installed");
+            assert_eq!(
+                (footprint.index, footprint.width, footprint.height),
+                (stage, width, height)
+            );
+            assert_eq!(
+                footprint.cells().len(),
+                usize::from(width) * usize::from(height)
+            );
+        }
+
+        // The stage controller is reached through the ordinary Level 2
+        // source pass, using the footprint installed by the qualified cache.
+        let stage_one = inspection
+            .level2_castle_stage_footprints
+            .get(&1)
+            .expect("stage-one footprint")
+            .clone();
+        let mut controller = inspection
+            .level2_reset_session()
+            .expect("cache-loaded controller session");
+        controller.select_level2_campaign_entry_stage();
+        let castle_slot = controller
+            .economy_mut()
+            .build_castle_with_footprint(
+                Position {
+                    x: 0x20_00,
+                    y: 0x30_00,
+                    z: 0,
+                },
+                111,
+                &stage_one,
+            )
+            .expect("ordinary Castle allocation");
+        controller.step_outer_turn(PlayerCommand::default(), 0);
+        let castle = controller.economy().castle().expect("live Castle");
+        assert_eq!(castle.source_entity_index, castle_slot);
+        assert_eq!((castle.level, castle.controller_chain_count), (1, 1));
+        let stage_controller_slot = controller
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::CastleController,
+                    ..
+                } => Some(*source_slot),
+                _ => None,
+            })
+            .expect("ordinary source-pass stage controller");
+        assert_eq!(
+            stage_controller_slot,
+            controller
+                .economy()
+                .castle()
+                .expect("Castle after controller dispatch")
+                .controller_chain_slots[0]
+        );
+        assert!(
+            !controller
+                .economy()
+                .map_chains()
+                .is_linked(stage_controller_slot)
+        );
+        assert!(controller.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Castle { source_slot, .. }
+                    if *source_slot == castle_slot
+            )
+        }));
+
+        // The even-phase maintenance call is exercised only by the ordinary
+        // source route; no direct maintenance helper call is used here.
+        let mut maintenance = inspection
+            .level2_reset_session()
+            .expect("cache-loaded maintenance session");
+        maintenance.select_level2_campaign_entry_stage();
+        let maintenance_slot = maintenance
+            .economy_mut()
+            .build_castle_with_footprint(Position::default(), 111, &stage_one)
+            .expect("maintenance Castle allocation");
+        maintenance.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(maintenance.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    kind: Level2DynamicArenaKind::CastleChild,
+                    ..
+                }
+            )
+        }));
+        assert_eq!(
+            (
+                maintenance.economy().castle().expect("Castle").action,
+                maintenance.economy().castle().expect("Castle").build_state,
+            ),
+            (5, 4)
+        );
+        {
+            let castle = maintenance.economy_mut().castle.as_mut().expect("Castle");
+            castle.action = 4;
+            castle.timer = 0;
+            castle.phase &= !1;
+        }
+        maintenance.step_outer_turn(PlayerCommand::default(), 0);
+        let defender = maintenance
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| {
+                child.active
+                    && child.parent_entity_index == maintenance_slot
+                    && child.model == 3
+                    && child.action == 9
+            })
+            .expect("even-phase Castle defender maintenance");
+        assert!(
+            maintenance
+                .economy()
+                .map_chains()
+                .is_linked(defender.source_entity_index)
+        );
+        assert!(maintenance.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Castle { source_slot, .. }
+                    if *source_slot == maintenance_slot
+            )
+        }));
+
+        // Destruction indexes the loaded old-stage row, and reset restores
+        // the cache-loaded arena, terrain authority, and campaign digest.
+        let mut teardown = inspection
+            .level2_reset_session()
+            .expect("cache-loaded teardown session");
+        teardown.select_level2_campaign_entry_stage();
+        let baseline_campaign_hash = teardown.campaign_state_hash();
+        let baseline_terrain_hash = teardown.terrain_hash();
+        let baseline_free_slots = teardown.economy().free_slots.len();
+        let teardown_slot = teardown
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("teardown Castle allocation");
+        {
+            let castle = teardown.economy_mut().castle.as_mut().expect("Castle");
+            castle.action = 6;
+            castle.level = 1;
+            castle.life = -1;
+        }
+        teardown.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(teardown.economy().events().iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::CastleStageDestroyed {
+                    source_entity_index,
+                    previous_level: 1,
+                    next_level: 0,
+                } if *source_entity_index == teardown_slot
+            )
+        }));
+        assert!(!teardown.economy().map_chains().is_linked(teardown_slot));
+        assert_ne!(teardown.terrain_hash(), baseline_terrain_hash);
+        teardown.reset();
+        assert_eq!(teardown.campaign_state_hash(), baseline_campaign_hash);
+        assert_eq!(teardown.terrain_hash(), baseline_terrain_hash);
+        assert_eq!(teardown.economy().free_slots.len(), baseline_free_slots);
+        assert_eq!(teardown.economy().castle_stage_footprints.len(), 7);
+
+        // A binding mutation with its stale payload digest is rejected before
+        // any gameplay rows can be installed.
+        let tampered_root = std::env::temp_dir().join(format!(
+            "mc-bvihb1-gameplay-manifest-tamper-{}",
+            std::process::id()
+        ));
+        if tampered_root.exists() {
+            fs::remove_dir_all(&tampered_root).expect("remove stale tamper cache");
+        }
+        fs::create_dir_all(&tampered_root).expect("create tamper cache");
+        fs::copy(
+            gameplay_cache.join("manifest.json"),
+            tampered_root.join("manifest.json"),
+        )
+        .expect("copy gameplay manifest");
+        let manifest_path = tampered_root.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("read gameplay manifest"))
+                .expect("parse gameplay manifest");
+        manifest["bindings"]["level_export_package_sha256"] = json!("0".repeat(64));
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("encode tampered manifest"),
+        )
+        .expect("write tampered manifest");
+        assert!(NativeWorld::inspect_level2_with_owner_cache(&package, &tampered_root).is_err());
+        let mut unsigned_manifest = manifest.clone();
+        unsigned_manifest
+            .as_object_mut()
+            .expect("tampered manifest object")
+            .remove("manifest_payload_sha256");
+        let canonical_manifest = serde_json::to_string_pretty(&unsigned_manifest)
+            .expect("encode tampered manifest canonically")
+            + "\n";
+        manifest["manifest_payload_sha256"] = json!(sha256_hex(canonical_manifest.as_bytes()));
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("encode binding-tampered manifest"),
+        )
+        .expect("write binding-tampered manifest");
+        assert!(NativeWorld::inspect_level2_with_owner_cache(&package, &tampered_root).is_err());
+        fs::remove_dir_all(tampered_root).expect("remove test tamper cache");
     }
 
     #[test]
