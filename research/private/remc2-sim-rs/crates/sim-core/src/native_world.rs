@@ -7966,7 +7966,8 @@ impl Level2EconomyState {
         // same source slot. Rebuild once after construction so the
         // install/replacement semantics remain explicit if a future profile
         // includes a source-linked model-39 row outside the baseline filter.
-        state.rebuild_owner_mana_projection();
+        state.refresh_owner_mana_rows();
+        state.publish_owner_mana_projection();
         Ok(state)
     }
 
@@ -9351,7 +9352,7 @@ impl Level2EconomyState {
         };
         self.source_rng.insert(source_entity_index, entity_rng);
         self.spheres.push(sphere);
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
         self.events.push(Level2EconomyEvent::ManaSphereSpawned {
             sphere_id: sphere.id,
             source_entity_index: trigger_source_entity_index,
@@ -10070,7 +10071,7 @@ impl Level2EconomyState {
     }
 
     fn disable_house_source_slot(&mut self, source_slot: u16) -> Result<()> {
-        self.source_owner.insert(source_slot, 0);
+        self.source_owner.remove(&source_slot);
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -12330,11 +12331,43 @@ impl Level2EconomyState {
         self.owner_max_mana.insert(owner_entity_index, max_mana);
     }
 
-    /// Rebuild the exact `sub_60F00` class/model-filtered owner aggregate
-    /// immediately before Castle defender arbitration.  The source resets
-    /// this value every pass; it is not the local sum of model-3 holders.
-    fn rebuild_owner_mana_projection(&mut self) {
-        self.owner_mana_rows = self.baseline_owner_mana_rows.clone();
+    /// Refresh the current class/model-filtered source rows after a typed
+    /// economy mutation. Baseline rows retain the last source-boundary
+    /// relation; the owning pass below is the only place that adopts newly
+    /// written `source_owner` relations. The published aggregate and global
+    /// counter remain frozen until that boundary as they do in `sub_60F00`.
+    fn refresh_owner_mana_rows(&mut self) {
+        let baseline_source_slots = self
+            .baseline_owner_mana_rows
+            .iter()
+            .map(|row| row.source_entity_index)
+            .collect::<BTreeSet<_>>();
+        let mut active_dynamic_source_slots = BTreeSet::new();
+        if let Some(castle) = self.castle.filter(|castle| castle.active) {
+            active_dynamic_source_slots.insert(castle.source_entity_index);
+        }
+        active_dynamic_source_slots.extend(
+            self.castle_children
+                .iter()
+                .filter(|child| child.active)
+                .map(|child| child.source_entity_index),
+        );
+        active_dynamic_source_slots.extend(
+            self.spheres
+                .iter()
+                .filter(|sphere| sphere.active)
+                .map(|sphere| sphere.source_entity_index),
+        );
+        active_dynamic_source_slots.extend(
+            self.carriers
+                .iter()
+                .filter(|carrier| carrier.active)
+                .map(|carrier| carrier.source_entity_index),
+        );
+        self.owner_mana_rows.retain(|row| {
+            baseline_source_slots.contains(&row.source_entity_index)
+                || active_dynamic_source_slots.contains(&row.source_entity_index)
+        });
         if let Some(castle) = self.castle.filter(|castle| castle.active) {
             self.install_owner_mana_row(
                 castle.source_entity_index,
@@ -12391,14 +12424,39 @@ impl Level2EconomyState {
         }
         self.owner_mana_rows
             .sort_unstable_by_key(|row| row.source_entity_index);
+    }
+
+    fn publish_owner_mana_projection(&mut self) {
         let (aggregate, global) = level2_owner_mana_projection(&self.owner_mana_rows);
         self.owner_mana_aggregate = aggregate;
         self.owner_mana_global = global;
     }
 
+    /// Run the source `sub_60F00` owner-row reset at the owning-pass
+    /// boundary. House callbacks update `source_owner` during the cursor;
+    /// those writes become visible only at this next boundary, while typed
+    /// sphere/carrier callbacks continue to refresh their own rows without
+    /// retroactively changing the frozen baseline relation for the pass.
+    fn rebuild_owner_mana_projection_at_source_boundary(&mut self) {
+        self.owner_mana_rows = self
+            .baseline_owner_mana_rows
+            .iter()
+            .filter_map(|row| {
+                self.source_owner
+                    .get(&row.source_entity_index)
+                    .map(|&owner| Level2OwnerManaRow {
+                        player_entity_index: owner,
+                        ..*row
+                    })
+            })
+            .collect();
+        self.refresh_owner_mana_rows();
+        self.publish_owner_mana_projection();
+    }
+
     /// Run the source `sub_60F00` max-mana reset/sink at its owning-pass
-    /// boundary. Generic sphere/carrier mutations rebuild dword-13C/global
-    /// rows but must not move this capacity earlier than the source turn.
+    /// boundary. Generic sphere/carrier mutations refresh the underlying rows
+    /// but must not publish aggregate/global/capacity earlier than this turn.
     fn rebuild_owner_max_mana_projection(&mut self) {
         self.owner_max_mana =
             level2_owner_max_mana_projection(&self.baseline_owner_max_mana, &self.owner_mana_rows);
@@ -12567,7 +12625,7 @@ impl Level2EconomyState {
             };
             sphere_ids.push(sphere.id);
             self.spheres.push(sphere);
-            self.rebuild_owner_mana_projection();
+            self.refresh_owner_mana_rows();
             self.events.push(Level2EconomyEvent::ManaSphereSpawned {
                 sphere_id: sphere.id,
                 source_entity_index,
@@ -12731,7 +12789,7 @@ impl Level2EconomyState {
             sphere_id: sphere.id,
             owner_entity_index,
         });
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
         true
     }
 
@@ -12870,7 +12928,7 @@ impl Level2EconomyState {
                 self.merge_mana_spheres(sphere_slot, absorbed_slot);
             }
         }
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
         true
     }
 
@@ -13117,7 +13175,7 @@ impl Level2EconomyState {
         }
         let child = self.castle_children[child_index];
         self.sync_castle_child_map(child);
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
         true
     }
 
@@ -13270,7 +13328,7 @@ impl Level2EconomyState {
                 y: position.y,
             })
             .expect("Level 2 carrier source slot fits the map chain");
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
         true
     }
 
@@ -13354,7 +13412,7 @@ impl Level2EconomyState {
         });
         self.spheres.remove(source_index);
         self.release_slot(source_slot, Some(source_entity_rng));
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
         true
     }
 
@@ -13420,7 +13478,7 @@ impl Level2EconomyState {
             carrier_id: carrier.id,
             mana,
         });
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
         true
     }
 
@@ -13452,7 +13510,7 @@ impl Level2EconomyState {
             active: true,
         };
         self.carriers.push(carrier);
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
         self.events.push(Level2EconomyEvent::ManaCarrierSpawned {
             source_entity_index,
             owner_entity_index,
@@ -13912,10 +13970,14 @@ impl Level2EconomyState {
         };
         let release = if castle.level == 0 {
             castle.mana
-        } else if self.player_mana.saturating_add(castle.mana) > castle.mana_capacity {
-            // `sub_5FD00` tests the owner's aggregate secured mana plus the
-            // Castle payload, but its local release amount is the Castle's
-            // payload minus maxMana (not the aggregate total).
+        } else if self
+            .owner_mana_aggregate(castle.source_id_entity_index)
+            .saturating_add(castle.mana)
+            > castle.mana_capacity
+        {
+            // `sub_5FD00` tests the Castle owner's dword-0x13C aggregate plus
+            // the Castle payload, but its local release amount is the
+            // Castle's payload minus maxMana (not the aggregate total).
             castle.mana.saturating_sub(castle.mana_capacity)
         } else {
             0
@@ -13994,7 +14056,7 @@ impl Level2EconomyState {
                 pending_delete: false,
             };
             self.spheres.push(sphere);
-            self.rebuild_owner_mana_projection();
+            self.refresh_owner_mana_rows();
             self.events.push(Level2EconomyEvent::ManaSphereSpawned {
                 sphere_id: sphere.id,
                 source_entity_index: castle_slot,
@@ -14212,9 +14274,6 @@ impl Level2EconomyState {
             ];
             castle.defender_count = defenders.len() as u8;
         }
-
-        self.rebuild_owner_mana_projection();
-        self.rebuild_owner_max_mana_projection();
 
         // `sub_5FF50` resets the owner's aggregate defender mana/max counters
         // and then arbitrates each holder's `word_0x96_150` target. A full
@@ -15627,7 +15686,7 @@ impl Level2EconomyState {
             self.release_slot(castle.source_entity_index, None);
             self.castle = None;
         }
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
     }
 
     #[must_use]
@@ -16637,7 +16696,8 @@ impl Level2EconomyState {
         self.player_spell_holder_max_action = self.baseline_player_spell_holder_max_action;
         self.castle_stage_coefficients = self.baseline_castle_stage_coefficients;
         self.castle_controller_coefficients = self.baseline_castle_controller_coefficients;
-        self.rebuild_owner_mana_projection();
+        self.refresh_owner_mana_rows();
+        self.publish_owner_mana_projection();
         self.rebuild_owner_max_mana_projection();
         self.events.clear();
     }
@@ -23416,11 +23476,13 @@ impl Level2ResetSession {
         let goat_players = self.level2_goat_player_targets();
         self.economy.advance_global_rng();
         // Pinned `UpdateEntities_57730` invokes `sub_60F00` once at the
-        // owning-pass boundary (EventsFunctions.cpp:40123), before any
-        // callback can spawn a fresh model-39 sphere or carrier.  Refresh
-        // maxMana here so rows created by the previous source turn become
-        // visible now, while same-pass merges still observe the prior
-        // boundary's capacity just like remc2.
+        // owning-pass boundary (EventsFunctions.cpp:40115), before any
+        // callback can spawn a fresh model-39 sphere or carrier. Rebuild the
+        // full row projection before maxMana so the Castle dword-0x13C gate
+        // and capacity sink both observe the same source boundary; same-pass
+        // merges still observe the prior boundary's capacity.
+        self.economy
+            .rebuild_owner_mana_projection_at_source_boundary();
         self.economy.rebuild_owner_max_mana_projection();
         self.synchronize_level2_terrain();
         self.step_level2_imported_switch_roots(pass);
@@ -34476,99 +34538,332 @@ mod tests {
         assert_eq!(session.economy().owner_mana_aggregate(111), 0);
         let baseline_hash = session.economy().reset_hash();
 
-        // Keep a source-linked model-39 row in the baseline, then add a
-        // second active row and verify the owner capacity rebuild/reset path.
-        let mut owner_max_session = inspection
-            .level2_reset_session()
-            .expect("owner max-mana session");
-        {
-            let economy = owner_max_session.economy_mut();
-            economy.baseline_owner_max_mana.insert(222, 100);
-            economy.baseline_owner_mana_rows.push(Level2OwnerManaRow {
-                source_entity_index: 900,
-                source_class: 10,
-                source_model: 39,
-                player_entity_index: 222,
-                mana: 75,
-                active: true,
-            });
-            economy.rebuild_owner_mana_projection();
-            economy.rebuild_owner_max_mana_projection();
-            assert_eq!(economy.owner_max_mana.get(&222), Some(&175));
-        }
-        {
-            let economy = owner_max_session.economy_mut();
-            economy.baseline_owner_mana_rows.push(Level2OwnerManaRow {
-                source_entity_index: 901,
-                source_class: 10,
-                source_model: 39,
-                player_entity_index: 222,
-                mana: 25,
-                active: true,
-            });
-            economy.rebuild_owner_mana_projection();
-            economy.rebuild_owner_max_mana_projection();
-            assert_eq!(economy.owner_max_mana.get(&222), Some(&200));
-        }
-        let owner_max_baseline_hash = owner_max_session.economy().reset_hash();
         session.reset();
         assert_eq!(session.economy().reset_hash(), baseline_hash);
-        owner_max_session.reset();
-        assert_eq!(
-            owner_max_session.economy().reset_hash(),
-            owner_max_baseline_hash
-        );
-        assert_eq!(
-            owner_max_session.economy().owner_max_mana.get(&222),
-            Some(&200)
-        );
         assert_eq!(session.economy().owner_mana_aggregate(111), 0);
         assert_eq!(session.economy().owner_mana_global(), 12_835);
+    }
 
-        // A model-45 owner row reaches the Castle capacity branch even when
-        // the local model-3 defender vector is empty of mana.
-        let mut gate = inspection
+    #[test]
+    fn level_two_house_possession_reaches_castle_projection_at_next_source_boundary() {
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(
+            &level_two_fixture_path(),
+            &gameplay_cache,
+        )
+        .expect("qualified Level 2 package");
+        let mut session = inspection
             .level2_reset_session()
-            .expect("owner aggregate capacity session");
-        gate.economy_mut()
-            .baseline_owner_mana_rows
-            .push(Level2OwnerManaRow {
-                source_entity_index: 900,
-                source_class: 10,
-                source_model: 45,
-                player_entity_index: 111,
-                mana: 900,
-                active: true,
-            });
-        let castle_slot = gate
-            .economy_mut()
-            .build_castle(Position::default(), 111)
-            .expect("owner aggregate Castle");
-        {
-            let castle = gate
-                .economy_mut()
-                .castle
-                .as_mut()
-                .expect("owner aggregate Castle");
-            castle.level = 1;
-            castle.mana = 0;
-            castle.mana_capacity = 500;
-        }
-        gate.economy_mut().maintain_castle_defenders(castle_slot);
-        assert_eq!(gate.economy().owner_mana_aggregate(111), 900);
-        let defender_slot = gate
+            .expect("qualified Level 2 production session");
+        session.select_level2_campaign_entry_stage();
+        assert_eq!(session.economy().player_mana(), 1_000);
+
+        let live_house_slots = session
+            .ordinary()
+            .houses()
+            .iter()
+            .filter(|house| house.active)
+            .map(|house| house.entity_index)
+            .collect::<Vec<_>>();
+        assert_eq!(live_house_slots, (1_u16..=22).collect::<Vec<_>>());
+        let house_slots = session
+            .ordinary()
+            .houses()
+            .iter()
+            .filter(|house| house.active && !house.parameter.possession_blocked())
+            .map(|house| house.entity_index)
+            .collect::<Vec<_>>();
+        let house_mana = session
             .economy()
-            .castle
-            .expect("owner aggregate Castle")
-            .defender_slots[0];
+            .baseline_owner_mana_rows
+            .iter()
+            .filter(|row| {
+                house_slots.contains(&row.source_entity_index)
+                    && row.source_class == HOUSE_CLASS
+                    && row.source_model == HOUSE_MODEL
+                    && row.active
+            })
+            .map(|row| row.mana)
+            .sum::<i32>();
+        assert_eq!(house_mana, 2_034);
+        assert_eq!(session.economy().owner_mana_aggregate(111), 0);
+
+        let castle_position = Position::default();
+        let sphere_position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        let loaded_sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(901, sphere_position, 0, 0x4321, 7_000, 0)
+            .expect("qualified loading sphere");
+        let loaded_sphere_slot = u16::try_from(loaded_sphere_id).expect("loading sphere slot");
+        assert!(
+            session
+                .economy_mut()
+                .claim_mana_sphere(loaded_sphere_slot, 111)
+        );
+        let carrier_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(sphere_position, 111, loaded_sphere_id)
+            .expect("qualified loading carrier");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(castle_position, 111)
+            .expect("qualified level-one Castle");
+        let castle = session.economy().castle().expect("loaded Castle");
         assert_eq!(
-            gate.economy()
-                .castle_children()
+            (castle.level, castle.mana, castle.mana_capacity),
+            (1, 0, 8_500)
+        );
+        assert_eq!(castle.phase & 1, (castle_slot as u8) & 1);
+        assert!(
+            session
+                .economy_mut()
+                .absorb_sphere_into_carrier(loaded_sphere_slot, carrier_slot)
+        );
+        assert!(session.economy_mut().return_carrier_to_castle(carrier_slot));
+        assert!(
+            session
+                .economy_mut()
+                .step_carrier_to_castle(carrier_slot, castle_position)
+        );
+        assert_eq!(
+            session.economy().castle().expect("loaded Castle").mana,
+            7_000
+        );
+        let loaded_castle = session.economy().castle().expect("loaded Castle");
+        assert!(
+            session
+                .economy()
+                .player_mana()
+                .saturating_add(loaded_castle.mana)
+                < loaded_castle.mana_capacity
+        );
+        assert!(house_mana.saturating_add(loaded_castle.mana) > loaded_castle.mana_capacity);
+
+        for &house_slot in &house_slots {
+            session
+                .ordinary_mut()
+                .submit_house_possession(house_slot, 111, 1)
+                .expect("qualified House possession mailbox");
+        }
+
+        let initial_castle_phase = session.economy().castle().expect("initial Castle").phase;
+        assert_eq!(initial_castle_phase & 1, (castle_slot as u8) & 1);
+        assert_ne!(initial_castle_phase & 1, 0);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let possessed_slots = session
+            .dispatch_events()
+            .iter()
+            .flat_map(|event| match event {
+                Level2DispatchEvent::House { events, .. } => events
+                    .iter()
+                    .filter_map(|event| match event {
+                        HouseStepEvent::Possessed {
+                            entity_index,
+                            owner_entity_index,
+                            ..
+                        } => Some((*entity_index, *owner_entity_index)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .map(|(source_slot, owner)| {
+                assert_eq!(owner, 111);
+                source_slot
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(possessed_slots, house_slots);
+        // House mailboxes are consumed by this cursor, but sub_60F00's
+        // source-boundary projection remains frozen for the rest of the pass.
+        assert_eq!(session.economy().owner_mana_aggregate(111), 0);
+        let first_castle = session.economy().castle().expect("first-turn Castle");
+        assert_eq!(first_castle.phase & 1, 0);
+        let owner_max_before_model39 = session
+            .economy()
+            .owner_max_mana
+            .get(&111)
+            .copied()
+            .expect("player max-mana projection");
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Castle { source_slot, .. }
+                    if *source_slot == castle_slot
+            )
+        }));
+
+        let global_before_model39 = session.economy().owner_mana_global();
+        let model39_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(902, sphere_position, 0, 0x5678, 1, 111)
+            .expect("qualified owned model-39 negative sphere");
+        let model39_slot = u16::try_from(model39_id).expect("model-39 sphere slot");
+        assert_eq!(
+            session.economy().owner_mana_global(),
+            global_before_model39,
+            "a same-pass model-39 spawn cannot publish sub_60F00's global counter early"
+        );
+        assert_eq!(session.economy().owner_mana_aggregate(111), 0);
+        assert_eq!(
+            session.economy().owner_max_mana.get(&111),
+            Some(&owner_max_before_model39)
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.economy().owner_mana_aggregate(111), house_mana);
+        assert_eq!(
+            session.economy().owner_max_mana.get(&111),
+            Some(&(owner_max_before_model39 + house_mana + 1))
+        );
+        assert_eq!(
+            session.economy().owner_mana_global(),
+            global_before_model39 + 1
+        );
+        let castle = session.economy().castle().expect("second-turn Castle");
+        assert_eq!(castle.mana, 7_000);
+        assert_eq!(castle.defender_count, 1);
+        let defender_slot = castle.defender_slots[0];
+        let defender = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .copied()
+            .expect("ordinary Castle defender");
+        assert_eq!(
+            (defender.source_class, defender.model, defender.action),
+            (3, 3, 9)
+        );
+        assert_eq!(defender.target_sphere_slot, castle_slot);
+        assert_ne!(defender.target_sphere_slot, model39_slot);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Castle { source_slot, .. }
+                    if *source_slot == castle_slot
+            )
+        }));
+        let castle_dispatch_index = session
+            .dispatch_events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::Castle { source_slot, .. }
+                        if *source_slot == castle_slot
+                )
+            })
+            .expect("ordinary Castle dispatch");
+        let defender_dispatch_index = session
+            .dispatch_events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::CastleDefender,
+                        ..
+                    } if *source_slot == defender_slot
+                )
+            })
+            .expect("ordinary Castle defender dispatch");
+        assert!(castle_dispatch_index < defender_dispatch_index);
+
+        session.reset();
+        session.select_level2_campaign_entry_stage();
+        let positive_house_slots = session
+            .economy()
+            .baseline_owner_mana_rows
+            .iter()
+            .filter(|row| row.source_class == HOUSE_CLASS && row.source_model == HOUSE_MODEL)
+            .filter(|row| row.mana > 0)
+            .map(|row| row.source_entity_index)
+            .collect::<BTreeSet<_>>();
+        let disabled_house = session
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|house| house.active && positive_house_slots.contains(&house.entity_index))
+            .expect("qualified positive-mana House for disable path");
+        let disabled_mana = session
+            .economy()
+            .baseline_owner_mana_rows
+            .iter()
+            .find(|row| row.source_entity_index == disabled_house.entity_index)
+            .expect("disabled House owner row")
+            .mana;
+        let baseline_global = session.economy().owner_mana_global();
+        let baseline_campaign_hash = session.campaign_state_hash();
+        session
+            .ordinary_mut()
+            .inject_house_damage(
+                disabled_house.entity_index,
+                disabled_house.life.wrapping_add(1),
+                111,
+            )
+            .expect("qualified House destruction mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::House { events, .. }
+                    if events.iter().any(|event| matches!(
+                        event,
+                        HouseStepEvent::RemoveFootprint { entity_index, .. }
+                            if *entity_index == disabled_house.entity_index
+                    ))
+            )
+        }));
+        assert!(
+            !session
+                .ordinary()
+                .houses()
                 .iter()
-                .find(|child| child.source_entity_index == defender_slot)
-                .expect("owner aggregate defender")
-                .target_sphere_slot,
-            castle_slot
+                .find(|house| house.entity_index == disabled_house.entity_index)
+                .expect("disabled House state")
+                .active
+        );
+        assert_eq!(
+            session.economy().source_owner(disabled_house.entity_index),
+            0
+        );
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .is_linked(disabled_house.entity_index)
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .economy()
+                .owner_mana_rows
+                .iter()
+                .any(|row| row.source_entity_index == disabled_house.entity_index)
+        );
+        assert_eq!(
+            session.economy().owner_mana_global(),
+            baseline_global - disabled_mana
+        );
+        assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+        assert_eq!(session.economy().owner_mana_global(), baseline_global);
+        assert!(
+            session
+                .economy()
+                .owner_mana_rows
+                .iter()
+                .any(|row| row.source_entity_index == disabled_house.entity_index)
         );
     }
 
@@ -44559,9 +44854,10 @@ mod tests {
                 && *group == 1
                 && authored_indices.as_ref() == expected_group1_indices.as_slice()
         )));
-        assert!(
-            session.economy().owner_mana_global() >= owner_mana_global_before_group1 + 28 * 512,
-            "group 1 spheres update the source owner-mana projection"
+        assert_eq!(
+            session.economy().owner_mana_global(),
+            owner_mana_global_before_group1,
+            "group 1 spheres cannot publish sub_60F00's global counter in their allocation pass"
         );
         let expected_group1_positions = expected_group1_model39_indices
             .iter()
@@ -44610,6 +44906,11 @@ mod tests {
             .expect("imported row-11 entity");
         assert_eq!(imported_entity.phase, baseline_root_phase.wrapping_add(1));
         assert_eq!(imported_entity.source_word_10(), 10);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session.economy().owner_mana_global() >= owner_mana_global_before_group1 + 28 * 512,
+            "group 1 spheres publish at the next source boundary"
+        );
         if !session
             .economy()
             .authored_switch_producers()
@@ -44783,7 +45084,7 @@ mod tests {
         };
         let record_chain_turn =
             |session: &Level2ResetSession,
-             owner_global_before: i32,
+             owner_global_at_boundary: i32,
              owner_global_after: i32,
              group5_activated: &mut bool,
              group5_owner_mana_global_before: &mut Option<i32>,
@@ -44806,11 +45107,11 @@ mod tests {
                     class5_slots,
                 ) = classify_chain_events(session.dispatch_events());
                 if group5_this_turn {
-                    *group5_owner_mana_global_before = Some(owner_global_before);
+                    *group5_owner_mana_global_before = Some(owner_global_at_boundary);
                     *group5_owner_mana_global_after = Some(owner_global_after);
                 }
                 if group7_this_turn {
-                    *group7_owner_mana_global_before = Some(owner_global_before);
+                    *group7_owner_mana_global_before = Some(owner_global_at_boundary);
                     *group7_owner_mana_global_after = Some(owner_global_after);
                 }
                 *group5_activated |= group5_this_turn;
@@ -44840,14 +45141,15 @@ mod tests {
                 .map(|source| source.phase)
                 .expect("chain producer remains live before its cadence");
             for _ in 0..level_two_switch_turns_until_cadence(source_phase) {
-                let owner_global_before = session.economy().owner_mana_global();
+                let (_, owner_global_at_boundary) =
+                    level2_owner_mana_projection(&session.economy().owner_mana_rows);
                 session
                     .set_level2_entity_position(local_player, row65_position)
                     .expect("public player-position input remains on row 65");
                 session.step_outer_turn(PlayerCommand::default(), 0);
                 record_chain_turn(
                     &session,
-                    owner_global_before,
+                    owner_global_at_boundary,
                     session.economy().owner_mana_global(),
                     &mut group5_activated,
                     &mut group5_owner_mana_global_before,
@@ -45036,9 +45338,13 @@ mod tests {
             .expect("group 5 owner-mana baseline captured on activation");
         let group5_owner_mana_global_after = group5_owner_mana_global_after
             .expect("group 5 owner-mana projection captured on activation");
+        assert_eq!(
+            group5_owner_mana_global_after, group5_owner_mana_global_before,
+            "group 5 spheres cannot publish sub_60F00's global counter in their allocation pass"
+        );
         assert!(
-            group5_owner_mana_global_after >= group5_owner_mana_global_before + 16 * 512,
-            "group 5 spheres update the source owner-mana projection"
+            session.economy().owner_mana_global() >= group5_owner_mana_global_before + 16 * 512,
+            "later production turns publish the group 5 spheres"
         );
         let expected_group5_positions = expected_group5_model39_indices
             .iter()
@@ -45116,9 +45422,14 @@ mod tests {
             .expect("group 7 owner-mana baseline captured on activation");
         let group7_owner_mana_global_after = group7_owner_mana_global_after
             .expect("group 7 owner-mana projection captured on activation");
+        assert_eq!(
+            group7_owner_mana_global_after, group7_owner_mana_global_before,
+            "group 7 spheres cannot publish sub_60F00's global counter in their allocation pass"
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
-            group7_owner_mana_global_after >= group7_owner_mana_global_before + 20 * 512,
-            "group 7 spheres update the source owner-mana projection"
+            session.economy().owner_mana_global() >= group7_owner_mana_global_before + 20 * 512,
+            "group 7 spheres publish at the next source boundary"
         );
 
         session.reset();
@@ -46273,10 +46584,11 @@ mod tests {
         let row356_position = feature_position(356);
         session.state.position = row356_position;
         let mut group26_activated = false;
-        let mut group26_owner_mana_global_before = None;
+        let mut group26_owner_mana_global_at_boundary = None;
         let mut group26_owner_mana_global_after = None;
         for _ in 0..16 {
-            let owner_mana_global_before = session.economy().owner_mana_global();
+            let (_, owner_mana_global_at_boundary) =
+                level2_owner_mana_projection(&session.economy().owner_mana_rows);
             session.step_outer_turn(PlayerCommand::default(), 0);
             let activated_this_turn = session.dispatch_events().iter().any(|event| {
                 matches!(
@@ -46289,7 +46601,7 @@ mod tests {
                 )
             });
             if activated_this_turn {
-                group26_owner_mana_global_before = Some(owner_mana_global_before);
+                group26_owner_mana_global_at_boundary = Some(owner_mana_global_at_boundary);
                 group26_owner_mana_global_after = Some(session.economy().owner_mana_global());
             }
             group26_activated |= activated_this_turn;
@@ -46337,11 +46649,14 @@ mod tests {
             .map(|position| (position, 1usize))
             .collect::<BTreeMap<_, _>>();
         assert_eq!(actual_position_counts, expected_position_counts);
-        let owner_mana_global_before =
-            group26_owner_mana_global_before.expect("group 26 owner-mana baseline captured");
+        let owner_mana_global_at_boundary = group26_owner_mana_global_at_boundary
+            .expect("group 26 owner-mana boundary projection captured");
         let owner_mana_global_after =
             group26_owner_mana_global_after.expect("group 26 owner-mana projection captured");
-        assert!(owner_mana_global_after >= owner_mana_global_before + 4 * 512);
+        assert_eq!(
+            owner_mana_global_after, owner_mana_global_at_boundary,
+            "group 26 spheres cannot publish sub_60F00's global counter in their allocation pass"
+        );
 
         // The generic class-11 producer bridge runs at the next source-pass
         // boundary after row 356's switch callback. Keep this follow-up
@@ -46370,6 +46685,10 @@ mod tests {
             }
         }
         assert_eq!(model13_activated, model13_indices);
+        assert!(
+            session.economy().owner_mana_global() >= owner_mana_global_at_boundary + 4 * 512,
+            "group 26 spheres publish on a later source boundary"
+        );
         for index in model13_indices {
             let source = session
                 .economy()
