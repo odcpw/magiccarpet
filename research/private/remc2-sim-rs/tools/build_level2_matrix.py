@@ -42,8 +42,6 @@ FAMILIES = (
     "presentation_refs",
 )
 
-MATRIX_CONTROL_BEAD_IDS = {"mc-a4ir", "mc-a4ir.1"}
-
 SOURCE = {
     "authored": ("remc2/engine/Level.cpp", "437", "sub_49270_generate_level_features"),
     "reset": ("remc2/engine/EventsFunctions.cpp", "39441-39480", "sub_56D60"),
@@ -62,7 +60,7 @@ SOURCE = {
 # ---------------------------------------------------------------------------
 # Leaf ownership join tables.
 #
-# Every open Level 2 bead's description carries a structured "Denominator
+# Every owning Level 2 bead's description carries a structured "Denominator
 # ownership:" line (see `.beads/issues.jsonl`).  The tables below are that
 # declared ownership translated into executable joins over the pinned
 # census/activation/denominator artifacts: explicit stable IDs where the
@@ -71,12 +69,6 @@ SOURCE = {
 # bead names a computable band.  None of this depends on scanning English
 # gameplay prose in a bead title.
 #
-# A handful of assignments are coarse, single-leaf placeholders because the
-# pinned ledgers do not expose a safe, mechanical discriminator fine enough
-# to split them further (documented at each site below and in the packet's
-# closure report).  Those placeholders still satisfy "one leaf owner, never
-# a parent aggregate" even though the fine split they describe remains a
-# follow-up.
 # ---------------------------------------------------------------------------
 
 
@@ -119,36 +111,49 @@ for _bead, _text in AI_HELPER_RANGES.items():
     for _n in _expand_id_ranges(_text):
         AI_HELPER_OWNER[f"AI_HELPER-{_n:04d}"] = _bead
 
-# (runtime_class, model) -> leaf bead.  Shared by the reset census, the
-# CTOR-flavored tuple_denominator rows, and (for the classes it resolves)
-# the dispatch constructor/action tables -- the same pinned "class/model"
-# identity selects the same owner in every ledger that carries it.
-CLASS_MODEL_OWNER = {
-    (2, 2): "mc-oiaa.1",       # bad_stone / dolmen family (Basic.cpp)
-    (2, 3): "mc-oiaa.1",
-    (3, 0): "mc-bvihb.1",      # castle/local-wizard construction
-    (3, 1): "mc-bvihb.1",
-    (5, 1): "mc-2sbd.1",       # goat (default; slots/tuples 39/71 overridden below)
-    (5, 3): "mc-38gs.1",
-    (5, 4): "mc-38gs.3",
-    (5, 9): "mc-38gs.2",
-    (5, 13): "mc-50i6",        # villager: shared Day creature inherited from Level 1
-    (5, 14): "mc-38gs.4",
-    (10, 45): "mc-oiaa.3",     # building / vault preprocessor rows
-    (11, 0): "mc-clng",        # family 11 (Invisible)
-    (11, 4): "mc-clng",
-    (11, 32): "mc-clng",
-    (15, 0): "mc-xcgi.1.1.1",  # spell pickup / holder rows
-    (15, 1): "mc-xcgi.1.1.1",
-    (15, 3): "mc-xcgi.1.1.1",
-    (15, 12): "mc-xcgi.1.1.1",
-}
+def _stable_id_map(prefix: str, width: int, owner_ranges: dict[str, str]) -> dict[str, str]:
+    """Build an exact stable-ID ownership map and reject overlapping bands."""
+    result: dict[str, str] = {}
+    for owner, ranges in owner_ranges.items():
+        for number in _expand_id_ranges(ranges):
+            identifier = f"{prefix}{number:0{width}d}"
+            if identifier in result:
+                raise RuntimeError(f"stable denominator ID {identifier} has two owners")
+            result[identifier] = owner
+    return result
 
-# mc-2sbd.2 explicitly names these two reset slots and their CTOR tuple IDs
-# ("reset slots 39/71" / "CTOR-L2-05-001-009, CTOR-L2-05-001-011"); every
-# other goat reset slot/tuple falls back to CLASS_MODEL_OWNER's (5, 1) entry.
-GOAT_RESET_SLOT_OVERRIDE = {39: "mc-2sbd.2", 71: "mc-2sbd.2"}
-GOAT_TUPLE_ID_OVERRIDE = {"CTOR-L2-05-001-009": "mc-2sbd.2", "CTOR-L2-05-001-011": "mc-2sbd.2"}
+
+# Reset and constructor ownership is deliberately keyed by the ledger's stable
+# IDs.  A class/model fallback cannot distinguish the two goat packets and can
+# silently absorb a newly introduced row into an unrelated worker surface.
+RESET_OWNER = _stable_id_map("RST-L2-", 4, {
+    "mc-oiaa.3": "1-22",
+    "mc-clng": "23-32, 37, 76, 87, 107",
+    "mc-oiaa.1": "33-36, 108-110",
+    "mc-xcgi.1.1.1": "38, 75, 113-114",
+    "mc-2sbd.2": "39, 71",
+    "mc-2sbd.1": "40-70, 72-74",
+    "mc-50i6": "77-86, 88-106",
+    "mc-bvihb.1": "111-112",
+})
+
+CTOR_OWNER = {
+    "CTOR-L2-02-002-006": "mc-oiaa.1",
+    "CTOR-L2-02-003-009": "mc-oiaa.1",
+    "CTOR-L2-03-000-000": "mc-bvihb.1",
+    "CTOR-L2-03-001-001": "mc-bvihb.1",
+    "CTOR-L2-05-001-009": "mc-2sbd.2",
+    "CTOR-L2-05-001-011": "mc-2sbd.2",
+    "CTOR-L2-05-013-105": "mc-50i6",
+    "CTOR-L2-10-045-052": "mc-oiaa.3",
+    "CTOR-L2-11-000-000": "mc-clng",
+    "CTOR-L2-11-004-004": "mc-clng",
+    "CTOR-L2-11-032-032": "mc-clng",
+    "CTOR-L2-15-000-000": "mc-xcgi.1.1.1",
+    "CTOR-L2-15-001-003": "mc-xcgi.1.1.1",
+    "CTOR-L2-15-003-010": "mc-xcgi.1.1.1",
+    "CTOR-L2-15-012-037": "mc-xcgi.1.1.1",
+}
 
 # Explicit AUT-L2 authored/tuple index overrides named by the mc-38gs.* leaf
 # beads ("authored rows AUT-L2-0164/0165/..." etc.), applied ahead of the
@@ -254,29 +259,92 @@ CACHE_FAMILY_OWNER = {
     "particle_parameters": "mc-oiaa.2",
 }
 
-# presentation_refs family: primary join is source path, which already
-# names the owning leaf bead's file directly (mc-exzm.1's "Terrain
-# references", mc-oiaa.1's "Basic.cpp references", mc-94h7.2's music
-# lifecycle -> Sound.cpp).  GameUI.cpp is further split by the exact root
-# symbols mc-a73w.1/.2/.3 each name.  EventsFunctions.cpp (the shared
-# gameplay-dispatch file) and the handful of GameUI.cpp refs outside the
-# three named a73w roots are not mechanically separable per-owner from the
-# pinned ledger alone (no field ties an individual reference to a single
-# creature/spell family); they fall to mc-c2by.1 as a coarse placeholder,
-# flagged as a residual in the closure report.
+# Presentation ownership uses either a whole-file declaration or an exact
+# enclosing-symbol declaration from the sealed source-reference ledger.  No
+# catch-all is allowed: a newly reachable symbol must be assigned explicitly
+# instead of silently becoming somebody else's work.
 PRESENTATION_PATH_OWNER = {
     "remc2/engine/Terrain.cpp": "mc-exzm.1",
     "remc2/engine/Basic.cpp": "mc-oiaa.1",
     "remc2/engine/Sound.cpp": "mc-94h7.2",
-    "remc2/engine/EventsFunctions.cpp": "mc-c2by.1",
 }
 PRESENTATION_GAMEUI_SYMBOL_OWNER = {
     "DrawTopStatusBar_2D710": "mc-a73w.1",
+    "DrawSpellIcon_2E260": "mc-a73w.1",
     "DrawCurrentObjectiveTextbox_30630": "mc-a73w.2",
     "DrawMinimapEntities_B_61A00": "mc-a73w.3",
     "DrawMinimapMarks_644F0": "mc-a73w.3",
+    "SetMenuCursorPosition_52E90": "mc-a73w.1",
+    "DrawChatMenu_2F6B0": "mc-a73w.1",
+    "DrawPauseMenu_2FD90": "mc-a73w.1",
+    "DrawVolumeSettings_303D0": "mc-a73w.1",
 }
-PRESENTATION_GAMEUI_FALLBACK_OWNER = "mc-c2by.1"
+PRESENTATION_EVENTS_SYMBOL_OWNER = {
+    "sub_12A70": "mc-app8.1",
+    "sub_13E40": "mc-6dqd.1",
+    "sub_14030": "mc-6dqd.1",
+    "sub_14250": "mc-6dqd.1",
+    "sub_14530": "mc-6dqd.1",
+    "sub_15170": "mc-1g06.1",
+    "sub_15790": "mc-1g06.1",
+    "sub_15910": "mc-1g06.1",
+    "sub_15F20": "mc-1g06.1",
+    "sub_274C0": "mc-oiaa.2",
+    "DrawGameFrame_2BE30": "mc-exzm.1",
+    "DrawAndEventsInGame_47560": "mc-exzm.1",
+    "DrawSorcererScores_2D1D0": "mc-a73w.1",
+    "DrawBottomSpellsMenu_2ECC0": "mc-a73w.1",
+    "TransformEntityToManaSphere_36BA0": "mc-oiaa.2",
+    "DrawMapObject_812D0": "mc-oiaa.2",
+    "DrawAnimSprite_81CA0": "mc-oiaa.2",
+    "PlayCDTrackSegmentWithPaletteFlash_86F70": "mc-94h7.2",
+    "PlayCDTrackSegment_86FF0": "mc-94h7.2",
+    "sub_68D50": "mc-xcgi.1.1.1",
+    "sub_68DE0": "mc-xcgi.1.1.1",
+    "sub_693F0": "mc-c2by.2",
+    "sub_69640": "mc-c2by.2",
+    "sub_69900": "mc-c2by.2",
+    "sub_69AB0": "mc-c2by.2",
+    "sub_5F660": "mc-1g06.2",
+    "sub_5D530": "mc-94h7.2",
+    "sub_5DE30": "mc-2eby.1",
+    "AddPlayer03_00_5E010": "mc-c2by.1",
+    "sub_5EFA0": "mc-6dqd.1",
+    "EndOfCastleProjectile_5F8F0": "mc-c2by.1",
+    "sub_5FD00": "mc-c2by.1",
+    "sub_5FF50": "mc-c2by.1",
+    "sub_61050": "mc-c2by.1",
+    "sub_613D0": "mc-oiaa.3",
+}
+PRESENTATION_SYMBOL_OWNER = {
+    **{
+        ("remc2/engine/GameUI.cpp", symbol): owner
+        for symbol, owner in PRESENTATION_GAMEUI_SYMBOL_OWNER.items()
+    },
+    **{
+        ("remc2/engine/EventsFunctions.cpp", symbol): owner
+        for symbol, owner in PRESENTATION_EVENTS_SYMBOL_OWNER.items()
+    },
+}
+
+# Only beads named by a stable denominator join become matrix rows.  Their
+# lifecycle status is tracker state, not semantic ownership; claiming or
+# closing one must not rewrite the denominator partition.
+DENOMINATOR_OWNER_IDS = frozenset(
+    set(AI_HELPER_OWNER.values())
+    | set(RESET_OWNER.values())
+    | set(CTOR_OWNER.values())
+    | set(AUTHORED_INDEX_OVERRIDE.values())
+    | set(DISPATCH_CONTRADICTION_OWNER.values())
+    | set(DISPATCH_LIVE_OWNER.values())
+    | set(CACHE_FAMILY_OWNER.values())
+    | set(PRESENTATION_PATH_OWNER.values())
+    | set(PRESENTATION_SYMBOL_OWNER.values())
+    | {
+        "mc-uk2k.1", "mc-uk2k.2", "mc-uk2k.3", "mc-uk2k.4",
+        "mc-nr19.1", "mc-yawx.1", "mc-yawx.2",
+    }
+)
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -292,13 +360,12 @@ def beads() -> dict[str, dict[str, Any]]:
             value = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(value, dict) or value.get("status") != "open":
-            continue
-        if "level-2" not in (value.get("labels") or []):
-            continue
-        if value.get("id") in MATRIX_CONTROL_BEAD_IDS:
+        if not isinstance(value, dict) or value.get("id") not in DENOMINATOR_OWNER_IDS:
             continue
         result[value["id"]] = value
+    missing = sorted(DENOMINATOR_OWNER_IDS - set(result))
+    if missing:
+        raise RuntimeError(f"denominator owner beads are absent from the registry: {missing}")
     return dict(sorted(result.items()))
 
 
@@ -360,18 +427,15 @@ def empty_coverage() -> dict[str, list[str]]:
     return {family: [] for family in FAMILIES}
 
 
-def row_for(plan_id: str, title: str, is_aggregate: bool) -> dict[str, Any]:
+def row_for(plan_id: str, title: str) -> dict[str, Any]:
     """Build a matrix row for a bead.
 
-    Classification and subsystem are derived from the bead's own structural
-    role (aggregate closure gate vs. worker-ready implementation packet, a
-    literal marker in the bead description -- see build()) rather than from
-    scanning the bead's English title for behavior keywords.  `family` and
-    `source` are finalized by build() once this plan's actual denominator
-    coverage is known, so a bead that owns e.g. both dispatch and authored
-    IDs gets a source anchor consistent with what it actually covers.
+    Every row is a stable-ID owner, never a parent aggregate. `family` and
+    `source` are finalized by build() once the row's denominator coverage is
+    known, so a bead that owns both dispatch and authored IDs gets a source
+    anchor consistent with what it actually covers.
     """
-    classification = "Unproved" if is_aggregate else "Missing"
+    classification = "Missing"
     behavior = [
         "select external level 2 -> internal index 1 -> Day profile",
         "consume owned Level 2 records in source order",
@@ -390,7 +454,7 @@ def row_for(plan_id: str, title: str, is_aggregate: bool) -> dict[str, Any]:
             "rust": ["research/private/remc2-sim-rs"],
             "capi": [],
             "unity": [],
-            "absent": not is_aggregate,
+            "absent": True,
         },
         "classification": classification,
         "mismatch_detail": ["Level 2 executable behavior is not yet accepted; this row remains open."] if classification != "Exact" else [],
@@ -436,18 +500,14 @@ def build() -> dict[str, Any]:
     d = load(HERE / "denominator" / "level2-dispatch-rng-audio-presentation.json")
     plan_defs = beads()
     if not plan_defs:
-        raise RuntimeError("no open Level 2 implementation beads found")
+        raise RuntimeError("no Level 2 denominator owner beads found")
     plan_ids = list(plan_defs)
-    is_aggregate = {
-        plan_id: "worker-ready implementation packet" not in (plan_defs[plan_id].get("description") or "")
-        for plan_id in plan_ids
-    }
-    rows = [row_for(plan_id, plan_defs[plan_id]["title"], is_aggregate[plan_id]) for plan_id in plan_ids]
+    rows = [row_for(plan_id, plan_defs[plan_id]["title"]) for plan_id in plan_ids]
     by_plan = {row["plan_item"]: row for row in rows}
 
     def owner_row(plan_id: str) -> dict[str, Any]:
         if plan_id not in by_plan:
-            raise RuntimeError(f"denominator join names {plan_id!r}, which is not an open Level 2 bead")
+            raise RuntimeError(f"denominator join names {plan_id!r}, which is not a registered Level 2 owner bead")
         return by_plan[plan_id]
 
     exclusions: list[dict[str, Any]] = []
@@ -475,11 +535,7 @@ def build() -> dict[str, Any]:
     active = [r for r in reset if r["active"]]
     inactive = [r["id"] for r in reset if not r["active"]]
     for slot in active:
-        key = (slot["class"], slot["model"])
-        if key == (5, 1) and slot["slot"] in GOAT_RESET_SLOT_OVERRIDE:
-            owner = GOAT_RESET_SLOT_OVERRIDE[slot["slot"]]
-        else:
-            owner = CLASS_MODEL_OWNER.get(key)
+        owner = RESET_OWNER.get(slot["id"])
         if owner is None:
             raise RuntimeError(f"reset slot {slot['id']} (class={slot['class']} model={slot['model']}) has no owner join")
         add(owner_row(owner)["coverage"], "reset", [slot["id"]])
@@ -523,11 +579,7 @@ def build() -> dict[str, Any]:
     # -- tuples --------------------------------------------------------
     for row in d["tuple_denominator"]["rows"]:
         if row["id"].startswith("CTOR-L2-"):
-            key = (row["runtime_class"], row["model"])
-            if key == (5, 1) and row["id"] in GOAT_TUPLE_ID_OVERRIDE:
-                owner = GOAT_TUPLE_ID_OVERRIDE[row["id"]]
-            else:
-                owner = CLASS_MODEL_OWNER.get(key)
+            owner = CTOR_OWNER.get(row["id"])
         else:
             idx = int(row["id"].split("-")[-1])
             owner = AUTHORED_INDEX_OVERRIDE.get(idx) or _activation_group_owner(row["activation_group"])
@@ -566,12 +618,14 @@ def build() -> dict[str, Any]:
     for row in refs:
         if row["classification"] != "reachable_level2":
             continue
-        if row["path"] == "remc2/engine/GameUI.cpp":
-            owner = PRESENTATION_GAMEUI_SYMBOL_OWNER.get(row["enclosing_symbol"], PRESENTATION_GAMEUI_FALLBACK_OWNER)
-        else:
-            owner = PRESENTATION_PATH_OWNER.get(row["path"])
+        owner = PRESENTATION_PATH_OWNER.get(row["path"])
         if owner is None:
-            raise RuntimeError(f"presentation reference {row['id']} path {row['path']!r} has no owner join")
+            owner = PRESENTATION_SYMBOL_OWNER.get((row["path"], row["enclosing_symbol"]))
+        if owner is None:
+            raise RuntimeError(
+                f"presentation reference {row['id']} path {row['path']!r} "
+                f"symbol {row['enclosing_symbol']!r} has no exact owner join"
+            )
         add(owner_row(owner)["coverage"], "presentation_refs", [row["id"]])
     exclusions.append(exclusion("EXC-L2-PRESENTATION-NONROOTED", "818 source presentation references", "source references outside the Level 2 presentation root closure are mechanically unreachable", {"presentation_refs": [r["id"] for r in refs if r["classification"] != "reachable_level2"]}, "presentation_refs"))
 

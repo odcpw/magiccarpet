@@ -7,7 +7,9 @@ import copy
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 import sys
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
@@ -59,6 +61,10 @@ class Level2ConformanceMatrixTests(unittest.TestCase):
     def test_worker_ownership_is_disjoint_and_complete(self) -> None:
         validator.validate_source_and_ownership(self.matrix)
         counts = validator.validate_coverage(self.matrix)
+        self.assertEqual(
+            [row["plan_item"] for row in self.matrix["rows"] if not any(row["coverage"].values())],
+            [],
+        )
         covered = {
             family: sum(
                 len(entry["coverage"][family])
@@ -75,6 +81,84 @@ class Level2ConformanceMatrixTests(unittest.TestCase):
         self.assertEqual(
             dispatch_exclusion["scope"],
             f"{excluded_count} non-rooted/disabled/null dispatch slots",
+        )
+
+    def test_owner_registry_is_invariant_under_tracker_status(self) -> None:
+        statuses = ("open", "in_progress", "blocked", "deferred", "closed")
+        records = [
+            {
+                "id": identifier,
+                "title": identifier,
+                "description": "worker-ready implementation packet",
+                "status": statuses[index % len(statuses)],
+            }
+            for index, identifier in enumerate(sorted(builder.DENOMINATOR_OWNER_IDS))
+        ]
+        records.append({"id": "mc-unrelated", "title": "unrelated", "status": "open"})
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Path(directory) / "issues.jsonl"
+            registry.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            with mock.patch.object(builder, "BEADS", registry):
+                self.assertEqual(set(builder.beads()), set(builder.DENOMINATOR_OWNER_IDS))
+
+    def test_reset_and_constructor_owners_are_exact_stable_ids(self) -> None:
+        census = json.loads(
+            (builder.HERE / "census" / "level2-authored-reset-census.json").read_text()
+        )
+        ledger = json.loads(
+            (builder.HERE / "denominator" / "level2-dispatch-rng-audio-presentation.json").read_text()
+        )
+        active_reset = {row["id"] for row in census["reset"]["slots"] if row["active"]}
+        constructors = {
+            row["id"]
+            for row in ledger["tuple_denominator"]["rows"]
+            if row["id"].startswith("CTOR-L2-")
+        }
+        self.assertEqual(set(builder.RESET_OWNER), active_reset)
+        self.assertEqual(set(builder.CTOR_OWNER), constructors)
+        self.assertNotIn("RST-L2-0115", builder.RESET_OWNER)
+        self.assertNotIn("CTOR-L2-05-001-999", builder.CTOR_OWNER)
+
+    def test_reachable_presentation_symbols_have_no_fallback_owner(self) -> None:
+        ledger = json.loads(
+            (builder.HERE / "denominator" / "level2-dispatch-rng-audio-presentation.json").read_text()
+        )
+        unresolved = [
+            row["id"]
+            for row in ledger["presentation"]["source_references"]
+            if row["classification"] == "reachable_level2"
+            and row["path"] not in builder.PRESENTATION_PATH_OWNER
+            and (row["path"], row["enclosing_symbol"])
+            not in builder.PRESENTATION_SYMBOL_OWNER
+        ]
+        self.assertEqual(unresolved, [])
+        self.assertNotIn(
+            ("remc2/engine/EventsFunctions.cpp", "new_reachable_symbol"),
+            builder.PRESENTATION_SYMBOL_OWNER,
+        )
+        self.assertEqual(
+            {
+                symbol: builder.PRESENTATION_SYMBOL_OWNER[
+                    ("remc2/engine/EventsFunctions.cpp", symbol)
+                ]
+                for symbol in ("sub_14530", "sub_15790", "sub_15910", "sub_5EFA0", "sub_5F660")
+            },
+            {
+                "sub_14530": "mc-6dqd.1",
+                "sub_15790": "mc-1g06.1",
+                "sub_15910": "mc-1g06.1",
+                "sub_5EFA0": "mc-6dqd.1",
+                "sub_5F660": "mc-1g06.2",
+            },
+        )
+        self.assertEqual(
+            builder.PRESENTATION_SYMBOL_OWNER[
+                ("remc2/engine/GameUI.cpp", "DrawSpellIcon_2E260")
+            ],
+            "mc-a73w.1",
         )
 
     def test_activation_reachable_dispatch_cannot_be_excluded(self) -> None:

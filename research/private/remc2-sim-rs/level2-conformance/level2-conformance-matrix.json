@@ -58,36 +58,35 @@
     ],
     "test_inventory": {
       "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list",
-      "count": 821
+      "count": 852
     },
     "census_method": "independent join of L2-04 authored/reset census, L2-05 rooted activation closure, and L2-06 dispatch/RNG/audio/presentation ledger",
     "totals": {
-      "rows": 83,
+      "rows": 46,
       "by_classification": {
-        "Unproved": 19,
-        "Missing": 64,
+        "Missing": 46,
         "Exact": 0,
         "Partial": 0,
-        "Wrong": 0
+        "Wrong": 0,
+        "Unproved": 0
       },
       "by_subsystem": {
-        "gameplay": {
-          "Unproved": 19,
-          "Missing": 44
-        },
         "ai": {
           "Missing": 12
         },
         "presentation": {
-          "Missing": 6
+          "Missing": 8
+        },
+        "gameplay": {
+          "Missing": 24
         },
         "rng-audio": {
           "Missing": 2
         }
       },
-      "reachable_rows": 83,
+      "reachable_rows": 46,
       "exclusions": 9,
-      "plan_items": 83
+      "plan_items": 46
     },
     "denominators": {
       "authored": 1200,
@@ -4527,310 +4526,6 @@
   },
   "rows": [
     {
-      "id": "ROW-mc-0qxf",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-39] Build the Level 2 reference corpus, presentation correspondence, and final runner",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-0qxf",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-0qxf.1",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-39A] Drive the full Level 2 mission from ordinary Unity input",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-0qxf.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-0qxf.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-39B] Validate presentation correspondence and reject stale or mismatched receipts",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-0qxf.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-1agi",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-40] Reality-check parity and apply only proven isomorphic cleanup",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-1agi",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
       "id": "ROW-mc-1g06.1",
       "subsystem": "ai",
       "family": "ai_helpers",
@@ -4913,7 +4608,25 @@
         "rng": [],
         "audio": [],
         "cache": [],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0017",
+          "PRESENTATION-REF-L2-0018",
+          "PRESENTATION-REF-L2-0019",
+          "PRESENTATION-REF-L2-0020",
+          "PRESENTATION-REF-L2-0021",
+          "PRESENTATION-REF-L2-0022",
+          "PRESENTATION-REF-L2-0023",
+          "PRESENTATION-REF-L2-0024",
+          "PRESENTATION-REF-L2-0025",
+          "PRESENTATION-REF-L2-0026",
+          "PRESENTATION-REF-L2-0027",
+          "PRESENTATION-REF-L2-0028",
+          "PRESENTATION-REF-L2-0029",
+          "PRESENTATION-REF-L2-0030",
+          "PRESENTATION-REF-L2-0031",
+          "PRESENTATION-REF-L2-0032",
+          "PRESENTATION-REF-L2-0034"
+        ]
       }
     },
     {
@@ -4994,13 +4707,15 @@
         "rng": [],
         "audio": [],
         "cache": [],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0673"
+        ]
       }
     },
     {
       "id": "ROW-mc-2eby.1",
-      "subsystem": "gameplay",
-      "family": "authored",
+      "subsystem": "presentation",
+      "family": "presentation_refs",
       "title": "[L2-25A] Port AI lethal damage, attacker credit, score, and action-2 entry",
       "reachability": {
         "status": "reachable",
@@ -5009,10 +4724,10 @@
       "source": {
         "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
         "symbols": [
-          "sub_49270_generate_level_features"
+          "GenerateEvents_49290"
         ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
+        "path": "remc2/engine/Events.cpp",
+        "lines": "152-3020",
         "dispatch": null
       },
       "preconditions": [
@@ -5070,159 +4785,11 @@
         "rng": [],
         "audio": [],
         "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-2eby.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-25B] Port holder release, replacement allocation, and action-2 to action-3 transition",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-2eby.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-2sbd",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-15D] Implement reset-visible Goat action 11 exactly",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-2sbd",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0655",
+          "PRESENTATION-REF-L2-0656",
+          "PRESENTATION-REF-L2-0657"
+        ]
       }
     },
     {
@@ -5417,82 +4984,6 @@
           "CTOR-L2-05-001-009",
           "CTOR-L2-05-001-011"
         ],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-38gs",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-29] Close census-rooted additional creature families and parameter branches",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-38gs",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
         "ai_helpers": [],
         "rng": [],
         "audio": [],
@@ -6339,82 +5830,6 @@
       }
     },
     {
-      "id": "ROW-mc-5iyv",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "Level 2 remc2-to-Rust-to-Unity conformance foundation",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-5iyv",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
       "id": "ROW-mc-6dqd.1",
       "subsystem": "ai",
       "family": "ai_helpers",
@@ -6498,7 +5913,15 @@
         "rng": [],
         "audio": [],
         "cache": [],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0012",
+          "PRESENTATION-REF-L2-0013",
+          "PRESENTATION-REF-L2-0014",
+          "PRESENTATION-REF-L2-0015",
+          "PRESENTATION-REF-L2-0016",
+          "PRESENTATION-REF-L2-0671",
+          "PRESENTATION-REF-L2-0672"
+        ]
       }
     },
     {
@@ -6595,82 +6018,6 @@
       }
     },
     {
-      "id": "ROW-mc-94h7.1",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-38B1] Consume Level 2 gameplay sound commands with exact IDs, ordering, and positional parameters",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-94h7.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
       "id": "ROW-mc-94h7.2",
       "subsystem": "presentation",
       "family": "presentation_refs",
@@ -6744,6 +6091,10 @@
         "audio": [],
         "cache": [],
         "presentation_refs": [
+          "PRESENTATION-REF-L2-0529",
+          "PRESENTATION-REF-L2-0530",
+          "PRESENTATION-REF-L2-0653",
+          "PRESENTATION-REF-L2-0654",
           "PRESENTATION-REF-L2-1125",
           "PRESENTATION-REF-L2-1126",
           "PRESENTATION-REF-L2-1127",
@@ -6929,6 +6280,26 @@
         "audio": [],
         "cache": [],
         "presentation_refs": [
+          "PRESENTATION-REF-L2-0140",
+          "PRESENTATION-REF-L2-0141",
+          "PRESENTATION-REF-L2-0142",
+          "PRESENTATION-REF-L2-0143",
+          "PRESENTATION-REF-L2-0144",
+          "PRESENTATION-REF-L2-0145",
+          "PRESENTATION-REF-L2-0146",
+          "PRESENTATION-REF-L2-0147",
+          "PRESENTATION-REF-L2-0148",
+          "PRESENTATION-REF-L2-0149",
+          "PRESENTATION-REF-L2-0150",
+          "PRESENTATION-REF-L2-0151",
+          "PRESENTATION-REF-L2-0152",
+          "PRESENTATION-REF-L2-0153",
+          "PRESENTATION-REF-L2-0154",
+          "PRESENTATION-REF-L2-0155",
+          "PRESENTATION-REF-L2-0156",
+          "PRESENTATION-REF-L2-0157",
+          "PRESENTATION-REF-L2-0158",
+          "PRESENTATION-REF-L2-0159",
           "PRESENTATION-REF-L2-0707",
           "PRESENTATION-REF-L2-0708",
           "PRESENTATION-REF-L2-0709",
@@ -6946,7 +6317,30 @@
           "PRESENTATION-REF-L2-0721",
           "PRESENTATION-REF-L2-0722",
           "PRESENTATION-REF-L2-0723",
-          "PRESENTATION-REF-L2-0724"
+          "PRESENTATION-REF-L2-0724",
+          "PRESENTATION-REF-L2-0725",
+          "PRESENTATION-REF-L2-0726",
+          "PRESENTATION-REF-L2-0727",
+          "PRESENTATION-REF-L2-0728",
+          "PRESENTATION-REF-L2-0729",
+          "PRESENTATION-REF-L2-0730",
+          "PRESENTATION-REF-L2-0731",
+          "PRESENTATION-REF-L2-0732",
+          "PRESENTATION-REF-L2-0733",
+          "PRESENTATION-REF-L2-0800",
+          "PRESENTATION-REF-L2-0801",
+          "PRESENTATION-REF-L2-0802",
+          "PRESENTATION-REF-L2-0882",
+          "PRESENTATION-REF-L2-0883",
+          "PRESENTATION-REF-L2-0884",
+          "PRESENTATION-REF-L2-0885",
+          "PRESENTATION-REF-L2-0886",
+          "PRESENTATION-REF-L2-0887",
+          "PRESENTATION-REF-L2-0888",
+          "PRESENTATION-REF-L2-0889",
+          "PRESENTATION-REF-L2-0890",
+          "PRESENTATION-REF-L2-0891",
+          "PRESENTATION-REF-L2-0903"
         ]
       }
     },
@@ -7221,7 +6615,19 @@
         "rng": [],
         "audio": [],
         "cache": [],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0001",
+          "PRESENTATION-REF-L2-0002",
+          "PRESENTATION-REF-L2-0003",
+          "PRESENTATION-REF-L2-0004",
+          "PRESENTATION-REF-L2-0005",
+          "PRESENTATION-REF-L2-0006",
+          "PRESENTATION-REF-L2-0007",
+          "PRESENTATION-REF-L2-0008",
+          "PRESENTATION-REF-L2-0009",
+          "PRESENTATION-REF-L2-0010",
+          "PRESENTATION-REF-L2-0011"
+        ]
       }
     },
     {
@@ -7320,82 +6726,6 @@
       }
     },
     {
-      "id": "ROW-mc-bvihb",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-15C-A] Complete Level 2 shared pickup, mana-carrier, castle, damage, and allocation behavior",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-bvihb",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
       "id": "ROW-mc-bvihb.1",
       "subsystem": "gameplay",
       "family": "reset",
@@ -7485,310 +6815,6 @@
       }
     },
     {
-      "id": "ROW-mc-bvihb.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-15C-A2] Port Castle teardown and allocator fallback semantics",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-bvihb.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-bvihb.4",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-15C-A4] Bind Level 2 economy into production entity dispatcher",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-bvihb.4",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-bvihb.4.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-15C-A4.2] Unify Level 2 dispatcher terrain and reset authority",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-bvihb.4.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-bvihb.4.3",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-15C-A4.3] Dispatch dynamic Level 2 arena slots",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-bvihb.4.3",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
       "id": "ROW-mc-c2by.1",
       "subsystem": "presentation",
       "family": "presentation_refs",
@@ -7862,167 +6888,6 @@
         "audio": [],
         "cache": [],
         "presentation_refs": [
-          "PRESENTATION-REF-L2-0001",
-          "PRESENTATION-REF-L2-0002",
-          "PRESENTATION-REF-L2-0003",
-          "PRESENTATION-REF-L2-0004",
-          "PRESENTATION-REF-L2-0005",
-          "PRESENTATION-REF-L2-0006",
-          "PRESENTATION-REF-L2-0007",
-          "PRESENTATION-REF-L2-0008",
-          "PRESENTATION-REF-L2-0009",
-          "PRESENTATION-REF-L2-0010",
-          "PRESENTATION-REF-L2-0011",
-          "PRESENTATION-REF-L2-0012",
-          "PRESENTATION-REF-L2-0013",
-          "PRESENTATION-REF-L2-0014",
-          "PRESENTATION-REF-L2-0015",
-          "PRESENTATION-REF-L2-0016",
-          "PRESENTATION-REF-L2-0017",
-          "PRESENTATION-REF-L2-0018",
-          "PRESENTATION-REF-L2-0019",
-          "PRESENTATION-REF-L2-0020",
-          "PRESENTATION-REF-L2-0021",
-          "PRESENTATION-REF-L2-0022",
-          "PRESENTATION-REF-L2-0023",
-          "PRESENTATION-REF-L2-0024",
-          "PRESENTATION-REF-L2-0025",
-          "PRESENTATION-REF-L2-0026",
-          "PRESENTATION-REF-L2-0027",
-          "PRESENTATION-REF-L2-0028",
-          "PRESENTATION-REF-L2-0029",
-          "PRESENTATION-REF-L2-0030",
-          "PRESENTATION-REF-L2-0031",
-          "PRESENTATION-REF-L2-0032",
-          "PRESENTATION-REF-L2-0034",
-          "PRESENTATION-REF-L2-0045",
-          "PRESENTATION-REF-L2-0059",
-          "PRESENTATION-REF-L2-0060",
-          "PRESENTATION-REF-L2-0061",
-          "PRESENTATION-REF-L2-0062",
-          "PRESENTATION-REF-L2-0063",
-          "PRESENTATION-REF-L2-0064",
-          "PRESENTATION-REF-L2-0065",
-          "PRESENTATION-REF-L2-0066",
-          "PRESENTATION-REF-L2-0067",
-          "PRESENTATION-REF-L2-0068",
-          "PRESENTATION-REF-L2-0069",
-          "PRESENTATION-REF-L2-0070",
-          "PRESENTATION-REF-L2-0071",
-          "PRESENTATION-REF-L2-0072",
-          "PRESENTATION-REF-L2-0073",
-          "PRESENTATION-REF-L2-0074",
-          "PRESENTATION-REF-L2-0075",
-          "PRESENTATION-REF-L2-0076",
-          "PRESENTATION-REF-L2-0077",
-          "PRESENTATION-REF-L2-0078",
-          "PRESENTATION-REF-L2-0079",
-          "PRESENTATION-REF-L2-0080",
-          "PRESENTATION-REF-L2-0081",
-          "PRESENTATION-REF-L2-0082",
-          "PRESENTATION-REF-L2-0083",
-          "PRESENTATION-REF-L2-0084",
-          "PRESENTATION-REF-L2-0085",
-          "PRESENTATION-REF-L2-0086",
-          "PRESENTATION-REF-L2-0087",
-          "PRESENTATION-REF-L2-0088",
-          "PRESENTATION-REF-L2-0089",
-          "PRESENTATION-REF-L2-0090",
-          "PRESENTATION-REF-L2-0091",
-          "PRESENTATION-REF-L2-0092",
-          "PRESENTATION-REF-L2-0093",
-          "PRESENTATION-REF-L2-0094",
-          "PRESENTATION-REF-L2-0095",
-          "PRESENTATION-REF-L2-0096",
-          "PRESENTATION-REF-L2-0097",
-          "PRESENTATION-REF-L2-0098",
-          "PRESENTATION-REF-L2-0099",
-          "PRESENTATION-REF-L2-0100",
-          "PRESENTATION-REF-L2-0101",
-          "PRESENTATION-REF-L2-0102",
-          "PRESENTATION-REF-L2-0103",
-          "PRESENTATION-REF-L2-0104",
-          "PRESENTATION-REF-L2-0105",
-          "PRESENTATION-REF-L2-0106",
-          "PRESENTATION-REF-L2-0107",
-          "PRESENTATION-REF-L2-0108",
-          "PRESENTATION-REF-L2-0109",
-          "PRESENTATION-REF-L2-0110",
-          "PRESENTATION-REF-L2-0111",
-          "PRESENTATION-REF-L2-0112",
-          "PRESENTATION-REF-L2-0113",
-          "PRESENTATION-REF-L2-0114",
-          "PRESENTATION-REF-L2-0140",
-          "PRESENTATION-REF-L2-0141",
-          "PRESENTATION-REF-L2-0142",
-          "PRESENTATION-REF-L2-0143",
-          "PRESENTATION-REF-L2-0144",
-          "PRESENTATION-REF-L2-0145",
-          "PRESENTATION-REF-L2-0146",
-          "PRESENTATION-REF-L2-0147",
-          "PRESENTATION-REF-L2-0148",
-          "PRESENTATION-REF-L2-0149",
-          "PRESENTATION-REF-L2-0150",
-          "PRESENTATION-REF-L2-0151",
-          "PRESENTATION-REF-L2-0152",
-          "PRESENTATION-REF-L2-0153",
-          "PRESENTATION-REF-L2-0154",
-          "PRESENTATION-REF-L2-0155",
-          "PRESENTATION-REF-L2-0156",
-          "PRESENTATION-REF-L2-0157",
-          "PRESENTATION-REF-L2-0158",
-          "PRESENTATION-REF-L2-0159",
-          "PRESENTATION-REF-L2-0164",
-          "PRESENTATION-REF-L2-0165",
-          "PRESENTATION-REF-L2-0166",
-          "PRESENTATION-REF-L2-0167",
-          "PRESENTATION-REF-L2-0168",
-          "PRESENTATION-REF-L2-0169",
-          "PRESENTATION-REF-L2-0170",
-          "PRESENTATION-REF-L2-0171",
-          "PRESENTATION-REF-L2-0172",
-          "PRESENTATION-REF-L2-0173",
-          "PRESENTATION-REF-L2-0174",
-          "PRESENTATION-REF-L2-0175",
-          "PRESENTATION-REF-L2-0176",
-          "PRESENTATION-REF-L2-0177",
-          "PRESENTATION-REF-L2-0178",
-          "PRESENTATION-REF-L2-0179",
-          "PRESENTATION-REF-L2-0180",
-          "PRESENTATION-REF-L2-0181",
-          "PRESENTATION-REF-L2-0182",
-          "PRESENTATION-REF-L2-0183",
-          "PRESENTATION-REF-L2-0184",
-          "PRESENTATION-REF-L2-0185",
-          "PRESENTATION-REF-L2-0186",
-          "PRESENTATION-REF-L2-0187",
-          "PRESENTATION-REF-L2-0188",
-          "PRESENTATION-REF-L2-0189",
-          "PRESENTATION-REF-L2-0190",
-          "PRESENTATION-REF-L2-0191",
-          "PRESENTATION-REF-L2-0259",
-          "PRESENTATION-REF-L2-0509",
-          "PRESENTATION-REF-L2-0523",
-          "PRESENTATION-REF-L2-0529",
-          "PRESENTATION-REF-L2-0530",
-          "PRESENTATION-REF-L2-0619",
-          "PRESENTATION-REF-L2-0620",
-          "PRESENTATION-REF-L2-0621",
-          "PRESENTATION-REF-L2-0622",
-          "PRESENTATION-REF-L2-0623",
-          "PRESENTATION-REF-L2-0624",
-          "PRESENTATION-REF-L2-0625",
-          "PRESENTATION-REF-L2-0626",
-          "PRESENTATION-REF-L2-0627",
-          "PRESENTATION-REF-L2-0628",
-          "PRESENTATION-REF-L2-0629",
-          "PRESENTATION-REF-L2-0630",
-          "PRESENTATION-REF-L2-0631",
-          "PRESENTATION-REF-L2-0653",
-          "PRESENTATION-REF-L2-0654",
-          "PRESENTATION-REF-L2-0655",
-          "PRESENTATION-REF-L2-0656",
-          "PRESENTATION-REF-L2-0657",
           "PRESENTATION-REF-L2-0658",
           "PRESENTATION-REF-L2-0659",
           "PRESENTATION-REF-L2-0660",
@@ -8034,9 +6899,6 @@
           "PRESENTATION-REF-L2-0666",
           "PRESENTATION-REF-L2-0667",
           "PRESENTATION-REF-L2-0668",
-          "PRESENTATION-REF-L2-0671",
-          "PRESENTATION-REF-L2-0672",
-          "PRESENTATION-REF-L2-0673",
           "PRESENTATION-REF-L2-0674",
           "PRESENTATION-REF-L2-0675",
           "PRESENTATION-REF-L2-0676",
@@ -8060,39 +6922,14 @@
           "PRESENTATION-REF-L2-0701",
           "PRESENTATION-REF-L2-0702",
           "PRESENTATION-REF-L2-0703",
-          "PRESENTATION-REF-L2-0704",
-          "PRESENTATION-REF-L2-0705",
-          "PRESENTATION-REF-L2-0706",
-          "PRESENTATION-REF-L2-0725",
-          "PRESENTATION-REF-L2-0726",
-          "PRESENTATION-REF-L2-0727",
-          "PRESENTATION-REF-L2-0728",
-          "PRESENTATION-REF-L2-0729",
-          "PRESENTATION-REF-L2-0730",
-          "PRESENTATION-REF-L2-0731",
-          "PRESENTATION-REF-L2-0732",
-          "PRESENTATION-REF-L2-0733",
-          "PRESENTATION-REF-L2-0800",
-          "PRESENTATION-REF-L2-0801",
-          "PRESENTATION-REF-L2-0802",
-          "PRESENTATION-REF-L2-0882",
-          "PRESENTATION-REF-L2-0883",
-          "PRESENTATION-REF-L2-0884",
-          "PRESENTATION-REF-L2-0885",
-          "PRESENTATION-REF-L2-0886",
-          "PRESENTATION-REF-L2-0887",
-          "PRESENTATION-REF-L2-0888",
-          "PRESENTATION-REF-L2-0889",
-          "PRESENTATION-REF-L2-0890",
-          "PRESENTATION-REF-L2-0891",
-          "PRESENTATION-REF-L2-0903"
+          "PRESENTATION-REF-L2-0704"
         ]
       }
     },
     {
       "id": "ROW-mc-c2by.2",
-      "subsystem": "gameplay",
-      "family": "authored",
+      "subsystem": "presentation",
+      "family": "presentation_refs",
       "title": "[L2-37A2] Present rooted Level 2 spell-family pickup, active, and expiry cues from Rust authority",
       "reachability": {
         "status": "reachable",
@@ -8101,10 +6938,10 @@
       "source": {
         "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
         "symbols": [
-          "sub_49270_generate_level_features"
+          "GenerateEvents_49290"
         ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
+        "path": "remc2/engine/Events.cpp",
+        "lines": "152-3020",
         "dispatch": null
       },
       "preconditions": [
@@ -8162,7 +6999,12 @@
         "rng": [],
         "audio": [],
         "cache": [],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0628",
+          "PRESENTATION-REF-L2-0629",
+          "PRESENTATION-REF-L2-0630",
+          "PRESENTATION-REF-L2-0631"
+        ]
       }
     },
     {
@@ -8270,234 +7112,6 @@
       }
     },
     {
-      "id": "ROW-mc-e7oi",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-24] Aggregate opponent AI casting, castle, and advanced-mode closure",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-e7oi",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-e7oi.1",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-24C] Drive one natural Nyphur turn through the complete AI helper closure",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-e7oi.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-ewsc",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-38] Aggregate Level 2 HUD, minimap, localization, audio, and music closure",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-ewsc",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
       "id": "ROW-mc-exzm.1",
       "subsystem": "presentation",
       "family": "presentation_refs",
@@ -8571,6 +7185,63 @@
         "audio": [],
         "cache": [],
         "presentation_refs": [
+          "PRESENTATION-REF-L2-0059",
+          "PRESENTATION-REF-L2-0060",
+          "PRESENTATION-REF-L2-0061",
+          "PRESENTATION-REF-L2-0062",
+          "PRESENTATION-REF-L2-0063",
+          "PRESENTATION-REF-L2-0064",
+          "PRESENTATION-REF-L2-0065",
+          "PRESENTATION-REF-L2-0066",
+          "PRESENTATION-REF-L2-0067",
+          "PRESENTATION-REF-L2-0068",
+          "PRESENTATION-REF-L2-0069",
+          "PRESENTATION-REF-L2-0070",
+          "PRESENTATION-REF-L2-0071",
+          "PRESENTATION-REF-L2-0072",
+          "PRESENTATION-REF-L2-0073",
+          "PRESENTATION-REF-L2-0074",
+          "PRESENTATION-REF-L2-0075",
+          "PRESENTATION-REF-L2-0076",
+          "PRESENTATION-REF-L2-0077",
+          "PRESENTATION-REF-L2-0078",
+          "PRESENTATION-REF-L2-0079",
+          "PRESENTATION-REF-L2-0080",
+          "PRESENTATION-REF-L2-0081",
+          "PRESENTATION-REF-L2-0082",
+          "PRESENTATION-REF-L2-0083",
+          "PRESENTATION-REF-L2-0084",
+          "PRESENTATION-REF-L2-0085",
+          "PRESENTATION-REF-L2-0086",
+          "PRESENTATION-REF-L2-0087",
+          "PRESENTATION-REF-L2-0088",
+          "PRESENTATION-REF-L2-0089",
+          "PRESENTATION-REF-L2-0090",
+          "PRESENTATION-REF-L2-0091",
+          "PRESENTATION-REF-L2-0092",
+          "PRESENTATION-REF-L2-0093",
+          "PRESENTATION-REF-L2-0094",
+          "PRESENTATION-REF-L2-0095",
+          "PRESENTATION-REF-L2-0096",
+          "PRESENTATION-REF-L2-0097",
+          "PRESENTATION-REF-L2-0098",
+          "PRESENTATION-REF-L2-0099",
+          "PRESENTATION-REF-L2-0100",
+          "PRESENTATION-REF-L2-0101",
+          "PRESENTATION-REF-L2-0102",
+          "PRESENTATION-REF-L2-0103",
+          "PRESENTATION-REF-L2-0104",
+          "PRESENTATION-REF-L2-0105",
+          "PRESENTATION-REF-L2-0106",
+          "PRESENTATION-REF-L2-0107",
+          "PRESENTATION-REF-L2-0108",
+          "PRESENTATION-REF-L2-0109",
+          "PRESENTATION-REF-L2-0110",
+          "PRESENTATION-REF-L2-0111",
+          "PRESENTATION-REF-L2-0112",
+          "PRESENTATION-REF-L2-0113",
+          "PRESENTATION-REF-L2-0114",
+          "PRESENTATION-REF-L2-0259",
           "PRESENTATION-REF-L2-0926",
           "PRESENTATION-REF-L2-0927",
           "PRESENTATION-REF-L2-0928",
@@ -8579,310 +7250,6 @@
           "PRESENTATION-REF-L2-0931",
           "PRESENTATION-REF-L2-0932"
         ]
-      }
-    },
-    {
-      "id": "ROW-mc-exzm.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-36B] Close the live Unity indexed upload/render loop and reset-visible world-object gating",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-exzm.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-fgrh",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-18] Implement Beyond Sight lifecycle and authoritative reveal predicate",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-fgrh",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-fi4n",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-42] Run the one accepted Level 2 gate, publish receipts, commit, push, and close",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-fi4n",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-hgk9",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-30] Close census-rooted class-10 effects including Meteor or Whirlwind branches",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-hgk9",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
       }
     },
     {
@@ -9033,158 +7400,6 @@
         "dispatch": [
           "DSP-L2-486"
         ],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-jc4w",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-15] Aggregate inherited Level 2 behavior compatibility closure",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-jc4w",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-jmcp",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-27] Implement Bee constructor and actions 16-19",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-jmcp",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
         "tuples": [],
         "ai_helpers": [],
         "rng": [],
@@ -9674,82 +7889,6 @@
       }
     },
     {
-      "id": "ROW-mc-nr19.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-32B] Close type-9 BUILD-chain destruction, terminal exit, and objective reset/loss branches",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-nr19.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
       "id": "ROW-mc-oiaa.1",
       "subsystem": "gameplay",
       "family": "reset",
@@ -10118,7 +8257,39 @@
           "PARTICLE-L2-271",
           "PARTICLE-L2-273"
         ],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0045",
+          "PRESENTATION-REF-L2-0164",
+          "PRESENTATION-REF-L2-0165",
+          "PRESENTATION-REF-L2-0166",
+          "PRESENTATION-REF-L2-0167",
+          "PRESENTATION-REF-L2-0168",
+          "PRESENTATION-REF-L2-0169",
+          "PRESENTATION-REF-L2-0170",
+          "PRESENTATION-REF-L2-0171",
+          "PRESENTATION-REF-L2-0172",
+          "PRESENTATION-REF-L2-0173",
+          "PRESENTATION-REF-L2-0174",
+          "PRESENTATION-REF-L2-0175",
+          "PRESENTATION-REF-L2-0176",
+          "PRESENTATION-REF-L2-0177",
+          "PRESENTATION-REF-L2-0178",
+          "PRESENTATION-REF-L2-0179",
+          "PRESENTATION-REF-L2-0180",
+          "PRESENTATION-REF-L2-0181",
+          "PRESENTATION-REF-L2-0182",
+          "PRESENTATION-REF-L2-0183",
+          "PRESENTATION-REF-L2-0184",
+          "PRESENTATION-REF-L2-0185",
+          "PRESENTATION-REF-L2-0186",
+          "PRESENTATION-REF-L2-0187",
+          "PRESENTATION-REF-L2-0188",
+          "PRESENTATION-REF-L2-0189",
+          "PRESENTATION-REF-L2-0190",
+          "PRESENTATION-REF-L2-0191",
+          "PRESENTATION-REF-L2-0509",
+          "PRESENTATION-REF-L2-0523"
+        ]
       }
     },
     {
@@ -10267,7 +8438,10 @@
         "rng": [],
         "audio": [],
         "cache": [],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0705",
+          "PRESENTATION-REF-L2-0706"
+        ]
       },
       "authored_indices": [
         1,
@@ -10293,310 +8467,6 @@
         259,
         283
       ]
-    },
-    {
-      "id": "ROW-mc-ptqs",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-17A] Implement Shield active lifecycle and status semantics",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-ptqs",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-sq58.1",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-26A] Port Nyphur castle-present countdown and exact respawn reconstruction",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-sq58.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-sq58.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-26B] Port permanent banishment and the exact objective-type-3 consumed state",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-sq58.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-uk2k",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-31] Implement the data-driven Level 2 switch and group activation graph",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-uk2k",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
     },
     {
       "id": "ROW-mc-uk2k.1",
@@ -12028,462 +9898,6 @@
       }
     },
     {
-      "id": "ROW-mc-wl60",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-41] Reconcile Level 2 documentation, matrix views, policies, and tracker state",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-wl60",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-wv4o.1",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-34A] Build the ordinary-input direct Rust mission route and negative branches",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-wv4o.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-wv4o.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-34B] Prove public C-ABI parity, replay/reset identity, and authored-event readback for the full route",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-wv4o.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-xcgi",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-17] Generalize spell-holder indexing and acquire Shield, Invisible, and Beyond Sight",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-xcgi",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-xcgi.1",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-17.1] Match production spell-holder acquisition source semantics",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-xcgi.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-xcgi.1.1",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-17.1A] Port source spell pickup lifecycle and owner selection",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-xcgi.1.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
       "id": "ROW-mc-xcgi.1.1.1",
       "subsystem": "gameplay",
       "family": "reset",
@@ -12566,235 +9980,17 @@
         "rng": [],
         "audio": [],
         "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-xcgi.1.1.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-17.1A2] Complete SetSpell holder and learned-versus-hand state",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-xcgi.1.1.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-xcgi.1.2",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-17.1B] Port replacement allocation and Level2 campaign C-ABI step",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-xcgi.1.2",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
-      }
-    },
-    {
-      "id": "ROW-mc-xm2n",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-37] Aggregate complete Level 2 entity presentation closure",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": false
-      },
-      "classification": "Unproved",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-xm2n",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
+        "presentation_refs": [
+          "PRESENTATION-REF-L2-0619",
+          "PRESENTATION-REF-L2-0620",
+          "PRESENTATION-REF-L2-0621",
+          "PRESENTATION-REF-L2-0622",
+          "PRESENTATION-REF-L2-0623",
+          "PRESENTATION-REF-L2-0624",
+          "PRESENTATION-REF-L2-0625",
+          "PRESENTATION-REF-L2-0626",
+          "PRESENTATION-REF-L2-0627"
+        ]
       }
     },
     {
@@ -18103,102 +15299,6 @@
   ],
   "plan_items": [
     {
-      "id": "mc-0qxf",
-      "title": "[L2-39] Build the Level 2 reference corpus, presentation correspondence, and final runner",
-      "depends_on": [
-        "mc-0qxf.1",
-        "mc-0qxf.2",
-        "mc-ewsc"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-0qxf"
-      ]
-    },
-    {
-      "id": "mc-0qxf.1",
-      "title": "[L2-39A] Drive the full Level 2 mission from ordinary Unity input",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-0qxf.1"
-      ]
-    },
-    {
-      "id": "mc-0qxf.2",
-      "title": "[L2-39B] Validate presentation correspondence and reject stale or mismatched receipts",
-      "depends_on": [
-        "mc-0qxf.1"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-0qxf.2"
-      ]
-    },
-    {
-      "id": "mc-1agi",
-      "title": "[L2-40] Reality-check parity and apply only proven isomorphic cleanup",
-      "depends_on": [
-        "mc-0qxf"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-1agi"
-      ]
-    },
-    {
       "id": "mc-1g06.1",
       "title": "[L2-24A1] Port spell eligibility, tier, mana, and cooldown decisions for Nyphur AI",
       "depends_on": [],
@@ -18267,55 +15367,6 @@
       ]
     },
     {
-      "id": "mc-2eby.2",
-      "title": "[L2-25B] Port holder release, replacement allocation, and action-2 to action-3 transition",
-      "depends_on": [
-        "mc-2eby.1"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-2eby.2"
-      ]
-    },
-    {
-      "id": "mc-2sbd",
-      "title": "[L2-15D] Implement reset-visible Goat action 11 exactly",
-      "depends_on": [
-        "mc-2sbd.1",
-        "mc-2sbd.2"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-2sbd"
-      ]
-    },
-    {
       "id": "mc-2sbd.1",
       "title": "[L2-15D.1] Wire Level 2 Goat action-11 into production reset and dispatcher",
       "depends_on": [
@@ -18359,34 +15410,6 @@
       ],
       "owned_rows": [
         "ROW-mc-2sbd.2"
-      ]
-    },
-    {
-      "id": "mc-38gs",
-      "title": "[L2-29] Close census-rooted additional creature families and parameter branches",
-      "depends_on": [
-        "mc-38gs.1",
-        "mc-38gs.2",
-        "mc-38gs.3",
-        "mc-38gs.4",
-        "mc-jc4w"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-38gs"
       ]
     },
     {
@@ -18503,7 +15526,8 @@
       "id": "mc-4ipu.2",
       "title": "[L2-21B] Port basic Nyphur modes 0-2 with exact transitions and side effects",
       "depends_on": [
-        "mc-4ipu.1"
+        "mc-4ipu.1",
+        "mc-app8.2"
       ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
@@ -18527,7 +15551,8 @@
       "id": "mc-4ipu.3",
       "title": "[L2-21C] Port basic Nyphur modes 3-4, 11, and 12 plus default/fallthrough behavior",
       "depends_on": [
-        "mc-4ipu.1"
+        "mc-4ipu.1",
+        "mc-app8.2"
       ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
@@ -18570,33 +15595,11 @@
       ]
     },
     {
-      "id": "mc-5iyv",
-      "title": "Level 2 remc2-to-Rust-to-Unity conformance foundation",
-      "depends_on": [
-        "mc-fi4n"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-5iyv"
-      ]
-    },
-    {
       "id": "mc-6dqd.1",
       "title": "[L2-23A] Consume Invisible and Beyond Sight predicates in Nyphur target selection",
-      "depends_on": [],
+      "depends_on": [
+        "mc-clng"
+      ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18637,28 +15640,6 @@
       ],
       "owned_rows": [
         "ROW-mc-6dqd.2"
-      ]
-    },
-    {
-      "id": "mc-94h7.1",
-      "title": "[L2-38B1] Consume Level 2 gameplay sound commands with exact IDs, ordering, and positional parameters",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-94h7.1"
       ]
     },
     {
@@ -18730,7 +15711,9 @@
     {
       "id": "mc-a73w.3",
       "title": "[L2-38A3] Implement minimap entities, marks, and authoritative visibility",
-      "depends_on": [],
+      "depends_on": [
+        "mc-a73w.1"
+      ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18796,32 +15779,6 @@
       ]
     },
     {
-      "id": "mc-bvihb",
-      "title": "[L2-15C-A] Complete Level 2 shared pickup, mana-carrier, castle, damage, and allocation behavior",
-      "depends_on": [
-        "mc-bvihb.1",
-        "mc-bvihb.2",
-        "mc-bvihb.4"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-bvihb"
-      ]
-    },
-    {
       "id": "mc-bvihb.1",
       "title": "[L2-15C-A1] Port Castle stage controller and source-chain side effects",
       "depends_on": [],
@@ -18841,97 +15798,6 @@
       ],
       "owned_rows": [
         "ROW-mc-bvihb.1"
-      ]
-    },
-    {
-      "id": "mc-bvihb.2",
-      "title": "[L2-15C-A2] Port Castle teardown and allocator fallback semantics",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-bvihb.2"
-      ]
-    },
-    {
-      "id": "mc-bvihb.4",
-      "title": "[L2-15C-A4] Bind Level 2 economy into production entity dispatcher",
-      "depends_on": [
-        "mc-bvihb.4.2",
-        "mc-bvihb.4.3"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-bvihb.4"
-      ]
-    },
-    {
-      "id": "mc-bvihb.4.2",
-      "title": "[L2-15C-A4.2] Unify Level 2 dispatcher terrain and reset authority",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-bvihb.4.2"
-      ]
-    },
-    {
-      "id": "mc-bvihb.4.3",
-      "title": "[L2-15C-A4.3] Dispatch dynamic Level 2 arena slots",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-bvihb.4.3"
       ]
     },
     {
@@ -18959,7 +15825,9 @@
     {
       "id": "mc-c2by.2",
       "title": "[L2-37A2] Present rooted Level 2 spell-family pickup, active, and expiry cues from Rust authority",
-      "depends_on": [],
+      "depends_on": [
+        "mc-clng"
+      ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18981,55 +15849,6 @@
     {
       "id": "mc-clng",
       "title": "[L2-17B] Implement Invisible active lifecycle and visibility semantics",
-      "depends_on": [
-        "mc-xcgi"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-clng"
-      ]
-    },
-    {
-      "id": "mc-e7oi",
-      "title": "[L2-24] Aggregate opponent AI casting, castle, and advanced-mode closure",
-      "depends_on": [
-        "mc-e7oi.1",
-        "mc-xcgi"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-e7oi"
-      ]
-    },
-    {
-      "id": "mc-e7oi.1",
-      "title": "[L2-24C] Drive one natural Nyphur turn through the complete AI helper closure",
       "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
@@ -19046,31 +15865,7 @@
         "unresolved or multiply-owned denominator ID"
       ],
       "owned_rows": [
-        "ROW-mc-e7oi.1"
-      ]
-    },
-    {
-      "id": "mc-ewsc",
-      "title": "[L2-38] Aggregate Level 2 HUD, minimap, localization, audio, and music closure",
-      "depends_on": [
-        "mc-xm2n"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-ewsc"
+        "ROW-mc-clng"
       ]
     },
     {
@@ -19093,103 +15888,6 @@
       ],
       "owned_rows": [
         "ROW-mc-exzm.1"
-      ]
-    },
-    {
-      "id": "mc-exzm.2",
-      "title": "[L2-36B] Close the live Unity indexed upload/render loop and reset-visible world-object gating",
-      "depends_on": [
-        "mc-exzm.1"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-exzm.2"
-      ]
-    },
-    {
-      "id": "mc-fgrh",
-      "title": "[L2-18] Implement Beyond Sight lifecycle and authoritative reveal predicate",
-      "depends_on": [
-        "mc-xcgi"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-fgrh"
-      ]
-    },
-    {
-      "id": "mc-fi4n",
-      "title": "[L2-42] Run the one accepted Level 2 gate, publish receipts, commit, push, and close",
-      "depends_on": [
-        "mc-wl60"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-fi4n"
-      ]
-    },
-    {
-      "id": "mc-hgk9",
-      "title": "[L2-30] Close census-rooted class-10 effects including Meteor or Whirlwind branches",
-      "depends_on": [
-        "mc-hgk9.1",
-        "mc-hgk9.2"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-hgk9"
       ]
     },
     {
@@ -19237,56 +15935,6 @@
       ]
     },
     {
-      "id": "mc-jc4w",
-      "title": "[L2-15] Aggregate inherited Level 2 behavior compatibility closure",
-      "depends_on": [
-        "mc-2sbd",
-        "mc-50i6"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-jc4w"
-      ]
-    },
-    {
-      "id": "mc-jmcp",
-      "title": "[L2-27] Implement Bee constructor and actions 16-19",
-      "depends_on": [
-        "mc-jmcp.1",
-        "mc-jmcp.2"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-jmcp"
-      ]
-    },
-    {
       "id": "mc-jmcp.1",
       "title": "[L2-27A] Complete Bee construction plus actions 16-17 on the authored cave route",
       "depends_on": [],
@@ -19311,7 +15959,9 @@
     {
       "id": "mc-jmcp.2",
       "title": "[L2-27B] Complete Bee actions 18-19, event side effects, and family accounting",
-      "depends_on": [],
+      "depends_on": [
+        "mc-jmcp.1"
+      ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19377,9 +16027,7 @@
     {
       "id": "mc-mmv3",
       "title": "[L2-28] Implement Bee actions 20-23 and exact objective death identity",
-      "depends_on": [
-        "mc-jmcp"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19421,33 +16069,11 @@
       ]
     },
     {
-      "id": "mc-nr19.2",
-      "title": "[L2-32B] Close type-9 BUILD-chain destruction, terminal exit, and objective reset/loss branches",
-      "depends_on": [
-        "mc-nr19.1"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-nr19.2"
-      ]
-    },
-    {
       "id": "mc-oiaa.1",
       "title": "[L2-37B1] Present Bees, goats, villagers, bad stones, and remaining rooted creature families",
-      "depends_on": [],
+      "depends_on": [
+        "mc-mmv3"
+      ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19491,7 +16117,9 @@
     {
       "id": "mc-oiaa.3",
       "title": "[L2-37B3] Present Level 2 scenery, buildings, and vault destruction",
-      "depends_on": [],
+      "depends_on": [
+        "mc-oiaa.2"
+      ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19508,101 +16136,6 @@
       ],
       "owned_rows": [
         "ROW-mc-oiaa.3"
-      ]
-    },
-    {
-      "id": "mc-ptqs",
-      "title": "[L2-17A] Implement Shield active lifecycle and status semantics",
-      "depends_on": [
-        "mc-xcgi"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-ptqs"
-      ]
-    },
-    {
-      "id": "mc-sq58.1",
-      "title": "[L2-26A] Port Nyphur castle-present countdown and exact respawn reconstruction",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-sq58.1"
-      ]
-    },
-    {
-      "id": "mc-sq58.2",
-      "title": "[L2-26B] Port permanent banishment and the exact objective-type-3 consumed state",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-sq58.2"
-      ]
-    },
-    {
-      "id": "mc-uk2k",
-      "title": "[L2-31] Implement the data-driven Level 2 switch and group activation graph",
-      "depends_on": [
-        "mc-uk2k.1",
-        "mc-uk2k.2",
-        "mc-uk2k.3",
-        "mc-uk2k.4"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-uk2k"
       ]
     },
     {
@@ -19746,150 +16279,6 @@
       ]
     },
     {
-      "id": "mc-wl60",
-      "title": "[L2-41] Reconcile Level 2 documentation, matrix views, policies, and tracker state",
-      "depends_on": [
-        "mc-1agi"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-wl60"
-      ]
-    },
-    {
-      "id": "mc-wv4o.1",
-      "title": "[L2-34A] Build the ordinary-input direct Rust mission route and negative branches",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-wv4o.1"
-      ]
-    },
-    {
-      "id": "mc-wv4o.2",
-      "title": "[L2-34B] Prove public C-ABI parity, replay/reset identity, and authored-event readback for the full route",
-      "depends_on": [
-        "mc-wv4o.1"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-wv4o.2"
-      ]
-    },
-    {
-      "id": "mc-xcgi",
-      "title": "[L2-17] Generalize spell-holder indexing and acquire Shield, Invisible, and Beyond Sight",
-      "depends_on": [
-        "mc-xcgi.1"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-xcgi"
-      ]
-    },
-    {
-      "id": "mc-xcgi.1",
-      "title": "[L2-17.1] Match production spell-holder acquisition source semantics",
-      "depends_on": [
-        "mc-xcgi.1.1",
-        "mc-xcgi.1.2"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-xcgi.1"
-      ]
-    },
-    {
-      "id": "mc-xcgi.1.1",
-      "title": "[L2-17.1A] Port source spell pickup lifecycle and owner selection",
-      "depends_on": [
-        "mc-xcgi.1.1.1",
-        "mc-xcgi.1.1.2"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-xcgi.1.1"
-      ]
-    },
-    {
       "id": "mc-xcgi.1.1.1",
       "title": "[L2-17.1A1] Match spell pickup owner candidate and source-field gates",
       "depends_on": [],
@@ -19909,78 +16298,6 @@
       ],
       "owned_rows": [
         "ROW-mc-xcgi.1.1.1"
-      ]
-    },
-    {
-      "id": "mc-xcgi.1.1.2",
-      "title": "[L2-17.1A2] Complete SetSpell holder and learned-versus-hand state",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-xcgi.1.1.2"
-      ]
-    },
-    {
-      "id": "mc-xcgi.1.2",
-      "title": "[L2-17.1B] Port replacement allocation and Level2 campaign C-ABI step",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-xcgi.1.2"
-      ]
-    },
-    {
-      "id": "mc-xm2n",
-      "title": "[L2-37] Aggregate complete Level 2 entity presentation closure",
-      "depends_on": [
-        "mc-38gs",
-        "mc-e7oi",
-        "mc-fgrh",
-        "mc-hgk9",
-        "mc-mmv3"
-      ],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-xm2n"
       ]
     },
     {

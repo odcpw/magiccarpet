@@ -9,6 +9,8 @@ import subprocess
 import sys
 from typing import Any
 
+import build_level2_matrix as builder
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 MATRIX = ROOT / "level2-conformance" / "level2-conformance-matrix.json"
@@ -33,9 +35,6 @@ ACTIVATION_REACHABLE_DISPATCH_IDS = frozenset({
     "DSP-L2-291", "DSP-L2-292", "DSP-L2-293", "DSP-L2-312",
     "DSP-L2-313", "DSP-L2-318", "DSP-L2-323",
 })
-MATRIX_CONTROL_BEAD_IDS = {"mc-a4ir", "mc-a4ir.1"}
-
-
 class Level2MatrixError(ValueError):
     pass
 
@@ -70,19 +69,9 @@ def expected_denominators() -> dict[str, set[str]]:
     }
 
 
-def open_bead_ids() -> set[str]:
-    path = ROOT.parents[2] / ".beads" / "issues.jsonl"
-    result: set[str] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(value, dict) or value.get("status") != "open":
-            continue
-        if "level-2" in (value.get("labels") or []) and value.get("id") not in MATRIX_CONTROL_BEAD_IDS:
-            result.add(value["id"])
-    return result
+def denominator_owner_bead_ids() -> set[str]:
+    """Return the status-invariant owner registry used by the builder."""
+    return set(builder.beads())
 
 
 def validate_coverage(document: dict[str, Any]) -> dict[str, int]:
@@ -136,7 +125,7 @@ def validate_source_and_ownership(document: dict[str, Any]) -> None:
     if document["meta"].get("remc2_commit") != COMMIT:
         raise Level2MatrixError("matrix meta uses the wrong pinned commit")
     plans = {item["id"]: item for item in document["plan_items"]}
-    expected_beads = open_bead_ids()
+    expected_beads = denominator_owner_bead_ids()
     if set(plans) != expected_beads:
         raise Level2MatrixError(f"plan/bead mismatch: missing={sorted(expected_beads-set(plans))}, extra={sorted(set(plans)-expected_beads)}")
     owned: dict[str, str] = {}
