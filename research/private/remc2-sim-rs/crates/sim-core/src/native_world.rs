@@ -1212,6 +1212,17 @@ fn level2_source_intersects(left: &EntitySnapshot, right: &EntitySnapshot) -> bo
         && dz.abs() < i32::from(i16_at(left, 92)) + i32::from(i16_at(right, 92))
 }
 
+fn sync_level2_spell_candidate_projection(target: &mut EntitySnapshot, source: &EntitySnapshot) {
+    target.active = source.active;
+    target.model = source.model;
+    target.life = source.life;
+    target.position = source.position;
+    target.record[2] = source.record[2];
+    target.record[12..16].copy_from_slice(&source.record[12..16]);
+    target.record[67..69].copy_from_slice(&source.record[67..69]);
+    target.record[80..86].copy_from_slice(&source.record[80..86]);
+}
+
 fn level2_experience_scroll_overlap(scroll: Position, player: Position) -> bool {
     let dx = i32::from(player.x.wrapping_sub(scroll.x).cast_signed()).abs();
     let dy = i32::from(player.y.wrapping_sub(scroll.y).cast_signed()).abs();
@@ -18104,11 +18115,13 @@ impl Level2SharedSpellResetSession {
         player_entity_index: u16,
         player_position: Position,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        let source_player_order = (0..self.players.len()).collect::<Vec<_>>();
         self.step_level2_spell_acquisition_with_castle_mana(
             family,
             player_entity_index,
             player_position,
             None,
+            &source_player_order,
         )
     }
 
@@ -18118,6 +18131,7 @@ impl Level2SharedSpellResetSession {
         player_entity_index: u16,
         player_position: Position,
         parent_castle_mana: Option<i32>,
+        source_player_order: &[usize],
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         if player_entity_index != self.player_entity.index {
             return Err(NativeWorldError::new(format!(
@@ -18232,26 +18246,28 @@ impl Level2SharedSpellResetSession {
         // used by the pinned routine); this branch is intentionally kept
         // separate from the SpellEnabled collision gate below.
         if pickup.control_flags & 1 == 0
-            && self
-                .players
-                .iter()
-                .enumerate()
-                .any(|(player_index, player)| {
-                    player.enabled_spell_holders[usize::from(family)] != 0
-                        && player.player_color_index() == 0
-                        && self
-                            .player_entities
-                            .get(player_index)
-                            .is_some_and(|entity| {
-                                entity.active && entity.model == 0 && entity.life >= 0
-                            })
-                })
+            && source_player_order.iter().copied().any(|player_index| {
+                let Some(player) = self.players.get(player_index) else {
+                    return false;
+                };
+                player.enabled_spell_holders[usize::from(family)] != 0
+                    && player.player_color_index() == 0
+                    && self
+                        .player_entities
+                        .get(player_index)
+                        .is_some_and(|entity| {
+                            entity.active && entity.model == 0 && entity.life >= 0
+                        })
+            })
         {
             pickup.control_flags |= 1;
             pickup.record[16] |= 1;
         }
         let mut owner_index = None;
-        for (player_index, player) in self.players.iter().enumerate() {
+        for &player_index in source_player_order {
+            let Some(player) = self.players.get(player_index) else {
+                continue;
+            };
             if player.enabled_spell_holders[usize::from(family)] != 0 {
                 continue;
             }
@@ -18293,6 +18309,24 @@ impl Level2SharedSpellResetSession {
         player_entity_index: u16,
         player_position: Position,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        let source_player_order = (0..self.players.len()).collect::<Vec<_>>();
+        self.step_level2_spell_acquisition_with_economy_in_source_order(
+            economy,
+            family,
+            player_entity_index,
+            player_position,
+            &source_player_order,
+        )
+    }
+
+    fn step_level2_spell_acquisition_with_economy_in_source_order(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        family: u8,
+        player_entity_index: u16,
+        player_position: Position,
+        source_player_order: &[usize],
+    ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         let active_parent = self
             .invisible
             .and_then(|invisible| {
@@ -18328,6 +18362,7 @@ impl Level2SharedSpellResetSession {
             player_entity_index,
             player_position,
             parent_castle_mana,
+            source_player_order,
         )?;
         if family == BEYOND_SIGHT_FAMILY {
             if let Some((beyond_sight, holder, parent, auxiliary)) =
@@ -18429,6 +18464,26 @@ impl Level2SharedSpellResetSession {
         player_entity_index: u16,
         player_position: Position,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        let source_player_order = (0..self.players.len()).collect::<Vec<_>>();
+        self.step_level2_spell_replacement_acquisition_with_economy_in_source_order(
+            economy,
+            source_slot,
+            family,
+            player_entity_index,
+            player_position,
+            &source_player_order,
+        )
+    }
+
+    fn step_level2_spell_replacement_acquisition_with_economy_in_source_order(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        source_slot: u16,
+        family: u8,
+        player_entity_index: u16,
+        player_position: Position,
+        source_player_order: &[usize],
+    ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         let family_index = self
             .acquisitions
             .iter()
@@ -18452,8 +18507,13 @@ impl Level2SharedSpellResetSession {
         source_state.source_life = pickup.life;
         source_state.source_draw_enabled = pickup.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
         self.acquisitions[family_index] = source_state;
-        let result =
-            self.step_level2_spell_acquisition(family, player_entity_index, player_position);
+        let result = self.step_level2_spell_acquisition_with_castle_mana(
+            family,
+            player_entity_index,
+            player_position,
+            None,
+            source_player_order,
+        );
         let result_state = self.acquisitions[family_index];
         self.acquisitions[family_index] = base_state;
         let outcome = match result {
@@ -19994,6 +20054,85 @@ impl Level2ResetSession {
             current = entity.next_relation.unwrap_or(0);
         }
         targets
+    }
+
+    /// Refresh the shared spell scan from the live source entity arena at the
+    /// source-cursor boundary. Movement has already committed to `state`, so
+    /// the local source row is synchronized before the linked-list walk; the
+    /// remaining candidate projections receive only the source-owned fields
+    /// used by `sub_68FF0`, leaving holder/mana state in its existing owner.
+    fn refresh_level2_spell_owner_candidates(&mut self) -> Vec<usize> {
+        let local_entity_index = self.state.entity_index;
+        if let Some(local_entity) = self
+            .entities
+            .iter_mut()
+            .find(|entity| entity.index == local_entity_index)
+        {
+            local_entity.set_position(self.state.position);
+        }
+        for player_index in 0..self.shared_spells.players.len() {
+            let entity_index = self.shared_spells.players[player_index].entity_index;
+            let Some(live_entity) = self
+                .entities
+                .iter()
+                .find(|entity| entity.index == entity_index)
+                .cloned()
+            else {
+                continue;
+            };
+            if let Some(projected) = self.shared_spells.player_entities.get_mut(player_index) {
+                sync_level2_spell_candidate_projection(projected, &live_entity);
+            }
+            if entity_index == local_entity_index {
+                sync_level2_spell_candidate_projection(
+                    &mut self.shared_spells.player_entity,
+                    &live_entity,
+                );
+            }
+        }
+
+        // `next_relation` is the source list's order carrier. Keep every
+        // active class-3 row in the traversal, then admit only live model-0
+        // rows that map to a shared player snapshot. There is deliberately no
+        // pool-order fallback when the source chain is absent or malformed.
+        let chain_entities = self
+            .entities
+            .iter()
+            .filter(|entity| entity.index != 0 && entity.active && entity.class == 3)
+            .map(|entity| entity.index)
+            .collect::<BTreeSet<_>>();
+        let linked = chain_entities
+            .iter()
+            .filter_map(|index| self.entities.get(usize::from(*index)))
+            .filter_map(|entity| entity.next_relation)
+            .collect::<BTreeSet<_>>();
+        let Some(mut current) = chain_entities
+            .iter()
+            .copied()
+            .find(|index| !linked.contains(index))
+        else {
+            return Vec::new();
+        };
+        let mut visited = BTreeSet::new();
+        let mut player_order = Vec::new();
+        while current != 0 && visited.insert(current) {
+            let Some(entity) = self.entities.get(usize::from(current)) else {
+                break;
+            };
+            if chain_entities.contains(&current)
+                && entity.model == 0
+                && entity.life >= 0
+                && let Some(player_index) = self
+                    .shared_spells
+                    .players
+                    .iter()
+                    .position(|player| player.entity_index == current)
+            {
+                player_order.push(player_index);
+            }
+            current = entity.next_relation.unwrap_or(0);
+        }
+        player_order
     }
 
     fn new(
@@ -22818,6 +22957,7 @@ impl Level2ResetSession {
     /// its own mutable state; unknown mission rows are not coerced into a
     /// neighboring Level 1 handler.
     fn step_level2_source_pass(&mut self, pass: u8) {
+        let source_player_order = self.refresh_level2_spell_owner_candidates();
         let player_entity_index = self.state.entity_index;
         let player_position = self.state.position;
         // Retain event chronology across all source slots in this pass;
@@ -22982,11 +23122,12 @@ impl Level2ResetSession {
                         .expect("generic Level 2 spell route has a family");
                     match self
                         .shared_spells
-                        .step_level2_spell_acquisition_with_economy(
+                        .step_level2_spell_acquisition_with_economy_in_source_order(
                             &mut self.economy,
                             family,
                             player_entity_index,
                             player_position,
+                            &source_player_order,
                         ) {
                         Ok(result) => {
                             self.dispatch_events
@@ -23130,6 +23271,7 @@ impl Level2ResetSession {
                             source_slot,
                             player_entity_index,
                             player_position,
+                            &source_player_order,
                         )
                     } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
                         self.step_level2_dynamic_spell_replacement(
@@ -23137,6 +23279,7 @@ impl Level2ResetSession {
                             source_slot,
                             player_entity_index,
                             player_position,
+                            &source_player_order,
                         )
                     } else {
                         self.step_level2_dynamic_arena(pass, source_slot, row.kind)
@@ -23264,6 +23407,7 @@ impl Level2ResetSession {
                         source_slot,
                         player_entity_index,
                         player_position,
+                        &source_player_order,
                     )
                 } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
                     self.step_level2_dynamic_spell_replacement(
@@ -23271,6 +23415,7 @@ impl Level2ResetSession {
                         source_slot,
                         player_entity_index,
                         player_position,
+                        &source_player_order,
                     )
                 } else {
                     self.step_level2_dynamic_arena(pass, source_slot, row.kind)
@@ -23325,6 +23470,7 @@ impl Level2ResetSession {
         source_slot: u16,
         player_entity_index: u16,
         player_position: Position,
+        source_player_order: &[usize],
     ) -> bool {
         let Some(family) = self
             .economy
@@ -23337,11 +23483,12 @@ impl Level2ResetSession {
         };
         match self
             .shared_spells
-            .step_level2_spell_acquisition_with_economy(
+            .step_level2_spell_acquisition_with_economy_in_source_order(
                 &mut self.economy,
                 family,
                 player_entity_index,
                 player_position,
+                source_player_order,
             ) {
             Ok(result) => self
                 .dispatch_events
@@ -23370,6 +23517,7 @@ impl Level2ResetSession {
         source_slot: u16,
         player_entity_index: u16,
         player_position: Position,
+        source_player_order: &[usize],
     ) -> bool {
         let Some((family, action, active)) = self
             .economy
@@ -23388,12 +23536,13 @@ impl Level2ResetSession {
         if persistent_action == Some(action) {
             match self
                 .shared_spells
-                .step_level2_spell_replacement_acquisition_with_economy(
+                .step_level2_spell_replacement_acquisition_with_economy_in_source_order(
                     &mut self.economy,
                     source_slot,
                     family,
                     player_entity_index,
                     player_position,
+                    source_player_order,
                 ) {
                 Ok(result) => self
                     .dispatch_events
@@ -35177,6 +35326,389 @@ mod tests {
     }
 
     #[test]
+    fn level_two_spell_owner_scan_and_source_gates_are_complete() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 source-ordered spell session");
+        let baseline_hash = session.campaign_state_hash();
+        let local_entity_index = session.state.entity_index;
+        let local_player_index = session
+            .shared_spells()
+            .players
+            .iter()
+            .position(|player| player.entity_index == local_entity_index)
+            .expect("local shared player");
+        let remote_player_index = session
+            .shared_spells()
+            .players
+            .iter()
+            .enumerate()
+            .find(|(_, player)| player.entity_index != local_entity_index)
+            .map(|(index, _)| index)
+            .expect("remote shared player");
+        let remote_entity_index = session.shared_spells().players[remote_player_index].entity_index;
+
+        // Let the real group-8 source constructor reveal its authored row
+        // position, then reset before the acquisition run.
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source_155_position = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 155)
+            .expect("authored row 155 materialized")
+            .position;
+        assert!(
+            session
+                .economy()
+                .spell_pickups()
+                .iter()
+                .any(|source| source.authored_index == 156)
+        );
+        session.reset();
+
+        let configure_players = |session: &mut Level2ResetSession,
+                                 local_position: Position,
+                                 remote_position: Position,
+                                 remote_model: u8,
+                                 remote_life: i32,
+                                 full_hand: bool| {
+            for entity in &mut session.entities {
+                if entity.class == 3
+                    && entity.index != local_entity_index
+                    && entity.index != remote_entity_index
+                {
+                    entity.active = false;
+                    entity.record[2] = 0;
+                    entity.next_relation = None;
+                    entity.record[4..8].fill(0);
+                }
+            }
+            let local = &mut session.entities[usize::from(local_entity_index)];
+            local.active = true;
+            local.class = 3;
+            local.model = 0;
+            local.life = 100;
+            local.position = local_position;
+            local.record[2] = 1;
+            local.record[67] = 3;
+            local.record[68] = 0;
+            local.record[12..16].copy_from_slice(&100_i32.to_le_bytes());
+            local.record[80..86].copy_from_slice(&[
+                local_position.x.to_le_bytes()[0],
+                local_position.x.to_le_bytes()[1],
+                local_position.y.to_le_bytes()[0],
+                local_position.y.to_le_bytes()[1],
+                local_position.z.to_le_bytes()[0],
+                local_position.z.to_le_bytes()[1],
+            ]);
+            local.next_relation = None;
+            local.record[4..8].fill(0);
+
+            let remote = &mut session.entities[usize::from(remote_entity_index)];
+            remote.active = true;
+            remote.class = 3;
+            remote.model = remote_model;
+            remote.life = remote_life;
+            remote.position = remote_position;
+            remote.record[2] = 1;
+            remote.record[67] = 3;
+            remote.record[68] = remote_model;
+            remote.record[12..16].copy_from_slice(&remote_life.to_le_bytes());
+            remote.record[80..86].copy_from_slice(&[
+                remote_position.x.to_le_bytes()[0],
+                remote_position.x.to_le_bytes()[1],
+                remote_position.y.to_le_bytes()[0],
+                remote_position.y.to_le_bytes()[1],
+                remote_position.z.to_le_bytes()[0],
+                remote_position.z.to_le_bytes()[1],
+            ]);
+            // The source head is remote even though storage keeps local
+            // player 0 first.
+            remote.next_relation = Some(local_entity_index);
+            remote.record[4..8].copy_from_slice(&(u32::from(local_entity_index) + 1).to_le_bytes());
+            session.state.position = local_position;
+
+            if full_hand {
+                let player = &mut session.shared_spells.players[remote_player_index];
+                player.left_spell_slot_raw = 4;
+                player.right_spell_slot_raw = 5;
+                player.record[554..556].copy_from_slice(&4_i16.to_le_bytes());
+                player.record[556..558].copy_from_slice(&5_i16.to_le_bytes());
+            }
+        };
+
+        // The linked source order is [remote, local], while storage order is
+        // [local, remote]. Both overlap row 155, so only source-first remote
+        // may acquire it. Existing full-hand SetSpell behavior is exercised.
+        configure_players(
+            &mut session,
+            source_155_position,
+            source_155_position,
+            0,
+            100,
+            true,
+        );
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+        let mut positive = None;
+        for _ in 0..4 {
+            session.state.position = source_155_position;
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            positive = session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot,
+                        family: 6,
+                        result: Some(outcome),
+                        ..
+                    } => Some((*source_slot, *outcome)),
+                    _ => None,
+                });
+            if positive.is_some() {
+                break;
+            }
+        }
+        let (source_slot, outcome) = positive.expect("ordinary route acquires authored row 155");
+        assert_eq!(outcome.parent_entity_index, remote_entity_index);
+        assert_eq!(outcome.hand, crate::spell_activation::SpellHand::Left);
+        assert_eq!(
+            session.shared_spells().players[local_player_index].enabled_spell_holders[6],
+            0
+        );
+        assert_eq!(
+            session.shared_spells().players[remote_player_index].enabled_spell_holders[6],
+            source_slot
+        );
+        let source = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|source| source.index == source_slot)
+            .expect("live authored row 155 source");
+        assert_ne!(source.control_flags & 1, 0);
+        assert_eq!(
+            source.record_bytes()[44..46],
+            remote_entity_index.to_le_bytes()
+        );
+        assert_eq!(
+            session.shared_spells().players[remote_player_index].right_spell_slot_raw,
+            5
+        );
+        assert!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2SharedSpellEvent::SpellAcquired {
+                        source_slot: observed,
+                        player_entity_index,
+                        family: 6,
+                        ..
+                    } if *observed == source_slot && *player_entity_index == remote_entity_index
+                ))
+        );
+        assert!(
+            session
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    FlightEvent::PrepareSound {
+                        entity_index,
+                        player_index: -1,
+                        sound_id: 18,
+                        ..
+                    } if *entity_index == remote_entity_index
+                ))
+        );
+        assert!(
+            session
+                .economy()
+                .spell_pickups()
+                .iter()
+                .any(|source| source.authored_index == 155)
+        );
+        assert!(
+            session
+                .economy()
+                .spell_pickups()
+                .iter()
+                .any(|source| source.authored_index == 156)
+        );
+        let stepped_hash = session.campaign_state_hash();
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        configure_players(
+            &mut session,
+            source_155_position,
+            source_155_position,
+            0,
+            100,
+            true,
+        );
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+        let mut replay = None;
+        for _ in 0..4 {
+            session.state.position = source_155_position;
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            replay = session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot,
+                        family: 6,
+                        result: Some(outcome),
+                        ..
+                    } => Some((*source_slot, *outcome)),
+                    _ => None,
+                });
+            if replay.is_some() {
+                break;
+            }
+        }
+        assert_eq!(replay, Some((source_slot, outcome)));
+        assert_eq!(session.campaign_state_hash(), stepped_hash);
+
+        for (remote_model, remote_life) in [(1_u8, 100_i32), (0, -1)] {
+            session.reset();
+            configure_players(
+                &mut session,
+                Position {
+                    x: source_155_position.x.wrapping_add(0x2000),
+                    ..source_155_position
+                },
+                source_155_position,
+                remote_model,
+                remote_life,
+                false,
+            );
+            session
+                .set_level2_selected_objective_stage_state(2)
+                .expect("source objective completion sentinel");
+            for _ in 0..4 {
+                session.step_outer_turn(PlayerCommand::default(), 0);
+            }
+            assert!(session.dispatch_events().iter().all(|event| {
+                !matches!(
+                    event,
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 6,
+                        result: Some(_),
+                        ..
+                    }
+                )
+            }));
+            assert!(
+                session
+                    .shared_spells()
+                    .players
+                    .iter()
+                    .all(|player| player.enabled_spell_holders[6] == 0)
+            );
+        }
+
+        // Existing duplicate/no-overlap gates remain nonmutating; this test
+        // only proves the source-order route does not bypass them.
+        session.reset();
+        let source_position = session.shared_spells().pickups()[0].position;
+        for player_index in 0..session.shared_spells().players.len() {
+            session.shared_spells_mut().players[player_index].enabled_spell_holders[12] = 999;
+            session.shared_spells_mut().players[player_index].record[268 + 12 * 2..270 + 12 * 2]
+                .copy_from_slice(&999_u16.to_le_bytes());
+            session.shared_spells_mut().player_entities[player_index].active = true;
+            session.shared_spells_mut().player_entities[player_index].model = 0;
+            session.shared_spells_mut().player_entities[player_index].life = 1;
+            session.shared_spells_mut().player_entities[player_index].position = source_position;
+        }
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        let before_duplicate_players = session.shared_spells().players.clone();
+        let before_duplicate_states = session.shared_spells().acquisitions.clone();
+        let before_duplicate_action = session.shared_spells().pickups()[0].action;
+        assert!(
+            session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(12, local_entity_index, source_position)
+                .expect("duplicate source gate")
+                .is_none()
+        );
+        assert_eq!(session.shared_spells().players, before_duplicate_players);
+        assert_eq!(
+            session.shared_spells().acquisitions,
+            before_duplicate_states
+        );
+        assert_eq!(
+            session.shared_spells().pickups()[0].action,
+            before_duplicate_action
+        );
+        assert!(session.shared_spells().pickup_events().is_empty());
+
+        session.shared_spells_mut().reset();
+        let far_position = Position {
+            x: source_position.x.wrapping_add(0x4000),
+            ..source_position
+        };
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        let before_no_overlap_players = session.shared_spells().players.clone();
+        let before_no_overlap_states = session.shared_spells().acquisitions.clone();
+        let before_no_overlap_action = session.shared_spells().pickups()[0].action;
+        assert!(
+            session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(12, local_entity_index, far_position)
+                .expect("no-overlap source gate")
+                .is_none()
+        );
+        assert_eq!(session.shared_spells().players, before_no_overlap_players);
+        assert_eq!(
+            session.shared_spells().acquisitions,
+            before_no_overlap_states
+        );
+        assert_eq!(
+            session.shared_spells().pickups()[0].action,
+            before_no_overlap_action
+        );
+        assert!(session.shared_spells().pickup_events().is_empty());
+
+        // A full source arena rejects authored construction without leaving a
+        // partial row or holder relation behind.
+        session.reset();
+        session.economy_mut().free_slots.clear();
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.economy().spell_pickups().is_empty());
+        assert!(session.shared_spells().authored_pickup_slots().is_empty());
+        assert!(
+            session
+                .shared_spells()
+                .players
+                .iter()
+                .all(|player| player.enabled_spell_holders[6] == 0)
+        );
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -45816,6 +46348,17 @@ mod tests {
                 session.shared_spells_mut().players[0].enabled_spell_holders[12] = 999;
                 session.shared_spells_mut().players[0].record[268 + 12 * 2..270 + 12 * 2]
                     .copy_from_slice(&999_u16.to_le_bytes());
+                let remote_entity = &mut session.entities[112];
+                remote_entity.active = true;
+                remote_entity.model = 0;
+                remote_entity.life = 1;
+                remote_entity.position = source_position;
+                remote_entity.record[2] = 1;
+                remote_entity.record[68] = 0;
+                remote_entity.record[12..16].copy_from_slice(&1_i32.to_le_bytes());
+                remote_entity.record[80..82].copy_from_slice(&source_position.x.to_le_bytes());
+                remote_entity.record[82..84].copy_from_slice(&source_position.y.to_le_bytes());
+                remote_entity.record[84..86].copy_from_slice(&source_position.z.to_le_bytes());
                 let shared = session.shared_spells_mut();
                 let remote = &mut shared.player_entities[1];
                 remote.active = true;
