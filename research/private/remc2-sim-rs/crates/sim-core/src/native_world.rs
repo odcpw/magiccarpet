@@ -7578,6 +7578,10 @@ pub struct Level2EconomyState {
     slot_rng: BTreeMap<u16, u16>,
     baseline_global_rng: u32,
     global_rng: u32,
+    /// Source entity[0] is the transient `sub_605E0`/`RemoveCastleStage`
+    /// sentinel. Its rand_0x14 stream is independent of the Castle root.
+    baseline_sentinel_rng: u16,
+    sentinel_rng: u16,
     baseline_source_rng: BTreeMap<u16, u16>,
     source_rng: BTreeMap<u16, u16>,
     baseline_source_owner: BTreeMap<u16, u16>,
@@ -7777,6 +7781,10 @@ impl Level2EconomyState {
             level2_owner_max_mana_projection(&baseline_owner_max_mana, &owner_mana_rows);
         let (owner_mana_aggregate, owner_mana_global) =
             level2_owner_mana_projection(&owner_mana_rows);
+        let sentinel_rng = entities
+            .iter()
+            .find(|entity| entity.index == 0)
+            .map_or(0, |entity| entity.entity_rng);
         let raw_map_entries =
             raw_source_map_chain_entries(&terrain.planes().entity_indices, |source_entity_index| {
                 entities
@@ -7832,6 +7840,8 @@ impl Level2EconomyState {
             slot_rng,
             baseline_global_rng: global_rng,
             global_rng,
+            baseline_sentinel_rng: sentinel_rng,
+            sentinel_rng,
             baseline_source_rng: BTreeMap::new(),
             source_rng: BTreeMap::new(),
             baseline_source_owner: source_owner.clone(),
@@ -14825,22 +14835,19 @@ impl Level2EconomyState {
                             snapshot.anchor_position.y.wrapping_add(128).to_be_bytes()[0];
                         let start_x = center_x.wrapping_sub(footprint.width / 2);
                         let start_y = center_y.wrapping_sub(footprint.height / 2);
-                        let source_rng = self
-                            .source_rng
-                            .get(&snapshot.source_entity_index)
-                            .copied()
-                            .unwrap_or_else(|| self.new_event_rng(snapshot.source_entity_index));
-                        let final_source_rng = remove_castle_stage(
+                        // `sub_605E0` repurposes entity[0] as the stage-removal
+                        // sentinel. `RemoveCastleStage_385C0` advances that
+                        // row's rand_0x14; the Castle root RNG was consumed
+                        // only by the preceding `sub_5FD00` overflow path.
+                        self.sentinel_rng = remove_castle_stage(
                             &mut self.terrain.planes,
                             start_x,
                             start_y,
                             &footprint,
                             self.terrain.map_type,
                             &mut self.terrain.terrain_rng,
-                            source_rng,
+                            self.sentinel_rng,
                         );
-                        self.source_rng
-                            .insert(snapshot.source_entity_index, final_source_rng);
                     }
                 }
                 // `sub_613D0` retires only the old controller chain.  The
@@ -15629,6 +15636,7 @@ impl Level2EconomyState {
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(self.terrain.deterministic_hash().to_le_bytes());
         hasher.update(self.global_rng.to_le_bytes());
+        hasher.update(self.sentinel_rng.to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_castle_entity_index.to_le_bytes());
         hasher.update([self.player_castle_stage, self.player_castle_aux_flags]);
@@ -16569,6 +16577,7 @@ impl Level2EconomyState {
         self.slot_generations = self.baseline_slot_generations.clone();
         self.slot_rng = self.baseline_slot_rng.clone();
         self.global_rng = self.baseline_global_rng;
+        self.sentinel_rng = self.baseline_sentinel_rng;
         self.source_rng = self.baseline_source_rng.clone();
         self.source_owner = self.baseline_source_owner.clone();
         self.owner_class = self.baseline_owner_class.clone();
@@ -33925,16 +33934,12 @@ mod tests {
     }
 
     #[test]
-    fn level_two_castle_stage_removal_uses_old_tab_and_live_source_rng() {
+    fn level_two_castle_stage_removal_uses_old_tab_and_sentinel_rng() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
             .level2_reset_session()
             .expect("stage removal session");
-        let castle_slot = session
-            .economy_mut()
-            .build_castle(Position::default(), 111)
-            .expect("stage removal Castle");
         let mut stage_two_payload = vec![0xff; 21 * 21 * 2];
         stage_two_payload[..2].copy_from_slice(&[0, 21]);
         let footprint = CastleBuildFootprint::from_owner_cells(2, 21, 21, &stage_two_payload)
@@ -33944,31 +33949,68 @@ mod tests {
                 .economy_mut()
                 .set_castle_stage_footprint(2, footprint)
         );
+        session.reset();
+        let baseline_hash = session.economy().reset_hash();
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("stage removal Castle");
         let source_seed = session
             .economy()
             .source_rng
             .get(&castle_slot)
             .copied()
             .expect("live Castle source RNG");
+        let sentinel_seed = session.economy().sentinel_rng;
         {
+            session.terrain.planes.ground_heights[terrain_index(246, 246)] = 100;
             let economy = session.economy_mut();
-            economy.terrain.planes.ground_heights[terrain_index(246, 246)] = 100;
             let castle = economy.castle.as_mut().expect("stage removal Castle");
             castle.action = 6;
             castle.level = 2;
         }
-        assert!(session.economy_mut().step_castle_action(castle_slot));
+        session.select_level2_campaign_entry_stage();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Castle { source_slot, .. }
+                    if *source_slot == castle_slot
+            )
+        }));
         let source_after = session
             .economy()
             .source_rng
             .get(&castle_slot)
             .copied()
             .expect("updated Castle source RNG");
-        assert_ne!(source_after, source_seed);
+        assert_eq!(source_after, source_seed);
+        let first_sentinel_draw = level2_next_rng16(sentinel_seed);
+        let expected_sentinel = if first_sentinel_draw % 50 <= 20 {
+            first_sentinel_draw
+        } else {
+            level2_next_rng16(first_sentinel_draw)
+        };
+        let sentinel_after = session.economy().sentinel_rng;
+        assert_eq!(sentinel_after, expected_sentinel);
+        assert_ne!(sentinel_after, sentinel_seed);
+        let changed_hash = session.economy().reset_hash();
+        let mut sentinel_unchanged = session.economy().clone();
+        sentinel_unchanged.sentinel_rng = sentinel_seed;
+        assert_ne!(
+            changed_hash,
+            sentinel_unchanged.reset_hash(),
+            "stage-removal sentinel RNG is hash-bound"
+        );
+        assert_ne!(changed_hash, baseline_hash);
         assert_eq!(
             session.economy().castle().expect("downgraded Castle").level,
             1
         );
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+        assert_eq!(session.economy().sentinel_rng, sentinel_seed);
+        assert!(!session.economy().source_rng.contains_key(&castle_slot));
     }
 
     #[test]
