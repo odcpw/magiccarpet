@@ -33381,6 +33381,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(4, 33), (12, 97)]
         );
+        let mut expected_resident_slots = removal_residents
+            .iter()
+            .map(|resident| resident.source_entity_index)
+            .collect::<Vec<_>>();
+        expected_resident_slots.sort_unstable();
+        let dispatched_resident_slots = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::HouseResident,
+                    ..
+                } => Some(*source_slot),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(dispatched_resident_slots, expected_resident_slots);
         for resident in &removal_residents {
             assert!(
                 session
