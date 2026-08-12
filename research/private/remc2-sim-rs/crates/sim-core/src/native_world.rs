@@ -7394,6 +7394,23 @@ pub struct Level2AuthoredClass5Source {
     pub active: bool,
 }
 
+/// A resident constructed by an ordinary Level 2 House source callback.
+/// The row is owned by the shared Level 2 arena, preserving source-slot,
+/// owner, parent, map, and reset identity with the other dynamic families.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2HouseResidentSource {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub parent_house_entity_index: u16,
+    pub owner_entity_index: u16,
+    pub attacker_entity_index: u16,
+    pub position: Position,
+    pub model: u8,
+    pub action: u8,
+    pub phase: u8,
+    pub active: bool,
+}
+
 /// The first-pulse class-10/model-74 effect emitted by `sub_6CD20` for
 /// Beyond Sight.  The source creates it through class-9/subtype-25, then
 /// rewrites the class/model bytes to 10/74 and binds the holder/parent,
@@ -7622,6 +7639,8 @@ pub struct Level2EconomyState {
     authored_class14: Vec<Level2AuthoredClass14Source>,
     baseline_authored_class5: Vec<Level2AuthoredClass5Source>,
     authored_class5: Vec<Level2AuthoredClass5Source>,
+    baseline_house_residents: Vec<Level2HouseResidentSource>,
+    house_residents: Vec<Level2HouseResidentSource>,
     baseline_class5_model3_constructor_phase: u8,
     class5_model3_constructor_phase: u8,
     baseline_class5_model9_constructor_phase: u8,
@@ -7874,6 +7893,8 @@ impl Level2EconomyState {
             authored_class14: Vec::new(),
             baseline_authored_class5: Vec::new(),
             authored_class5: Vec::new(),
+            baseline_house_residents: Vec::new(),
+            house_residents: Vec::new(),
             baseline_class5_model3_constructor_phase: 0,
             class5_model3_constructor_phase: 0,
             baseline_class5_model9_constructor_phase: 0,
@@ -9937,6 +9958,110 @@ impl Level2EconomyState {
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_class5.push(source);
         Some(source)
+    }
+
+    fn allocate_house_resident(
+        &mut self,
+        parent_house_entity_index: u16,
+        owner_entity_index: u16,
+        request: HouseResidentRequest,
+    ) -> Option<u16> {
+        if !matches!(
+            (request.model, request.action),
+            (4, 33) | (12, 97) | (13, 105) | (14, 113)
+        ) {
+            return None;
+        }
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: request.position.x,
+                y: request.position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2HouseResidentSource {
+            source_entity_index,
+            entity_rng,
+            parent_house_entity_index,
+            owner_entity_index,
+            attacker_entity_index: request.attacker_entity_index,
+            position: request.position,
+            model: request.model,
+            action: request.action,
+            phase: source_entity_index as u8,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.source_owner
+            .insert(source_entity_index, owner_entity_index);
+        self.house_residents.push(source);
+        Some(source_entity_index)
+    }
+
+    fn allocate_house_residents_atomic(
+        &mut self,
+        requests: &[(u16, u16, HouseResidentRequest)],
+    ) -> Option<Vec<u16>> {
+        let mut staged = self.clone();
+        let mut source_slots = Vec::with_capacity(requests.len());
+        for &(parent_house_entity_index, owner_entity_index, request) in requests {
+            let source_entity_index = staged.allocate_house_resident(
+                parent_house_entity_index,
+                owner_entity_index,
+                request,
+            )?;
+            source_slots.push(source_entity_index);
+        }
+        *self = staged;
+        Some(source_slots)
+    }
+
+    fn step_house_resident_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .house_residents
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.phase = source.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    #[must_use]
+    pub fn house_residents(&self) -> &[Level2HouseResidentSource] {
+        &self.house_residents
+    }
+
+    fn set_house_owner_relation(&mut self, source_slot: u16, owner_entity_index: u16) {
+        self.source_owner.insert(source_slot, owner_entity_index);
+    }
+
+    fn disable_house_source_slot(&mut self, source_slot: u16) -> Result<()> {
+        self.source_owner.insert(source_slot, 0);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: false,
+                x: 0,
+                y: 0,
+            })
+            .map_err(NativeWorldError::new)
     }
 
     /// Advance one authored class-5 root through the live source cursor.
@@ -12045,6 +12170,12 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredClass5,
+            );
+        }
+        for source in self.house_residents.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::HouseResident,
             );
         }
         for effect in self
@@ -15423,6 +15554,16 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_house_residents = self
+            .house_residents
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.house_residents.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_house_residents {
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_beyond_sight_effects = self
             .beyond_sight_effects
             .iter()
@@ -16174,6 +16315,23 @@ impl Level2EconomyState {
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
         }
+        hasher.update(b"level2-house-resident-v1");
+        for source in &self.house_residents {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.parent_house_entity_index.to_le_bytes());
+            hasher.update(source.owner_entity_index.to_le_bytes());
+            hasher.update(source.attacker_entity_index.to_le_bytes());
+            hasher.update([
+                source.model,
+                source.action,
+                source.phase,
+                u8::from(source.active),
+            ]);
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+        }
         for effect in &self.beyond_sight_effects {
             hasher.update(effect.source_entity_index.to_le_bytes());
             hasher.update(effect.entity_rng.to_le_bytes());
@@ -16443,6 +16601,7 @@ impl Level2EconomyState {
         self.class5_model4_constructor_phase = self.baseline_class5_model4_constructor_phase;
         self.class5_model9_constructor_phase = self.baseline_class5_model9_constructor_phase;
         self.class5_model14_constructor_phase = self.baseline_class5_model14_constructor_phase;
+        self.house_residents = self.baseline_house_residents.clone();
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
         self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
         self.carriers = self.baseline_carriers.clone();
@@ -19135,7 +19294,11 @@ impl Level2OrdinaryResetSession {
         self.houses.step_source_slot(source_slot, &self.terrain)
     }
 
-    fn apply_house_terrain_events(&mut self, events: &[HouseStepEvent]) -> Result<()> {
+    fn apply_house_terrain_events(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        events: &[HouseStepEvent],
+    ) -> Result<()> {
         for event in events {
             match *event {
                 HouseStepEvent::ConstructionPass {
@@ -19175,6 +19338,7 @@ impl Level2OrdinaryResetSession {
                 }
                 HouseStepEvent::RemoveFootprint {
                     entity_index,
+                    attacker_entity_index,
                     position,
                     building_index,
                     occupants,
@@ -19205,6 +19369,35 @@ impl Level2OrdinaryResetSession {
                             footprint,
                         )
                         .map_err(NativeWorldError::new)?;
+                    let owner_entity_index = self
+                        .houses
+                        .houses()
+                        .iter()
+                        .find(|house| house.entity_index == entity_index)
+                        .map_or(0, |house| house.owner_entity_index);
+                    let requests = outcome
+                        .residents
+                        .iter()
+                        .map(|resident| {
+                            (
+                                entity_index,
+                                owner_entity_index,
+                                HouseResidentRequest {
+                                    position: resident.position,
+                                    model: resident.model,
+                                    action: resident.action,
+                                    attacker_entity_index,
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if !requests.is_empty()
+                        && economy.allocate_house_residents_atomic(&requests).is_none()
+                    {
+                        return Err(NativeWorldError::new(format!(
+                            "Level 2 House {entity_index} resident allocation failed"
+                        )));
+                    }
                     self.houses
                         .commit_removal_state(
                             entity_index,
@@ -19212,11 +19405,46 @@ impl Level2OrdinaryResetSession {
                             outcome.final_occupants,
                         )
                         .map_err(NativeWorldError::new)?;
+                    economy.disable_house_source_slot(entity_index)?;
                 }
-                HouseStepEvent::Damaged { .. }
-                | HouseStepEvent::DestructionStarted { .. }
-                | HouseStepEvent::ResidentRequested { .. }
-                | HouseStepEvent::Possessed { .. } => {}
+                HouseStepEvent::ResidentRequested {
+                    entity_index,
+                    attacker_entity_index,
+                    position,
+                    model,
+                    action,
+                } => {
+                    let owner_entity_index = self
+                        .houses
+                        .houses()
+                        .iter()
+                        .find(|house| house.entity_index == entity_index)
+                        .map_or(0, |house| house.owner_entity_index);
+                    let request = HouseResidentRequest {
+                        position,
+                        model,
+                        action,
+                        attacker_entity_index,
+                    };
+                    if economy
+                        .allocate_house_residents_atomic(&[(
+                            entity_index,
+                            owner_entity_index,
+                            request,
+                        )])
+                        .is_none()
+                    {
+                        return Err(NativeWorldError::new(format!(
+                            "Level 2 House {entity_index} resident allocation failed"
+                        )));
+                    }
+                }
+                HouseStepEvent::Possessed {
+                    entity_index,
+                    owner_entity_index,
+                    ..
+                } => economy.set_house_owner_relation(entity_index, owner_entity_index),
+                HouseStepEvent::Damaged { .. } | HouseStepEvent::DestructionStarted { .. } => {}
             }
         }
         Ok(())
@@ -19248,6 +19476,17 @@ impl Level2OrdinaryResetSession {
     ) -> Result<()> {
         self.houses
             .inject_damage(source_slot, damage, attacker)
+            .map_err(NativeWorldError::new)
+    }
+
+    pub fn submit_house_possession(
+        &mut self,
+        source_slot: u16,
+        owner_entity_index: u16,
+        payload: u32,
+    ) -> Result<()> {
+        self.houses
+            .submit_possession(source_slot, owner_entity_index, payload)
             .map_err(NativeWorldError::new)
     }
 
@@ -19730,6 +19969,7 @@ pub enum Level2DynamicArenaKind {
     Model76TailSpawn,
     AuthoredClass14,
     AuthoredClass5,
+    HouseResident,
     AuthoredSwitchProducer,
     AuthoredModel32,
     AuthoredModel59,
@@ -19870,6 +20110,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::AuthoredClass5 => 30,
+        Level2DynamicArenaKind::HouseResident => 35,
         Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
         Level2DynamicArenaKind::AuthoredModel32 => 29,
         Level2DynamicArenaKind::AuthoredModel59 => 28,
@@ -23344,17 +23585,34 @@ impl Level2ResetSession {
                     }),
                 },
                 2 => {
+                    let ordinary_before = self.ordinary.clone();
+                    let economy_before = self.economy.clone();
+                    let terrain_before = self.terrain.clone();
                     let events = self.ordinary.step_house_action_52(source_slot);
-                    self.ordinary
-                        .apply_house_terrain_events(&events)
-                        .expect("qualified Level 2 House terrain event");
-                    self.dispatch_events.push(Level2DispatchEvent::House {
-                        pass,
-                        source_slot,
-                        events: events.into_boxed_slice(),
-                    });
-                    self.terrain = self.ordinary.terrain.clone();
-                    self.synchronize_level2_terrain();
+                    match self
+                        .ordinary
+                        .apply_house_terrain_events(&mut self.economy, &events)
+                    {
+                        Ok(()) => {
+                            self.dispatch_events.push(Level2DispatchEvent::House {
+                                pass,
+                                source_slot,
+                                events: events.into_boxed_slice(),
+                            });
+                            self.terrain = self.ordinary.terrain.clone();
+                            self.synchronize_level2_terrain();
+                        }
+                        Err(error) => {
+                            self.ordinary = ordinary_before;
+                            self.economy = economy_before;
+                            self.terrain = terrain_before;
+                            self.dispatch_events.push(Level2DispatchEvent::Error {
+                                pass,
+                                source_slot,
+                                message: format!("Level 2 House sink failed: {error}"),
+                            });
+                        }
+                    }
                 }
                 3 => {
                     let effects = self.ordinary.step_villager_action_105(source_slot);
@@ -24361,6 +24619,9 @@ impl Level2ResetSession {
                     });
                 self.economy
                     .step_authored_class5_slot_with_target(source_slot, target)
+            }
+            Level2DynamicArenaKind::HouseResident => {
+                self.economy.step_house_resident_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredSwitchProducer => {
                 self.step_level2_authored_switch_producer(pass, source_slot)
@@ -32924,12 +33185,168 @@ mod tests {
                 .count(),
             session.economy().live_arena_slots(),
         );
-        let house = session.ordinary().houses()[0];
+        let house = session
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|house| house.parameter.produces_villagers())
+            .expect("qualified Level 2 resident-producing House");
         assert!(
             inspection
                 .level2_house_build_footprints
                 .contains_key(&house.building_index)
         );
+
+        // Possession is a source mailbox consumed by the same ordinary House
+        // visit.  Its owner relation is projected into the shared economy
+        // source-owner map, not a parallel test carrier.
+        let possession_owner = session.state.entity_index;
+        session
+            .ordinary_mut()
+            .submit_house_possession(house.entity_index, possession_owner, 1)
+            .expect("qualified House possession mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::House { events, .. }
+                    if events.iter().any(|event| matches!(
+                        event,
+                        HouseStepEvent::Possessed {
+                            entity_index,
+                            owner_entity_index,
+                            payload: 1,
+                        } if *entity_index == house.entity_index
+                            && *owner_entity_index == possession_owner
+                    ))
+            )
+        }));
+        assert_eq!(
+            session.economy().source_owner(house.entity_index),
+            possession_owner
+        );
+        session.reset();
+        assert_eq!(session.economy().source_owner(house.entity_index), 0);
+
+        // The qualified owner row starts with two occupants. The existing
+        // resident-entry operation supplies the third occupant before the
+        // ordinary House source visit; no House row is rewritten here.
+        assert_eq!(house.occupants, 2);
+        assert_eq!(
+            session
+                .ordinary_mut()
+                .houses
+                .try_enter_resident(house.entity_index),
+            HouseResidentEntry::Entered
+        );
+        session
+            .ordinary_mut()
+            .inject_house_damage(house.entity_index, 1, 111)
+            .expect("qualified House resident damage mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::House { events, .. }
+                    if events.iter().any(|event| matches!(
+                        event,
+                        HouseStepEvent::ResidentRequested {
+                            entity_index,
+                            model: 4,
+                            action: 33,
+                            ..
+                        } if *entity_index == house.entity_index
+                    ))
+            )
+        }));
+        let resident = session
+            .economy()
+            .house_residents()
+            .iter()
+            .find(|resident| resident.parent_house_entity_index == house.entity_index)
+            .copied()
+            .expect("resident constructor reaches shared Level 2 arena");
+        assert_eq!((resident.model, resident.action), (4, 33));
+        assert_eq!(
+            session.economy().source_owner(resident.source_entity_index),
+            resident.owner_entity_index
+        );
+        assert!(
+            session
+                .economy()
+                .map_chains()
+                .is_linked(resident.source_entity_index)
+        );
+        session.reset();
+
+        // Exhaustion rejects action-53's multi-resident transaction without
+        // committing House state, arena allocation, RNG, or map surgery.
+        session
+            .ordinary_mut()
+            .inject_house_damage(house.entity_index, house.life.wrapping_add(1), 111)
+            .expect("exhaustion House damage mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let failed_house = session
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .expect("failed House source row");
+        session.economy_mut().free_slots.clear();
+        let failed_terrain_hash = session.terrain_hash();
+        let failed_map = session.economy().map_chains().linked_entity_indices();
+        let failed_source_rng = session.economy().source_rng.clone();
+        let failed_global_rng = session.economy().global_rng;
+        let failed_live_arena = session.economy().live_arena_slots();
+        let failed_house_owner = session.economy().source_owner(house.entity_index);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+            event,
+            Level2DispatchEvent::Error { source_slot, .. }
+                if *source_slot == house.entity_index
+            )
+        }));
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::House { source_slot, .. }
+                    if *source_slot == house.entity_index
+            )
+        }));
+        assert_eq!(
+            session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|candidate| candidate.entity_index == house.entity_index)
+                .copied(),
+            Some(failed_house)
+        );
+        assert_eq!(session.economy().house_residents().len(), 0);
+        assert_eq!(session.terrain_hash(), failed_terrain_hash);
+        assert_eq!(session.economy().source_rng, failed_source_rng);
+        assert_eq!(
+            session.economy().global_rng,
+            level2_next_rng32(failed_global_rng)
+        );
+        assert_eq!(session.economy().live_arena_slots(), failed_live_arena);
+        assert_eq!(
+            session.economy().source_owner(house.entity_index),
+            failed_house_owner
+        );
+        assert_eq!(
+            session.economy().map_chains().linked_entity_indices(),
+            failed_map
+        );
+        session.reset();
+        assert_eq!(session.terrain_hash(), baseline_terrain_hash);
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+
+        // Action-53 returns source-ordered resident constructors as part of
+        // the same ordinary removal transaction.
         session
             .ordinary_mut()
             .inject_house_damage(house.entity_index, house.life.wrapping_add(1), 111)
@@ -32950,6 +33367,28 @@ mod tests {
         assert_eq!(session.terrain, session.ordinary().terrain);
         assert_eq!(session.terrain, session.economy().terrain);
         assert_ne!(session.terrain_hash(), baseline_terrain_hash);
+        let removal_residents = session
+            .economy()
+            .house_residents()
+            .iter()
+            .filter(|resident| resident.parent_house_entity_index == house.entity_index)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            removal_residents
+                .iter()
+                .map(|resident| (resident.model, resident.action))
+                .collect::<Vec<_>>(),
+            vec![(4, 33), (12, 97)]
+        );
+        for resident in &removal_residents {
+            assert!(
+                session
+                    .economy()
+                    .map_chains()
+                    .is_linked(resident.source_entity_index)
+            );
+        }
         let replay_dispatch = session.dispatch_events().to_vec();
         let replay_terrain_hash = session.terrain_hash();
         let replay_campaign_hash = session.campaign_state_hash();
@@ -32961,6 +33400,7 @@ mod tests {
         assert_eq!(session.ordinary().reset_hash(), baseline_ordinary_hash);
         assert_eq!(session.economy().free_slots.len(), baseline_free_count);
         assert_eq!(session.economy().live_arena_slots(), baseline_arena_slots);
+        assert!(session.economy().house_residents().is_empty());
         assert_eq!(
             (
                 session
