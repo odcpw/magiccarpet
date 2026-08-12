@@ -34879,8 +34879,9 @@ mod tests {
             let castle = economy.castle.as_mut().expect("stage-two Castle");
             // Keep the real stage-two controller chain while selecting the
             // source maintenance tail that owns model-15 rows. This is only
-            // branch setup; maintenance and teardown remain on the ordinary
-            // Level 2 source cursor.
+            // branch setup; the production maintenance helper creates the
+            // rows here, while teardown alone uses the ordinary Level 2
+            // source cursor, which also observes terminal auxiliary cleanup.
             castle.level = 3;
             castle.action = 4;
             castle.timer = 0;
