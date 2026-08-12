@@ -7717,7 +7717,7 @@ pub struct Level2EconomyState {
     events: Vec<Level2EconomyEvent>,
 }
 
-mod level2_castle;
+mod level2_dynamic_economy;
 
 impl Level2EconomyState {
     #[cfg(test)]
