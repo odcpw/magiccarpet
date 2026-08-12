@@ -21,7 +21,7 @@ import sys
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verify_package import verify
+from verify_package import SCHEMA_V3, SCHEMA_V4, verify
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -195,6 +195,11 @@ L2_CORPUS_MANIFEST_EXCLUSIONS = {
 
 def _stable_l2_manifest(manifest: dict) -> dict:
     stable = copy.deepcopy(manifest)
+    # GOLDEN-CHANGE authorized by Bead comment 350: v4 adds only the
+    # source-exact collision-mask carrier. Compare all pre-existing fields
+    # against the preserved v3 captures without accepting a changed payload.
+    stable["schema"] = SCHEMA_V3
+    stable.pop("collision_masks", None)
     stable.pop("source", None)
     stable.pop("package_sha256", None)
     # Older exploratory captures copied the Level 1 reset seal. Fresh Level 2
@@ -209,6 +214,7 @@ def _stable_l2_manifest(manifest: dict) -> dict:
     for name, entry in stable.get("files", {}).items():
         if name.startswith("terrain") and name.endswith(".bin"):
             entry.pop("sha256", None)
+    stable.get("files", {}).pop("collision-masks.bin", None)
     return stable
 
 
@@ -219,7 +225,7 @@ def _assert_l2_corpus_matches(fresh: Path, preserved: Path) -> None:
     )
     if _stable_l2_manifest(fresh_manifest) != _stable_l2_manifest(preserved_manifest):
         raise AssertionError(f"Level 2 manifest differs from preserved corpus: {preserved}")
-    fresh_files = set(fresh_manifest["files"])
+    fresh_files = set(fresh_manifest["files"]) - {"collision-masks.bin"}
     preserved_files = set(preserved_manifest["files"])
     if fresh_files != preserved_files:
         raise AssertionError(
@@ -299,6 +305,11 @@ def test_deterministic_level_profiles() -> None:
             "internal": 1,
             "map_type": {"id": 0, "name": "Day"},
         }
+        assert level_two_manifest["schema"] == SCHEMA_V4
+        assert level_two_manifest["files"]["collision-masks.bin"]["bytes"] > 20
+        assert level_two_manifest["collision_masks"]["magic"] == "MCM1"
+        assert level_two_manifest["collision_masks"]["vga_resolution_selector"] == 1
+        assert level_two_manifest["collision_masks"]["selectors"]
         assert "reset_projection" not in level_two_manifest
 
         # Exercise the production verifier against both independent native
@@ -334,6 +345,65 @@ def test_deterministic_level_profiles() -> None:
             _refresh_package_hash(candidate)
 
         _expect_level2_rejected(level_two_a, tamper_active_entity_count)
+
+        def tamper_collision_mask_payload(candidate: Path) -> None:
+            path = candidate / "collision-masks.bin"
+            content = bytearray(path.read_bytes())
+            content[-1] ^= 1
+            path.write_bytes(content)
+            path.chmod(0o600)
+            _mutate_manifest(
+                candidate,
+                lambda manifest: manifest["files"]["collision-masks.bin"].update(
+                    {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                ),
+            )
+            _refresh_package_hash(candidate)
+
+        _expect_level2_rejected(level_two_a, tamper_collision_mask_payload)
+
+        def tamper_collision_mask_header(candidate: Path) -> None:
+            path = candidate / "collision-masks.bin"
+            content = bytearray(path.read_bytes())
+            content[8:10] = (2).to_bytes(2, "little")
+            path.write_bytes(content)
+            path.chmod(0o600)
+            _mutate_manifest(
+                candidate,
+                lambda manifest: manifest["files"]["collision-masks.bin"].update(
+                    {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                ),
+            )
+            _refresh_package_hash(candidate)
+
+        _expect_level2_rejected(level_two_a, tamper_collision_mask_header)
+
+        def tamper_collision_mask_extent(candidate: Path) -> None:
+            path = candidate / "collision-masks.bin"
+            content = bytearray(path.read_bytes())
+            content[28:32] = (6).to_bytes(4, "little")
+            path.write_bytes(content)
+            path.chmod(0o600)
+            _mutate_manifest(
+                candidate,
+                lambda manifest: manifest["files"]["collision-masks.bin"].update(
+                    {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                ),
+            )
+            _refresh_package_hash(candidate)
+
+        _expect_level2_rejected(level_two_a, tamper_collision_mask_extent)
+
+        def tamper_collision_mask_metadata(candidate: Path) -> None:
+            _mutate_manifest(
+                candidate,
+                lambda manifest: manifest["collision_masks"].update(
+                    {"vga_resolution_selector": 2}
+                ),
+            )
+            _refresh_package_hash(candidate)
+
+        _expect_level2_rejected(level_two_a, tamper_collision_mask_metadata)
 
         def tamper_binary_u32(candidate: Path, name: str, offset: int, value: int) -> None:
             path = candidate / name

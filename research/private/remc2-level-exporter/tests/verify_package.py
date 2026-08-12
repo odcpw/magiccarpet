@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict verifier for private mc2-owner-level-export/v1, v2, and v3 packages."""
+"""Strict verifier for private mc2-owner-level-export/v1 through v4 packages."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ import sys
 SCHEMA_V1 = "mc2-owner-level-export/v1"
 SCHEMA_V2 = "mc2-owner-level-export/v2"
 SCHEMA_V3 = "mc2-owner-level-export/v3"
-SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3}
+SCHEMA_V4 = "mc2-owner-level-export/v4"
+SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}
 STATE_SEQUENCE = (
     "remc2-regression-test/memimages/regressions/level1/"
     "sequence-002285FF-00356038.bin"
@@ -47,6 +48,9 @@ V3_FILES = V2_FILES | {
     "terrain-post-features.bin",
     "terrain-pre-features.bin",
 }
+V4_FILES = V3_FILES | {"collision-masks.bin"}
+MSPRD0_0_TAB_SHA256 = "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"
+MSPRD0_0_DAT_SHA256 = "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"
 V3_PACKAGE_SHA256 = "15f1ca196b1ebf227860f468e419732c1ba917d57de9097acc5e2f647bbfd835"
 V3_SOURCE_IDENTITY = {
     "upstream_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -680,6 +684,81 @@ def verify_reset_projection(
     }
 
 
+def verify_collision_masks(package: Path, manifest: dict) -> None:
+    metadata = manifest.get("collision_masks")
+    require(isinstance(metadata, dict), "Level 2 collision-mask metadata is missing")
+    assert metadata == {
+        "file": "collision-masks.bin",
+        "magic": "MCM1",
+        "version": 1,
+        "header_bytes": 20,
+        "record_header_bytes": 12,
+        "bank": "MSPRD0-0",
+        "vga_resolution_selector": 1,
+        "selector_source": "authored class-10/model-45 par1 selectors",
+        "pixel_encoding": "signed i16 little-endian",
+        "pixel_order": "row-major (y then x)",
+        "transparent_value": -1,
+        "source_files": metadata["source_files"],
+        "selectors": metadata["selectors"],
+    }
+    source_files = metadata["source_files"]
+    require(set(source_files) == {"tab", "dat"}, "collision-mask source file set differs")
+    for key, logical_path, expected_bytes, expected_hash in (
+        ("tab", "CD_Files/DATA/MSPRD0-0.TAB", 1572, MSPRD0_0_TAB_SHA256),
+        ("dat", "CD_Files/DATA/MSPRD0-0.DAT", 49202, MSPRD0_0_DAT_SHA256),
+    ):
+        entry = source_files[key]
+        assert entry == {
+            "logical_path": logical_path,
+            "bytes": expected_bytes,
+            "sha256": expected_hash,
+        }
+
+    content = (package / "collision-masks.bin").read_bytes()
+    require(len(content) >= 20, "collision-mask carrier header is truncated")
+    require(content[:4] == b"MCM1", "collision-mask carrier magic mismatch")
+    require(u16(content, 4) == 1, "collision-mask carrier version mismatch")
+    require(u16(content, 6) == 20, "collision-mask carrier header extent mismatch")
+    require(u16(content, 8) == 1, "collision-mask VGA selector mismatch")
+    require(u16(content, 10) == 0, "collision-mask header reserved field is non-zero")
+    selector_rows = metadata["selectors"]
+    require(selector_rows, "collision-mask carrier has no selectors")
+    count = u32(content, 12)
+    require(count == len(selector_rows), "collision-mask count disagrees with metadata")
+    require(u32(content, 16) == 12, "collision-mask record header extent mismatch")
+
+    cursor = 20
+    previous_selector = -1
+    parsed_rows = []
+    for index in range(count):
+        require(cursor + 12 <= len(content), "collision-mask record header is truncated")
+        selector = u16(content, cursor)
+        width = u16(content, cursor + 2)
+        height = u16(content, cursor + 4)
+        require(u16(content, cursor + 6) == 0, "collision-mask record reserved field is non-zero")
+        pixel_bytes = u32(content, cursor + 8)
+        require(selector > previous_selector, "collision-mask selectors are not strictly ordered")
+        require(width > 0 and height > 0, "collision-mask dimensions are empty")
+        expected_bytes = width * height * 2
+        require(pixel_bytes == expected_bytes, "collision-mask pixel extent mismatch")
+        payload_start = cursor + 12
+        payload_end = payload_start + pixel_bytes
+        require(payload_end <= len(content), "collision-mask payload is truncated")
+        payload = content[payload_start:payload_end]
+        parsed_rows.append({
+            "selector": selector,
+            "width": width,
+            "height": height,
+            "pixel_bytes": pixel_bytes,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        })
+        previous_selector = selector
+        cursor = payload_end
+    require(cursor == len(content), "collision-mask carrier has trailing bytes")
+    assert parsed_rows == selector_rows
+
+
 def verify_binary_structure(package: Path, manifest: dict) -> None:
     external_level = manifest["level"]["external"]
     authored = (package / "authored-level.bin").read_bytes()
@@ -727,13 +806,13 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
     players = verify_record_file(
         package / "players.bin",
         b"MCP1",
-        2 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3} else 1,
+        2 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4} else 1,
         8,
         manifest["record_sizes"]["player"],
     )
     player_record_size = manifest["record_sizes"]["player"]
     expected_player_size = (
-        573 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3} else 565
+        573 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4} else 565
     )
     assert player_record_size == expected_player_size
     for index in range(8):
@@ -744,7 +823,7 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             u16(players, offset + 4) < manifest["counts"]["entity_slots"],
             f"player slot {index} entity relation is out of range",
         )
-    if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
+    if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}:
         layout = manifest["record_layouts"]["player"]
         assert layout == {
             "index_offset": 0,
@@ -802,7 +881,7 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             "Level 2 runtime scalar divergences must be empty",
         )
         require(u32(runtime, 32) == 2, "Level 2 runtime music selector must be 2")
-    if external_level == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
+    if external_level == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}:
         verify_reset_projection(manifest, players, entities, runtime)
     elif external_level == 1:
         assert "reset_projection" not in manifest
@@ -1022,6 +1101,7 @@ def verify(
     if level["external"] == 1:
         assert level["internal"] == 0
         assert level["map_type"] == {"id": 1, "name": "Night"}
+        require(manifest["schema"] != SCHEMA_V4, "v4 collision-mask schema is Level 2-only")
     else:
         require(level == {
             "external": LEVEL2_PROFILE["external"],
@@ -1040,7 +1120,12 @@ def verify(
         f"active entity count differs for external level {level['external']}",
     )
     assert manifest["dimensions"]["terrain"] == [256, 256]
-    required_files = V3_FILES if manifest["schema"] == SCHEMA_V3 else V2_FILES
+    if manifest["schema"] == SCHEMA_V4:
+        required_files = V4_FILES
+    elif manifest["schema"] == SCHEMA_V3:
+        required_files = V3_FILES
+    else:
+        required_files = V2_FILES
     require(
         set(manifest["files"]) == required_files,
         f"manifest file set differs for schema {manifest['schema']}",
@@ -1063,6 +1148,9 @@ def verify(
             assert manifest["source"]["upstream_commit"] == (
                 "6806c7204d17220ecc0430759f784aea8ee2ddb2"
             )
+    if manifest["schema"] == SCHEMA_V4:
+        require(level["external"] == 2, "v4 collision-mask schema requires Level 2")
+        require("reset_projection" not in manifest, "Level 2 v4 must not carry reset projection")
     modified_hashes = {
         entry["path"]: entry["sha256"] for entry in manifest["source"]["modified_files"]
     }
@@ -1087,7 +1175,7 @@ def verify(
         assert identity == sorted(identity)
         aggregate = hashlib.sha256("".join(identity).encode()).hexdigest()
         assert aggregate == manifest["source"]["compiled_source_sha256"]
-        if level["external"] == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
+        if level["external"] == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}:
             verify_ambient_sequence(upstream_root, manifest)
 
     identity_rows = []
@@ -1116,6 +1204,8 @@ def verify(
     assert (package / "authored-level.bin").stat().st_size == 0x6604
     if manifest["schema"] == SCHEMA_V3 and level["external"] == 1:
         verify_feature_generation_input(package, manifest)
+    if manifest["schema"] == SCHEMA_V4:
+        verify_collision_masks(package, manifest)
     verify_binary_structure(package, manifest)
 
     raw_manifest = manifest_path.read_text(encoding="utf-8")

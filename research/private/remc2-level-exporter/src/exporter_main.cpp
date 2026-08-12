@@ -47,6 +47,8 @@ constexpr std::size_t kFeatureStartBytes = 16;
 constexpr std::size_t kFeatureAllocatorHeaderBytes = 32;
 constexpr std::size_t kFeatureAllocatorRelationCount = 1000;
 constexpr std::size_t kFeatureAllocatorTraceRecordBytes = 8;
+constexpr std::uint16_t kCollisionMaskHeaderBytes = 20;
+constexpr std::uint32_t kCollisionMaskRecordHeaderBytes = 12;
 constexpr std::uint32_t kFeatureStartGlobalRng = 0x0000BFCA;
 constexpr std::array<std::uint32_t, 7> kFeatureGlobalRngBarriers = {
     0x1B712AE9,
@@ -197,6 +199,12 @@ private:
 std::string sha256(const std::vector<std::uint8_t>& bytes) {
     Sha256 hash;
     hash.update(bytes.data(), bytes.size());
+    return hash.finish();
+}
+
+std::string sha256_pointer(const std::uint8_t* bytes, std::size_t size) {
+    Sha256 hash;
+    hash.update(bytes, size);
     return hash.finish();
 }
 
@@ -413,6 +421,108 @@ std::vector<std::uint16_t> building_selectors(
         }
     }
     return {selectors.begin(), selectors.end()};
+}
+
+struct CollisionMaskCapture {
+    Bytes bytes;
+    json metadata;
+};
+
+CollisionMaskCapture capture_collision_masks(
+    const fs::path& owner_root,
+    const std::vector<std::uint16_t>& selectors) {
+    if (x_WORD_180660_VGA_type_resolution != 1) {
+        throw std::runtime_error("MSPRD collision masks require VGA selector 1");
+    }
+    if (selectors.empty()) {
+        throw std::runtime_error("Level 2 has no authored model-45 collision selectors");
+    }
+    if (MSPRD00TAB_BEGIN_BUFFER == nullptr || MSPRD00TAB_END_BUFFER == nullptr ||
+        MSPRD00DAT_BEGIN_BUFFER == nullptr) {
+        throw std::runtime_error("MSPRD0-0 source buffers are unavailable");
+    }
+    const std::size_t table_count = static_cast<std::size_t>(
+        MSPRD00TAB_END_BUFFER - MSPRD00TAB_BEGIN_BUFFER);
+    const fs::path tab_path = owner_root / "CD_Files/DATA/MSPRD0-0.TAB";
+    const fs::path dat_path = owner_root / "CD_Files/DATA/MSPRD0-0.DAT";
+    if (!fs::is_regular_file(tab_path) || !fs::is_regular_file(dat_path)) {
+        throw std::runtime_error("MSPRD0-0 owner source files are unavailable");
+    }
+    const std::size_t tab_bytes = fs::file_size(tab_path);
+    const std::size_t dat_bytes = fs::file_size(dat_path);
+    if (tab_bytes != table_count * sizeof(bitmap_pos_struct2_t)) {
+        throw std::runtime_error("MSPRD0-0 loaded table disagrees with owner source extent");
+    }
+
+    CollisionMaskCapture result;
+    result.bytes.magic("MCM1");
+    result.bytes.u16(1);
+    result.bytes.u16(kCollisionMaskHeaderBytes);
+    result.bytes.u16(x_WORD_180660_VGA_type_resolution);
+    result.bytes.u16(0);
+    result.bytes.u32(static_cast<std::uint32_t>(selectors.size()));
+    result.bytes.u32(kCollisionMaskRecordHeaderBytes);
+
+    json selector_metadata = json::array();
+    for (const std::uint16_t selector : selectors) {
+        if (selector >= table_count) {
+            throw std::runtime_error("authored MSPRD selector is outside MSPRD0-0.TAB");
+        }
+        const bitmap_pos_struct2_t& record = MSPRD00TAB_BEGIN_BUFFER[selector];
+        if (record.width_4 == 0 || record.height_5 == 0) {
+            throw std::runtime_error("authored MSPRD selector has an empty collision mask");
+        }
+        const std::uint64_t pixel_bytes =
+            static_cast<std::uint64_t>(record.width_4) *
+            static_cast<std::uint64_t>(record.height_5) * 2;
+        const std::uint64_t data_end =
+            static_cast<std::uint64_t>(record.data_0) + pixel_bytes;
+        if (data_end > dat_bytes || pixel_bytes > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error("authored MSPRD selector exceeds MSPRD0-0.DAT");
+        }
+        const auto* pixels = MSPRD00DAT_BEGIN_BUFFER + record.data_0;
+        result.bytes.u16(selector);
+        result.bytes.u16(record.width_4);
+        result.bytes.u16(record.height_5);
+        result.bytes.u16(0);
+        result.bytes.u32(static_cast<std::uint32_t>(pixel_bytes));
+        result.bytes.raw(pixels, static_cast<std::size_t>(pixel_bytes));
+        selector_metadata.push_back({
+            {"selector", selector},
+            {"width", record.width_4},
+            {"height", record.height_5},
+            {"pixel_bytes", pixel_bytes},
+            {"sha256", sha256_pointer(pixels, static_cast<std::size_t>(pixel_bytes))}
+        });
+    }
+
+    result.metadata = {
+        {"file", "collision-masks.bin"},
+        {"magic", "MCM1"},
+        {"version", 1},
+        {"header_bytes", kCollisionMaskHeaderBytes},
+        {"record_header_bytes", kCollisionMaskRecordHeaderBytes},
+        {"bank", "MSPRD0-0"},
+        {"vga_resolution_selector", x_WORD_180660_VGA_type_resolution},
+        {"selector_source", "authored class-10/model-45 par1 selectors"},
+        {"pixel_encoding", "signed i16 little-endian"},
+        {"pixel_order", "row-major (y then x)"},
+        {"transparent_value", -1},
+        {"source_files", {
+            {"tab", {
+                {"logical_path", "CD_Files/DATA/MSPRD0-0.TAB"},
+                {"bytes", fs::file_size(tab_path)},
+                {"sha256", sha256_file(tab_path)}
+            }},
+            {"dat", {
+                {"logical_path", "CD_Files/DATA/MSPRD0-0.DAT"},
+                {"bytes", fs::file_size(dat_path)},
+                {"sha256", sha256_file(dat_path)}
+            }}
+        }},
+        {"selectors", selector_metadata}
+    };
+    return result;
 }
 
 Bytes capture_feature_construction_inputs(
@@ -1292,7 +1402,10 @@ Bytes serialize_authored_level(const Type_Level_2FECE& level) {
     return result;
 }
 
-json make_owner_sources(const fs::path& owner_root, const MapTypeProfile& map_profile) {
+json make_owner_sources(
+    const fs::path& owner_root,
+    const MapTypeProfile& map_profile,
+    bool include_collision_masks) {
     const std::string map_code(1, map_profile.asset_code);
     const std::string terrain_bank = "TMAPS" + std::to_string(map_profile.id) + "-0";
     const std::string medium_sprite = "MSPR" + map_code + "0-0";
@@ -1301,7 +1414,7 @@ json make_owner_sources(const fs::path& owner_root, const MapTypeProfile& map_pr
     const std::string high_web = "HWEB" + map_code + "0-0";
     const std::string palette = "PAL" + map_code + "-0";
     const std::string sky = "SKY" + map_code + "0-0";
-    const std::vector<std::string> candidates = {
+    std::vector<std::string> candidates = {
         "GAME/NETHERW/CLEVELS/LEVELS.DAT",
         "GAME/NETHERW/CLEVELS/LEVELS.TAB",
         "GAME/NETHERW/CDATA/" + terrain_bank + ".DAT",
@@ -1337,6 +1450,10 @@ json make_owner_sources(const fs::path& owner_root, const MapTypeProfile& map_pr
         "memimages/regressions/sequence-002285FF-002DC4E0.bin",
         "regression-config.json"
     };
+    if (include_collision_masks) {
+        candidates.push_back("CD_Files/DATA/MSPRD0-0.DAT");
+        candidates.push_back("CD_Files/DATA/MSPRD0-0.TAB");
+    }
     json result = json::array();
     for (const std::string& logical_name : candidates) {
         const fs::path path = owner_root / logical_name;
@@ -1612,6 +1729,10 @@ int run(const Arguments& arguments) {
     std::vector<std::uint16_t> feature_building_selectors;
     Bytes feature_construction_inputs =
         capture_feature_construction_inputs(authored, feature_building_selectors, level_one);
+    CollisionMaskCapture collision_masks;
+    if (!level_one) {
+        collision_masks = capture_collision_masks(owner_root, feature_building_selectors);
+    }
     const Type_Level_2FECE feature_expectation = authored;
     const auto feature_allocator_trace = level_one
         ? expected_feature_allocator_trace(feature_expectation)
@@ -1657,21 +1778,22 @@ int run(const Arguments& arguments) {
 
     fs::remove(runtime_config);
 
-    const std::array<std::pair<const char*, const Bytes*>, 13> files = {{
-        {"authored-level.bin", &authored_bytes},
-        {"entities-post-features.bin", &feature_entities},
-        {"entities.bin", &entities},
-        {"feature-allocator.bin", &feature_allocator},
-        {"feature-construction-inputs.bin", &feature_construction_inputs},
-        {"feature-end.bin", &feature_end},
-        {"feature-start.bin", &feature_start},
-        {"players.bin", &players},
-        {"presentation.bin", &presentation},
-        {"runtime.bin", &runtime},
-        {"terrain-post-features.bin", &terrain_post_features},
-        {"terrain-pre-features.bin", &terrain_pre_features},
-        {"terrain.bin", &terrain},
-    }};
+    std::vector<std::pair<const char*, const Bytes*>> files;
+    files.reserve(level_one ? 13 : 14);
+    files.emplace_back("authored-level.bin", &authored_bytes);
+    if (!level_one) files.emplace_back("collision-masks.bin", &collision_masks.bytes);
+    files.emplace_back("entities-post-features.bin", &feature_entities);
+    files.emplace_back("entities.bin", &entities);
+    files.emplace_back("feature-allocator.bin", &feature_allocator);
+    files.emplace_back("feature-construction-inputs.bin", &feature_construction_inputs);
+    files.emplace_back("feature-end.bin", &feature_end);
+    files.emplace_back("feature-start.bin", &feature_start);
+    files.emplace_back("players.bin", &players);
+    files.emplace_back("presentation.bin", &presentation);
+    files.emplace_back("runtime.bin", &runtime);
+    files.emplace_back("terrain-post-features.bin", &terrain_post_features);
+    files.emplace_back("terrain-pre-features.bin", &terrain_pre_features);
+    files.emplace_back("terrain.bin", &terrain);
     json file_manifest = json::object();
     std::string identity_input;
     for (const auto& [name, content] : files) {
@@ -1703,7 +1825,7 @@ int run(const Arguments& arguments) {
         x_WORD_180660_VGA_type_resolution == 1 ? medium_web_bank_name : high_web_bank_name;
 
     json manifest = {
-        {"schema", "mc2-owner-level-export/v3"},
+        {"schema", level_one ? "mc2-owner-level-export/v3" : "mc2-owner-level-export/v4"},
         {"byte_order", "little-endian"},
         {"level", {
             {"external", arguments.level.external},
@@ -2121,7 +2243,7 @@ int run(const Arguments& arguments) {
             {"modified_paths", json::parse(MC2_UPSTREAM_STATUS_JSON)},
             {"modified_files", json::parse(MC2_MODIFIED_FILE_HASHES_JSON)},
             {"compiled_files", json::parse(MC2_SOURCE_INVENTORY_JSON)},
-            {"owner_files", make_owner_sources(owner_root, map_profile)}
+            {"owner_files", make_owner_sources(owner_root, map_profile, !level_one)}
         }},
         {"reference", {
             {"terrain_frame0_sha256", level_one ? kExpectedTerrainSha256 : sha256(terrain.data)},
@@ -2218,6 +2340,7 @@ int run(const Arguments& arguments) {
         {"files", file_manifest},
         {"package_sha256", package_hash.finish()}
     };
+    if (!level_one) manifest["collision_masks"] = collision_masks.metadata;
     // The reset projection is a sealed Level 1 contract.  Do not copy its
     // Night-specific expected state into an open Level 2 package; Level 2 gets
     // its own reset seal only when that corpus is qualified.
