@@ -7408,12 +7408,6 @@ pub struct Level2HouseResidentSource {
     pub model: u8,
     pub action: u8,
     pub phase: u8,
-    /// Builder's `word_0x96`/post-build latch for the first constructor
-    /// transition.  The full action-97 roam/approach table remains a later
-    /// slice; this state prevents a successful source visit from allocating
-    /// the same House repeatedly.
-    pub builder_house_entity_index: u16,
-    pub builder_placement_latch: u8,
     pub active: bool,
 }
 
@@ -10003,8 +9997,6 @@ impl Level2EconomyState {
             model: request.model,
             action: request.action,
             phase: source_entity_index as u8,
-            builder_house_entity_index: 0,
-            builder_placement_latch: 0,
             active: true,
         };
         self.source_rng.insert(source_entity_index, entity_rng);
@@ -16334,10 +16326,8 @@ impl Level2EconomyState {
                 source.model,
                 source.action,
                 source.phase,
-                source.builder_placement_latch,
                 u8::from(source.active),
             ]);
-            hasher.update(source.builder_house_entity_index.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
@@ -24452,147 +24442,6 @@ impl Level2ResetSession {
         true
     }
 
-    /// Run the first source-backed Builder constructor transition for a
-    /// model-12/action-97 House resident. The resident came from the
-    /// ordinary House action-53 removal sink, so its parent row supplies the
-    /// already qualified Level 2 BLDGPRM parameter and BUILD selector. The
-    /// full action-97 roam/approach state machine remains explicitly outside
-    /// this slice.
-    fn step_level2_house_resident_builder(&mut self, source_slot: u16) -> bool {
-        let Some(resident) = self
-            .economy
-            .house_residents
-            .iter()
-            .find(|source| source.active && source.source_entity_index == source_slot)
-            .copied()
-        else {
-            return false;
-        };
-        if (resident.model, resident.action) != (12, 97) || resident.builder_placement_latch != 0 {
-            return self.economy.step_house_resident_slot(source_slot);
-        }
-
-        let Some(parent) = self
-            .ordinary
-            .houses
-            .houses()
-            .iter()
-            .find(|house| house.entity_index == resident.parent_house_entity_index)
-            .copied()
-        else {
-            return self.economy.step_house_resident_slot(source_slot);
-        };
-        // The parent was decoded through HouseParameter::level_two, and its
-        // BUILD selector is present in the qualified component table.  Do
-        // not invent a second BLDGPRM/footprint table for the constructor.
-        let Some(footprint) = self
-            .ordinary
-            .house_build_footprints
-            .get(&parent.building_index)
-        else {
-            return self.economy.step_house_resident_slot(source_slot);
-        };
-        let expected_cells = usize::from(footprint.width) * usize::from(footprint.height);
-        if expected_cells == 0 || footprint.cells().len() != expected_cells {
-            return self.economy.step_house_resident_slot(source_slot);
-        }
-        // `sub_104D0` rejects a material-zero site before NewEvent.  Keep the
-        // rejection side-effect free, including the source-global RNG.
-        if self.terrain.terrain_type(resident.position) == 0 {
-            return self.economy.step_house_resident_slot(source_slot);
-        }
-
-        let mut staged_economy = self.economy.clone();
-        let mut staged_ordinary = self.ordinary.clone();
-        let Some(house_slot) = staged_economy.allocate_slot() else {
-            return self.economy.step_house_resident_slot(source_slot);
-        };
-        let entity_rng = staged_economy.new_event_rng(house_slot);
-        if staged_economy
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: house_slot,
-                active: true,
-                x: resident.position.x,
-                y: resident.position.y,
-            })
-            .is_err()
-        {
-            return self.economy.step_house_resident_slot(source_slot);
-        }
-
-        // The existing imported row is the source-shaped constructor
-        // template.  Its parameter was validated against pinned Level2
-        // BLDGPRM; only NewEvent/BUILD-owned identity and lifecycle fields
-        // change here.
-        let mut constructor = parent;
-        constructor.entity_index = house_slot;
-        constructor.source_id = house_slot;
-        constructor.active = true;
-        constructor.control_flags = 0x0000_000d;
-        constructor.max_life = 30;
-        constructor.life = 0;
-        constructor.occupants = 0;
-        constructor.rng = entity_rng;
-        constructor.position = resident.position;
-        constructor.action = 0;
-        constructor.phase = house_slot as u8;
-        constructor.xtype = 0;
-        constructor.build_tail = 0;
-        constructor.owner_entity_index = resident.owner_entity_index;
-        constructor.pending_damage = 0;
-        constructor.pending_attacker = 0;
-        constructor.pending_possession_owner = 0;
-        constructor.pending_possession_payload = 0;
-
-        let mut initialized = constructor;
-        initialized.life = initialized.max_life;
-        if staged_ordinary
-            .houses
-            .insert_builder_house(constructor)
-            .and_then(|()| staged_ordinary.houses.initialize_builder_house(initialized))
-            .and_then(|()| {
-                staged_ordinary
-                    .houses
-                    .set_builder_house_action(house_slot, 51)
-            })
-            .is_err()
-        {
-            return self.economy.step_house_resident_slot(source_slot);
-        }
-
-        staged_economy.source_rng.insert(house_slot, entity_rng);
-        staged_economy
-            .source_owner
-            .insert(house_slot, resident.owner_entity_index);
-        let Some(staged_resident) = staged_economy
-            .house_residents
-            .iter_mut()
-            .find(|source| source.active && source.source_entity_index == source_slot)
-        else {
-            return self.economy.step_house_resident_slot(source_slot);
-        };
-        staged_resident.builder_house_entity_index = house_slot;
-        staged_resident.builder_placement_latch = 1;
-        staged_resident.phase = staged_resident.phase.wrapping_add(1);
-        if staged_economy
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: true,
-                x: staged_resident.position.x,
-                y: staged_resident.position.y,
-            })
-            .is_err()
-        {
-            return self.economy.step_house_resident_slot(source_slot);
-        }
-
-        self.economy = staged_economy;
-        self.ordinary = staged_ordinary;
-        true
-    }
-
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
     /// handler applies its `life-- < 0` drawing gate; all dynamic families
     /// remain on the shared cursor and reclaim policy.
@@ -24772,7 +24621,7 @@ impl Level2ResetSession {
                     .step_authored_class5_slot_with_target(source_slot, target)
             }
             Level2DynamicArenaKind::HouseResident => {
-                self.step_level2_house_resident_builder(source_slot)
+                self.economy.step_house_resident_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredSwitchProducer => {
                 self.step_level2_authored_switch_producer(pass, source_slot)
@@ -33587,140 +33436,6 @@ mod tests {
         assert_eq!(session.terrain_hash(), replay_terrain_hash);
         assert_eq!(session.campaign_state_hash(), replay_campaign_hash);
         assert_eq!(session.ordinary().reset_hash(), replay_ordinary_hash);
-    }
-
-    #[test]
-    fn level_two_house_resident_builder_constructs_through_outer_cursor() {
-        let package = level_two_fixture_path();
-        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/level2-day-owner-cache/components/gameplay");
-        let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
-            .expect("qualified Level 2 gameplay component");
-        let house = inspection
-            .entities
-            .iter()
-            .find(|entity| {
-                entity.class == HOUSE_CLASS
-                    && entity.model == HOUSE_MODEL
-                    && entity.active
-                    && HouseParameter::level_two(entity.record_bytes()[74])
-                        .is_some_and(HouseParameter::produces_villagers)
-            })
-            .expect("qualified Level 2 resident-producing House");
-        let house_slot = house.index;
-
-        let drive = |session: &mut Level2ResetSession| {
-            session.select_level2_campaign_entry_stage();
-            let baseline_house = session
-                .ordinary()
-                .houses()
-                .iter()
-                .copied()
-                .find(|candidate| candidate.entity_index == house_slot)
-                .expect("resident-producing House source row");
-            assert_eq!(baseline_house.occupants, 2);
-            assert_eq!(
-                session.ordinary_mut().houses.try_enter_resident(house_slot),
-                HouseResidentEntry::Entered
-            );
-            session
-                .ordinary_mut()
-                .inject_house_damage(house_slot, baseline_house.life.wrapping_add(1), 111)
-                .expect("House destruction mailbox");
-            session.step_outer_turn(PlayerCommand::default(), 0);
-            session.step_outer_turn(PlayerCommand::default(), 0);
-
-            let builder = session
-                .economy()
-                .house_residents()
-                .iter()
-                .find(|resident| {
-                    resident.parent_house_entity_index == house_slot
-                        && resident.model == 12
-                        && resident.action == 97
-                })
-                .copied()
-                .expect("action-53 Builder resident reaches the dynamic cursor");
-            assert!(builder.builder_placement_latch != 0);
-            assert!(builder.builder_house_entity_index != 0);
-            assert!(session.dispatch_events().iter().any(|event| {
-                matches!(
-                    event,
-                    Level2DispatchEvent::DynamicArena {
-                        source_slot,
-                        kind: Level2DynamicArenaKind::HouseResident,
-                        ..
-                    } if *source_slot == builder.source_entity_index
-                )
-            }));
-
-            let constructed = session
-                .ordinary()
-                .houses()
-                .iter()
-                .copied()
-                .find(|candidate| candidate.entity_index == builder.builder_house_entity_index)
-                .expect("Builder inserts one Level 2 House row");
-            assert!(constructed.active);
-            assert_eq!(constructed.action, 51);
-            assert!(
-                inspection
-                    .level2_house_build_footprints
-                    .contains_key(&constructed.building_index)
-            );
-            assert!(
-                session
-                    .economy()
-                    .map_chains()
-                    .is_linked(constructed.entity_index)
-            );
-            assert_eq!(
-                session.economy().source_owner(constructed.entity_index),
-                constructed.owner_entity_index
-            );
-
-            let mut construction_pass = false;
-            let mut construction_completed = false;
-            for _ in 0..30 {
-                session.step_outer_turn(PlayerCommand::default(), 0);
-                for event in session.dispatch_events() {
-                    if let Level2DispatchEvent::House {
-                        source_slot,
-                        events,
-                        ..
-                    } = event
-                    {
-                        if *source_slot == constructed.entity_index {
-                            construction_pass |= events.iter().any(|event| {
-                                matches!(event, HouseStepEvent::ConstructionPass { .. })
-                            });
-                            construction_completed |= events.iter().any(|event| {
-                                matches!(event, HouseStepEvent::ConstructionCompleted { .. })
-                            });
-                        }
-                    }
-                }
-            }
-            (
-                constructed.entity_index,
-                construction_pass,
-                construction_completed,
-                session.terrain_hash(),
-                session.campaign_state_hash(),
-                session.ordinary().reset_hash(),
-                session.dispatch_events().to_vec(),
-            )
-        };
-
-        let mut session = inspection
-            .level2_reset_session()
-            .expect("cache-loaded Level 2 session");
-        let first = drive(&mut session);
-        assert!(first.1, "Builder action 51 must emit ConstructionPass");
-        assert!(first.2, "Builder action 51 must emit ConstructionCompleted");
-        session.reset();
-        let second = drive(&mut session);
-        assert_eq!(first, second, "Builder construction reset/replay diverged");
     }
 
     #[test]
