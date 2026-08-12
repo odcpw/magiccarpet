@@ -186,6 +186,10 @@ pub(super) struct Level2NyphurCommonUpkeep {
     cadence_candidate: Option<u16>,
     cadence_action: u8,
     return_value: i8,
+    /// The pinned Watcom `watcomrand` stream is process-global in remc2.  A
+    /// session-local carrier keeps its source draw order while preserving the
+    /// Rust session's reset and replay isolation.
+    watcom_rand_state: u32,
 }
 
 /// Source `sub_12A70` state made available to the next AI leaves and to
@@ -358,6 +362,7 @@ impl Level2NyphurCommonUpkeep {
             cadence_candidate: None,
             cadence_action: 0,
             return_value: 0,
+            watcom_rand_state: 1,
         })
     }
 
@@ -512,6 +517,17 @@ impl Level2NyphurCommonUpkeep {
             None => hasher.update([0]),
         }
         hasher.update([self.cadence_action]);
+        hasher.update(self.watcom_rand_state.to_le_bytes());
+    }
+
+    /// Advance the pinned Watcom C runtime stream and expose its 15-bit
+    /// result.  The source helper advances before applying `% 255`.
+    fn step_watcomrand(&mut self) -> u16 {
+        self.watcom_rand_state = self
+            .watcom_rand_state
+            .wrapping_mul(1_103_515_245)
+            .wrapping_add(12_345);
+        ((self.watcom_rand_state >> 16) & 0x7fff) as u16
     }
 
     fn cadence_period(&self) -> u16 {
@@ -1474,6 +1490,21 @@ fn level2_nyphur_source_identity_matches(source: &EntitySnapshot, target: &Entit
     source.source_word_98() == level2_nyphur_source_identity(target)
 }
 
+/// Read the source `axis_0x9A_154x` triple from the lossless entity record.
+/// The exported record carries a four-byte package header, so source offsets
+/// 154/156/158 are record offsets 158/160/162 respectively.
+fn level2_nyphur_axis_position(source: &EntitySnapshot) -> Result<Position> {
+    let axis = source
+        .record
+        .get(158..164)
+        .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur axis_0x9A_154x carrier is absent"))?;
+    Ok(Position {
+        x: u16::from_le_bytes([axis[0], axis[1]]),
+        y: u16::from_le_bytes([axis[2], axis[3]]),
+        z: i16::from_le_bytes([axis[4], axis[5]]),
+    })
+}
+
 /// Pinned `sub_580E0`. The fourth source argument is intentionally absent:
 /// the recovered helper never reads it. The Z write and comparison retain the
 /// source `i16` carrier at both boundaries.
@@ -1506,6 +1537,16 @@ fn level2_nyphur_source_distance_xy_euclidean_sq(left: Position, right: Position
         right.y.wrapping_sub(left.y).to_ne_bytes(),
     ));
     dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32
+}
+
+const LEVEL2_NYPHUR_SUB_133B0_CASTLE_DISTANCE_SQ: u32 = 0x0640_0000;
+
+/// The production `sub_133B0` branch predicate. Keep the source threshold in
+/// one carrier so the equality boundary is testable without duplicating an
+/// unused expected literal.
+fn level2_nyphur_sub_133b0_castle_is_far(source: Position, castle: Position) -> bool {
+    level2_nyphur_source_distance_xy_euclidean_sq(source, castle)
+        > LEVEL2_NYPHUR_SUB_133B0_CASTLE_DISTANCE_SQ
 }
 
 /// Pinned `watcominitrandnext`: the source helper returns the address of its
@@ -1662,9 +1703,13 @@ impl Level2NyphurDispatcher {
         // and the mode switch, not before the common callback.
         let selected_state = self.state_byte;
         match selected_state {
+            3 => self.step_sub_13100(source_slot, entities, terrain)?,
+            4 => self.step_sub_131f0(source_slot, entities, terrain)?,
             5 => Self::step_nmemneed0(),
             8 => self.step_sub_13830(source_slot, entities, terrain, presentation)?,
             9 => self.step_sub_13870(source_slot, entities, terrain, presentation)?,
+            11 => self.step_sub_133b0(source_slot, entities, terrain)?,
+            12 => self.step_sub_13270(source_slot, entities, terrain)?,
             13 => self.step_sub_13850(source_slot, entities, terrain, presentation)?,
             _ => {}
         }
@@ -1683,6 +1728,396 @@ impl Level2NyphurDispatcher {
     /// observable production behavior is therefore the following shared tail,
     /// with no AI, movement, or RNG write at this call site.
     const fn step_nmemneed0() {}
+
+    /// Execute the pinned `sub_14C90` distance gate used by the four mode
+    /// bodies owned here.  The source clears `word_0xe_14` before either the
+    /// target or axis comparison; a far target first offers family 3, and
+    /// only the failed offer falls through to minimum-speed movement.
+    fn step_sub_14c90(
+        &mut self,
+        source_index: usize,
+        target: Option<&EntitySnapshot>,
+        axis: Option<Position>,
+        near_distance: u32,
+        far_distance: u32,
+        entities: &mut [EntitySnapshot],
+    ) -> Result<bool> {
+        let source = entities
+            .get(source_index)
+            .cloned()
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur distance source row is absent"))?;
+        let comparison_position = match (target, axis) {
+            (Some(target), None) => target.position,
+            (None, Some(axis)) => axis,
+            _ => {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur distance gate has an invalid comparison carrier",
+                ));
+            }
+        };
+        self.common_upkeep.word_0xe_14 = 0;
+        let distance = level2_nyphur_source_distance_3d(source.position, comparison_position);
+        if distance <= near_distance {
+            self.common_upkeep.speed = 0;
+            self.common_upkeep.word_0xe_14 = 1;
+            return Ok(true);
+        }
+
+        if distance > far_distance && self.source_spell_ready(3, entities) {
+            if !self.common_upkeep.sub_156f0(3, entities) {
+                let mut source_control_flags = source.control_flags;
+                let _ = self.common_upkeep.step_sub_14e10(
+                    3,
+                    source.model,
+                    &mut source_control_flags,
+                    entities,
+                );
+                entities[source_index].set_control_flags(source_control_flags);
+            }
+        } else {
+            self.common_upkeep.speed = source.minimum_speed();
+            self.common_upkeep.word_0xe_14 = 1;
+        }
+        Ok(false)
+    }
+
+    /// The bounded Level 2 carrier for the source `sub_15170` predicate.
+    /// Unsupported spell families remain absent instead of borrowing a
+    /// neighboring profile.
+    fn source_spell_ready(&self, family: u8, entities: &[EntitySnapshot]) -> bool {
+        let Some(holder_slot) = self.common_upkeep.source_spell_holder_slot(family) else {
+            return false;
+        };
+        let Some(holder) = entities.get(usize::from(holder_slot)) else {
+            return false;
+        };
+        let Some((_, profile)) =
+            Level2NyphurCommonUpkeep::source_spell_profile(family, holder.level_gate)
+        else {
+            return false;
+        };
+        self.common_upkeep
+            .source_spell_available(family, holder, profile, entities)
+    }
+
+    /// Pinned `sub_13100` (AI_HELPER-0012, source line 5620).  Keep its
+    /// source roll, 2048/4096 gate, descending family-2 tier loop, activation
+    /// attempt, and signed vertical step in source order.
+    fn step_sub_13100(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+    ) -> Result<()> {
+        let source_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_13100 source row is absent")
+            })?;
+        let source = entities[source_index].clone();
+        let axis = level2_nyphur_axis_position(&source)?;
+        let roll = i16::try_from(heading_for_positions(source.position, axis))
+            .expect("Nyphur sub_13100 roll fits the signed source angle carrier");
+        entities[source_index].set_source_roll(roll);
+
+        if !self.step_sub_14c90(source_index, None, Some(axis), 2_048, 4_096, entities)? {
+            return self.step_sub_16580(&entities[source_index], terrain);
+        }
+
+        let mut tier = self.common_upkeep.spell_levels[2];
+        while tier >= 0 {
+            if self.common_upkeep.step_sub_15f20(2, tier, entities) == 2 {
+                break;
+            }
+            tier -= 1;
+        }
+        let mut source_control_flags = entities[source_index].control_flags;
+        if self.common_upkeep.step_sub_14e10(
+            2,
+            entities[source_index].model,
+            &mut source_control_flags,
+            entities,
+        ) {
+            entities[source_index].set_control_flags(source_control_flags);
+            return self.step_sub_16580(&entities[source_index], terrain);
+        }
+        entities[source_index].set_control_flags(source_control_flags);
+
+        self.common_upkeep.speed = 0;
+        let vertical_delta = i32::from(source.position.z) - (i32::from(axis.z) + 512);
+        let direction = if vertical_delta < 0 {
+            -1_i16
+        } else if vertical_delta > 0 {
+            1_i16
+        } else {
+            0_i16
+        };
+        let mut position = entities[source_index].position;
+        position.z = position
+            .z
+            .wrapping_add(direction.wrapping_mul(self.common_upkeep.word_0xe_14));
+        entities[source_index].set_position(position);
+        self.step_sub_16580(&entities[source_index], terrain)
+    }
+
+    /// Pinned `sub_131F0` (AI_HELPER-0013, source line 5658).  Its roll is
+    /// deliberately computed against the source position itself; this keeps
+    /// the source's unusual zero-heading expression rather than substituting
+    /// the stored target heading.
+    fn step_sub_131f0(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+    ) -> Result<()> {
+        let source_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_131F0 source row is absent")
+            })?;
+        let source = entities[source_index].clone();
+        let target = entities
+            .get(usize::from(source.source_word_96()))
+            .cloned()
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_131F0 target row is absent")
+            })?;
+        if !level2_nyphur_source_identity_matches(&source, &target) {
+            // The pinned source treats a stale identity as the false result
+            // of sub_14C60: it skips the roll/distance work, tails once
+            // through sub_16580, and returns zero.  Only an absent indexed
+            // carrier above is a package-boundary error.
+            self.step_sub_16580(&source, terrain)?;
+            return Ok(());
+        }
+        let roll = i16::try_from(heading_for_positions(source.position, source.position))
+            .expect("Nyphur sub_131F0 roll fits the signed source angle carrier");
+        entities[source_index].set_source_roll(roll);
+        self.step_sub_14c90(source_index, Some(&target), None, 256, 2_048, entities)?;
+        self.step_sub_16580(&entities[source_index], terrain)
+    }
+
+    /// Pinned `sub_13270` (AI_HELPER-0014, source line 5680).  The family-22
+    /// probe intentionally passes the constant spell-level carrier `v5`, not
+    /// the loop variable; the source's draw and branch order are preserved.
+    fn step_sub_13270(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+    ) -> Result<()> {
+        let source_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_13270 source row is absent")
+            })?;
+        let source = entities[source_index].clone();
+        let perception = self.common_upkeep.word_0x244;
+        let perception_roll = self.common_upkeep.step_watcomrand() % 255;
+        let mut source_control_flags = source.control_flags;
+        if i32::from(perception_roll) < i32::from(perception) {
+            let castle = if self.common_upkeep.castle_entity_index == 0 {
+                None
+            } else {
+                Some(
+                    entities
+                        .get(usize::from(self.common_upkeep.castle_entity_index))
+                        .cloned()
+                        .ok_or_else(|| {
+                            NativeWorldError::new("Level 2 Nyphur sub_13270 castle row is absent")
+                        })?,
+                )
+            };
+            let castle_overlap = castle.as_ref().is_some_and(|castle| {
+                super::level2_model76_sub106c0_matches(
+                    source.position,
+                    source.array_yaw(),
+                    source.array_pitch(),
+                    source.array_roll(),
+                    source.array_fov(),
+                    castle.position,
+                    castle.array_yaw(),
+                    castle.array_pitch(),
+                    castle.array_roll(),
+                    castle.array_fov(),
+                )
+            });
+            let family_two_tier = self.common_upkeep.spell_levels[2];
+            if !castle_overlap {
+                let mut tier = family_two_tier;
+                while tier >= 0 {
+                    // This is intentionally `family_two_tier`, matching the
+                    // pinned `sub_13270` body rather than the apparent loop typo.
+                    if self
+                        .common_upkeep
+                        .step_sub_15f20(22, family_two_tier, entities)
+                        == 22
+                    {
+                        let _ = self.common_upkeep.step_sub_14e10(
+                            22,
+                            source.model,
+                            &mut source_control_flags,
+                            entities,
+                        );
+                        entities[source_index].set_control_flags(source_control_flags);
+                        return self.step_sub_16580(&entities[source_index], terrain);
+                    }
+                    tier -= 1;
+                }
+            }
+        }
+
+        if self.source_spell_ready(3, entities) {
+            if !self.common_upkeep.sub_156f0(3, entities) {
+                let _ = self.common_upkeep.step_sub_14e10(
+                    3,
+                    source.model,
+                    &mut source_control_flags,
+                    entities,
+                );
+            }
+            entities[source_index].set_control_flags(source_control_flags);
+            return self.step_sub_16580(&entities[source_index], terrain);
+        }
+
+        self.step_sub_16580(&source, terrain)?;
+        if self.common_upkeep.sub_15760(3, entities).is_some() {
+            return Ok(());
+        }
+        self.common_upkeep.speed = source.minimum_speed();
+        self.common_upkeep.word_0xe_14 = 1;
+        Ok(())
+    }
+
+    /// Pinned `sub_133B0` (AI_HELPER-0015, source line 5745).  The no-castle
+    /// and castle branches retain their independent descending spell scans,
+    /// strict identity check, squared XY threshold, and post-helper terrain
+    /// call order.
+    fn step_sub_133b0(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+    ) -> Result<()> {
+        let source_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_133B0 source row is absent")
+            })?;
+        let source = entities[source_index].clone();
+        let mut source_control_flags = source.control_flags;
+        let castle = if self.common_upkeep.castle_entity_index == 0 {
+            None
+        } else {
+            Some(
+                entities
+                    .get(usize::from(self.common_upkeep.castle_entity_index))
+                    .cloned()
+                    .ok_or_else(|| {
+                        NativeWorldError::new("Level 2 Nyphur sub_133B0 castle row is absent")
+                    })?,
+            )
+        };
+
+        let Some(castle) = castle else {
+            let mut tier = self.common_upkeep.spell_levels[11];
+            while tier >= 0 {
+                if self.common_upkeep.step_sub_15f20(11, tier, entities) == 11 {
+                    let _ = self.common_upkeep.step_sub_14e10(
+                        11,
+                        source.model,
+                        &mut source_control_flags,
+                        entities,
+                    );
+                    break;
+                }
+                tier -= 1;
+            }
+
+            let mut tier = self.common_upkeep.spell_levels[3];
+            while tier >= 0 {
+                if self.common_upkeep.step_sub_15f20(3, tier, entities) == 3 {
+                    let _ = self.common_upkeep.step_sub_14e10(
+                        3,
+                        source.model,
+                        &mut source_control_flags,
+                        entities,
+                    );
+                    entities[source_index].set_control_flags(source_control_flags);
+                    self.step_sub_16580(&entities[source_index], terrain)?;
+                    return Ok(());
+                }
+                tier -= 1;
+            }
+            entities[source_index].set_control_flags(source_control_flags);
+            if self.common_upkeep.sub_15760(3, entities).is_some() {
+                return self.step_sub_16580(&entities[source_index], terrain);
+            }
+            self.common_upkeep.speed = source.minimum_speed();
+            self.common_upkeep.word_0xe_14 = 1;
+            return self.step_sub_16580(&entities[source_index], terrain);
+        };
+
+        if level2_nyphur_sub_133b0_castle_is_far(source.position, castle.position) {
+            let mut tier = self.common_upkeep.spell_levels[1];
+            while tier >= 0 {
+                if self.common_upkeep.step_sub_15f20(1, tier, entities) == 1
+                    && self.common_upkeep.step_sub_14e10(
+                        1,
+                        source.model,
+                        &mut source_control_flags,
+                        entities,
+                    )
+                {
+                    entities[source_index].set_control_flags(source_control_flags);
+                    self.step_sub_16580(&entities[source_index], terrain)?;
+                    return Ok(());
+                }
+                tier -= 1;
+            }
+        }
+
+        let mut tier = self.common_upkeep.spell_levels[11];
+        while tier >= 0 {
+            if self.common_upkeep.step_sub_15f20(11, tier, entities) == 11 {
+                let _ = self.common_upkeep.step_sub_14e10(
+                    11,
+                    source.model,
+                    &mut source_control_flags,
+                    entities,
+                );
+                break;
+            }
+            tier -= 1;
+        }
+
+        if level2_nyphur_source_identity_matches(&source, &castle) {
+            let roll = i16::try_from(heading_for_positions(source.position, castle.position))
+                .expect("Nyphur sub_133B0 roll fits the signed source angle carrier");
+            entities[source_index].set_source_roll(roll);
+            // Materialize every preceding sub_14E10 write before the
+            // distance helper snapshots the source.  A later family-3
+            // activation must extend, rather than be overwritten by, the
+            // family-11 local flag carrier.
+            entities[source_index].set_control_flags(source_control_flags);
+            let close =
+                self.step_sub_14c90(source_index, Some(&castle), None, 256, 2_048, entities)?;
+            source_control_flags = entities[source_index].control_flags;
+            entities[source_index].set_control_flags(source_control_flags);
+            self.step_sub_16580(&entities[source_index], terrain)?;
+            if close {
+                return Ok(());
+            }
+            return Ok(());
+        }
+
+        entities[source_index].set_control_flags(source_control_flags);
+        self.step_sub_16580(&entities[source_index], terrain)
+    }
 
     /// `sub_13830` is a source wrapper around `sub_13890`.
     fn step_sub_13830(
@@ -2692,6 +3127,354 @@ mod tests {
         assert_eq!(replay.entities, stepped_entities);
         assert_eq!(replay.nyphur_common_upkeep().unwrap(), stepped_common);
         assert_eq!(replay.nyphur_dispatch_traces(), stepped_traces.as_slice());
+    }
+
+    #[test]
+    fn level_two_ai_modes_3_4_11_12_are_exact() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut ordinary = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 Nyphur production session");
+
+        // The public outer cursor is the production carrier.  It discovers
+        // the authored source row and advances the common callback before
+        // any mode helper is selected; no state or action byte is written by
+        // this test setup.
+        ordinary.step_outer_turn(PlayerCommand::default(), 0);
+        let ordinary_trace = ordinary
+            .nyphur_dispatch_traces()
+            .first()
+            .expect("ordinary source dispatch trace");
+        assert_eq!(ordinary_trace.state_byte, 0);
+        assert_eq!(ordinary_trace.tail_call_count(), 2);
+        let mut production_probe = ordinary.clone();
+        let mut production_states = BTreeSet::new();
+        for _ in 0..220 {
+            production_probe.step_outer_turn(PlayerCommand::default(), 0);
+            if let Some(trace) = production_probe.nyphur_dispatch_traces().last() {
+                production_states.insert(trace.state_byte);
+            }
+        }
+        assert_eq!(
+            production_states,
+            BTreeSet::from([0_i8, 13_i8]),
+            "the qualified cursor currently reaches only default and the earlier state-13 selector"
+        );
+
+        // The mode map is the source switch, including signed-byte default
+        // fallthrough. The helper bodies below are body-level vectors on
+        // production entity carriers. They select the private state byte
+        // only to exercise the real dispatcher; the assertion above is the
+        // separate ordinary-cursor reachability result, not a natural-route
+        // claim.
+        for (state_byte, helper) in [
+            (3_i8, Level2NyphurDispatchHelper::Sub13100),
+            (4, Level2NyphurDispatchHelper::Sub131f0),
+            (11, Level2NyphurDispatchHelper::Sub133b0),
+            (12, Level2NyphurDispatchHelper::Sub13270),
+        ] {
+            let trace = Level2NyphurDispatcher::trace_for_state(state_byte, 0, 112);
+            assert_eq!(
+                trace.calls.as_ref(),
+                &[
+                    Level2NyphurDispatchCall::Sub12a70,
+                    Level2NyphurDispatchCall::Helper(helper),
+                    Level2NyphurDispatchCall::Sub12e70,
+                ]
+            );
+            assert_eq!(trace.tail_call_count(), 1);
+        }
+        for state_byte in [10_i8, -1_i8, i8::MIN, i8::MAX] {
+            let trace = Level2NyphurDispatcher::trace_for_state(state_byte, 0, 112);
+            assert_eq!(
+                trace.calls.as_ref(),
+                &[
+                    Level2NyphurDispatchCall::Sub12a70,
+                    Level2NyphurDispatchCall::Sub12e70,
+                ]
+            );
+        }
+
+        let source = ordinary.entities[112].clone();
+        let axis = level2_nyphur_axis_position(&source).expect("qualified axis carrier");
+        let mut mode3 = ordinary.clone();
+        mode3.nyphur_dispatcher.state_byte = 3;
+        mode3.step_outer_turn(PlayerCommand::default(), 0);
+        let mode3_trace = mode3
+            .nyphur_dispatch_traces()
+            .iter()
+            .rev()
+            .find(|trace| trace.source_slot == 112)
+            .expect("mode-3 dispatcher trace");
+        assert_eq!(mode3_trace.state_byte, 3);
+        assert_eq!(mode3_trace.tail_call_count(), 1);
+        assert_eq!(
+            mode3_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub13100),
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert!(mode3.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+        let mode3_source = &mode3.entities[112];
+        assert_eq!(
+            mode3_source.source_roll(),
+            i16::try_from(heading_for_positions(source.position, axis)).expect("mode-3 roll")
+        );
+        assert_eq!(
+            mode3.nyphur_dispatcher.common_upkeep.word_0xe_14, 1,
+            "sub_13100's sub_14C90 gate carries the vertical step"
+        );
+        let mode3_distance = level2_nyphur_source_distance_3d(source.position, axis);
+        if mode3_distance <= 2_048 {
+            assert_eq!(mode3.nyphur_dispatcher.common_upkeep.speed, 0);
+        } else {
+            assert_eq!(
+                mode3.nyphur_dispatcher.common_upkeep.speed,
+                source.minimum_speed()
+            );
+        }
+        assert_eq!(mode3_source.action, source.action);
+
+        // Let the ordinary route produce the source relation used by mode 4;
+        // the helper then preserves the source's self/self heading expression
+        // and uses the 256/2048 target gate.
+        let mut mode4 = inspection
+            .level2_reset_session()
+            .expect("mode-4 production carrier");
+        for _ in 0..53 {
+            mode4.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let mode4_source = mode4.entities[112].clone();
+        assert_eq!(mode4_source.source_word_96(), 70);
+        mode4.nyphur_dispatcher.state_byte = 4;
+        mode4.step_outer_turn(PlayerCommand::default(), 0);
+        let mode4_trace = mode4
+            .nyphur_dispatch_traces()
+            .iter()
+            .rev()
+            .find(|trace| trace.source_slot == 112)
+            .expect("mode-4 dispatcher trace");
+        assert_eq!(mode4_trace.state_byte, 4);
+        assert_eq!(mode4_trace.tail_call_count(), 1);
+        assert_eq!(
+            mode4_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub131f0),
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert!(mode4.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+        assert_eq!(mode4.entities[112].source_roll(), 0);
+        assert_eq!(mode4.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
+        assert_eq!(
+            mode4.entities[112].source_word_96(),
+            mode4_source.source_word_96()
+        );
+
+        // A stale sub_14C60 identity is a source-level false result, not a
+        // Rust error: sub_131F0 must tail once and leave the source roll
+        // untouched. The byte-0x45e fast path makes the tail observable in
+        // this private state-byte dispatcher vector.
+        let mut stale_identity = mode4;
+        let stale_source_roll = stale_identity.entities[112].source_roll();
+        let target_identity = level2_nyphur_source_identity(&stale_identity.entities[70]);
+        stale_identity.entities[112].record[156..158]
+            .copy_from_slice(&target_identity.wrapping_add(1).to_le_bytes());
+        stale_identity.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
+        stale_identity.nyphur_dispatcher.state_byte = 4;
+        stale_identity.step_outer_turn(PlayerCommand::default(), 0);
+        let stale_trace = stale_identity
+            .nyphur_dispatch_traces()
+            .iter()
+            .rev()
+            .find(|trace| trace.source_slot == 112)
+            .expect("stale mode-4 dispatcher trace");
+        assert_eq!(stale_trace.state_byte, 4);
+        assert_eq!(stale_trace.tail_call_count(), 1);
+        assert_eq!(
+            stale_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub131f0),
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert!(
+            stale_identity
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot: 112,
+                        ..
+                    }
+                ))
+        );
+        assert_eq!(
+            stale_identity.entities[112].source_roll(),
+            stale_source_roll,
+            "stale identity skips the source roll expression"
+        );
+        assert_eq!(
+            stale_identity.nyphur_dispatcher.common_upkeep.byte_0x45e, 4,
+            "stale identity still executes one sub_16580 tail"
+        );
+
+        let mut mode11 = inspection
+            .level2_reset_session()
+            .expect("mode-11 production carrier");
+        mode11.nyphur_dispatcher.state_byte = 11;
+        mode11.step_outer_turn(PlayerCommand::default(), 0);
+        let mode11_trace = mode11
+            .nyphur_dispatch_traces()
+            .iter()
+            .rev()
+            .find(|trace| trace.source_slot == 112)
+            .expect("mode-11 dispatcher trace");
+        assert_eq!(mode11_trace.state_byte, 11);
+        assert_eq!(mode11_trace.tail_call_count(), 1);
+        assert_eq!(
+            mode11_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub133b0),
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert!(mode11.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+        assert_eq!(
+            mode11.nyphur_dispatcher.common_upkeep.speed,
+            mode11.entities[112].minimum_speed()
+        );
+        assert_eq!(mode11.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
+
+        // sub_133B0's production far-castle predicate is strict: equality
+        // stays on the near side and one source unit above it enters the far
+        // branch. The old 0x0640_000 literal would classify equality as far.
+        let threshold_source = Position { x: 0, y: 0, z: 0 };
+        let threshold_boundary = Position {
+            x: 10_240,
+            y: 0,
+            z: 0,
+        };
+        let threshold_above = Position {
+            x: 10_241,
+            y: 0,
+            z: 0,
+        };
+        assert!(!level2_nyphur_sub_133b0_castle_is_far(
+            threshold_source,
+            threshold_boundary
+        ));
+        assert!(level2_nyphur_sub_133b0_castle_is_far(
+            threshold_source,
+            threshold_above
+        ));
+
+        // In the no-castle inactive-holder fallthrough, the source writes
+        // minimum speed and word_0xe_14 before the single sub_16580 call.
+        // A blocked terrain probe makes that ordering observable even though
+        // the helper ultimately fails closed.
+        let mut mode11_order = inspection
+            .level2_reset_session()
+            .expect("mode-11 order carrier");
+        let order_source = mode11_order.entities[112].clone();
+        let blocked_x = order_source.position.x.to_be_bytes()[0];
+        let blocked_y = order_source.position.y.to_be_bytes()[0].wrapping_sub(1);
+        mode11_order.terrain.planes.terrain_types[terrain_index(blocked_x, blocked_y)] = 8;
+        mode11_order.nyphur_dispatcher.state_byte = 11;
+        mode11_order.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(mode11_order.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+        assert_eq!(
+            mode11_order.nyphur_dispatcher.common_upkeep.speed,
+            order_source.minimum_speed()
+        );
+        assert_eq!(mode11_order.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
+
+        let mut mode12 = inspection
+            .level2_reset_session()
+            .expect("mode-12 production carrier");
+        let mode12_baseline_common = mode12
+            .nyphur_common_upkeep()
+            .expect("mode-12 baseline common carrier");
+        assert_eq!(mode12.nyphur_dispatcher.common_upkeep.watcom_rand_state, 1);
+        mode12.nyphur_dispatcher.state_byte = 12;
+        mode12.step_outer_turn(PlayerCommand::default(), 0);
+        let mode12_trace = mode12
+            .nyphur_dispatch_traces()
+            .iter()
+            .rev()
+            .find(|trace| trace.source_slot == 112)
+            .expect("mode-12 dispatcher trace");
+        assert_eq!(mode12_trace.state_byte, 12);
+        assert_eq!(mode12_trace.tail_call_count(), 1);
+        assert_eq!(
+            mode12_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub13270),
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert!(mode12.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+        assert_eq!(
+            mode12.nyphur_dispatcher.common_upkeep.watcom_rand_state,
+            1_103_527_590
+        );
+        assert_eq!(
+            mode12.nyphur_dispatcher.common_upkeep.speed,
+            mode12.entities[112].minimum_speed()
+        );
+        assert_eq!(mode12.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
+        assert_ne!(
+            mode12
+                .nyphur_common_upkeep()
+                .expect("mode-12 stepped common carrier"),
+            mode12_baseline_common
+        );
+        mode12.reset();
+        assert_eq!(
+            mode12
+                .nyphur_common_upkeep()
+                .expect("reset mode-12 common carrier"),
+            mode12_baseline_common
+        );
+        assert_eq!(mode12.nyphur_dispatcher.common_upkeep.watcom_rand_state, 1);
     }
 
     #[test]
