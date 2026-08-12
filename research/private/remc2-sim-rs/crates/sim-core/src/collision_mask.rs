@@ -5,12 +5,17 @@
 //! The binary header and records are bounded so malformed owner data cannot
 //! become an implicit collision authority.
 
+use sha2::{Digest, Sha256};
+
 const MAGIC: &[u8; 4] = b"MCM1";
 const VERSION: u16 = 1;
 const HEADER_BYTES: usize = 20;
 const RECORD_HEADER_BYTES: usize = 12;
 
 pub const MSPRD0_0_VGA_RESOLUTION_SELECTOR: u16 = 1;
+pub const LEVEL2_COLLISION_MASK_BANK_BYTES: usize = 4_638;
+pub const LEVEL2_COLLISION_MASK_BANK_SHA256: &str =
+    "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CollisionMask {
@@ -69,6 +74,13 @@ pub enum CollisionMaskError {
 pub enum CollisionMaskLookupError {
     SelectorOutOfRange(u16),
     PixelOutOfBounds { selector: u16, x: i32, y: i32 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CollisionMaskSourceIdentityError {
+    ByteLengthMismatch { expected: usize, actual: usize },
+    Sha256Mismatch,
+    Malformed(CollisionMaskError),
 }
 
 impl CollisionMaskBank {
@@ -162,6 +174,31 @@ impl CollisionMaskBank {
         })
     }
 
+    /// Validate and parse the complete qualified Level 2 MSPRD0-0 bank.
+    ///
+    /// Manifest member and aggregate hashes are self-consistency claims. This
+    /// source-derived identity is the immutable admission check that the
+    /// authoritative package-open path must use before constructing a live
+    /// session.
+    pub fn parse_source_exact(bytes: &[u8]) -> Result<Self, CollisionMaskSourceIdentityError> {
+        Self::validate_source_exact(bytes)?;
+        Self::parse(bytes).map_err(CollisionMaskSourceIdentityError::Malformed)
+    }
+
+    /// Validate the immutable byte identity of the qualified Level 2 bank.
+    pub fn validate_source_exact(bytes: &[u8]) -> Result<(), CollisionMaskSourceIdentityError> {
+        if bytes.len() != LEVEL2_COLLISION_MASK_BANK_BYTES {
+            return Err(CollisionMaskSourceIdentityError::ByteLengthMismatch {
+                expected: LEVEL2_COLLISION_MASK_BANK_BYTES,
+                actual: bytes.len(),
+            });
+        }
+        if format!("{:x}", Sha256::digest(bytes)) != LEVEL2_COLLISION_MASK_BANK_SHA256 {
+            return Err(CollisionMaskSourceIdentityError::Sha256Mismatch);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub const fn vga_resolution_selector(&self) -> u16 {
         self.vga_resolution_selector
@@ -244,9 +281,12 @@ fn read_u32(
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
+
     use super::{
         CollisionMaskBank, CollisionMaskError, CollisionMaskLookupError,
-        MSPRD0_0_VGA_RESOLUTION_SELECTOR,
+        CollisionMaskSourceIdentityError, LEVEL2_COLLISION_MASK_BANK_BYTES,
+        LEVEL2_COLLISION_MASK_BANK_SHA256, MSPRD0_0_VGA_RESOLUTION_SELECTOR,
     };
 
     fn sample_bank() -> Vec<u8> {
@@ -359,6 +399,24 @@ mod tests {
                 x: 2,
                 y: 0
             })
+        );
+    }
+
+    #[test]
+    fn source_exact_identity_rejects_wrong_full_bank_before_parse() {
+        let wrong_bank = vec![0_u8; LEVEL2_COLLISION_MASK_BANK_BYTES];
+        assert_eq!(wrong_bank.len(), LEVEL2_COLLISION_MASK_BANK_BYTES);
+        assert_ne!(
+            format!("{:x}", Sha256::digest(&wrong_bank)),
+            LEVEL2_COLLISION_MASK_BANK_SHA256
+        );
+        assert_eq!(
+            CollisionMaskBank::validate_source_exact(&wrong_bank),
+            Err(CollisionMaskSourceIdentityError::Sha256Mismatch)
+        );
+        assert_eq!(
+            CollisionMaskBank::parse_source_exact(&wrong_bank),
+            Err(CollisionMaskSourceIdentityError::Sha256Mismatch)
         );
     }
 }

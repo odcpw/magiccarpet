@@ -19,6 +19,9 @@ use crate::{
     PlayerCommand, Position, SOURCE_SPELL_INDEX_MAP, SourceAudioCallTag, SpellFireContext,
     angle_distance,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
+    collision_mask::{
+        CollisionMaskBank, CollisionMaskLookupError, LEVEL2_COLLISION_MASK_BANK_BYTES,
+    },
     combat_tmap::{CombatTmapBank, FireballTmapClock, PossessionTmapClock},
     conformance_hash,
     economy_tmap::{CastleTmapClock, EconomyTmapBank},
@@ -112,6 +115,8 @@ use crate::{
 use crate::mission_content::checked_in_level2_activation_plan;
 
 const MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v2";
+const LEVEL2_MANIFEST_SCHEMA_V3: &str = "mc2-owner-level-export/v3";
+const LEVEL2_MANIFEST_SCHEMA_V4: &str = "mc2-owner-level-export/v4";
 const CLOSURE_SCHEMA: &str = "mc2-level-asset-closure/v2";
 const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
 const LEVEL2_NYPHUR_SPELL_COOLDOWNS: [i16; PLAYER_SPELL_COUNT] = [
@@ -361,6 +366,26 @@ const LEVEL2_PACKAGE_MEMBERS: [(&str, usize); 13] = [
     ("terrain.bin", TERRAIN_BYTES),
 ];
 
+const LEVEL2_V4_PACKAGE_MEMBERS: [(&str, usize); 14] = [
+    ("authored-level.bin", AUTHORED_LEVEL_BYTES),
+    ("collision-masks.bin", LEVEL2_COLLISION_MASK_BANK_BYTES),
+    (
+        "entities-post-features.bin",
+        12 + ENTITY_COUNT * ENTITY_RECORD_BYTES,
+    ),
+    ("entities.bin", 12 + ENTITY_COUNT * ENTITY_RECORD_BYTES),
+    ("feature-allocator.bin", 4_032),
+    ("feature-construction-inputs.bin", 34_164),
+    ("feature-end.bin", 16),
+    ("feature-start.bin", 16),
+    ("players.bin", 12 + PLAYER_COUNT * PLAYER_RECORD_BYTES),
+    ("presentation.bin", 10_720),
+    ("runtime.bin", RUNTIME_BYTES),
+    ("terrain-post-features.bin", TERRAIN_BYTES),
+    ("terrain-pre-features.bin", TERRAIN_BYTES),
+    ("terrain.bin", TERRAIN_BYTES),
+];
+
 /// A fail-closed package or closure validation error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeWorldError(String);
@@ -394,6 +419,7 @@ pub enum OwnerPackageProfile {
 pub enum OwnerPackageSchema {
     V2,
     V3,
+    V4,
 }
 
 /// Resolve the single Level 1 presentation-cache root used by Rust fixtures.
@@ -3420,6 +3446,7 @@ pub struct NativeWorldInspection {
     terrain_rng: u16,
     reset_state: Option<FlightState>,
     authored_level: Box<[u8]>,
+    collision_masks: Option<CollisionMaskBank>,
 }
 
 impl NativeWorldInspection {
@@ -3481,6 +3508,25 @@ impl NativeWorldInspection {
     #[must_use]
     pub const fn reset_state(&self) -> Option<&FlightState> {
         self.reset_state.as_ref()
+    }
+
+    /// Borrow the immutable source-exact Level 2 collision bank. Historical
+    /// v3 packages intentionally return `None`; they are not collision
+    /// authority and cannot be upgraded by inference.
+    #[must_use]
+    pub const fn collision_mask_bank(&self) -> Option<&CollisionMaskBank> {
+        self.collision_masks.as_ref()
+    }
+
+    /// Query remc2 model-45 occupancy through the validated Level 2 carrier.
+    pub fn model45_occupancy(&self, selector: u16, x: i32, y: i32) -> Result<bool> {
+        let bank = self.collision_mask_bank().ok_or_else(|| {
+            NativeWorldError::new("Level 2 collision occupancy requires a qualified v4 package")
+        })?;
+        bank.model45_occupancy(selector, x, y)
+            .map_err(|error: CollisionMaskLookupError| {
+                NativeWorldError::new(format!("model-45 occupancy lookup failed: {error:?}"))
+            })
     }
 
     /// Select the typed mission profile from metadata already checked by the
@@ -3594,6 +3640,7 @@ impl NativeWorldInspection {
             goats,
             mission,
             nyphur_dispatcher,
+            self.collision_masks.clone(),
         ))
     }
 
@@ -19233,6 +19280,7 @@ struct Level2ImportedSwitchRootState {
 pub struct Level2ResetSession {
     profile: FlightProfile,
     package_sha256: String,
+    collision_masks: Option<CollisionMaskBank>,
     baseline_state: FlightState,
     pub state: FlightState,
     baseline_terrain: SessionTerrain,
@@ -19964,6 +20012,7 @@ impl Level2ResetSession {
         goats: GoatFamily,
         mission: MissionContentSession,
         nyphur_dispatcher: Level2NyphurDispatcher,
+        collision_masks: Option<CollisionMaskBank>,
     ) -> Self {
         // Pinned `sub_56D60` reset order (6806c7204d17):
         // ClearSettings -> LevelDecompress -> GenerateLevelMap /
@@ -20063,6 +20112,7 @@ impl Level2ResetSession {
         Self {
             profile,
             package_sha256,
+            collision_masks,
             baseline_state: state,
             state,
             baseline_terrain: terrain.clone(),
@@ -20165,6 +20215,24 @@ impl Level2ResetSession {
     #[must_use]
     pub fn package_sha256(&self) -> &str {
         &self.package_sha256
+    }
+
+    /// Borrow the immutable source-exact Level 2 collision bank retained by
+    /// this reset session. A historical v3 session has no collision authority.
+    #[must_use]
+    pub const fn collision_mask_bank(&self) -> Option<&CollisionMaskBank> {
+        self.collision_masks.as_ref()
+    }
+
+    /// Query remc2 model-45 occupancy through the authoritative session bank.
+    pub fn model45_occupancy(&self, selector: u16, x: i32, y: i32) -> Result<bool> {
+        let bank = self.collision_mask_bank().ok_or_else(|| {
+            NativeWorldError::new("Level 2 collision occupancy requires a qualified v4 package")
+        })?;
+        bank.model45_occupancy(selector, x, y)
+            .map_err(|error: CollisionMaskLookupError| {
+                NativeWorldError::new(format!("model-45 occupancy lookup failed: {error:?}"))
+            })
     }
 
     /// Select the authored Level 2 campaign entry objective for the C ABI
@@ -24763,6 +24831,7 @@ struct CommonPackage {
     terrain_rng: u16,
     reset_state: Option<FlightState>,
     authored: Vec<u8>,
+    collision_masks: Option<CollisionMaskBank>,
 }
 
 impl NativeWorld {
@@ -24846,6 +24915,7 @@ impl NativeWorld {
             terrain_rng: common.terrain_rng,
             reset_state: common.reset_state,
             authored_level: common.authored.into_boxed_slice(),
+            collision_masks: common.collision_masks,
         })
     }
 
@@ -24872,6 +24942,7 @@ impl NativeWorld {
             terrain_rng: _,
             reset_state,
             authored: _,
+            collision_masks: _,
         } = common;
         let reset_state = reset_state.ok_or_else(|| {
             NativeWorldError::new("Level 1 common package is missing reset_projection")
@@ -27235,14 +27306,23 @@ fn parse_common_package(
     profile: OwnerPackageProfile,
 ) -> Result<CommonPackage> {
     let schema = require_string(manifest, "schema", "manifest")?;
-    let expected_schema = match profile {
-        OwnerPackageProfile::Level1 => MANIFEST_SCHEMA,
-        OwnerPackageProfile::Level2 => "mc2-owner-level-export/v3",
-    };
-    if schema != expected_schema {
-        return Err(NativeWorldError::new(format!(
-            "manifest schema must be {expected_schema} for {profile:?}"
-        )));
+    match profile {
+        OwnerPackageProfile::Level1 if schema != MANIFEST_SCHEMA => {
+            return Err(NativeWorldError::new(format!(
+                "manifest schema must be {MANIFEST_SCHEMA} for {profile:?}"
+            )));
+        }
+        OwnerPackageProfile::Level2
+            if !matches!(
+                schema,
+                LEVEL2_MANIFEST_SCHEMA_V3 | LEVEL2_MANIFEST_SCHEMA_V4
+            ) =>
+        {
+            return Err(NativeWorldError::new(format!(
+                "manifest schema must be {LEVEL2_MANIFEST_SCHEMA_V3} or {LEVEL2_MANIFEST_SCHEMA_V4} for {profile:?}"
+            )));
+        }
+        _ => {}
     }
     if require_string(manifest, "byte_order", "manifest")? != "little-endian" {
         return Err(NativeWorldError::new(
@@ -27252,6 +27332,17 @@ fn parse_common_package(
 
     let package = validate_package(package_dir, manifest)?;
     let authored = member(&package.members, "authored-level.bin")?.to_vec();
+    let collision_masks = match (profile, package.schema) {
+        (OwnerPackageProfile::Level2, OwnerPackageSchema::V4) => Some(
+            CollisionMaskBank::parse_source_exact(member(&package.members, "collision-masks.bin")?)
+                .map_err(|error| {
+                    NativeWorldError::new(format!(
+                        "qualified Level 2 collision-mask bank rejected: {error:?}"
+                    ))
+                })?,
+        ),
+        _ => None,
+    };
     if profile == OwnerPackageProfile::Level2 {
         validate_level_two_provenance_members(&package.members)?;
     }
@@ -27345,6 +27436,7 @@ fn parse_common_package(
         terrain_rng,
         reset_state,
         authored,
+        collision_masks,
     })
 }
 
@@ -27360,7 +27452,8 @@ fn validate_package(
 ) -> Result<ValidatedPackage> {
     let schema = match require_string(manifest, "schema", "manifest")? {
         MANIFEST_SCHEMA => OwnerPackageSchema::V2,
-        "mc2-owner-level-export/v3" => OwnerPackageSchema::V3,
+        LEVEL2_MANIFEST_SCHEMA_V3 => OwnerPackageSchema::V3,
+        LEVEL2_MANIFEST_SCHEMA_V4 => OwnerPackageSchema::V4,
         other => {
             return Err(NativeWorldError::new(format!(
                 "unsupported owner package schema {other}"
@@ -27371,6 +27464,7 @@ fn validate_package(
     let expected_members: &[(&str, usize)] = match schema {
         OwnerPackageSchema::V2 => &PACKAGE_MEMBERS,
         OwnerPackageSchema::V3 => &LEVEL2_PACKAGE_MEMBERS,
+        OwnerPackageSchema::V4 => &LEVEL2_V4_PACKAGE_MEMBERS,
     };
     let mut allowed_paths = expected_members
         .iter()
@@ -29910,12 +30004,72 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/l2-debug3.fJ3PaM/level2")
     }
 
+    fn level_two_v4_fixture_path() -> PathBuf {
+        std::env::var_os("MC_LEVEL2_PACKAGE_V4")
+            .map(PathBuf::from)
+            .expect("MC_LEVEL2_PACKAGE_V4 must point to a real v4 Level 2 export")
+    }
+
+    fn refresh_level_two_v4_package_hash(manifest: &mut Value, package: &Path) {
+        let mut identity = Vec::new();
+        for (name, expected_size) in LEVEL2_V4_PACKAGE_MEMBERS {
+            let bytes = fs::read(package.join(name)).unwrap();
+            assert_eq!(bytes.len(), expected_size);
+            let hash = sha256_hex(&bytes);
+            identity.extend_from_slice(name.as_bytes());
+            identity.push(0);
+            identity.extend_from_slice(hash.as_bytes());
+            identity.push(0);
+            identity.extend_from_slice(expected_size.to_string().as_bytes());
+            identity.push(b'\n');
+        }
+        manifest["package_sha256"] = json!(sha256_hex(&identity));
+    }
+
+    fn tamper_level_two_v4_selector_64_and_refresh_manifest(package: &Path) {
+        let mask_path = package.join("collision-masks.bin");
+        let mut bytes = fs::read(&mask_path).unwrap();
+        let count = read_u32(&bytes, 12, "collision-mask count").unwrap();
+        let mut cursor = 20;
+        let mut row_index = None;
+        for index in 0..count as usize {
+            let selector = read_u16(&bytes, cursor, "collision-mask selector").unwrap();
+            let pixel_bytes = usize::try_from(
+                read_u32(&bytes, cursor + 8, "collision-mask pixel bytes").unwrap(),
+            )
+            .unwrap();
+            let payload_start = cursor + 12;
+            let payload_end = payload_start + pixel_bytes;
+            if selector == 64 {
+                bytes[payload_end - 1] ^= 1;
+                row_index = Some((index, payload_start, payload_end));
+                break;
+            }
+            cursor = payload_end;
+        }
+        let (row_index, payload_start, payload_end) =
+            row_index.expect("qualified v4 bank must contain selector 64");
+        fs::write(&mask_path, &bytes).unwrap();
+
+        let manifest_path = package.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["collision_masks"]["selectors"][row_index]["sha256"] =
+            json!(sha256_hex(&bytes[payload_start..payload_end]));
+        manifest["files"]["collision-masks.bin"]["bytes"] = json!(bytes.len());
+        manifest["files"]["collision-masks.bin"]["sha256"] = json!(sha256_hex(&bytes));
+        refresh_level_two_v4_package_hash(&mut manifest, package);
+        fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    }
+
     #[test]
     fn level_two_common_inspection_uses_typed_profile_and_exact_component_order() {
         let package = level_two_fixture_path();
         let inspection = NativeWorld::inspect_level2(&package).expect("qualified Level 2 package");
         assert_eq!(inspection.profile(), OwnerPackageProfile::Level2);
         assert_eq!(inspection.schema(), OwnerPackageSchema::V3);
+        assert!(inspection.collision_mask_bank().is_none());
+        assert!(inspection.model45_occupancy(64, 0, 0).is_err());
         assert_eq!(inspection.metadata().external_level, 2);
         assert_eq!(inspection.metadata().internal_level, 1);
         assert_eq!(inspection.metadata().map_type, MapType::Day);
@@ -29959,6 +30113,50 @@ mod tests {
         );
         assert_eq!(inspection.terrain_rng(), 9_858);
         assert!(inspection.mission_unimplemented().is_err());
+    }
+
+    #[test]
+    #[ignore = "requires an explicit qualified real Level 2 v4 owner export"]
+    fn level_two_v4_package_open_retains_source_exact_bank_and_model45_occupancy() {
+        let inspection = NativeWorld::inspect_level2(level_two_v4_fixture_path())
+            .expect("qualified v4 Level 2 package");
+        assert_eq!(inspection.schema(), OwnerPackageSchema::V4);
+        let bank = inspection
+            .collision_mask_bank()
+            .expect("v4 inspection retains the immutable collision bank");
+        assert_eq!(bank.masks().len(), 9);
+        assert!(
+            inspection
+                .model45_occupancy(64, 0, 0)
+                .expect("model-45 selector 64 pixel is in bounds")
+        );
+
+        let session = inspection
+            .level2_reset_session()
+            .expect("v4 package constructs the authoritative Level 2 session");
+        assert!(
+            session
+                .collision_mask_bank()
+                .is_some_and(|bank| bank.masks().len() == 9)
+        );
+        assert!(
+            session
+                .model45_occupancy(64, 0, 0)
+                .expect("authoritative session exposes model-45 occupancy")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an explicit qualified real Level 2 v4 owner export"]
+    fn level_two_v4_package_open_rejects_selector64_after_all_manifest_hashes_refresh() {
+        let temp = TempLevel2V4Package::copy_from(&level_two_v4_fixture_path());
+        tamper_level_two_v4_selector_64_and_refresh_manifest(&temp.package);
+        let error = NativeWorld::inspect_level2(&temp.package)
+            .expect_err("dual-refresh selector-64 tamper must fail before session construction");
+        assert!(
+            error.to_string().contains("collision-mask bank"),
+            "source identity must be the rejecting gate: {error}"
+        );
     }
 
     #[test]
@@ -51371,6 +51569,33 @@ mod tests {
         closure: PathBuf,
     }
 
+    struct TempLevel2V4Package {
+        root: PathBuf,
+        package: PathBuf,
+    }
+
+    impl TempLevel2V4Package {
+        fn copy_from(package: &Path) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "mc2-native-world-v4-{}-{}",
+                std::process::id(),
+                unique_suffix()
+            ));
+            let output = root.join("package");
+            fs::create_dir_all(&output).unwrap();
+            for entry in fs::read_dir(package).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_file() {
+                    fs::copy(entry.path(), output.join(entry.file_name())).unwrap();
+                }
+            }
+            Self {
+                root,
+                package: output,
+            }
+        }
+    }
+
     impl TempPackage {
         fn copy_from(package: &Path, closure: &Path) -> Self {
             let root = std::env::temp_dir().join(format!(
@@ -51443,6 +51668,12 @@ mod tests {
     }
 
     impl Drop for TempPackage {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    impl Drop for TempLevel2V4Package {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }

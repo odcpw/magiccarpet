@@ -51,6 +51,10 @@ V3_FILES = V2_FILES | {
 V4_FILES = V3_FILES | {"collision-masks.bin"}
 MSPRD0_0_TAB_SHA256 = "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"
 MSPRD0_0_DAT_SHA256 = "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"
+LEVEL2_COLLISION_MASK_BANK_BYTES = 4638
+LEVEL2_COLLISION_MASK_BANK_SHA256 = (
+    "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432"
+)
 V3_PACKAGE_SHA256 = "15f1ca196b1ebf227860f468e419732c1ba917d57de9097acc5e2f647bbfd835"
 V3_SOURCE_IDENTITY = {
     "upstream_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -716,6 +720,14 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
         }
 
     content = (package / "collision-masks.bin").read_bytes()
+    require(
+        len(content) == LEVEL2_COLLISION_MASK_BANK_BYTES,
+        "Level 2 collision-mask bank byte identity differs from the qualified source bank",
+    )
+    require(
+        hashlib.sha256(content).hexdigest() == LEVEL2_COLLISION_MASK_BANK_SHA256,
+        "Level 2 collision-mask bank SHA-256 differs from the qualified source bank",
+    )
     require(len(content) >= 20, "collision-mask carrier header is truncated")
     require(content[:4] == b"MCM1", "collision-mask carrier magic mismatch")
     require(u16(content, 4) == 1, "collision-mask carrier version mismatch")

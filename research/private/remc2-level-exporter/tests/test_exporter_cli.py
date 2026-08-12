@@ -21,7 +21,13 @@ import sys
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verify_package import SCHEMA_V3, SCHEMA_V4, verify
+from verify_package import (
+    LEVEL2_COLLISION_MASK_BANK_BYTES,
+    LEVEL2_COLLISION_MASK_BANK_SHA256,
+    SCHEMA_V3,
+    SCHEMA_V4,
+    verify,
+)
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -306,7 +312,9 @@ def test_deterministic_level_profiles() -> None:
             "map_type": {"id": 0, "name": "Day"},
         }
         assert level_two_manifest["schema"] == SCHEMA_V4
-        assert level_two_manifest["files"]["collision-masks.bin"]["bytes"] > 20
+        collision_member = level_two_manifest["files"]["collision-masks.bin"]
+        assert collision_member["bytes"] == LEVEL2_COLLISION_MASK_BANK_BYTES
+        assert collision_member["sha256"] == LEVEL2_COLLISION_MASK_BANK_SHA256
         assert level_two_manifest["collision_masks"]["magic"] == "MCM1"
         assert level_two_manifest["collision_masks"]["vga_resolution_selector"] == 1
         assert level_two_manifest["collision_masks"]["selectors"]
@@ -361,6 +369,40 @@ def test_deterministic_level_profiles() -> None:
             _refresh_package_hash(candidate)
 
         _expect_level2_rejected(level_two_a, tamper_collision_mask_payload)
+
+        def tamper_selector_64_with_refreshed_identities(candidate: Path) -> None:
+            manifest_path = candidate / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            path = candidate / "collision-masks.bin"
+            content = bytearray(path.read_bytes())
+            count = int.from_bytes(content[12:16], "little")
+            cursor = 20
+            found = False
+            for row_index in range(count):
+                selector = int.from_bytes(content[cursor : cursor + 2], "little")
+                pixel_bytes = int.from_bytes(content[cursor + 8 : cursor + 12], "little")
+                payload_start = cursor + 12
+                payload_end = payload_start + pixel_bytes
+                if selector == 64:
+                    content[payload_end - 1] ^= 1
+                    manifest["collision_masks"]["selectors"][row_index]["sha256"] = (
+                        hashlib.sha256(content[payload_start:payload_end]).hexdigest()
+                    )
+                    found = True
+                    break
+                cursor = payload_end
+            assert found, "qualified Level 2 carrier must contain selector 64"
+            path.write_bytes(content)
+            path.chmod(0o600)
+            manifest["files"]["collision-masks.bin"].update(
+                {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+            )
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            _refresh_package_hash(candidate)
+
+        # Refresh the member, selector-row, and aggregate package identities.
+        # Only the immutable source bank identity should reject this mutation.
+        _expect_level2_rejected(level_two_a, tamper_selector_64_with_refreshed_identities)
 
         def tamper_collision_mask_header(candidate: Path) -> None:
             path = candidate / "collision-masks.bin"
