@@ -32197,6 +32197,25 @@ mod tests {
             castle.mana = 20_000;
             castle.mana_capacity = 18_000;
         }
+        let terminal_cursor_rows = teardown
+            .economy()
+            .live_arena_cursor_rows()
+            .into_iter()
+            .filter(|row| {
+                matches!(
+                    row.kind,
+                    Level2DynamicArenaKind::CastleChild | Level2DynamicArenaKind::CastleController
+                )
+            })
+            .map(|row| (row.source_slot, row.generation, row.kind))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            terminal_cursor_rows,
+            vec![
+                (116, 1, Level2DynamicArenaKind::CastleChild),
+                (117, 1, Level2DynamicArenaKind::CastleController),
+            ]
+        );
         assert!(teardown.economy_mut().step_castle_action(teardown_slot));
         let downgraded = teardown.economy().castle().expect("downgraded Castle");
         assert!(downgraded.active);
@@ -32249,13 +32268,101 @@ mod tests {
                     next_level: 1,
                 })
         );
+        let callback_child_rows = teardown
+            .economy()
+            .castle_children()
+            .iter()
+            .filter(|child| child.active)
+            .map(|child| {
+                (
+                    child.source_entity_index,
+                    child.source_class,
+                    child.model,
+                    child.action,
+                    child.parent_entity_index,
+                    child.chain_previous_slot,
+                    child.chain_next_slot,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            callback_child_rows,
+            vec![
+                (116, 10, 42, 44, teardown_slot, 0, 0),
+                (117, 10, 79, 0, teardown_slot, teardown_slot, 0),
+                (128, 3, 3, 9, teardown_slot, 0, 0),
+            ]
+        );
+
+        teardown.select_level2_campaign_entry_stage();
+        teardown.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(teardown.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Castle { source_slot, .. }
+                    if *source_slot == teardown_slot
+            )
+        }));
+        let terminal_dispatch_rows = teardown
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::DynamicArena {
+                    source_slot, kind, ..
+                } if matches!(
+                    kind,
+                    Level2DynamicArenaKind::CastleChild | Level2DynamicArenaKind::CastleController
+                ) =>
+                {
+                    Some((*source_slot, *kind))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            terminal_dispatch_rows,
+            vec![
+                (116, Level2DynamicArenaKind::CastleChild),
+                (117, Level2DynamicArenaKind::CastleController),
+            ]
+        );
+        let live_cursor_rows = teardown.economy().live_arena_cursor_rows();
         assert!(
-            teardown
-                .economy()
-                .castle_children()
+            terminal_cursor_rows
                 .iter()
-                .filter(|child| child.active)
-                .all(|child| child.model == 79 || (child.source_class == 3 && child.model == 3))
+                .all(|(source_slot, generation, _)| {
+                    !live_cursor_rows
+                        .iter()
+                        .any(|row| row.source_slot == *source_slot && row.generation == *generation)
+                })
+        );
+        let terminal_post_turn_rows = terminal_cursor_rows
+            .iter()
+            .map(|(source_slot, generation, _)| {
+                (
+                    *source_slot,
+                    *generation,
+                    live_cursor_rows
+                        .iter()
+                        .find(|row| row.source_slot == *source_slot)
+                        .map(|row| (row.source_slot, row.generation, row.kind)),
+                    teardown.economy().map_chains().is_linked(*source_slot),
+                    teardown.economy().free_slots.contains(source_slot),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            terminal_post_turn_rows,
+            vec![
+                (
+                    116,
+                    1,
+                    Some((116, 2, Level2DynamicArenaKind::ManaAttraction)),
+                    true,
+                    false,
+                ),
+                (117, 1, None, false, true),
+            ]
         );
         assert_eq!(
             teardown
@@ -32263,8 +32370,19 @@ mod tests {
                 .castle_children()
                 .iter()
                 .filter(|child| child.active)
-                .count(),
-            2
+                .map(|child| {
+                    (
+                        child.source_entity_index,
+                        child.source_class,
+                        child.model,
+                        child.action,
+                        child.parent_entity_index,
+                        child.chain_previous_slot,
+                        child.chain_next_slot,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![(128, 3, 3, 9, teardown_slot, 0, 0)]
         );
 
         // A final-stage teardown also completes with an exhausted arena and
