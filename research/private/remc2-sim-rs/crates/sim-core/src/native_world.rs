@@ -39,7 +39,8 @@ use crate::{
     },
     heading_for_positions,
     house::{
-        HOUSE_CLASS, HOUSE_MODEL, HouseFamily, HouseResidentEntry, HouseState, HouseStepEvent,
+        HOUSE_CLASS, HOUSE_MODEL, HouseFamily, HouseParameter, HouseResidentEntry, HouseState,
+        HouseStepEvent,
     },
     latch_command_with_context,
     legacy_terrain::{
@@ -3472,6 +3473,7 @@ pub struct NativeWorldInspection {
     authored_level: Box<[u8]>,
     collision_masks: Option<CollisionMaskBank>,
     level2_castle_stage_footprints: BTreeMap<u8, CastleBuildFootprint>,
+    level2_house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
 }
 
 impl NativeWorldInspection {
@@ -3623,6 +3625,7 @@ impl NativeWorldInspection {
             self.entities.clone(),
             self.players.clone(),
             self.presentation.clone(),
+            self.level2_house_build_footprints.clone(),
         )?;
         let goat_config = GoatBehaviorConfig::from_level_two_parameter_record(
             self.presentation
@@ -18994,6 +18997,7 @@ impl Level2SharedSpellResetSession {
 pub struct Level2OrdinaryResetSession {
     baseline_terrain: SessionTerrain,
     pub terrain: SessionTerrain,
+    house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
     baseline_houses: HouseFamily,
     houses: HouseFamily,
     baseline_villagers: VillagerFamily,
@@ -19012,6 +19016,7 @@ impl Level2OrdinaryResetSession {
         entities: Box<[EntitySnapshot]>,
         players: Box<[PlayerSnapshot]>,
         presentation: PresentationSelectors,
+        house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
     ) -> Result<Self> {
         let houses =
             HouseFamily::from_level_two_entities(&entities).map_err(NativeWorldError::new)?;
@@ -19059,6 +19064,7 @@ impl Level2OrdinaryResetSession {
         Ok(Self {
             baseline_terrain: terrain.clone(),
             terrain,
+            house_build_footprints,
             baseline_houses: houses.clone(),
             houses,
             baseline_villagers: villagers.clone(),
@@ -19127,6 +19133,93 @@ impl Level2OrdinaryResetSession {
 
     pub fn step_house_action_52(&mut self, source_slot: u16) -> Vec<HouseStepEvent> {
         self.houses.step_source_slot(source_slot, &self.terrain)
+    }
+
+    fn apply_house_terrain_events(&mut self, events: &[HouseStepEvent]) -> Result<()> {
+        for event in events {
+            match *event {
+                HouseStepEvent::ConstructionPass {
+                    position,
+                    building_index,
+                    remaining,
+                    ..
+                } => {
+                    let footprint = self
+                        .house_build_footprints
+                        .get(&building_index)
+                        .ok_or_else(|| {
+                            NativeWorldError::new(format!(
+                                "Level 2 House BUILD footprint {building_index} is absent"
+                            ))
+                        })?;
+                    self.terrain
+                        .apply_house_construction(position, Some(remaining), footprint)
+                        .map_err(NativeWorldError::new)?;
+                }
+                HouseStepEvent::ConstructionCompleted {
+                    position,
+                    building_index,
+                    ..
+                } => {
+                    let footprint = self
+                        .house_build_footprints
+                        .get(&building_index)
+                        .ok_or_else(|| {
+                            NativeWorldError::new(format!(
+                                "Level 2 House BUILD footprint {building_index} is absent"
+                            ))
+                        })?;
+                    self.terrain
+                        .apply_house_construction(position, None, footprint)
+                        .map_err(NativeWorldError::new)?;
+                }
+                HouseStepEvent::RemoveFootprint {
+                    entity_index,
+                    position,
+                    building_index,
+                    occupants,
+                    rng,
+                    ..
+                } => {
+                    let produces_residents = self
+                        .houses
+                        .houses()
+                        .iter()
+                        .find(|house| house.entity_index == entity_index)
+                        .is_some_and(|house| house.parameter.produces_villagers());
+                    let footprint = self
+                        .house_build_footprints
+                        .get(&building_index)
+                        .ok_or_else(|| {
+                            NativeWorldError::new(format!(
+                                "Level 2 House BUILD footprint {building_index} is absent"
+                            ))
+                        })?;
+                    let outcome = self
+                        .terrain
+                        .apply_house_removal(
+                            position,
+                            rng,
+                            occupants,
+                            produces_residents,
+                            footprint,
+                        )
+                        .map_err(NativeWorldError::new)?;
+                    self.houses
+                        .commit_removal_state(
+                            entity_index,
+                            outcome.final_rng,
+                            outcome.final_occupants,
+                        )
+                        .map_err(NativeWorldError::new)?;
+                }
+                HouseStepEvent::Damaged { .. }
+                | HouseStepEvent::DestructionStarted { .. }
+                | HouseStepEvent::ResidentRequested { .. }
+                | HouseStepEvent::Possessed { .. } => {}
+            }
+        }
+        Ok(())
     }
 
     pub fn step_villager_action_105(&mut self, source_slot: u16) -> Vec<VillagerStepEffect> {
@@ -23252,6 +23345,9 @@ impl Level2ResetSession {
                 },
                 2 => {
                     let events = self.ordinary.step_house_action_52(source_slot);
+                    self.ordinary
+                        .apply_house_terrain_events(&events)
+                        .expect("qualified Level 2 House terrain event");
                     self.dispatch_events.push(Level2DispatchEvent::House {
                         pass,
                         source_slot,
@@ -25149,7 +25245,7 @@ impl NativeWorld {
             .map_err(|error| NativeWorldError::new(format!("invalid manifest JSON: {error}")))?;
         let object = as_object(&manifest, "manifest")?;
         let common = parse_common_package(package_dir, object, OwnerPackageProfile::Level2)?;
-        let level2_castle_stage_footprints = owner_cache
+        let (level2_castle_stage_footprints, level2_house_build_footprints) = owner_cache
             .map(|owner_cache| {
                 load_level2_castle_stage_footprints(owner_cache, &common.package.package_sha256)
             })
@@ -25171,6 +25267,7 @@ impl NativeWorld {
             authored_level: common.authored.into_boxed_slice(),
             collision_masks: common.collision_masks,
             level2_castle_stage_footprints,
+            level2_house_build_footprints,
         })
     }
 
@@ -29139,7 +29236,10 @@ impl QualifiedOwnerCacheReader {
 fn load_level2_castle_stage_footprints(
     root: &Path,
     package_sha256: &str,
-) -> Result<BTreeMap<u8, CastleBuildFootprint>> {
+) -> Result<(
+    BTreeMap<u8, CastleBuildFootprint>,
+    BTreeMap<u8, CastleBuildFootprint>,
+)> {
     let manifest_bytes = read_owner_cache_output(root, "manifest.json")?;
     let manifest_value: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
         NativeWorldError::new(format!(
@@ -29370,7 +29470,44 @@ fn load_level2_castle_stage_footprints(
         footprints.insert(stage, footprint);
         previous_end = Some(data_end);
     }
-    Ok(footprints)
+    let mut house_footprints = BTreeMap::new();
+    for building_index in [26_u8, 29, 30, 44, 50, 55, 59, 60, 64] {
+        if HouseParameter::level_two(building_index).is_none() {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 House BUILD selector {building_index} has no qualified BLDGPRM row"
+            )));
+        }
+        let record_offset = usize::from(building_index) * 6;
+        let data_offset = usize::try_from(read_u32(
+            &tab,
+            record_offset,
+            "Level 2 House BUILD TAB offset",
+        )?)
+        .map_err(|_| NativeWorldError::new("Level 2 House BUILD TAB offset exceeds usize"))?;
+        let width = read_u8(&tab, record_offset + 4, "Level 2 House BUILD TAB width")?;
+        let height = read_u8(&tab, record_offset + 5, "Level 2 House BUILD TAB height")?;
+        let payload_bytes = usize::from(width)
+            .checked_mul(usize::from(height))
+            .and_then(|cells| cells.checked_mul(2))
+            .ok_or_else(|| NativeWorldError::new("Level 2 House BUILD payload size overflow"))?;
+        let data_end = data_offset
+            .checked_add(payload_bytes)
+            .filter(|end| *end <= dat.len())
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Level 2 House BUILD selector {building_index} escapes DATA_BUILD0-0.DAT"
+                ))
+            })?;
+        let footprint = CastleBuildFootprint::from_owner_cells(
+            building_index,
+            width,
+            height,
+            &dat[data_offset..data_end],
+        )
+        .map_err(NativeWorldError::new)?;
+        house_footprints.insert(building_index, footprint);
+    }
+    Ok((footprints, house_footprints))
 }
 
 #[derive(Debug, Default)]
@@ -32735,6 +32872,130 @@ mod tests {
             NativeWorld::inspect_level2_with_owner_cache(&package, &dat_tampered_root).is_err()
         );
         fs::remove_dir_all(dat_tampered_root).expect("remove DAT tamper cache");
+    }
+
+    #[test]
+    fn level_two_economy_dispatch_uses_one_terrain_and_reset_authority() {
+        let package = level_two_fixture_path();
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+            .expect("qualified Level 2 gameplay component");
+        assert_eq!(inspection.level2_house_build_footprints.len(), 9);
+        for building_index in [26_u8, 29, 30, 44, 50, 55, 59, 60, 64] {
+            let footprint = inspection
+                .level2_house_build_footprints
+                .get(&building_index)
+                .expect("qualified Level 2 House BUILD footprint");
+            assert_eq!(footprint.index, building_index);
+            assert_eq!(
+                footprint.cells().len(),
+                usize::from(footprint.width) * usize::from(footprint.height)
+            );
+        }
+
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("cache-loaded Level 2 session");
+        session.select_level2_campaign_entry_stage();
+        let baseline_terrain_hash = session.terrain_hash();
+        let baseline_campaign_hash = session.campaign_state_hash();
+        let baseline_ordinary_hash = session.ordinary().reset_hash();
+        let baseline_free_count = session.economy().free_slots.len();
+        let baseline_arena_slots = session.economy().live_arena_slots();
+        let baseline_family_counts = (
+            session
+                .ordinary()
+                .houses()
+                .iter()
+                .filter(|house| house.active)
+                .count(),
+            session
+                .ordinary()
+                .villagers()
+                .iter()
+                .filter(|villager| villager.active)
+                .count(),
+            session
+                .ordinary()
+                .dolmens()
+                .iter()
+                .filter(|dolmen| dolmen.entity().active)
+                .count(),
+            session.economy().live_arena_slots(),
+        );
+        let house = session.ordinary().houses()[0];
+        assert!(
+            inspection
+                .level2_house_build_footprints
+                .contains_key(&house.building_index)
+        );
+        session
+            .ordinary_mut()
+            .inject_house_damage(house.entity_index, house.life.wrapping_add(1), 111)
+            .expect("qualified House damage mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::House { events, .. }
+                    if events.iter().any(|event| matches!(
+                        event,
+                        HouseStepEvent::RemoveFootprint { entity_index, .. }
+                            if *entity_index == house.entity_index
+                    ))
+            )
+        }));
+        assert_eq!(session.terrain, session.ordinary().terrain);
+        assert_eq!(session.terrain, session.economy().terrain);
+        assert_ne!(session.terrain_hash(), baseline_terrain_hash);
+        let replay_dispatch = session.dispatch_events().to_vec();
+        let replay_terrain_hash = session.terrain_hash();
+        let replay_campaign_hash = session.campaign_state_hash();
+        let replay_ordinary_hash = session.ordinary().reset_hash();
+
+        session.reset();
+        assert_eq!(session.terrain_hash(), baseline_terrain_hash);
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+        assert_eq!(session.ordinary().reset_hash(), baseline_ordinary_hash);
+        assert_eq!(session.economy().free_slots.len(), baseline_free_count);
+        assert_eq!(session.economy().live_arena_slots(), baseline_arena_slots);
+        assert_eq!(
+            (
+                session
+                    .ordinary()
+                    .houses()
+                    .iter()
+                    .filter(|house| house.active)
+                    .count(),
+                session
+                    .ordinary()
+                    .villagers()
+                    .iter()
+                    .filter(|villager| villager.active)
+                    .count(),
+                session
+                    .ordinary()
+                    .dolmens()
+                    .iter()
+                    .filter(|dolmen| dolmen.entity().active)
+                    .count(),
+                session.economy().live_arena_slots(),
+            ),
+            baseline_family_counts
+        );
+
+        session
+            .ordinary_mut()
+            .inject_house_damage(house.entity_index, house.life.wrapping_add(1), 111)
+            .expect("replay House damage mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.dispatch_events(), replay_dispatch.as_slice());
+        assert_eq!(session.terrain_hash(), replay_terrain_hash);
+        assert_eq!(session.campaign_state_hash(), replay_campaign_hash);
+        assert_eq!(session.ordinary().reset_hash(), replay_ordinary_hash);
     }
 
     #[test]
