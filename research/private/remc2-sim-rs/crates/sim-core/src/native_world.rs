@@ -6040,7 +6040,72 @@ impl Level2EconomyState {
     }
 
     fn allocate_slot(&mut self) -> Option<u16> {
-        let slot = self.free_slots.pop()?;
+        if let Some(slot) = self.free_slots.pop() {
+            let generation = self.slot_generations.entry(slot).or_default();
+            *generation = generation.wrapping_add(1);
+            return Some(slot);
+        }
+
+        // `NewEvent_4A050` falls through to the lowest live replaceable row
+        // when `sub_49F90` has no ordinary free slot. The current Level 2
+        // producers carrying byte[2] & 2 are death bursts and Castle
+        // class-5/model-15 auxiliaries. Evict the typed projection directly;
+        // `release_slot` would incorrectly add this row to the ordinary free
+        // stack and would lose the source relation that `sub_5FF50` cleans.
+        let death_burst_slot = self
+            .death_bursts
+            .iter()
+            .filter(|burst| burst.active && burst.control_flags & SOURCE_REPLACEABLE_FLAG != 0)
+            .map(|burst| burst.source_entity_index)
+            .min();
+        let castle_auxiliary_slot = self
+            .castle_children
+            .iter()
+            .filter(|child| {
+                child.active
+                    && child.source_class == 5
+                    && child.model == 15
+                    && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+            })
+            .map(|child| child.source_entity_index)
+            .min();
+        let (slot, evict_death_burst) = match (death_burst_slot, castle_auxiliary_slot) {
+            (Some(death_burst), Some(castle_auxiliary)) if death_burst <= castle_auxiliary => {
+                (death_burst, true)
+            }
+            (Some(_), Some(castle_auxiliary)) => (castle_auxiliary, false),
+            (Some(death_burst), None) => (death_burst, true),
+            (None, Some(castle_auxiliary)) => (castle_auxiliary, false),
+            (None, None) => return None,
+        };
+
+        if evict_death_burst {
+            let Some(index) = self
+                .death_bursts
+                .iter()
+                .position(|burst| burst.active && burst.source_entity_index == slot)
+            else {
+                return None;
+            };
+            self.death_bursts.remove(index);
+        } else {
+            let Some(index) = self.castle_children.iter().position(|child| {
+                child.active
+                    && child.source_entity_index == slot
+                    && child.source_class == 5
+                    && child.model == 15
+            }) else {
+                return None;
+            };
+            self.castle_children.remove(index);
+        }
+        let _ = self.map_chains.sync_entity(RenderableMapSeed {
+            entity_index: slot,
+            active: false,
+            x: 0,
+            y: 0,
+        });
+        self.slot_rng.remove(&slot);
         let generation = self.slot_generations.entry(slot).or_default();
         *generation = generation.wrapping_add(1);
         Some(slot)
