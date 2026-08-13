@@ -612,9 +612,11 @@ impl Level2NyphurCommonUpkeep {
             .is_some_and(|holder| self.max_mana >= holder.max_mana)
     }
 
-    /// Resolve the family-8 carrier through the entity currently named by
-    /// source word 0x96. The pinned call is `sub_15760(Entities[target], 8)`;
-    /// it does not consult this AI's common-upkeep holder table.
+    /// Resolve the family-8 carrier from the entity currently named by source
+    /// word 0x96. The pinned call is `sub_15760(Entities[target], 8)`: the
+    /// target itself must be a player/wizard carrier whose `entity_index`
+    /// names that row. It does not follow the target's own 0x94 relation and
+    /// does not consult this AI's common-upkeep holder table.
     fn target_sub_15760_family8(
         &self,
         target_slot: u16,
@@ -627,10 +629,9 @@ impl Level2NyphurCommonUpkeep {
         if target.index != target_slot {
             return false;
         }
-        let owner_entity_index = target.source_player_entity_index();
         let Some(owner) = players
             .iter()
-            .find(|player| player.entity_index == owner_entity_index)
+            .find(|player| player.entity_index == target_slot)
         else {
             return false;
         };
@@ -4963,9 +4964,12 @@ mod tests {
         assert_eq!(mutation_entities[113].max_mana, 1_000);
 
         // sub_15790's optional family-8 branch resolves the CURRENT TARGET's
-        // owner, not this AI's common-upkeep holder table, and consumes one
-        // RNG draw only when that target-owner holder is active. sub_15910
-        // has the distinct sentinel order but no such draw.
+        // own player/wizard carrier by target entity index, not the target's
+        // 0x94 relation and not this AI's common-upkeep holder table. A
+        // class-5 target has no such carrier and must not consume RNG. A
+        // genuine player target with its own active holder consumes exactly
+        // one source draw. sub_15910 has the distinct sentinel order but no
+        // such draw.
         let mut rng_15790 = session.nyphur_dispatcher.common_upkeep.clone();
         let mut rng_15910 = rng_15790.clone();
         rng_15790.word_0x244 = 255;
@@ -4973,45 +4977,57 @@ mod tests {
         rng_entities[113].active_value = 1;
         rng_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
         assert!(rng_entities[70].active);
-        let target_owner_slot = session
+        let player_zero_slot = session
             .players
             .iter()
             .position(|player| player.slot == 0)
-            .expect("target-owner player row");
-        let target_owner_entity_index = session.players[target_owner_slot].entity_index;
-        rng_entities[70].record[152..154].copy_from_slice(&target_owner_entity_index.to_le_bytes());
-        let mut target_active_players = session.players.clone();
-        target_active_players[target_owner_slot].enabled_spell_holders[8] = 113;
+            .expect("player-zero row");
+        let player_zero_entity_index = session.players[player_zero_slot].entity_index;
+        // Keep a misleading 0x94 relation to player zero: the target-owner
+        // carrier must come from target entity 70 itself, not this relation.
+        rng_entities[70].record[152..154].copy_from_slice(&player_zero_entity_index.to_le_bytes());
+        let mut player_zero_active_players = session.players.clone();
+        player_zero_active_players[player_zero_slot].enabled_spell_holders[8] = 113;
         let rng_before = rng_15790.watcom_rand_state;
         // Family zero is the pinned zero-terminated row: the source's
         // zero-valued failure result is therefore indistinguishable from a
         // family-zero match, even when its authored profile is absent.
-        // The target-owner family-8 holder is active while the AI's local
-        // holder table is cold, so the target probe must still draw.
+        // Class-5 target 70 has no own player/wizard carrier. Player zero's
+        // active family-8 holder and the misleading 0x94 relation are
+        // irrelevant, so the target probe must not draw.
         assert_eq!(
-            rng_15790.step_sub_15790(70, &mut rng_entities, &target_active_players),
+            rng_15790.step_sub_15790(70, &mut rng_entities, &player_zero_active_players),
             0
         );
-        assert_ne!(rng_15790.watcom_rand_state, rng_before);
+        assert_eq!(rng_15790.watcom_rand_state, rng_before);
 
-        let mut rng_ai_only = session.nyphur_dispatcher.common_upkeep.clone();
-        rng_ai_only.word_0x244 = 255;
-        rng_ai_only.spell_holder_indices[8] = 113;
-        let mut ai_only_entities = session.entities.clone();
-        ai_only_entities[113].active_value = 1;
-        ai_only_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
-        ai_only_entities[70].record[152..154]
-            .copy_from_slice(&target_owner_entity_index.to_le_bytes());
-        let mut target_cold_players = session.players.clone();
-        target_cold_players[target_owner_slot].enabled_spell_holders[8] = 0;
-        let ai_only_rng_before = rng_ai_only.watcom_rand_state;
-        // The AI's local family-8 holder is active while the CURRENT TARGET's
-        // owner is cold, so the target probe must not draw.
+        let player_target_slot = player_zero_entity_index;
+        let mut player_target_entities = session.entities.clone();
+        player_target_entities[usize::from(player_target_slot)].record[152..154]
+            .copy_from_slice(&0_u16.to_le_bytes());
+        player_target_entities[113].active_value = 1;
+        player_target_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+        let mut player_target_players = session.players.clone();
+        player_target_players[player_zero_slot].enabled_spell_holders[8] = 113;
+        let player_target_rng_before = rng_15790.watcom_rand_state;
+        let mut expected_player_target_rng = rng_15790.clone();
+        expected_player_target_rng.step_watcomrand();
+        // A genuine player target owns the active family-8 carrier. Its 0x94
+        // relation is deliberately zero and the AI's own holder table remains
+        // cold, so exactly the target-owned source draw must occur.
         assert_eq!(
-            rng_ai_only.step_sub_15790(70, &mut ai_only_entities, &target_cold_players),
+            rng_15790.step_sub_15790(
+                player_target_slot,
+                &mut player_target_entities,
+                &player_target_players,
+            ),
             0
         );
-        assert_eq!(rng_ai_only.watcom_rand_state, ai_only_rng_before);
+        assert_ne!(rng_15790.watcom_rand_state, player_target_rng_before);
+        assert_eq!(
+            rng_15790.watcom_rand_state,
+            expected_player_target_rng.watcom_rand_state
+        );
 
         let rng_15910_before = rng_15910.watcom_rand_state;
         let mut rng_entities_without_optional = session.entities.clone();
