@@ -26552,9 +26552,23 @@ mod tests {
     }
 
     #[test]
-    fn level_two_day_terrain_outdoor_flight_and_camera_use_shared_production_planes() {
+    fn level_two_shared_day_flight_uses_level2_profile() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
+        let mission_profile = inspection
+            .mission_content_profile()
+            .expect("qualified Level 2 mission profile");
+        assert!(mission_profile.is_level2());
+        assert_eq!(mission_profile, MissionContentProfile::LEVEL2);
+        assert!(!MissionContentProfile::LEVEL1.is_level2());
+        assert!(MissionContentProfile::from_metadata(2, 0, 0).is_err());
+        assert!(MissionContentProfile::from_metadata(2, 1, 1).is_err());
+        assert_eq!(inspection.metadata().external_level, 2);
+        assert_eq!(inspection.metadata().internal_level, 1);
+        assert_eq!(inspection.runtime().player_count, 2);
+        assert_eq!(inspection.runtime().local_player_slot, 0);
+        assert!(!inspection.players()[0].is_ai);
+        assert!(inspection.players()[1].is_ai);
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 reset session");
@@ -26654,6 +26668,7 @@ mod tests {
         // The Level 2 local wizard uses the same outdoor input/flight pass;
         // non-zero forward input is observable in the authoritative state.
         let before = session.state;
+        let baseline_campaign_hash = session.campaign_state_hash();
         let evidence = session.step_outer_turn(
             PlayerCommand {
                 flags: 1,
@@ -26665,8 +26680,35 @@ mod tests {
         assert_eq!(session.state.target_speed, 16);
         assert_eq!(session.state.speed_changed_flag, 1);
         assert_eq!(session.state.tick, before.tick + 1);
+        assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
+        let stepped_state = session.state;
+        let stepped_campaign_hash = session.campaign_state_hash();
+
+        let mut fresh = inspection
+            .level2_reset_session()
+            .expect("independent Level 2 reset session");
+        fresh.step_outer_turn(
+            PlayerCommand {
+                flags: 1,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert_eq!(fresh.state, stepped_state);
+        assert_eq!(fresh.campaign_state_hash(), stepped_campaign_hash);
+
         session.reset();
         assert_eq!(session.state, before);
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+        session.step_outer_turn(
+            PlayerCommand {
+                flags: 1,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert_eq!(session.state, stepped_state);
+        assert_eq!(session.campaign_state_hash(), stepped_campaign_hash);
     }
 
     #[test]
