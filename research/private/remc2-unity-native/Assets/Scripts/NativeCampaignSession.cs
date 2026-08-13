@@ -52,14 +52,17 @@ namespace MagicCarpet.Native
         private static int activeSessionCount;
         private long handleBits;
         private ulong generation;
+        private ulong tick;
+        private readonly bool dayMusicAvailable;
         private readonly byte[] dayIndexedFrameIndices =
             new byte[NativeSim.DayIndexedFrameIndexBytes];
         private readonly byte[] dayIndexedFramePalette =
             new byte[NativeSim.DayIndexedFramePaletteBytes];
 
-        private NativeCampaignSession(ulong handle)
+        private NativeCampaignSession(ulong handle, bool dayMusicAvailable)
         {
             handleBits = unchecked((long)handle);
+            this.dayMusicAvailable = dayMusicAvailable;
             Interlocked.Increment(ref activeSessionCount);
         }
 
@@ -80,6 +83,8 @@ namespace MagicCarpet.Native
         }
 
         internal ulong Generation => generation;
+
+        internal ulong Tick => tick;
 
         internal byte[] DayIndexedFrameIndices => dayIndexedFrameIndices;
 
@@ -134,7 +139,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "campaign session returned handle zero");
             }
-            return new NativeCampaignSession(handle);
+            return new NativeCampaignSession(handle, overrideCachePath);
         }
 
         private static void ValidateLevel2PackageIdentity(string packagePath)
@@ -1031,7 +1036,65 @@ namespace MagicCarpet.Native
                     $"campaign event count {eventCount} exceeds buffer {events.Length}");
             }
             generation = snapshot.generation;
+            tick = snapshot.revision;
             return (snapshot, events.Take(checked((int)eventCount)).ToArray());
+        }
+
+        internal NativeSim.CampaignDayMusicSnapshot DayMusicState()
+        {
+            var state = default(NativeSim.CampaignDayMusicSnapshot);
+            var status = NativeSim.mc_native_campaign_day_music_state(
+                Handle,
+                generation,
+                tick,
+                ref state,
+                80);
+            NativeSession.Check(status, "read Level 2 Day music state");
+            ValidateDayMusicState(state, generation, tick);
+            return state;
+        }
+
+        internal NativeSim.CampaignDayMusicSnapshot AdvanceDayMusic(uint callbackCount)
+        {
+            var state = default(NativeSim.CampaignDayMusicSnapshot);
+            var status = NativeSim.mc_native_campaign_day_music_advance(
+                Handle,
+                generation,
+                tick,
+                callbackCount,
+                ref state,
+                80);
+            NativeSession.Check(status, "advance Level 2 Day music fade");
+            ValidateDayMusicState(state, generation, tick);
+            return state;
+        }
+
+        internal NativeSim.CampaignDayMusicSnapshot StopDayMusic()
+        {
+            var state = default(NativeSim.CampaignDayMusicSnapshot);
+            var status = NativeSim.mc_native_campaign_day_music_stop(
+                Handle,
+                generation,
+                tick,
+                ref state,
+                80);
+            NativeSession.Check(status, "stop Level 2 Day music");
+            ValidateDayMusicState(state, generation, tick);
+            return state;
+        }
+
+        internal NativeSim.CampaignDayMusicSnapshot EndDayMusic()
+        {
+            var state = default(NativeSim.CampaignDayMusicSnapshot);
+            var status = NativeSim.mc_native_campaign_day_music_end(
+                Handle,
+                generation,
+                tick,
+                ref state,
+                80);
+            NativeSession.Check(status, "end Level 2 Day music");
+            ValidateDayMusicState(state, generation, tick);
+            return state;
         }
 
         internal NativeSim.CampaignEconomyEvent[] EconomyEvents()
@@ -1093,6 +1156,7 @@ namespace MagicCarpet.Native
             var status = NativeSim.mc_native_campaign_session_reset(Handle);
             NativeSession.Check(status, "reset Level 2 campaign session");
             generation++;
+            tick = 0;
         }
 
         public void Dispose()
@@ -1101,6 +1165,22 @@ namespace MagicCarpet.Native
             if (value == 0)
             {
                 return;
+            }
+            if (dayMusicAvailable)
+            {
+                var endState = default(NativeSim.CampaignDayMusicSnapshot);
+                var endStatus = NativeSim.mc_native_campaign_day_music_end(
+                    unchecked((ulong)value),
+                    generation,
+                    tick,
+                    ref endState,
+                    80);
+                if (endStatus != NativeSim.Ok)
+                {
+                    UnityEngine.Debug.LogError(
+                        $"end campaign Day music failed: {endStatus}: " +
+                        NativeSession.ReadLastError());
+                }
             }
             var status = NativeSim.mc_native_campaign_session_destroy(
                 unchecked((ulong)value));
@@ -1113,6 +1193,40 @@ namespace MagicCarpet.Native
                 return;
             }
             Interlocked.Decrement(ref activeSessionCount);
+        }
+
+        private static void ValidateDayMusicState(
+            NativeSim.CampaignDayMusicSnapshot state,
+            ulong expectedGeneration,
+            ulong expectedTick)
+        {
+            if (state.abiVersion != NativeSim.AbiVersion ||
+                state.structSize != 80 ||
+                state.generation != expectedGeneration ||
+                state.tick != expectedTick ||
+                state.assetSlot != 0 ||
+                state.track != 2 ||
+                state.volume != 127 ||
+                state.initialized > 1 ||
+                state.loaded > 1 ||
+                state.active > 1 ||
+                state.playing > 1 ||
+                state.updatesEnabled > 1 ||
+                state.timerActive > 1 ||
+                (state.targetMode != 1 && state.targetMode != 2) ||
+                (state.direction != -1 && state.direction != 1) ||
+                state.currentUnits > 127 ||
+                state.timerHz !=
+                    ((state.timerMultiplier >= 1 && state.timerMultiplier <= 4)
+                        ? 30 * state.timerMultiplier
+                        : 30) ||
+                state.stateHash == 0 ||
+                !AllZero(state.reserved) ||
+                state.reserved0 != 0)
+            {
+                throw new InvalidDataException(
+                    "Level 2 Day music state violates the native lifecycle contract");
+            }
         }
 
         private static bool AllZero(uint[] values)

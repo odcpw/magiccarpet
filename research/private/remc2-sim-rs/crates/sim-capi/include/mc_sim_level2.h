@@ -487,6 +487,36 @@ typedef struct McCampaignDayHudSnapshotV2 {
     McCampaignDayHudSpellSlotV2 right;
 } McCampaignDayHudSnapshotV2;
 
+/* Rust-owned logical Day music lifecycle; the owner asset is exact XMI. */
+typedef struct McCampaignDayMusicSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint32_t asset_slot;
+    uint32_t start_count;
+    uint32_t update_count;
+    uint32_t fade_callback_count;
+    uint32_t stop_count;
+    uint32_t end_count;
+    uint8_t initialized;
+    uint8_t loaded;
+    uint8_t active;
+    uint8_t playing;
+    uint8_t track;
+    uint8_t volume;
+    uint8_t updates_enabled;
+    uint8_t timer_active;
+    uint8_t target_mode;
+    int8_t direction;
+    uint8_t current_units;
+    uint8_t timer_multiplier;
+    uint16_t timer_hz;
+    uint16_t reserved_0;
+    uint64_t state_hash;
+    uint32_t reserved[2];
+} McCampaignDayMusicSnapshotV2;
+
 /* Generation/tick-bound Rust-owned Level 2 minimap projection summary. */
 typedef struct McCampaignMinimapStateV2 {
     uint32_t abi_version;
@@ -675,6 +705,20 @@ int32_t mc_native_campaign_opponent_state(
 int32_t mc_native_campaign_day_hud_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignDayHudSnapshotV2 *out_state, uint32_t out_state_size);
+
+int32_t mc_native_campaign_day_music_state(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McCampaignDayMusicSnapshotV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_day_music_advance(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t callback_count, McCampaignDayMusicSnapshotV2 *out_state,
+    uint32_t out_state_size);
+int32_t mc_native_campaign_day_music_stop(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McCampaignDayMusicSnapshotV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_day_music_end(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McCampaignDayMusicSnapshotV2 *out_state, uint32_t out_state_size);
 int32_t mc_native_campaign_day_indexed_frame_render(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignDayIndexedFrameInfoV2 *out_info, uint32_t out_info_size);

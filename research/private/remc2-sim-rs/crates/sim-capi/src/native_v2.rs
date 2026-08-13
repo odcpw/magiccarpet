@@ -101,6 +101,7 @@ use sim_core::{
         level1_map_entity_command, level1_minimap_castle_rope_pixels,
         level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
+    music::{DynamicMusicEnvelope, FadeCallback},
     native_world::{
         AssetRef, EntityAuthority, EntitySnapshot, Level2DayHudSnapshot, Level2DayHudSpellSlot,
         Level2DispatchEvent, Level2EconomyEvent, Level2ResetSession, NativeWorld,
@@ -1050,6 +1051,40 @@ pub struct McCampaignDayHudSnapshotV2 {
     pub nyphur: McCampaignOpponentSnapshotV2,
     pub left: McCampaignDayHudSpellSlotV2,
     pub right: McCampaignDayHudSpellSlotV2,
+}
+
+/// Generation/tick-bound logical Day music lifecycle. The qualified owner
+/// cache carries XMI, not PCM; this is the source control state and never an
+/// assertion that the native client can decode the track.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignDayMusicSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub asset_slot: u32,
+    pub start_count: u32,
+    pub update_count: u32,
+    pub fade_callback_count: u32,
+    pub stop_count: u32,
+    pub end_count: u32,
+    pub initialized: u8,
+    pub loaded: u8,
+    pub active: u8,
+    pub playing: u8,
+    pub track: u8,
+    pub volume: u8,
+    pub updates_enabled: u8,
+    pub timer_active: u8,
+    pub target_mode: u8,
+    pub direction: i8,
+    pub current_units: u8,
+    pub timer_multiplier: u8,
+    pub timer_hz: u16,
+    pub reserved_0: u16,
+    pub state_hash: u64,
+    pub reserved: [u32; 2],
 }
 
 /// Generation/tick-bound summary of the authoritative Level 2 minimap
@@ -7925,10 +7960,112 @@ enum CampaignSessionKind {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CampaignDayMusicLifecycle {
+    envelope: DynamicMusicEnvelope,
+    initialized: bool,
+    loaded: bool,
+    active: bool,
+    playing: bool,
+    track: u8,
+    volume: u8,
+    asset_slot: u32,
+    start_count: u32,
+    update_count: u32,
+    fade_callback_count: u32,
+    stop_count: u32,
+    end_count: u32,
+}
+
+impl CampaignDayMusicLifecycle {
+    fn start_day() -> Self {
+        let mut envelope = DynamicMusicEnvelope::default();
+        envelope.start();
+        Self {
+            envelope,
+            initialized: true,
+            loaded: true,
+            active: true,
+            playing: true,
+            track: 2,
+            volume: 127,
+            asset_slot: 0,
+            start_count: 1,
+            update_count: 0,
+            fade_callback_count: 0,
+            stop_count: 0,
+            end_count: 0,
+        }
+    }
+
+    fn update(&mut self, mode: u8, timer_multiplier: u8) {
+        self.update_count = self.update_count.wrapping_add(1);
+        let _ = self.envelope.update(mode, timer_multiplier);
+    }
+
+    fn advance(&mut self, callbacks: u32) {
+        for _ in 0..callbacks {
+            if !self.envelope.timer_active {
+                break;
+            }
+            self.fade_callback_count = self.fade_callback_count.wrapping_add(1);
+            debug_assert!(!matches!(self.envelope.callback(), FadeCallback::Inactive));
+        }
+    }
+
+    fn stop(&mut self) {
+        if !self.playing || !self.active {
+            return;
+        }
+        self.stop_count = self.stop_count.wrapping_add(1);
+        self.playing = false;
+        self.envelope.stop();
+    }
+
+    fn end(&mut self) {
+        if !self.loaded {
+            return;
+        }
+        self.end_count = self.end_count.wrapping_add(1);
+        self.playing = false;
+        self.loaded = false;
+        self.active = false;
+        self.envelope.stop();
+    }
+
+    fn state_hash(self) -> u64 {
+        let mut hasher = Sha256::new();
+        hasher.update(b"level2-day-music-lifecycle-v1");
+        hasher.update(self.asset_slot.to_le_bytes());
+        hasher.update(self.start_count.to_le_bytes());
+        hasher.update(self.update_count.to_le_bytes());
+        hasher.update(self.fade_callback_count.to_le_bytes());
+        hasher.update(self.stop_count.to_le_bytes());
+        hasher.update(self.end_count.to_le_bytes());
+        hasher.update([
+            u8::from(self.initialized),
+            u8::from(self.loaded),
+            u8::from(self.active),
+            u8::from(self.playing),
+            self.track,
+            self.volume,
+            u8::from(self.envelope.updates_enabled),
+            u8::from(self.envelope.timer_active),
+            self.envelope.target_mode,
+            self.envelope.direction.cast_unsigned(),
+            self.envelope.current,
+            self.envelope.timer_multiplier,
+        ]);
+        let digest = hasher.finalize();
+        u64::from_le_bytes(digest[..8].try_into().expect("sha256 has eight bytes"))
+    }
+}
+
 #[derive(Debug)]
 struct CampaignSessionRecord {
     kind: CampaignSessionKind,
     generation: u64,
+    day_music: Option<CampaignDayMusicLifecycle>,
 }
 
 #[derive(Default)]
@@ -8177,6 +8314,7 @@ fn open_campaign_session(
             .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
         reset.select_level2_campaign_entry_stage();
         let day_frame_assets = load_optional_level2_day_frame_assets(asset_cache_path.as_deref())?;
+        let day_music = load_optional_level2_day_music(asset_cache_path.as_deref())?;
         CampaignSessionRecord {
             kind: CampaignSessionKind::Level2 {
                 inspection: Arc::new(inspection),
@@ -8185,6 +8323,7 @@ fn open_campaign_session(
                 day_frame_state: DayIndexedFrameState::new(0),
             },
             generation: 0,
+            day_music,
         }
     } else {
         let closure = utf8_input(closure_path, closure_path_len, "closure_path")?;
@@ -8201,6 +8340,7 @@ fn open_campaign_session(
                 world: Arc::new(world),
             },
             generation: 0,
+            day_music: None,
         }
     };
     let handle = with_campaign_registry_mut(|registry| registry.insert(session))?;
@@ -8236,6 +8376,9 @@ pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
                 reset.reset();
                 session.generation = session.generation.wrapping_add(1);
                 day_frame_state.reset(session.generation);
+                if session.day_music.is_some() {
+                    session.day_music = Some(CampaignDayMusicLifecycle::start_day());
+                }
             }
             Ok(())
         })
@@ -8618,6 +8761,165 @@ pub extern "C" fn mc_native_campaign_day_hud_state(
     })
 }
 
+fn campaign_day_music_snapshot(
+    generation: u64,
+    tick: u64,
+    music: CampaignDayMusicLifecycle,
+) -> McCampaignDayMusicSnapshotV2 {
+    McCampaignDayMusicSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignDayMusicSnapshotV2>(),
+        generation,
+        tick,
+        asset_slot: music.asset_slot,
+        start_count: music.start_count,
+        update_count: music.update_count,
+        fade_callback_count: music.fade_callback_count,
+        stop_count: music.stop_count,
+        end_count: music.end_count,
+        initialized: u8::from(music.initialized),
+        loaded: u8::from(music.loaded),
+        active: u8::from(music.active),
+        playing: u8::from(music.playing),
+        track: music.track,
+        volume: music.volume,
+        updates_enabled: u8::from(music.envelope.updates_enabled),
+        timer_active: u8::from(music.envelope.timer_active),
+        target_mode: music.envelope.target_mode,
+        direction: music.envelope.direction,
+        current_units: music.envelope.current,
+        timer_multiplier: music.envelope.timer_multiplier,
+        timer_hz: DynamicMusicEnvelope::timer_hz(music.envelope.timer_multiplier),
+        reserved_0: 0,
+        state_hash: music.state_hash(),
+        reserved: [0; 2],
+    }
+}
+
+fn with_level2_campaign_day_music<T>(
+    session: &CampaignSessionRecord,
+    generation: u64,
+    expected_tick: u64,
+    operation: impl FnOnce(CampaignDayMusicLifecycle) -> AbiResult<T>,
+) -> AbiResult<T> {
+    let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "campaign Day music requires a Level 2 campaign session",
+        ));
+    };
+    if generation != session.generation || expected_tick != reset.state.tick {
+        return Err(AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            format!(
+                "campaign Day music generation/tick {generation}/{expected_tick} does not match {}/{}",
+                session.generation, reset.state.tick
+            ),
+        ));
+    }
+    let music = session.day_music.ok_or_else(|| {
+        AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            "campaign Day music requires the qualified Level 2 owner cache",
+        )
+    })?;
+    operation(music)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_day_music_state(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    out_state: *mut McCampaignDayMusicSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session(handle, |session| {
+            with_level2_campaign_day_music(session, generation, expected_tick, |music| {
+                Ok(campaign_day_music_snapshot(
+                    generation,
+                    expected_tick,
+                    music,
+                ))
+            })
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_day_music_advance(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    callback_count: u32,
+    out_state: *mut McCampaignDayMusicSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        if callback_count > 1_024 {
+            return Err(AbiError::new(
+                MC_STATUS_BOUNDS,
+                "campaign Day music callback count exceeds 1024",
+            ));
+        }
+        with_campaign_session_mut(handle, |session| {
+            with_level2_campaign_day_music(session, generation, expected_tick, |_| Ok(()))?;
+            let music = session.day_music.as_mut().expect("validated Day music");
+            music.advance(callback_count);
+            Ok(campaign_day_music_snapshot(
+                generation,
+                expected_tick,
+                *music,
+            ))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_day_music_stop(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    out_state: *mut McCampaignDayMusicSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session_mut(handle, |session| {
+            with_level2_campaign_day_music(session, generation, expected_tick, |_| Ok(()))?;
+            let music = session.day_music.as_mut().expect("validated Day music");
+            music.stop();
+            Ok(campaign_day_music_snapshot(
+                generation,
+                expected_tick,
+                *music,
+            ))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_day_music_end(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    out_state: *mut McCampaignDayMusicSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session_mut(handle, |session| {
+            with_level2_campaign_day_music(session, generation, expected_tick, |_| Ok(()))?;
+            let music = session.day_music.as_mut().expect("validated Day music");
+            music.end();
+            Ok(campaign_day_music_snapshot(
+                generation,
+                expected_tick,
+                *music,
+            ))
+        })
+    })
+}
+
 fn campaign_minimap_projection(
     session: &CampaignSessionRecord,
     generation: u64,
@@ -8974,6 +9276,7 @@ pub extern "C" fn mc_native_campaign_session_step(
             }
 
             let mut candidate = reset.clone();
+            let music_event_start = candidate.context.events.len();
             candidate.state.entity_index = player.entity_index;
             candidate.state.position = Position {
                 x: input.player_x,
@@ -8981,6 +9284,18 @@ pub extern "C" fn mc_native_campaign_session_step(
                 z: input.player_z,
             };
             candidate.step_outer_turn(command, input.speed_index);
+
+            if let Some(day_music) = session.day_music.as_mut() {
+                for event in &candidate.context.events[music_event_start..] {
+                    if let FlightEvent::UpdateMusic {
+                        mode,
+                        timer_multiplier,
+                    } = *event
+                    {
+                        day_music.update(mode, timer_multiplier);
+                    }
+                }
+            }
 
             let event_rows = candidate
                 .dispatch_events()
@@ -15105,6 +15420,35 @@ fn load_optional_level2_day_frame_assets(
         })
 }
 
+fn load_optional_level2_day_music(
+    explicit_root: Option<&str>,
+) -> AbiResult<Option<CampaignDayMusicLifecycle>> {
+    let root = explicit_root
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("MC_ASSET_CACHE_PATH").map(PathBuf::from));
+    let Some(root) = root else {
+        return Ok(None);
+    };
+    let audio_root = if root.join("components/audio/manifest.json").is_file() {
+        root.join("components/audio")
+    } else {
+        root
+    };
+    let _ = read_qualified_cache_file(
+        &audio_root,
+        "audio/descriptor.json",
+        171_163,
+        "4563b9f0eb2e7e861d5d99ae08844ab9a5d60dd9e09cc1107522a090182f3bd5",
+    )?;
+    let _ = read_qualified_cache_file(
+        &audio_root,
+        "audio/music/C2GAME1.xmi",
+        10_352,
+        "0f8081d8ef6ad609f406638862a573b9d1d014f940f0f3194e4d5687f724bd8d",
+    )?;
+    Ok(Some(CampaignDayMusicLifecycle::start_day()))
+}
+
 fn load_terrain_frame_assets(root: &Path) -> AbiResult<TerrainFrameAssets> {
     let terrain_atlas = read_qualified_cache_file(
         root,
@@ -18799,6 +19143,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignOpponentSnapshotV2>(), 104);
         assert_eq!(size_of::<McCampaignDayHudSpellSlotV2>(), 48);
         assert_eq!(size_of::<McCampaignDayHudSnapshotV2>(), 272);
+        assert_eq!(size_of::<McCampaignDayMusicSnapshotV2>(), 80);
         assert_eq!(size_of::<McCampaignDayIndexedFrameInfoV2>(), 152);
         assert_eq!(size_of::<McCampaignMinimapStateV2>(), 72);
         assert_eq!(size_of::<McCampaignMinimapEntityV2>(), 56);
@@ -21816,6 +22161,164 @@ mod tests {
     }
 
     #[test]
+    fn level_two_day_music_lifecycle_is_generation_and_tick_bound() {
+        let handle =
+            open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+        let mut initial = McCampaignDayMusicSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_music_state(
+                handle,
+                0,
+                0,
+                &raw mut initial,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(initial.generation, 0);
+        assert_eq!(initial.tick, 0);
+        assert_eq!(initial.asset_slot, 0);
+        assert_eq!(initial.track, 2);
+        assert_eq!(initial.volume, 127);
+        assert_eq!(initial.start_count, 1);
+        assert_eq!(initial.initialized, 1);
+        assert_eq!(initial.loaded, 1);
+        assert_eq!(initial.active, 1);
+        assert_eq!(initial.playing, 1);
+        assert_eq!(initial.updates_enabled, 1);
+        assert_eq!(initial.target_mode, 1);
+        assert_eq!(initial.current_units, 0);
+        assert_eq!(initial.direction, -1);
+        assert_eq!(initial.timer_hz, 90);
+        assert_ne!(initial.state_hash, 0);
+
+        let mut stale = McCampaignDayMusicSnapshotV2 {
+            state_hash: u64::MAX,
+            ..McCampaignDayMusicSnapshotV2::default()
+        };
+        assert_eq!(
+            mc_native_campaign_day_music_state(
+                handle,
+                1,
+                0,
+                &raw mut stale,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(stale.state_hash, u64::MAX);
+
+        let (step, _, _) = step_level2_campaign_once(handle, 0);
+        let mut stepped = McCampaignDayMusicSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_music_state(
+                handle,
+                0,
+                step.revision,
+                &raw mut stepped,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(stepped.update_count, 1);
+        assert_eq!(stepped.target_mode, 1);
+        assert_eq!(stepped.timer_active, 0);
+
+        let mut advanced = McCampaignDayMusicSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_music_advance(
+                handle,
+                0,
+                step.revision,
+                1,
+                &raw mut advanced,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(advanced.fade_callback_count, 0);
+        assert_eq!(advanced.current_units, 0);
+        assert_eq!(
+            mc_native_campaign_day_music_advance(
+                handle,
+                0,
+                step.revision,
+                1_025,
+                &raw mut advanced,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_BOUNDS
+        );
+
+        let mut stopped = McCampaignDayMusicSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_music_stop(
+                handle,
+                0,
+                step.revision,
+                &raw mut stopped,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(stopped.stop_count, 1);
+        assert_eq!(stopped.playing, 0);
+        assert_eq!(stopped.loaded, 1);
+        assert_eq!(stopped.active, 1);
+        assert_eq!(stopped.updates_enabled, 0);
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        let mut restarted = McCampaignDayMusicSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_music_state(
+                handle,
+                1,
+                0,
+                &raw mut restarted,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(restarted.start_count, 1);
+        assert_eq!(restarted.stop_count, 0);
+        assert_eq!(restarted.state_hash, initial.state_hash);
+
+        let mut ended = McCampaignDayMusicSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_music_end(
+                handle,
+                1,
+                0,
+                &raw mut ended,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(ended.end_count, 1);
+        assert_eq!(ended.playing, 0);
+        assert_eq!(ended.loaded, 0);
+        assert_eq!(ended.active, 0);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+
+        let no_cache_handle = open_level2_campaign_handle();
+        let mut unavailable = McCampaignDayMusicSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_music_state(
+                no_cache_handle,
+                0,
+                0,
+                &raw mut unavailable,
+                struct_size::<McCampaignDayMusicSnapshotV2>(),
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(
+            mc_native_campaign_session_destroy(no_cache_handle),
+            MC_STATUS_OK
+        );
+    }
+
+    #[test]
     fn level2_campaign_step_projects_family12_source_slot38() {
         let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/l2-debug3.fJ3PaM/level2");
@@ -24149,6 +24652,7 @@ _Static_assert(offsetof(McCampaignGoatEventV2, asset_ref_index) == 52, "campaign
 _Static_assert(offsetof(McCampaignStepSnapshotV2, dispatch_hash) == 40, "campaign step hash offset");
 _Static_assert(sizeof(McCampaignWorldInfoV2) == 64, "McCampaignWorldInfoV2 size");
 _Static_assert(sizeof(McCampaignTerrainStateV2) == 64, "McCampaignTerrainStateV2 size");
+_Static_assert(sizeof(McCampaignDayMusicSnapshotV2) == 80, "McCampaignDayMusicSnapshotV2 size");
 _Static_assert(sizeof(McCampaignDayIndexedFrameInfoV2) == 152, "McCampaignDayIndexedFrameInfoV2 size");
 _Static_assert(offsetof(McCampaignDayIndexedFrameInfoV2, index_bytes) == 32, "Day indexed frame bytes offset");
 _Static_assert(offsetof(McCampaignDayIndexedFrameInfoV2, index_hash) == 40, "Day indexed frame index hash offset");

@@ -688,6 +688,38 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignDayMusicSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal uint assetSlot;
+            internal uint startCount;
+            internal uint updateCount;
+            internal uint fadeCallbackCount;
+            internal uint stopCount;
+            internal uint endCount;
+            internal byte initialized;
+            internal byte loaded;
+            internal byte active;
+            internal byte playing;
+            internal byte track;
+            internal byte volume;
+            internal byte updatesEnabled;
+            internal byte timerActive;
+            internal byte targetMode;
+            internal sbyte direction;
+            internal byte currentUnits;
+            internal byte timerMultiplier;
+            internal ushort timerHz;
+            internal ushort reserved0;
+            internal ulong stateHash;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct CampaignMinimapState
         {
             internal uint abiVersion;
@@ -2197,6 +2229,39 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_day_music_state(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            ref CampaignDayMusicSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_day_music_advance(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            uint callbackCount,
+            ref CampaignDayMusicSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_day_music_stop(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            ref CampaignDayMusicSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_day_music_end(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            ref CampaignDayMusicSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_minimap_state(
             ulong handle,
             ulong generation,
@@ -2868,6 +2933,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignOpponentSnapshot>(104);
             RequireSize<CampaignDayHudSpellSlot>(48);
             RequireSize<CampaignDayHudSnapshot>(272);
+            RequireSize<CampaignDayMusicSnapshot>(80);
             RequireSize<CampaignMinimapState>(72);
             RequireSize<CampaignMinimapEntity>(56);
             RequireSize<CampaignMinimapMark>(48);
@@ -2968,6 +3034,12 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.nyphur), 72);
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.left), 176);
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.right), 224);
+            RequireOffset<CampaignDayMusicSnapshot>(
+                nameof(CampaignDayMusicSnapshot.initialized), 48);
+            RequireOffset<CampaignDayMusicSnapshot>(
+                nameof(CampaignDayMusicSnapshot.timerHz), 60);
+            RequireOffset<CampaignDayMusicSnapshot>(
+                nameof(CampaignDayMusicSnapshot.stateHash), 64);
             RequireOffset<CampaignMinimapState>(nameof(CampaignMinimapState.entityCount), 28);
             RequireOffset<CampaignMinimapState>(nameof(CampaignMinimapState.entityHash), 40);
             RequireOffset<CampaignMinimapEntity>(nameof(CampaignMinimapEntity.sourceOrder), 24);

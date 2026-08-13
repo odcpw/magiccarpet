@@ -524,6 +524,8 @@ namespace MagicCarpet.Native
         private NativeSim.CampaignStepSnapshot level2StepSnapshot;
         private NativeSim.CampaignTerrainState level2TerrainState;
         private NativeSim.CampaignDayHudSnapshot level2DayHud;
+        private NativeSim.CampaignDayMusicSnapshot level2DayMusic;
+        private float level2DayMusicFadeAccumulator;
         private NativeSim.CampaignDayHudSnapshot level2PresentedDayHud;
         private bool level2DayHudPresenterReady;
         private NativeSim.CampaignMinimapState level2MinimapState;
@@ -935,6 +937,9 @@ namespace MagicCarpet.Native
 
         internal NativeSim.CampaignDayHudSnapshot Level2ProductionDayHud =>
             level2DayHud;
+
+        internal NativeSim.CampaignDayMusicSnapshot Level2ProductionDayMusic =>
+            level2DayMusic;
 
         internal bool Level2ProductionDayHudPresenterReady =>
             level2DayHudPresenterReady;
@@ -2164,6 +2169,23 @@ namespace MagicCarpet.Native
                 flags: 1);
             level2StepSnapshot = result.snapshot;
             level2StepEvents = result.events;
+            level2DayMusic = campaignSession.DayMusicState();
+            if (level2DayMusic.timerActive != 0)
+            {
+                level2DayMusicFadeAccumulator +=
+                    Time.fixedDeltaTime * level2DayMusic.timerHz;
+                var callbacks = Mathf.FloorToInt(level2DayMusicFadeAccumulator);
+                if (callbacks > 0)
+                {
+                    level2DayMusicFadeAccumulator -= callbacks;
+                    level2DayMusic = campaignSession.AdvanceDayMusic(
+                        checked((uint)callbacks));
+                }
+            }
+            else
+            {
+                level2DayMusicFadeAccumulator = 0f;
+            }
             level2AuthoredGroupEvents = campaignSession.AuthoredGroupEvents();
             level2TerrainState = campaignSession.TerrainState();
             UpdateLevel2IndexedFrame(level2TerrainState.tick);
@@ -8289,6 +8311,8 @@ namespace MagicCarpet.Native
             level2AuthoredGroupEvents =
                 Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
             level2TerrainState = campaignSession.TerrainState();
+            level2DayMusic = campaignSession.DayMusicState();
+            level2DayMusicFadeAccumulator = 0f;
             SeedLevel2LocalPlayerPosition();
             level2LastStepInputX = 0;
             level2LastStepInputY = 0;
@@ -11623,6 +11647,8 @@ namespace MagicCarpet.Native
                 campaignWorldInfo = campaignSession.WorldInfo();
                 SeedLevel2LocalPlayerPosition();
                 level2TerrainState = campaignSession.TerrainState();
+                level2DayMusic = campaignSession.DayMusicState();
+                level2DayMusicFadeAccumulator = 0f;
                 Require(
                     campaignWorldInfo.abiVersion == NativeSim.AbiVersion &&
                     campaignWorldInfo.structSize == 64,
@@ -12065,6 +12091,8 @@ namespace MagicCarpet.Native
             level2StepSnapshot = default;
             level2TerrainState = default;
             level2DayHud = default;
+            level2DayMusic = default;
+            level2DayMusicFadeAccumulator = 0f;
             level2PresentedDayHud = default;
             level2DayHudPresenterReady = false;
             level2MinimapState = default;

@@ -57,6 +57,107 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2DayMusicLifecycleIsSessionIsolated()
+        {
+            var root = new GameObject("Level 2 Day music production route");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            ulong initialHash = 0;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
+
+                var initial = runtime.Level2ProductionDayMusic;
+                Assert.That(initial.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+                Assert.That(initial.structSize, Is.EqualTo(80));
+                Assert.That(initial.generation, Is.Zero);
+                Assert.That(initial.tick, Is.Zero);
+                Assert.That(initial.assetSlot, Is.Zero);
+                Assert.That(initial.track, Is.EqualTo(2));
+                Assert.That(initial.volume, Is.EqualTo(127));
+                Assert.That(initial.initialized, Is.EqualTo(1));
+                Assert.That(initial.loaded, Is.EqualTo(1));
+                Assert.That(initial.active, Is.EqualTo(1));
+                Assert.That(initial.playing, Is.EqualTo(1));
+                Assert.That(initial.startCount, Is.EqualTo(1));
+                Assert.That(initial.updatesEnabled, Is.EqualTo(1));
+                Assert.That(initial.targetMode, Is.EqualTo(1));
+                Assert.That(initial.currentUnits, Is.Zero);
+                Assert.That(initial.direction, Is.EqualTo(-1));
+                Assert.That(initial.timerMultiplier, Is.EqualTo(3));
+                Assert.That(initial.timerHz, Is.EqualTo(90));
+                Assert.That(initial.stateHash, Is.Not.Zero);
+                initialHash = initial.stateHash;
+
+                runtime.QualificationDriveLevel2Frames(1);
+                var stepped = runtime.Level2ProductionDayMusic;
+                Assert.That(stepped.generation, Is.Zero);
+                Assert.That(stepped.tick, Is.EqualTo(1));
+                Assert.That(stepped.updateCount, Is.EqualTo(1));
+                Assert.That(stepped.targetMode, Is.EqualTo(1));
+                Assert.That(stepped.timerActive, Is.Zero);
+
+                runtime.QualificationResetLevel2Production();
+                var reset = runtime.Level2ProductionDayMusic;
+                Assert.That(reset.generation, Is.EqualTo(1));
+                Assert.That(reset.tick, Is.Zero);
+                Assert.That(reset.startCount, Is.EqualTo(1));
+                Assert.That(reset.updateCount, Is.Zero);
+                Assert.That(reset.stopCount, Is.Zero);
+                Assert.That(reset.endCount, Is.Zero);
+                Assert.That(reset.stateHash, Is.EqualTo(initialHash));
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+
+            using (var session = NativeCampaignSession.OpenLevel2(
+                       Level2Package,
+                       Level2DayCache))
+            {
+                var stale = default(NativeSim.CampaignDayMusicSnapshot);
+                var staleStatus = NativeSim.mc_native_campaign_day_music_state(
+                    session.Handle,
+                    session.Generation + 1,
+                    session.Tick,
+                    ref stale,
+                    80);
+                Assert.That(staleStatus, Is.EqualTo(NativeSim.GenerationMismatch));
+                Assert.Throws<System.InvalidOperationException>(
+                    () => session.AdvanceDayMusic(1_025));
+
+                var stopped = session.StopDayMusic();
+                Assert.That(stopped.stopCount, Is.EqualTo(1));
+                Assert.That(stopped.playing, Is.Zero);
+                Assert.That(stopped.loaded, Is.EqualTo(1));
+                Assert.That(stopped.active, Is.EqualTo(1));
+
+                session.Reset();
+                var restarted = session.DayMusicState();
+                Assert.That(restarted.generation, Is.EqualTo(1));
+                Assert.That(restarted.startCount, Is.EqualTo(1));
+                Assert.That(restarted.stopCount, Is.Zero);
+                Assert.That(restarted.stateHash, Is.EqualTo(initialHash));
+
+                var ended = session.EndDayMusic();
+                Assert.That(ended.endCount, Is.EqualTo(1));
+                Assert.That(ended.playing, Is.Zero);
+                Assert.That(ended.loaded, Is.Zero);
+                Assert.That(ended.active, Is.Zero);
+            }
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+
+            using var noCache = NativeCampaignSession.OpenLevel2(Level2Package);
+            Assert.Throws<System.InvalidOperationException>(() => noCache.DayMusicState());
+        }
+
+        [Test]
         public void Level2IndexedWorldRendersFromCampaignFrame()
         {
             var root = new GameObject("Level 2 indexed frame production route");
