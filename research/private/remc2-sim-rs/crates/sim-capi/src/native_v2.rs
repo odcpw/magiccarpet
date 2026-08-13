@@ -317,6 +317,9 @@ pub const MC_CAMPAIGN_ECONOMY_CASTLE_STAGE_DESTROYED: u8 = 14;
 pub const MC_CAMPAIGN_ECONOMY_DAMAGE_APPLIED: u8 = 15;
 pub const MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_CAVE_SOUND: u8 = 17;
 pub const MC_CAMPAIGN_ECONOMY_FIRE_SPHERE_COLLISION_SOUND: u8 = 18;
+/// Typed source-audio handoff for class-5/model-3 action callbacks.  This
+/// remains distinct from the Castle and fire-sphere sound projections.
+pub const MC_CAMPAIGN_ECONOMY_AUTHORED_CLASS5_MODEL3_SOUND: u8 = 19;
 
 pub const MC_AUDIO_ACTION_PREPARED_PENDING: u8 = 0;
 pub const MC_AUDIO_ACTION_START: u8 = 1;
@@ -13404,6 +13407,19 @@ fn campaign_economy_event_snapshot(
             0,
             0,
         ),
+        Level2EconomyEvent::AuthoredClass5Model3Sound {
+            source_entity_index,
+            sound_id,
+        } => (
+            MC_CAMPAIGN_ECONOMY_AUTHORED_CLASS5_MODEL3_SOUND,
+            u32::from(source_entity_index),
+            0,
+            sound_id,
+            0,
+            0,
+            0,
+            0,
+        ),
         Level2EconomyEvent::CastleStageDestroyed {
             source_entity_index,
             previous_level,
@@ -19888,6 +19904,45 @@ mod tests {
         assert_eq!(snapshot.primary_id, 200);
         assert_eq!(snapshot.secondary_id, 0);
         assert_eq!(snapshot.entity_0, 3);
+        assert_eq!(snapshot.entity_1, 0);
+        assert_eq!(snapshot.value_0, 0);
+        assert_eq!(snapshot.value_1, 0);
+        assert_eq!(snapshot.flags, 0);
+        assert_eq!(snapshot.reserved, [0; 4]);
+    }
+
+    #[test]
+    fn campaign_economy_snapshot_binds_authored_class5_model3_sound_without_aliasing() {
+        let source_slot = 238;
+        let sound_id = 22;
+        let snapshot = campaign_economy_event_snapshot(
+            11,
+            22,
+            4,
+            source_slot,
+            Level2EconomyEvent::AuthoredClass5Model3Sound {
+                source_entity_index: source_slot,
+                sound_id,
+            },
+        );
+
+        assert_eq!(
+            snapshot.code,
+            MC_CAMPAIGN_ECONOMY_AUTHORED_CLASS5_MODEL3_SOUND
+        );
+        assert_ne!(
+            snapshot.code,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_CAVE_SOUND
+        );
+        assert_ne!(
+            snapshot.code,
+            MC_CAMPAIGN_ECONOMY_FIRE_SPHERE_COLLISION_SOUND
+        );
+        assert_eq!(snapshot.family, 7);
+        assert_eq!(snapshot.source_slot, source_slot);
+        assert_eq!(snapshot.primary_id, u32::from(source_slot));
+        assert_eq!(snapshot.secondary_id, 0);
+        assert_eq!(snapshot.entity_0, sound_id);
         assert_eq!(snapshot.entity_1, 0);
         assert_eq!(snapshot.value_0, 0);
         assert_eq!(snapshot.value_1, 0);

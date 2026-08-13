@@ -46,6 +46,10 @@ impl Level2EconomyState {
             9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
             _ => return None,
         };
+        // The model-3 constructor is a root-plus-sixteen allocation.  Keep
+        // the whole constructor transactional so an exhausted arena cannot
+        // strand a root, a partial chain, a generation, or an RNG sidecar.
+        let state_before = (model == 3).then(|| self.clone());
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
         let entity_rng = level2_next_rng16(initial_rng);
@@ -72,6 +76,8 @@ impl Level2EconomyState {
         // pose: rotation_speed/2 = 125 and speed/2 = 66.
         let (yaw, pitch, roll, fov) = if model == 4 {
             (125, 66, 66, 125)
+        } else if model == 3 {
+            (90, 414, 414, 108)
         } else {
             (0, 0, 0, 0)
         };
@@ -87,10 +93,14 @@ impl Level2EconomyState {
             })
             .is_err()
         {
-            self.release_slot(source_entity_index, None);
+            if let Some(state_before) = state_before {
+                *self = state_before;
+            } else {
+                self.release_slot(source_entity_index, None);
+            }
             return None;
         }
-        let source = Level2AuthoredClass5Source {
+        let mut source = Level2AuthoredClass5Source {
             source_entity_index,
             entity_rng,
             authored_index,
@@ -117,7 +127,7 @@ impl Level2EconomyState {
             byte_0x46_70: 0,
             particle_index,
             source_byte_3e,
-            source_byte_39: 0,
+            source_byte_39: if model == 3 { 34 } else { 0 },
             yaw,
             pitch,
             roll,
@@ -142,7 +152,21 @@ impl Level2EconomyState {
             active: true,
         };
         self.source_rng.insert(source_entity_index, entity_rng);
+        let model3_state = if model == 3 {
+            match self.allocate_model3_chain(&mut source) {
+                Some(state) => Some(state),
+                None => {
+                    *self = state_before.expect("model-3 allocation snapshot");
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         self.authored_class5.push(source);
+        if let Some(model3_state) = model3_state {
+            self.authored_class5_model3.push(model3_state);
+        }
         Some(source)
     }
 
@@ -171,7 +195,7 @@ impl Level2EconomyState {
             return false;
         };
         let mut source = self.authored_class5[source_index];
-        if source.authored_index == 238 && source.model == 3 && source.action == 25 {
+        if source.model == 3 && matches!(source.action, 25 | 216..=220) {
             self.step_authored_class5_model3(&mut source, target);
         } else if source.model == 9 && matches!(source.action, 72 | 73) {
             self.step_authored_class5_model9(&mut source);

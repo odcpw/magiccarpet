@@ -5298,6 +5298,71 @@ pub struct Level2AuthoredClass5RuntimeState {
     pub linked_head: u16,
 }
 
+/// The model-3-only words which are present in the source class-5 carrier but
+/// are not part of the shared model-4/model-9/trader projection.  The source
+/// slot remains the sole identity joining this sidecar to its root; no second
+/// class-5 root is created here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredClass5Model3State {
+    pub source_entity_index: u16,
+    pub damage_dword_0x5e_94: i32,
+    pub word_0x32: u16,
+    pub word_0x34: u16,
+    pub word_0x36: i16,
+    pub control_flags: u32,
+    pub byte_0x43: u8,
+    pub byte_0x44: u8,
+    pub word_0x2c: i16,
+    pub descriptor_index: u16,
+    pub last_child_root_phase: u8,
+}
+
+/// A linked child allocated by `sub_4B6F0` for a class-5/model-3 root.  The
+/// raw chain words and action-local mailbox are retained because the child is
+/// itself visited by the source cursor and participates in deterministic
+/// damage, peer selection, movement, reset, and hashing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredClass5Model3Child {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub word_0x32: u16,
+    pub word_0x34: u16,
+    pub word_0x36: i16,
+    pub word_0x24: u16,
+    pub pending_word_0x62: u16,
+    pub word_0x26: u16,
+    pub word_0x96: u16,
+    pub damage_dword_0x5e_94: i32,
+    pub dword_0x10: i32,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub actual_speed: i16,
+    pub max_life: i32,
+    pub life: i32,
+    pub mana: i32,
+    pub control_flags: u32,
+    pub model: u8,
+    pub action: u8,
+    pub source_byte_3e: u8,
+    pub byte_0x3b: u8,
+    pub byte_0x43: u8,
+    pub byte_0x44: u8,
+    pub byte_0x46: u8,
+    pub word_0x2c: i16,
+    pub particle_index: u16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub fov: i16,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// A resident constructed by an ordinary Level 2 House source callback.
 /// The row is owned by the shared Level 2 arena, preserving source-slot,
 /// owner, parent, map, and reset identity with the other dynamic families.
@@ -5460,6 +5525,12 @@ pub enum Level2EconomyEvent {
         damage: i32,
         lethal: bool,
     },
+    /// Source `PrepareEventSound(root_slot, -1, sound)` emitted by the
+    /// class-5/model-3 action-216 and child callbacks.
+    AuthoredClass5Model3Sound {
+        source_entity_index: u16,
+        sound_id: u16,
+    },
 }
 
 /// Production Level 2 economy projection for the shared mana sphere, carrier,
@@ -5553,6 +5624,10 @@ pub struct Level2EconomyState {
     authored_class5: Vec<Level2AuthoredClass5Source>,
     baseline_authored_class5_runtime: Vec<Level2AuthoredClass5RuntimeState>,
     authored_class5_runtime: Vec<Level2AuthoredClass5RuntimeState>,
+    baseline_authored_class5_model3: Vec<Level2AuthoredClass5Model3State>,
+    authored_class5_model3: Vec<Level2AuthoredClass5Model3State>,
+    baseline_authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
+    authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
     baseline_house_residents: Vec<Level2HouseResidentSource>,
     house_residents: Vec<Level2HouseResidentSource>,
     baseline_class5_model3_constructor_phase: u8,
@@ -5818,6 +5893,10 @@ impl Level2EconomyState {
             authored_class5: Vec::new(),
             baseline_authored_class5_runtime: Vec::new(),
             authored_class5_runtime: Vec::new(),
+            baseline_authored_class5_model3: Vec::new(),
+            authored_class5_model3: Vec::new(),
+            baseline_authored_class5_model3_children: Vec::new(),
+            authored_class5_model3_children: Vec::new(),
             baseline_house_residents: Vec::new(),
             house_residents: Vec::new(),
             baseline_class5_model3_constructor_phase: 0,
@@ -6104,6 +6183,16 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_class5_runtime(&self) -> &[Level2AuthoredClass5RuntimeState] {
         &self.authored_class5_runtime
+    }
+
+    #[must_use]
+    pub fn authored_class5_model3(&self) -> &[Level2AuthoredClass5Model3State] {
+        &self.authored_class5_model3
+    }
+
+    #[must_use]
+    pub fn authored_class5_model3_children(&self) -> &[Level2AuthoredClass5Model3Child] {
+        &self.authored_class5_model3_children
     }
 
     fn authored_class5_runtime_mut(
@@ -9823,6 +9912,16 @@ impl Level2EconomyState {
                 Level2DynamicArenaKind::AuthoredClass5,
             );
         }
+        for child in self
+            .authored_class5_model3_children
+            .iter()
+            .filter(|child| child.active)
+        {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::AuthoredClass5Model3Child,
+            );
+        }
         for source in self.house_residents.iter().filter(|source| source.active) {
             visit(
                 source.source_entity_index,
@@ -10538,6 +10637,34 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let inactive_class5_roots = self
+            .authored_class5
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| source.source_entity_index)
+            .collect::<BTreeSet<_>>();
+        for child in &mut self.authored_class5_model3_children {
+            if inactive_class5_roots.contains(&child.parent_entity_index) {
+                child.active = false;
+            }
+        }
+        let reclaimed_class5_model3_children = self
+            .authored_class5_model3_children
+            .iter()
+            .filter(|child| !child.active)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_class5_model3_children
+            .retain(|child| child.active);
+        for (slot, entity_rng) in reclaimed_class5_model3_children {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_class5 = self
             .authored_class5
             .iter()
@@ -10551,6 +10678,8 @@ impl Level2EconomyState {
             .map(|source| source.source_entity_index)
             .collect::<BTreeSet<_>>();
         self.authored_class5_runtime
+            .retain(|state| live_class5_slots.contains(&state.source_entity_index));
+        self.authored_class5_model3
             .retain(|state| live_class5_slots.contains(&state.source_entity_index));
         for (slot, entity_rng) in reclaimed_class5 {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
@@ -11323,6 +11452,65 @@ impl Level2EconomyState {
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
         }
+        hasher.update(b"authored-class5-model3-v1");
+        for state in &self.authored_class5_model3 {
+            hasher.update(state.source_entity_index.to_le_bytes());
+            hasher.update(state.damage_dword_0x5e_94.to_le_bytes());
+            hasher.update(state.word_0x32.to_le_bytes());
+            hasher.update(state.word_0x34.to_le_bytes());
+            hasher.update(state.word_0x36.to_le_bytes());
+            hasher.update(state.control_flags.to_le_bytes());
+            hasher.update([state.byte_0x43, state.byte_0x44]);
+            hasher.update(state.word_0x2c.to_le_bytes());
+            hasher.update(state.descriptor_index.to_le_bytes());
+            hasher.update([state.last_child_root_phase]);
+        }
+        for child in &self.authored_class5_model3_children {
+            hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.entity_rng.to_le_bytes());
+            hasher.update(child.parent_entity_index.to_le_bytes());
+            hasher.update(child.word_0x32.to_le_bytes());
+            hasher.update(child.word_0x34.to_le_bytes());
+            hasher.update(child.word_0x36.to_le_bytes());
+            hasher.update(child.word_0x24.to_le_bytes());
+            hasher.update(child.pending_word_0x62.to_le_bytes());
+            hasher.update(child.word_0x26.to_le_bytes());
+            hasher.update(child.word_0x96.to_le_bytes());
+            hasher.update(child.damage_dword_0x5e_94.to_le_bytes());
+            hasher.update(child.dword_0x10.to_le_bytes());
+            hasher.update(child.minimum_speed.to_le_bytes());
+            hasher.update(child.maximum_speed.to_le_bytes());
+            hasher.update(child.actual_speed.to_le_bytes());
+            hasher.update(child.max_life.to_le_bytes());
+            hasher.update(child.life.to_le_bytes());
+            hasher.update(child.mana.to_le_bytes());
+            hasher.update(child.control_flags.to_le_bytes());
+            hasher.update([
+                child.model,
+                child.action,
+                child.source_byte_3e,
+                child.byte_0x3b,
+                child.byte_0x43,
+                child.byte_0x44,
+                child.byte_0x46,
+            ]);
+            hasher.update(child.word_0x2c.to_le_bytes());
+            hasher.update(child.particle_index.to_le_bytes());
+            hasher.update(child.yaw.to_le_bytes());
+            hasher.update(child.pitch.to_le_bytes());
+            hasher.update(child.roll.to_le_bytes());
+            hasher.update(child.fov.to_le_bytes());
+            hasher.update(child.shift_rot_x.to_le_bytes());
+            hasher.update(child.shift_rot_y.to_le_bytes());
+            hasher.update(child.position.x.to_le_bytes());
+            hasher.update(child.position.y.to_le_bytes());
+            hasher.update(child.position.z.to_le_bytes());
+            hasher.update([
+                child.phase,
+                u8::from(child.drawing_enabled),
+                u8::from(child.active),
+            ]);
+        }
         for state in &self.authored_class5_runtime {
             hasher.update(state.source_entity_index.to_le_bytes());
             hasher.update([state.byte_0x38, state.xtype]);
@@ -11614,6 +11802,9 @@ impl Level2EconomyState {
         self.class14_model3_handle = self.baseline_class14_model3_handle;
         self.authored_class5 = self.baseline_authored_class5.clone();
         self.authored_class5_runtime = self.baseline_authored_class5_runtime.clone();
+        self.authored_class5_model3 = self.baseline_authored_class5_model3.clone();
+        self.authored_class5_model3_children =
+            self.baseline_authored_class5_model3_children.clone();
         self.class5_model3_constructor_phase = self.baseline_class5_model3_constructor_phase;
         self.class5_model4_constructor_phase = self.baseline_class5_model4_constructor_phase;
         self.class5_model9_constructor_phase = self.baseline_class5_model9_constructor_phase;
@@ -15005,6 +15196,7 @@ pub enum Level2DynamicArenaKind {
     Model76TailSpawn,
     AuthoredClass14,
     AuthoredClass5,
+    AuthoredClass5Model3Child,
     HouseResident,
     AuthoredSwitchProducer,
     AuthoredModel32,
@@ -15146,6 +15338,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::AuthoredClass5 => 30,
+        Level2DynamicArenaKind::AuthoredClass5Model3Child => 36,
         Level2DynamicArenaKind::HouseResident => 35,
         Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
         Level2DynamicArenaKind::AuthoredModel32 => 29,
@@ -15179,6 +15372,7 @@ pub const fn level2_economy_event_family(event: Level2EconomyEvent) -> u8 {
         | Level2EconomyEvent::DeathBurstExpired { .. } => 4,
         Level2EconomyEvent::DamageApplied { .. } => 5,
         Level2EconomyEvent::FireSphereCollisionSound { .. } => 6,
+        Level2EconomyEvent::AuthoredClass5Model3Sound { .. } => 7,
     }
 }
 
@@ -15250,6 +15444,10 @@ fn level2_economy_event_source_slot(event: Level2EconomyEvent, fallback: u16) ->
             target_entity_index,
             ..
         } => u32::from(target_entity_index),
+        Level2EconomyEvent::AuthoredClass5Model3Sound {
+            source_entity_index,
+            ..
+        } => u32::from(source_entity_index),
     };
     u16::try_from(id).unwrap_or(fallback)
 }
@@ -19993,6 +20191,9 @@ impl Level2ResetSession {
                 self.economy
                     .step_authored_class5_slot_with_target(source_slot, target)
             }
+            Level2DynamicArenaKind::AuthoredClass5Model3Child => self
+                .economy
+                .step_authored_class5_model3_child_slot(source_slot),
             Level2DynamicArenaKind::HouseResident => {
                 self.economy.step_house_resident_slot(source_slot)
             }
