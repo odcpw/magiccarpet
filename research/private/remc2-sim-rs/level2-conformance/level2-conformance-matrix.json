@@ -58,13 +58,13 @@
     ],
     "test_inventory": {
       "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list",
-      "count": 852
+      "count": 856
     },
     "census_method": "independent join of L2-04 authored/reset census, L2-05 rooted activation closure, and L2-06 dispatch/RNG/audio/presentation ledger",
     "totals": {
-      "rows": 46,
+      "rows": 45,
       "by_classification": {
-        "Missing": 46,
+        "Missing": 45,
         "Exact": 0,
         "Partial": 0,
         "Wrong": 0,
@@ -78,15 +78,15 @@
           "Missing": 8
         },
         "gameplay": {
-          "Missing": 24
+          "Missing": 23
         },
         "rng-audio": {
           "Missing": 2
         }
       },
-      "reachable_rows": 46,
+      "reachable_rows": 45,
       "exclusions": 9,
-      "plan_items": 46
+      "plan_items": 45
     },
     "denominators": {
       "authored": 1200,
@@ -3725,9 +3725,6 @@
       "DSP-L2-145": [
         "ROW-mc-38gs.2"
       ],
-      "DSP-L2-155": [
-        "ROW-mc-hgk9.1"
-      ],
       "DSP-L2-323": [
         "ROW-mc-38gs.4"
       ],
@@ -3880,6 +3877,7 @@
       "DSP-L2-152": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-153": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-154": "EXC-L2-DISPATCH-NONROOTED",
+      "DSP-L2-155": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-156": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-157": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-158": "EXC-L2-DISPATCH-NONROOTED",
@@ -4518,8 +4516,8 @@
       "DSP-L2-844": "EXC-L2-DISPATCH-NONROOTED"
     },
     "partition_proof": {
-      "included_slots": 86,
-      "excluded_slots": 759,
+      "included_slots": 85,
+      "excluded_slots": 760,
       "disjoint": true,
       "union_equals_slot_set": true
     }
@@ -7250,84 +7248,6 @@
           "PRESENTATION-REF-L2-0931",
           "PRESENTATION-REF-L2-0932"
         ]
-      }
-    },
-    {
-      "id": "ROW-mc-hgk9.1",
-      "subsystem": "gameplay",
-      "family": "dispatch",
-      "title": "[L2-30A] Complete Whirlwind action-82 player-overlap spell handoff",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_4A1E0"
-        ],
-        "path": "remc2/engine/EventsFunctions.cpp",
-        "lines": "28173",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-hgk9.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [
-          "DSP-L2-155"
-        ],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
       }
     },
     {
@@ -12102,7 +12022,7 @@
     },
     {
       "id": "EXC-L2-DISPATCH-NONROOTED",
-      "scope": "759 non-rooted/disabled/null dispatch slots",
+      "scope": "760 non-rooted/disabled/null dispatch slots",
       "description": "Pinned denominator members outside the selected Level 2 rooted behavior profile.",
       "mechanical_proof": "dispatch ledger partitions every non-live slot as null sentinel, disabled, or mechanically unreachable under Level 2",
       "source_anchors": [
@@ -12243,6 +12163,7 @@
           "DSP-L2-152",
           "DSP-L2-153",
           "DSP-L2-154",
+          "DSP-L2-155",
           "DSP-L2-156",
           "DSP-L2-157",
           "DSP-L2-158",
@@ -15888,28 +15809,6 @@
       ],
       "owned_rows": [
         "ROW-mc-exzm.1"
-      ]
-    },
-    {
-      "id": "mc-hgk9.1",
-      "title": "[L2-30A] Complete Whirlwind action-82 player-overlap spell handoff",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-hgk9.1"
       ]
     },
     {

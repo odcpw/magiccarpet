@@ -213,8 +213,6 @@ DISPATCH_CONTRADICTION_OWNER = {
     "DSP-L2-313": "mc-38gs.3",
     # class-5 model-9: constructor + action 72 (token 0x002A5BEC)
     "DSP-L2-318": "mc-38gs.2", "DSP-L2-145": "mc-38gs.2",
-    # class-5 model-10 Whirlwind: reachable action 82 (token 0x002A5BF0)
-    "DSP-L2-155": "mc-hgk9.1",
     # class-5 model-14 (trader): constructor + actions 112-119 (token 0x002A5C00)
     "DSP-L2-323": "mc-38gs.4",
     "DSP-L2-185": "mc-38gs.4", "DSP-L2-186": "mc-38gs.4", "DSP-L2-187": "mc-38gs.4",

@@ -171,6 +171,29 @@ class Level2ConformanceMatrixTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "activation-reachable dispatch"):
             validator.validate_coverage(value)
 
+    def test_whirlwind_action82_uses_class10_model_gate_not_class5_dispatch(self) -> None:
+        ledger = json.loads(
+            (builder.HERE / "denominator" / "level2-dispatch-rng-audio-presentation.json").read_text()
+        )
+        rows = {row["id"]: row for row in ledger["dispatch"]["rows"]}
+        self.assertEqual(
+            (rows["DSP-L2-155"]["runtime_class"], rows["DSP-L2-155"]["selector_word_4"],
+             rows["DSP-L2-155"]["resolved_function"]),
+            (5, 82, "sub_22540"),
+        )
+        self.assertEqual(
+            (rows["DSP-L2-492"]["runtime_class"], rows["DSP-L2-492"]["selector_word_4"],
+             rows["DSP-L2-492"]["classification"]),
+            (10, 82, "disabled_slot"),
+        )
+        self.assertNotIn("DSP-L2-155", builder.DISPATCH_CONTRADICTION_OWNER)
+        exclusion = next(
+            item for item in self.matrix["exclusions"]
+            if item["id"] == "EXC-L2-DISPATCH-NONROOTED"
+        )
+        self.assertIn("DSP-L2-155", exclusion["coverage"]["dispatch"])
+        self.assertIn("DSP-L2-492", exclusion["coverage"]["dispatch"])
+
     def test_mutation_negative_rejects_stale_source_and_missing_chain(self) -> None:
         value = copy.deepcopy(self.matrix)
         value["rows"][0]["source"]["commit"] = "0" * 40

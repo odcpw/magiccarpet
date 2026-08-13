@@ -8,7 +8,7 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-04
 
 ## Status
 
-**46 rows**: Exact=0, Missing=46, Partial=0, Unproved=0, Wrong=0; **9 mechanical exclusions**; **46 owning beads**.
+**45 rows**: Exact=0, Missing=45, Partial=0, Unproved=0, Wrong=0; **9 mechanical exclusions**; **45 owning beads**.
 
 ## Denominator reconciliation
 
@@ -57,7 +57,6 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-04
 | `ROW-mc-c2by.2` | presentation | **Missing** | `mc-c2by.2` | presentation_refs |
 | `ROW-mc-clng` | gameplay | **Missing** | `mc-clng` | reset, dispatch, tuples |
 | `ROW-mc-exzm.1` | presentation | **Missing** | `mc-exzm.1` | presentation_refs |
-| `ROW-mc-hgk9.1` | gameplay | **Missing** | `mc-hgk9.1` | dispatch |
 | `ROW-mc-hgk9.2` | gameplay | **Missing** | `mc-hgk9.2` | dispatch |
 | `ROW-mc-jmcp.1` | gameplay | **Missing** | `mc-jmcp.1` | dispatch |
 | `ROW-mc-jmcp.2` | gameplay | **Missing** | `mc-jmcp.2` | dispatch |
@@ -86,7 +85,7 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-04
 | `EXC-L2-AUTHORED-MECHANICAL` | 87 mechanically excluded authored records |
 | `EXC-L2-RESET-INACTIVE` | 886 inactive reset slots |
 | `EXC-L2-GROUP-30` | activation group 30 |
-| `EXC-L2-DISPATCH-NONROOTED` | 759 non-rooted/disabled/null dispatch slots |
+| `EXC-L2-DISPATCH-NONROOTED` | 760 non-rooted/disabled/null dispatch slots |
 | `EXC-L2-RNG-NONROOTED` | 414 non-rooted RNG occurrences |
 | `EXC-L2-AUDIO-NONROOTED` | 93 non-rooted audio calls |
 | `EXC-L2-CACHE-NONROOTED` | 967 presentation cache records |

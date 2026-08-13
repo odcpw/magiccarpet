@@ -5021,9 +5021,10 @@ pub struct Level2AuthoredModel22Source {
     pub active: bool,
 }
 
-/// One model-75/action-82 row cloned by `AddWind_4F040`. The action-82
-/// callback owns its life/terrain settle and the parent action-22 callback
-/// owns chain movement and linked expiry.
+/// One class-10/model-75/action-82 row cloned by `AddWind_4F040`. `ApplyEvents`
+/// excludes model 75 before consulting class 10's disabled action-82 slot; it
+/// hides the row while the parent action-22 callback continues to own chain
+/// movement and linked expiry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2Model22SpawnedChild {
     pub source_entity_index: u16,
@@ -8972,12 +8973,12 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    /// Advance one model-75/action-82 child through the bounded part of
-    /// `sub_69250`/`sub_68FF0` that is independent of player spell ownership:
-    /// the source life countdown and `sub_580E0(position, ground, 0, 0,
-    /// -128)` terrain settle. The source's player-overlap spell handoff is a
-    /// separate relation-heavy follow-up; this row is still a real callback,
-    /// not a no-call placeholder.
+    /// Advance one class-10/model-75/action-82 child through `ApplyEvents`.
+    /// Model 75 is rejected by the class-10 model-range gate before action
+    /// dispatch, so the row is hidden and byte 0x3e advances. Class 10's
+    /// action-82 slot is disabled; the similarly numbered class-5 slot is
+    /// unrelated. No callback scans players, transfers a spell, draws RNG,
+    /// emits audio, changes action/life, or settles terrain.
     pub fn step_model22_spawned_child_slot(&mut self, source_slot: u16) -> bool {
         let Some(child) = self
             .model22_spawned_children
@@ -8986,25 +8987,7 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        let life_before = child.life;
-        if life_before != 0 {
-            child.life = child.life.wrapping_sub(1);
-            if life_before == 1 {
-                // `sub_68FF0` disables drawing on the terminal positive-life
-                // visit and skips its terrain settle branch.
-                child.drawing_enabled = false;
-            }
-        }
-        if life_before != 1 {
-            let ground = self.terrain.ground_height(child.position);
-            if child.position.z > ground {
-                child.position.z = child.position.z.wrapping_sub(128);
-            }
-            if child.position.z <= ground {
-                child.position.z = ground;
-            }
-        }
-        // ApplyEvents advances byte 0x3e after visiting the live row.
+        child.drawing_enabled = false;
         child.phase = child.phase.wrapping_add(1);
         self.source_rng.insert(source_slot, child.entity_rng);
         self.map_chains
@@ -33459,35 +33442,10 @@ mod tests {
             .iter()
             .find(|child| child.source_entity_index == first_child.source_entity_index)
             .copied()
-            .expect("Wind child after action-82 terrain settle");
-        assert_eq!((stepped_child.max_life, stepped_child.life), (500, 499));
-
-        // The positive-life terminal branch disables drawing before the
-        // terrain settle and keeps the source row alive for the next reclaim
-        // pass.
-        let terminal_z = stepped_child.position.z;
-        session
-            .economy_mut()
-            .model22_spawned_children
-            .iter_mut()
-            .find(|child| child.source_entity_index == first_child.source_entity_index)
-            .expect("Wind child for terminal action-82 branch")
-            .life = 1;
-        assert!(
-            session
-                .economy_mut()
-                .step_model22_spawned_child_slot(first_child.source_entity_index)
-        );
-        let terminal_child = session
-            .economy()
-            .model22_spawned_children()
-            .iter()
-            .find(|child| child.source_entity_index == first_child.source_entity_index)
-            .copied()
-            .expect("Wind child after terminal action-82 branch");
-        assert_eq!(terminal_child.life, 0);
-        assert!(!terminal_child.drawing_enabled);
-        assert_eq!(terminal_child.position.z, terminal_z);
+            .expect("Wind child after action-82 writeback");
+        assert_eq!(stepped_child.action, 82);
+        assert_eq!((stepped_child.max_life, stepped_child.life), (500, 500));
+        assert!(!stepped_child.drawing_enabled);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::DynamicArena {
@@ -33535,6 +33493,135 @@ mod tests {
         assert!(session.economy().authored_model22().is_empty());
         assert!(session.economy().model22_spawned_children().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_whirlwind_action82_player_handoff_is_exact() {
+        let ledger: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../level2-conformance/denominator/level2-dispatch-rng-audio-presentation.json"
+        ))
+        .expect("pinned Level 2 dispatch ledger");
+        let rows = ledger["dispatch"]["rows"]
+            .as_array()
+            .expect("dispatch rows");
+        let class5_row = rows
+            .iter()
+            .find(|row| row["id"] == "DSP-L2-155")
+            .expect("class-5 action-82 dispatch row");
+        assert_eq!(class5_row["runtime_class"], 5);
+        assert_eq!(class5_row["physical_slot"], 82);
+        assert_eq!(class5_row["resolved_function"], "sub_22540");
+        assert_eq!(class5_row["stored_address_hex"], "0x00203540");
+        assert_eq!(
+            class5_row["classification"],
+            "mechanically_unreachable_level2"
+        );
+        let class10_row = rows
+            .iter()
+            .find(|row| row["id"] == "DSP-L2-492")
+            .expect("class-10 action-82 dispatch row");
+        assert_eq!(class10_row["runtime_class"], 10);
+        assert_eq!(class10_row["physical_slot"], 82);
+        assert_eq!(class10_row["resolved_function"], "");
+        assert_eq!(class10_row["classification"], "disabled_slot");
+
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Whirlwind session");
+        let baseline_hash = session.campaign_state_hash();
+        let wind = session
+            .allocate_level2_authored_model22(110)
+            .expect("authored Whirlwind row 110");
+        assert_eq!(wind.authored_index, 110);
+        let child = session.economy().model22_spawned_children()[0];
+        assert_eq!((child.model, child.action), (75, 82));
+
+        // Deliberately combine the packet's supposed rejection predicates:
+        // occupied family, no free hand, and an ineligible player row. The
+        // pinned model-range gate reads none of them and dispatches no
+        // callback, so the complete spell projection must remain byte-for-byte
+        // unchanged.
+        {
+            let shared = session.shared_spells_mut();
+            shared.players[0].enabled_spell_holders[10] = 999;
+            shared.players[0].left_spell_slot_raw = 4;
+            shared.players[0].right_spell_slot_raw = 5;
+            shared.player_entities[0].active = false;
+        }
+        let spells_before = session.shared_spells().clone();
+        let economy_events_before = session.economy().events.clone();
+        let global_rng_before = session.economy().global_rng;
+        assert!(
+            session
+                .economy_mut()
+                .step_model22_spawned_child_slot(child.source_entity_index)
+        );
+        let directly_stepped = session
+            .economy()
+            .model22_spawned_children()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == child.source_entity_index)
+            .copied()
+            .expect("directly stepped action-82 child");
+        assert_eq!(directly_stepped.action, 82);
+        assert_eq!(directly_stepped.phase, child.phase.wrapping_add(1));
+        assert_eq!(directly_stepped.life, child.life);
+        assert_eq!(directly_stepped.position, child.position);
+        assert_eq!(directly_stepped.entity_rng, child.entity_rng);
+        assert!(!directly_stepped.drawing_enabled);
+        assert_eq!(session.shared_spells(), &spells_before);
+        assert_eq!(session.economy().events, economy_events_before);
+        assert_eq!(session.economy().global_rng, global_rng_before);
+
+        // The ordinary Level 2 source cursor reaches the same row, then reset
+        // and replay reproduce the complete campaign hash.
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        let replay_once = session
+            .allocate_level2_authored_model22(110)
+            .expect("first production Whirlwind replay");
+        let replay_child_slot = session.economy().model22_spawned_children()[0].source_entity_index;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let first_hash = session.campaign_state_hash();
+        assert!(
+            session
+                .economy()
+                .model22_spawned_children()
+                .iter()
+                .any(
+                    |candidate| candidate.source_entity_index == replay_child_slot
+                        && candidate.action == 82
+                        && candidate.life == 500
+                        && !candidate.drawing_enabled
+                )
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::Model22SpawnedChild,
+                source_slot,
+                ..
+            } if *source_slot == replay_child_slot
+        )));
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::SpellAcquisition {
+                source_slot,
+                result: Some(_),
+                ..
+            } if *source_slot == replay_child_slot
+        )));
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        let replay_twice = session
+            .allocate_level2_authored_model22(110)
+            .expect("second production Whirlwind replay");
+        assert_eq!(replay_twice, replay_once);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.campaign_state_hash(), first_hash);
     }
 
     fn level_two_model76_switch25_activation_turns(phase: u8) -> usize {
