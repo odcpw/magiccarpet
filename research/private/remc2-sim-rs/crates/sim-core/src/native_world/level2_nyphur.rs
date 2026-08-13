@@ -1720,6 +1720,11 @@ impl Level2NyphurDispatcher {
         // and the mode switch, not before the common callback.
         let selected_state = self.state_byte;
         match selected_state {
+            1 => self.step_sub_12ff0(source_slot, entities, terrain)?,
+            // The pinned program contains this structural `_nmemneed` case,
+            // but no assignment of byte 0x1C1 to value 2. Preserve the call
+            // in the trace map without inventing a production transition.
+            2 => Self::step_nmemneed(),
             3 => self.step_sub_13100(source_slot, entities, terrain)?,
             4 => self.step_sub_131f0(source_slot, entities, terrain)?,
             5 => Self::step_nmemneed0(),
@@ -1745,6 +1750,81 @@ impl Level2NyphurDispatcher {
     /// observable production behavior is therefore the following shared tail,
     /// with no AI, movement, or RNG write at this call site.
     const fn step_nmemneed0() {}
+
+    /// The pinned case-2 helper is the other weak memory hook. The complete
+    /// source state-byte assignment set never writes value 2, so this body is
+    /// retained only for an externally reconstructed structural trace.
+    const fn step_nmemneed() {}
+
+    /// Pinned `sub_12FF0` (AI_HELPER-0011, source line 5579). The selected
+    /// target must still satisfy the paired slot/identity relation. Its
+    /// inclusive 512 near gate, exclusive 2048 far gate, family-2 tier scan,
+    /// activation polarity, signed vertical step, and `sub_16580` tail remain
+    /// in source order.
+    fn step_sub_12ff0(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+    ) -> Result<()> {
+        let source_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_12FF0 source row is absent")
+            })?;
+        let source = entities[source_index].clone();
+        let target = entities
+            .get(usize::from(source.source_word_96()))
+            .cloned()
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_12FF0 target row is absent")
+            })?;
+        if !level2_nyphur_source_identity_matches(&source, &target) {
+            return self.step_sub_16580(&source, terrain);
+        }
+
+        let roll = i16::try_from(heading_for_positions(source.position, target.position))
+            .expect("Nyphur sub_12FF0 roll fits the signed source angle carrier");
+        entities[source_index].set_source_roll(roll);
+        if !self.step_sub_14c90(source_index, Some(&target), None, 512, 2_048, entities)? {
+            return self.step_sub_16580(&entities[source_index], terrain);
+        }
+
+        let mut tier = self.common_upkeep.spell_levels[2];
+        while tier >= 0 {
+            if self.common_upkeep.step_sub_15f20(2, tier, entities) == 2 {
+                break;
+            }
+            tier -= 1;
+        }
+        let mut source_control_flags = entities[source_index].control_flags;
+        let activated = self.common_upkeep.step_sub_14e10(
+            2,
+            entities[source_index].model,
+            &mut source_control_flags,
+            entities,
+        );
+        entities[source_index].set_control_flags(source_control_flags);
+        if !activated {
+            self.common_upkeep.speed = 0;
+            let vertical_delta =
+                i32::from(entities[source_index].position.z) - (i32::from(target.position.z) + 512);
+            let direction = if vertical_delta < 0 {
+                -1_i16
+            } else if vertical_delta > 0 {
+                1_i16
+            } else {
+                0_i16
+            };
+            let mut position = entities[source_index].position;
+            position.z = position
+                .z
+                .wrapping_add(direction.wrapping_mul(self.common_upkeep.word_0xe_14));
+            entities[source_index].set_position(position);
+        }
+        self.step_sub_16580(&entities[source_index], terrain)
+    }
 
     /// Execute the pinned `sub_14C90` distance gate used by the four mode
     /// bodies owned here.  The source clears `word_0xe_14` before either the
@@ -2920,6 +3000,199 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn level_two_ai_modes_0_1_2_are_exact() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut ordinary = inspection
+            .level2_reset_session()
+            .expect("Level 2 basic-mode production session");
+        let baseline_hash = ordinary.campaign_state_hash();
+
+        // Qualified reset enters source case 0 without a state/action write by
+        // the test. It executes the shared selector twice, including when the
+        // first call changes the next-turn state byte.
+        ordinary.step_outer_turn(PlayerCommand::default(), 0);
+        let mode0_trace = ordinary
+            .nyphur_dispatch_traces()
+            .first()
+            .expect("ordinary case-0 trace");
+        assert_eq!(mode0_trace.state_byte, 0);
+        assert_eq!(mode0_trace.tail_call_count(), 2);
+        assert_eq!(
+            mode0_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Sub12e70,
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        let stepped_hash = ordinary.campaign_state_hash();
+        ordinary.reset();
+        assert_eq!(ordinary.campaign_state_hash(), baseline_hash);
+        ordinary.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(ordinary.campaign_state_hash(), stepped_hash);
+
+        // Let the ordinary selector establish a valid source slot/identity
+        // pair. The helper vectors below change only geometry to discriminate
+        // sub_12FF0's inclusive 512 threshold from a generic near-target test.
+        let mut related = inspection
+            .level2_reset_session()
+            .expect("Level 2 mode-1 relation session");
+        for _ in 0..53 {
+            related.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(related.entities[112].source_word_96(), 70);
+        assert!(level2_nyphur_source_identity_matches(
+            &related.entities[112],
+            &related.entities[70]
+        ));
+
+        let mode1_trace = Level2NyphurDispatcher::trace_for_state(1, 0, 112);
+        assert_eq!(
+            mode1_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub12ff0),
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert_eq!(mode1_trace.tail_call_count(), 1);
+
+        let mut dispatched_mode1 = related.clone();
+        dispatched_mode1.nyphur_dispatcher.state_byte = 1;
+        dispatched_mode1.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            dispatched_mode1
+                .nyphur_dispatch_traces()
+                .last()
+                .expect("dispatched mode-1 trace")
+                .calls,
+            mode1_trace.calls
+        );
+        assert!(
+            dispatched_mode1
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot: 112,
+                        ..
+                    }
+                ))
+        );
+
+        let source_position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 2_048,
+        };
+        let mut inclusive = related.clone();
+        inclusive.entities[112].set_position(source_position);
+        inclusive.entities[70].set_position(Position {
+            x: source_position.x + 512,
+            ..source_position
+        });
+        let inclusive_terrain = inclusive.terrain.clone();
+        inclusive
+            .nyphur_dispatcher
+            .step_sub_12ff0(112, &mut inclusive.entities, &inclusive_terrain)
+            .expect("inclusive sub_12FF0 threshold");
+        assert_eq!(inclusive.nyphur_dispatcher.common_upkeep.speed, 0);
+        assert_eq!(inclusive.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
+        assert_eq!(inclusive.entities[112].position.z, source_position.z - 1);
+
+        let mut exact_height = related.clone();
+        exact_height.entities[112].set_position(source_position);
+        exact_height.entities[70].set_position(Position {
+            z: source_position.z - 512,
+            ..source_position
+        });
+        let exact_height_terrain = exact_height.terrain.clone();
+        exact_height
+            .nyphur_dispatcher
+            .step_sub_12ff0(112, &mut exact_height.entities, &exact_height_terrain)
+            .expect("equal target-height delta");
+        assert_eq!(exact_height.entities[112].position.z, source_position.z);
+
+        let mut exclusive = related.clone();
+        exclusive.entities[112].set_position(source_position);
+        exclusive.entities[70].set_position(Position {
+            x: source_position.x + 513,
+            ..source_position
+        });
+        let exclusive_terrain = exclusive.terrain.clone();
+        exclusive
+            .nyphur_dispatcher
+            .step_sub_12ff0(112, &mut exclusive.entities, &exclusive_terrain)
+            .expect("exclusive sub_12FF0 threshold");
+        assert_eq!(
+            exclusive.nyphur_dispatcher.common_upkeep.speed,
+            exclusive.entities[112].minimum_speed()
+        );
+        assert_eq!(exclusive.entities[112].position.z, source_position.z);
+
+        let mut stale = inclusive.clone();
+        let preserved_roll = stale.entities[112].source_roll();
+        let stale_identity = level2_nyphur_source_identity(&stale.entities[70]).wrapping_add(1);
+        stale.entities[112].record[156..158].copy_from_slice(&stale_identity.to_le_bytes());
+        let stale_terrain = stale.terrain.clone();
+        stale
+            .nyphur_dispatcher
+            .step_sub_12ff0(112, &mut stale.entities, &stale_terrain)
+            .expect("stale identity is a source false result");
+        assert_eq!(stale.entities[112].source_roll(), preserved_roll);
+
+        // Case 2 exists in sub_12910, but the pinned complete assignment set
+        // contains no write of value 2. Retain the structural hook and shared
+        // tail without manufacturing a reachable transition.
+        let mode2_trace = Level2NyphurDispatcher::trace_for_state(2, 0, 112);
+        assert_eq!(
+            mode2_trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Nmemneed),
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        let mut dispatched_mode2 = related.clone();
+        dispatched_mode2.nyphur_dispatcher.state_byte = 2;
+        dispatched_mode2.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            dispatched_mode2
+                .nyphur_dispatch_traces()
+                .last()
+                .expect("dispatched structural mode-2 trace")
+                .calls,
+            mode2_trace.calls
+        );
+        assert!(
+            dispatched_mode2
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot: 112,
+                        ..
+                    }
+                ))
+        );
+        let mut production = inspection
+            .level2_reset_session()
+            .expect("Level 2 production exclusion session");
+        for _ in 0..282 {
+            production.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(
+            production
+                .nyphur_dispatch_traces()
+                .iter()
+                .all(|trace| trace.state_byte != 2)
+        );
     }
 
     #[test]
