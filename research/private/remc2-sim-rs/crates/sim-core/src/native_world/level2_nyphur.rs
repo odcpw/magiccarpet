@@ -9,6 +9,14 @@ use super::{
 #[cfg(test)]
 use super::{Level2DispatchEvent, NativeWorld, PlayerCommand};
 
+/// Pinned `sub_15790` spell-family order, including its zero-terminated tail
+/// and the source's unsigned `0xff` sentinel. These rows are deliberately
+/// separate from the later `sub_15910` order: the first helper has one
+/// optional family-7 RNG branch before this scan.
+const LEVEL2_NYPHUR_SPELL_SCAN_15790: [u8; 9] =
+    [0x10, 0x12, 0x09, 0x07, 0x14, 0x15, 0x13, 0x00, 0xff];
+const LEVEL2_NYPHUR_SPELL_SCAN_15910: [u8; 8] = [0x10, 0x12, 0x07, 0x09, 0x11, 0x14, 0x00, 0xff];
+
 /// Source-owned Level 2 AI participant/holder chain at reset.
 ///
 /// The participant rows remain part of the lossless entity/player arrays. This
@@ -154,6 +162,9 @@ pub(super) struct Level2NyphurCommonUpkeep {
     yaw_0x1e_30: i16,
     fov_0x22_34: i16,
     word_0x1a2: i16,
+    /// Source `Type_str_164::word_0x1A4_420`, the mana-starvation latch
+    /// shared by `sub_15790` and `sub_15910`.
+    word_0x1a4: i16,
     byte_0x154: u8,
     word_0x159: i16,
     life_regen: i16,
@@ -223,6 +234,9 @@ pub struct Level2NyphurCommonUpkeepSnapshot {
     pub yaw_0x1e_30: i16,
     pub fov_0x22_34: i16,
     pub word_0x1a2: i16,
+    /// Source `Type_str_164::word_0x1A4_420`, the shared mana-starvation
+    /// latch consumed by the two source spell selectors.
+    pub word_0x1a4: i16,
     pub byte_0x154: u8,
     pub word_0x159: i16,
     pub life_regen: i16,
@@ -330,6 +344,7 @@ impl Level2NyphurCommonUpkeep {
             yaw_0x1e_30: 0,
             fov_0x22_34: 0,
             word_0x1a2: 0,
+            word_0x1a4: 0,
             byte_0x154: 0,
             word_0x159: 100,
             life_regen: 0,
@@ -394,6 +409,7 @@ impl Level2NyphurCommonUpkeep {
             yaw_0x1e_30: self.yaw_0x1e_30,
             fov_0x22_34: self.fov_0x22_34,
             word_0x1a2: self.word_0x1a2,
+            word_0x1a4: self.word_0x1a4,
             byte_0x154: self.byte_0x154,
             word_0x159: self.word_0x159,
             life_regen: self.life_regen,
@@ -475,6 +491,7 @@ impl Level2NyphurCommonUpkeep {
         hasher.update(self.yaw_0x1e_30.to_le_bytes());
         hasher.update(self.fov_0x22_34.to_le_bytes());
         hasher.update(self.word_0x1a2.to_le_bytes());
+        hasher.update(self.word_0x1a4.to_le_bytes());
         hasher.update([self.byte_0x154]);
         hasher.update(self.word_0x159.to_le_bytes());
         hasher.update(self.life_regen.to_le_bytes());
@@ -565,6 +582,62 @@ impl Level2NyphurCommonUpkeep {
             .filter(|slot| *slot != 0)
     }
 
+    /// Pinned `sub_146C0`: resolve one source-slot/list relation against the
+    /// live entity pool. The C++ sentinel comparison is represented by the
+    /// explicit index, active, and nonnegative-life checks; malformed or
+    /// missing carriers therefore return the source null result instead of
+    /// indexing a neighboring row.
+    fn sub_146c0<'a>(
+        &self,
+        family: u8,
+        entities: &'a [EntitySnapshot],
+    ) -> Option<&'a EntitySnapshot> {
+        let slot = self.source_spell_holder_slot(family)?;
+        Self::sub_146c0_slot(slot, entities)
+    }
+
+    fn sub_146c0_slot<'a>(slot: u16, entities: &'a [EntitySnapshot]) -> Option<&'a EntitySnapshot> {
+        if slot == 0 {
+            return None;
+        }
+        let holder = entities.get(usize::from(slot))?;
+        (holder.index == slot && holder.active && holder.life >= 0).then_some(holder)
+    }
+
+    /// Pinned `sub_15730`: the AI's maximum mana is compared with the
+    /// resolved holder's maximum mana using the source's inclusive boundary.
+    /// `sub_146C0` owns the invalid-carrier failure path.
+    fn sub_15730(&self, family: u8, entities: &[EntitySnapshot]) -> bool {
+        self.sub_146c0(family, entities)
+            .is_some_and(|holder| self.max_mana >= holder.max_mana)
+    }
+
+    /// Resolve the family-8 carrier through the entity currently named by
+    /// source word 0x96. The pinned call is `sub_15760(Entities[target], 8)`;
+    /// it does not consult this AI's common-upkeep holder table.
+    fn target_sub_15760_family8(
+        &self,
+        target_slot: u16,
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+    ) -> bool {
+        let Some(target) = entities.get(usize::from(target_slot)) else {
+            return false;
+        };
+        if target.index != target_slot {
+            return false;
+        }
+        let owner_entity_index = target.source_player_entity_index();
+        let Some(owner) = players
+            .iter()
+            .find(|player| player.entity_index == owner_entity_index)
+        else {
+            return false;
+        };
+        let holder_slot = owner.enabled_spell_holders[8];
+        Self::sub_146c0_slot(holder_slot, entities).is_some_and(|holder| holder.active_value > 0)
+    }
+
     /// Pinned `sub_15760`: return a holder only while its source word 0x2E is
     /// positive. A cold holder remains a real source slot but is not an
     /// active target for this predicate.
@@ -573,8 +646,7 @@ impl Level2NyphurCommonUpkeep {
         family: u8,
         entities: &'a [EntitySnapshot],
     ) -> Option<&'a EntitySnapshot> {
-        self.source_spell_holder_slot(family)
-            .and_then(|slot| entities.get(usize::from(slot)))
+        self.sub_146c0(family, entities)
             .filter(|holder| holder.active_value > 0)
     }
 
@@ -592,6 +664,76 @@ impl Level2NyphurCommonUpkeep {
             .any(|family| self.source_spell_holder_slot(family).is_some())
     }
 
+    /// Pinned `sub_13DC0`: the damaged-source Castle relation is tested
+    /// before the cadence gate. A missing, inactive, or mismatched Castle
+    /// carrier is the source null result.
+    fn step_sub_13dc0(&self, source: &mut EntitySnapshot, castle: Option<&EntitySnapshot>) -> bool {
+        if self.max_life / 2 <= self.life || self.castle_entity_index == 0 {
+            return false;
+        }
+        let Some(castle) = castle else {
+            return false;
+        };
+        if castle.index != self.castle_entity_index || !castle.active || castle.life < 0 {
+            return false;
+        }
+        source.set_source_relation(castle);
+        true
+    }
+
+    /// Pinned `sub_13C50` entry gates. Its final `sub_155E0` eligibility
+    /// carrier belongs to another Bead, so a qualified holder is not
+    /// substituted with a generic cast: the dependent branch fails closed.
+    fn step_sub_13c50(
+        &self,
+        source: &EntitySnapshot,
+        castle: Option<&EntitySnapshot>,
+        entities: &[EntitySnapshot],
+    ) -> bool {
+        let Some(castle) = castle else {
+            return false;
+        };
+        if castle.index != self.castle_entity_index
+            || !castle.active
+            || castle.life < 0
+            || castle.action != 4
+            || castle.activation_value != 0
+        {
+            return false;
+        }
+        let Some(_family_two_holder) = self.sub_146c0(2, entities) else {
+            return false;
+        };
+        if !self.sub_15730(2, entities) {
+            return false;
+        }
+
+        // `sub_155E0` owns the remaining Castle aperture/cooldown/heading
+        // decision. It is intentionally not reimplemented in this lane.
+        let _ = source;
+        false
+    }
+
+    /// Pinned `sub_13CE0`: family 1 is the first carrier gate, followed by
+    /// the inclusive family-2 maximum-mana comparison. The final
+    /// `sub_148E0` source-list search is owned elsewhere and is therefore a
+    /// hard fail-closed boundary here.
+    fn step_sub_13ce0(&self, source: &EntitySnapshot, entities: &[EntitySnapshot]) -> bool {
+        if self.sub_146c0(1, entities).is_none() {
+            return false;
+        }
+        if let Some(family_two_holder) = self.sub_146c0(2, entities)
+            && self.max_mana > family_two_holder.max_mana
+        {
+            return false;
+        }
+
+        // No source relation is written until `sub_148E0` returns a target;
+        // that target search is deliberately not approximated here.
+        let _ = source;
+        false
+    }
+
     /// The qualified fall-through of `sub_12E70` reaches `sub_14630`. Keep
     /// its castle/relation write here so the post-mode tail owns the source
     /// slot and identity together. Mode-specific selector helpers remain in
@@ -603,6 +745,9 @@ impl Level2NyphurCommonUpkeep {
         let Some(castle) = castle else {
             return 12;
         };
+        if castle.index != self.castle_entity_index || !castle.active || castle.life < 0 {
+            return 12;
+        }
         source.set_source_relation(castle);
         11
     }
@@ -645,7 +790,7 @@ impl Level2NyphurCommonUpkeep {
         if !(0..LEVEL2_NYPHUR_SOURCE_SPELL_TIER_COUNT).contains(&raw_tier) {
             return 0;
         }
-        let Some(holder_slot) = self.source_spell_holder_slot(family) else {
+        let Some(holder_slot) = self.sub_146c0(family, entities).map(|holder| holder.index) else {
             return 0;
         };
         let Some((_, profile)) = Self::source_spell_profile(family, raw_tier) else {
@@ -667,6 +812,138 @@ impl Level2NyphurCommonUpkeep {
             };
         }
         family.cast_signed()
+    }
+
+    /// The pinned `sub_15790` quarter expression. `my_sign32` is zero for
+    /// every nonnegative carrier, including max mana 1000.
+    fn sub_15790_mana_quarter(max_mana: i32) -> i32 {
+        let sign = if max_mana < 0 { -1 } else { 0 };
+        max_mana.wrapping_sub(sign << 2).wrapping_add(sign) >> 2
+    }
+
+    /// Model the x86 carry flag returned by a left shift. `__CFSHL__(x, 2)`
+    /// is the final bit shifted out, not the shifted value; for the source's
+    /// arithmetic sign carrier (`0` or `-1`) it is respectively `0` or `1`.
+    fn source_cfs_hl(value: i32, shift: u32) -> i32 {
+        debug_assert!((1..=32).contains(&shift));
+        i32::from(((value.cast_unsigned() >> (32 - shift)) & 1) != 0)
+    }
+
+    /// The pinned `sub_15910` quarter expression. For the qualified
+    /// nonnegative max-mana carrier this is exactly `max_mana >> 2` (250 at
+    /// max mana 1000); retain the source sign carrier for negative inputs.
+    fn sub_15910_mana_quarter(max_mana: i32) -> i32 {
+        let sign_bit = max_mana >> 31;
+        let carry = Self::source_cfs_hl(sign_bit, 2);
+        let correction = carry.wrapping_add(sign_bit.wrapping_mul(4));
+        max_mana.wrapping_sub(correction) >> 2
+    }
+
+    /// Apply the shared source `word_0x1A4` mana latch after the caller has
+    /// supplied its helper-specific quarter expression. All arithmetic stays
+    /// in the source's signed 32-bit carrier; the latch clears at the
+    /// inclusive recovery boundary.
+    fn update_spell_mana_latch_with_quarter(&mut self, quarter: i32) -> bool {
+        if quarter <= self.mana {
+            if self.word_0x1a4 != 0 {
+                let mut recovery = quarter.wrapping_add(6_000);
+                if recovery >= self.max_mana {
+                    recovery = self.max_mana / 2;
+                }
+                if recovery <= self.mana {
+                    self.word_0x1a4 = 0;
+                }
+            }
+        } else {
+            self.word_0x1a4 = 1;
+        }
+        self.word_0x1a4 == 0
+    }
+
+    fn update_spell_mana_latch_15790(&mut self) -> bool {
+        self.update_spell_mana_latch_with_quarter(Self::sub_15790_mana_quarter(self.max_mana))
+    }
+
+    fn update_spell_mana_latch_15910(&mut self) -> bool {
+        self.update_spell_mana_latch_with_quarter(Self::sub_15910_mana_quarter(self.max_mana))
+    }
+
+    /// Pinned `sub_15790`: optional family-7 selection consumes one Watcom
+    /// draw only when the current target owner's family-8 holder is active,
+    /// then the sentinel-table scan runs in source order with descending
+    /// tiers. The family-19 target model guard is retained even though its
+    /// authored profile is currently outside the qualified Rust spell table.
+    fn step_sub_15790(
+        &mut self,
+        target_slot: u16,
+        entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
+    ) -> i8 {
+        if !self.update_spell_mana_latch_15790() {
+            return -1;
+        }
+
+        if self.target_sub_15760_family8(target_slot, entities, players) {
+            let roll = self.step_watcomrand() % 255;
+            if i32::from(roll) < i32::from(self.word_0x244) {
+                let mut tier = self.spell_levels[7];
+                while tier >= 0 {
+                    if self.step_sub_15f20(7, tier, entities) == 7 {
+                        return 7;
+                    }
+                    tier -= 1;
+                }
+            }
+        }
+
+        for &family in &LEVEL2_NYPHUR_SPELL_SCAN_15790 {
+            if family == u8::MAX {
+                break;
+            }
+            let mut tier = self.spell_levels[usize::from(family)];
+            while tier >= 0 {
+                if self.step_sub_15f20(family, tier, entities) == family.cast_signed() {
+                    if family != 19 {
+                        return family.cast_signed();
+                    }
+                    let Some(target) = entities.get(usize::from(target_slot)) else {
+                        break;
+                    };
+                    if target.index == target_slot
+                        && target.active
+                        && target.life >= 0
+                        && matches!(target.model, 0 | 1)
+                    {
+                        return family.cast_signed();
+                    }
+                }
+                tier -= 1;
+            }
+        }
+        -1
+    }
+
+    /// Pinned `sub_15910`: it shares only the mana latch with `sub_15790`;
+    /// this source order has no optional family-7 branch and therefore never
+    /// consumes the Watcom stream itself.
+    fn step_sub_15910(&mut self, entities: &mut [EntitySnapshot]) -> i8 {
+        if !self.update_spell_mana_latch_15910() {
+            return -1;
+        }
+        for &family in &LEVEL2_NYPHUR_SPELL_SCAN_15910 {
+            if family == u8::MAX {
+                break;
+            }
+            let mut tier = self.spell_levels[usize::from(family)];
+            while tier >= 0 {
+                let result = self.step_sub_15f20(family, tier, entities);
+                if result == family.cast_signed() {
+                    return result;
+                }
+                tier -= 1;
+            }
+        }
+        -1
     }
 
     /// Pinned `sub_5F7E0`: the owner visibility mode is read as an unsigned
@@ -1740,11 +2017,11 @@ impl Level2NyphurDispatcher {
             3 => self.step_sub_13100(source_slot, entities, terrain)?,
             4 => self.step_sub_131f0(source_slot, entities, terrain)?,
             5 => Self::step_nmemneed0(),
-            8 => self.step_sub_13830(source_slot, entities, terrain, presentation)?,
-            9 => self.step_sub_13870(source_slot, entities, terrain, presentation)?,
+            8 => self.step_sub_13830(source_slot, entities, players, terrain, presentation)?,
+            9 => self.step_sub_13870(source_slot, entities, players, terrain, presentation)?,
             11 => self.step_sub_133b0(source_slot, entities, terrain)?,
             12 => self.step_sub_13270(source_slot, entities, terrain)?,
-            13 => self.step_sub_13850(source_slot, entities, terrain, presentation)?,
+            13 => self.step_sub_13850(source_slot, entities, players, terrain, presentation)?,
             _ => {}
         }
         let tail_calls = if selected_state == 0 { 2 } else { 1 };
@@ -1894,10 +2171,7 @@ impl Level2NyphurDispatcher {
     /// Unsupported spell families remain absent instead of borrowing a
     /// neighboring profile.
     fn source_spell_ready(&self, family: u8, entities: &[EntitySnapshot]) -> bool {
-        let Some(holder_slot) = self.common_upkeep.source_spell_holder_slot(family) else {
-            return false;
-        };
-        let Some(holder) = entities.get(usize::from(holder_slot)) else {
+        let Some(holder) = self.common_upkeep.sub_146c0(family, entities) else {
             return false;
         };
         let Some((_, profile)) =
@@ -2233,10 +2507,11 @@ impl Level2NyphurDispatcher {
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
     ) -> Result<()> {
-        self.step_sub_13890(source_slot, entities, terrain, presentation)
+        self.step_sub_13890(source_slot, entities, players, terrain, presentation)
     }
 
     /// `sub_13870` is a source wrapper around `sub_13890`; its nullsub return
@@ -2245,10 +2520,11 @@ impl Level2NyphurDispatcher {
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
     ) -> Result<()> {
-        self.step_sub_13890(source_slot, entities, terrain, presentation)
+        self.step_sub_13890(source_slot, entities, players, terrain, presentation)
     }
 
     /// `sub_13850` is a source wrapper around `sub_13890`.
@@ -2256,10 +2532,11 @@ impl Level2NyphurDispatcher {
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
     ) -> Result<()> {
-        self.step_sub_13890(source_slot, entities, terrain, presentation)
+        self.step_sub_13890(source_slot, entities, players, terrain, presentation)
     }
 
     /// Execute the shared body reached by pinned `sub_13830`, `sub_13870`,
@@ -2274,6 +2551,7 @@ impl Level2NyphurDispatcher {
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
     ) -> Result<()> {
@@ -2307,6 +2585,23 @@ impl Level2NyphurDispatcher {
             self.common_upkeep.speed = 0;
             self.common_upkeep.word_0xe_14 = 1;
         } else {
+            if distance <= 4_608 && self.common_upkeep.word_0x1a2 >= 0 {
+                let family =
+                    self.common_upkeep
+                        .step_sub_15790(source.source_word_96(), entities, players);
+                if family >= 0 && self.source_spell_ready(family.cast_unsigned(), entities) {
+                    let mut source_control_flags = source.control_flags;
+                    if self.common_upkeep.step_sub_14e10(
+                        family.cast_unsigned(),
+                        source.model,
+                        &mut source_control_flags,
+                        entities,
+                    ) {
+                        entities[source_index].set_control_flags(source_control_flags);
+                        return self.step_sub_16580(&entities[source_index], terrain);
+                    }
+                }
+            }
             if distance > 4_608 && self.common_upkeep.source_spell_holder_slot(3).is_some() {
                 return Err(NativeWorldError::new(
                     "Level 2 Nyphur sub_13890 sub_15170 family-3 carrier is unsupported",
@@ -2447,22 +2742,50 @@ impl Level2NyphurDispatcher {
             return Ok(());
         }
 
+        let castle = (self.common_upkeep.castle_entity_index != 0)
+            .then(|| entities.get(usize::from(self.common_upkeep.castle_entity_index)))
+            .flatten()
+            .cloned();
+        if self
+            .common_upkeep
+            .step_sub_13dc0(&mut entities[source_index], castle.as_ref())
+        {
+            self.state_byte = 11;
+            return Ok(());
+        }
+
         let source_phase = entities[source_index].phase;
         let period = self.common_upkeep.cadence_period();
         if u16::from(source_phase) % period != 0 {
             return Ok(());
         }
 
-        // The selector bodies are owned by later mode packets. This gate is
-        // deliberately source-shaped rather than a generic fallback: it
-        // rejects the tail unless every earlier selector is mechanically
-        // absent for the current indexed Level 2 rows. The owned
-        // `sub_14530` selector runs immediately after this proof and before
-        // the shared `sub_14630` fall-through.
+        // The Castle action-4 selector is the first cadence-gated owned row.
+        // Its final `sub_155E0` dependency fails closed when no owned carrier
+        // is available, without consuming a source relation or RNG draw.
+        if self
+            .common_upkeep
+            .step_sub_13c50(&entities[source_index], castle.as_ref(), entities)
+        {
+            self.state_byte = 1;
+            return Ok(());
+        }
+
+        // The selector bodies between `sub_13C50` and `sub_13CE0` are owned
+        // by other Beads. This gate is source-shaped rather than a generic
+        // fallback: it rejects the tail unless every unowned prerequisite is
+        // mechanically absent for the current indexed Level 2 rows.
         if !self.owned_tail_fallthrough_is_safe(&entities[source_index], entities, players) {
             return Err(NativeWorldError::new(
                 "Level 2 Nyphur tail reached an unowned selector prerequisite",
             ));
+        }
+        if self
+            .common_upkeep
+            .step_sub_13ce0(&entities[source_index], entities)
+        {
+            self.state_byte = 6;
+            return Ok(());
         }
         let source_snapshot = entities[source_index].clone();
         if let Some(target_index) = self.sub_14530_target(&source_snapshot, entities) {
@@ -2474,10 +2797,6 @@ impl Level2NyphurDispatcher {
             self.state_byte = 13;
             return Ok(());
         }
-        let castle = (self.common_upkeep.castle_entity_index != 0)
-            .then(|| entities.get(usize::from(self.common_upkeep.castle_entity_index)))
-            .flatten()
-            .cloned();
         let state = self
             .common_upkeep
             .step_sub_14630(&mut entities[source_index], castle.as_ref());
@@ -2498,9 +2817,7 @@ impl Level2NyphurDispatcher {
         if self.common_upkeep.castle_entity_index != 0 {
             return None;
         }
-        let holder_slot = self.common_upkeep.source_spell_holder_slot(2)?;
-        let holder = entities.get(usize::from(holder_slot))?;
-        if source.max_mana < holder.max_mana {
+        if !self.common_upkeep.sub_15730(2, entities) {
             return None;
         }
 
@@ -2590,16 +2907,9 @@ impl Level2NyphurDispatcher {
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
     ) -> bool {
-        // sub_13DC0/sub_13C50 are the still-unowned Castle branches. The
-        // family-2 arena search is handled above by sub_13B00 in exact source
-        // order. The qualified reset has no Castle carrier; preserving these
-        // remaining predicates keeps changed data from becoming an accidental
-        // mode implementation.
-        if self.common_upkeep.castle_entity_index != 0
-            || self.common_upkeep.life < self.common_upkeep.max_life / 2
-        {
-            return false;
-        }
+        // `sub_13DC0` and `sub_13C50` have already run in source order. The
+        // family-2 arena search is handled above by `sub_13B00`; the
+        // remaining predicates below cover only selectors owned elsewhere.
 
         let source_order = level2_nyphur_class3_source_order(entities);
         // sub_13E40 and sub_14250 scan the source class-3 list for model 2 and
@@ -3355,6 +3665,7 @@ mod tests {
             .step_sub_13830(
                 112,
                 &mut close.entities,
+                &close.players,
                 &close.terrain,
                 &close.presentation,
             )
@@ -3386,6 +3697,7 @@ mod tests {
             .step_sub_13870(
                 112,
                 &mut exact_far.entities,
+                &exact_far.players,
                 &exact_far.terrain,
                 &exact_far.presentation,
             )
@@ -3403,6 +3715,7 @@ mod tests {
             .step_sub_13850(
                 112,
                 &mut direction_carrier.entities,
+                &direction_carrier.players,
                 &direction_carrier.terrain,
                 &direction_carrier.presentation,
             )
@@ -3419,6 +3732,7 @@ mod tests {
             .step_sub_13850(
                 112,
                 &mut reset_carrier.entities,
+                &reset_carrier.players,
                 &reset_carrier.terrain,
                 &reset_carrier.presentation,
             )
@@ -3438,6 +3752,7 @@ mod tests {
                 .step_sub_13850(
                     112,
                     &mut wrong_identity.entities,
+                    &wrong_identity.players,
                     &wrong_identity.terrain,
                     &wrong_identity.presentation,
                 )
@@ -4605,5 +4920,205 @@ mod tests {
             threshold
         );
         assert_eq!(threshold_session.campaign_state_hash(), threshold_hash);
+    }
+
+    #[test]
+    fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Nyphur production session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // sub_146C0 resolves the source list identity and rejects both the
+        // absent and out-of-pool carriers. sub_15730 is inclusive at the
+        // max-mana boundary and rejects a one-unit shortfall.
+        let holder_max = session.entities[113].max_mana;
+        let mut carrier = session.nyphur_dispatcher.common_upkeep.clone();
+        assert!(carrier.sub_146c0(1, &session.entities).is_some());
+        assert!(carrier.sub_146c0(2, &session.entities).is_none());
+        carrier.spell_holder_indices[6] = 113;
+        carrier.max_mana = holder_max;
+        assert!(carrier.sub_15730(6, &session.entities));
+        carrier.max_mana = holder_max - 1;
+        assert!(!carrier.sub_15730(6, &session.entities));
+        carrier.spell_holder_indices[6] = u16::MAX;
+        assert!(carrier.sub_146c0(6, &session.entities).is_none());
+
+        // sub_15F20 applies SetSpell before checking mana. The failed result
+        // must still carry the tier-0 family-6 profile into the holder.
+        let mut mutation_entities = session.entities.clone();
+        let before_holder = mutation_entities[113].clone();
+        let mut mutation_probe = session.nyphur_dispatcher.common_upkeep.clone();
+        mutation_probe.spell_holder_indices[6] = 113;
+        mutation_probe.max_mana = 1_000;
+        mutation_probe.mana = 0;
+        assert_eq!(
+            mutation_probe.step_sub_15f20(6, 0, &mut mutation_entities),
+            -1
+        );
+        assert_ne!(mutation_entities[113], before_holder);
+        assert_eq!(mutation_entities[113].subspell_index, 100);
+        assert_eq!(mutation_entities[113].max_mana, 1_000);
+
+        // sub_15790's optional family-8 branch resolves the CURRENT TARGET's
+        // owner, not this AI's common-upkeep holder table, and consumes one
+        // RNG draw only when that target-owner holder is active. sub_15910
+        // has the distinct sentinel order but no such draw.
+        let mut rng_15790 = session.nyphur_dispatcher.common_upkeep.clone();
+        let mut rng_15910 = rng_15790.clone();
+        rng_15790.word_0x244 = 255;
+        let mut rng_entities = session.entities.clone();
+        rng_entities[113].active_value = 1;
+        rng_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+        assert!(rng_entities[70].active);
+        let target_owner_slot = session
+            .players
+            .iter()
+            .position(|player| player.slot == 0)
+            .expect("target-owner player row");
+        let target_owner_entity_index = session.players[target_owner_slot].entity_index;
+        rng_entities[70].record[152..154].copy_from_slice(&target_owner_entity_index.to_le_bytes());
+        let mut target_active_players = session.players.clone();
+        target_active_players[target_owner_slot].enabled_spell_holders[8] = 113;
+        let rng_before = rng_15790.watcom_rand_state;
+        // Family zero is the pinned zero-terminated row: the source's
+        // zero-valued failure result is therefore indistinguishable from a
+        // family-zero match, even when its authored profile is absent.
+        // The target-owner family-8 holder is active while the AI's local
+        // holder table is cold, so the target probe must still draw.
+        assert_eq!(
+            rng_15790.step_sub_15790(70, &mut rng_entities, &target_active_players),
+            0
+        );
+        assert_ne!(rng_15790.watcom_rand_state, rng_before);
+
+        let mut rng_ai_only = session.nyphur_dispatcher.common_upkeep.clone();
+        rng_ai_only.word_0x244 = 255;
+        rng_ai_only.spell_holder_indices[8] = 113;
+        let mut ai_only_entities = session.entities.clone();
+        ai_only_entities[113].active_value = 1;
+        ai_only_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+        ai_only_entities[70].record[152..154]
+            .copy_from_slice(&target_owner_entity_index.to_le_bytes());
+        let mut target_cold_players = session.players.clone();
+        target_cold_players[target_owner_slot].enabled_spell_holders[8] = 0;
+        let ai_only_rng_before = rng_ai_only.watcom_rand_state;
+        // The AI's local family-8 holder is active while the CURRENT TARGET's
+        // owner is cold, so the target probe must not draw.
+        assert_eq!(
+            rng_ai_only.step_sub_15790(70, &mut ai_only_entities, &target_cold_players),
+            0
+        );
+        assert_eq!(rng_ai_only.watcom_rand_state, ai_only_rng_before);
+
+        let rng_15910_before = rng_15910.watcom_rand_state;
+        let mut rng_entities_without_optional = session.entities.clone();
+        assert_eq!(
+            rng_15910.step_sub_15910(&mut rng_entities_without_optional),
+            0
+        );
+        assert_eq!(rng_15910.watcom_rand_state, rng_15910_before);
+
+        // Both source helpers yield 250 for nonnegative max-mana 1000. Their
+        // negative-input source expressions remain distinct, so retain both
+        // narrow helpers: both source expressions yield -250 for -1000.
+        assert_eq!(Level2NyphurCommonUpkeep::sub_15790_mana_quarter(1_000), 250);
+        assert_eq!(Level2NyphurCommonUpkeep::sub_15910_mana_quarter(1_000), 250);
+        assert_eq!(
+            Level2NyphurCommonUpkeep::sub_15790_mana_quarter(-1_000),
+            -250
+        );
+        assert_eq!(
+            Level2NyphurCommonUpkeep::sub_15910_mana_quarter(-1_000),
+            -250
+        );
+        let mut latch_falsifier_15790 = session.nyphur_dispatcher.common_upkeep.clone();
+        latch_falsifier_15790.max_mana = 1_000;
+        latch_falsifier_15790.mana = 249;
+        latch_falsifier_15790.word_0x1a4 = 0;
+        assert!(!latch_falsifier_15790.update_spell_mana_latch_15790());
+        assert_eq!(latch_falsifier_15790.word_0x1a4, 1);
+        let mut latch_falsifier_15910 = session.nyphur_dispatcher.common_upkeep.clone();
+        latch_falsifier_15910.max_mana = 1_000;
+        latch_falsifier_15910.mana = 249;
+        latch_falsifier_15910.word_0x1a4 = 0;
+        assert!(!latch_falsifier_15910.update_spell_mana_latch_15910());
+        assert_eq!(latch_falsifier_15910.word_0x1a4, 1);
+
+        // The 15790 latch clears at the inclusive recovery boundary after
+        // its +6000 clamp reaches max/2.
+        let mut latch = session.nyphur_dispatcher.common_upkeep.clone();
+        latch.max_mana = 1_000;
+        latch.mana = 248;
+        assert!(!latch.update_spell_mana_latch_15790());
+        assert_eq!(latch.word_0x1a4, 1);
+        latch.mana = 249;
+        assert!(!latch.update_spell_mana_latch_15790());
+        assert_eq!(latch.word_0x1a4, 1);
+        latch.mana = 500;
+        assert!(latch.update_spell_mana_latch_15790());
+        assert_eq!(latch.word_0x1a4, 0);
+
+        // sub_13DC0 is before cadence: a damaged source reaches the valid
+        // Castle relation even on a non-cadence phase. At equality it is a
+        // strict negative and the cadence-gated tail remains untouched.
+        let mut damaged = session.clone();
+        damaged.nyphur_dispatcher.common_upkeep.castle_entity_index = 70;
+        damaged.nyphur_dispatcher.common_upkeep.life =
+            damaged.nyphur_dispatcher.common_upkeep.max_life / 2 - 1;
+        damaged.entities[112].phase = 1;
+        damaged
+            .nyphur_dispatcher
+            .step_sub_12e70(112, &mut damaged.entities, &damaged.players)
+            .expect("pre-cadence damaged Castle branch");
+        assert_eq!(damaged.nyphur_dispatcher.state_byte, 11);
+        assert_eq!(damaged.entities[112].source_word_96(), 70);
+        assert!(level2_nyphur_source_identity_matches(
+            &damaged.entities[112],
+            &damaged.entities[70]
+        ));
+
+        let mut at_half = session.clone();
+        at_half.nyphur_dispatcher.common_upkeep.castle_entity_index = 70;
+        at_half.nyphur_dispatcher.common_upkeep.life =
+            at_half.nyphur_dispatcher.common_upkeep.max_life / 2;
+        at_half.entities[112].phase = 1;
+        let source_before = at_half.entities[112].clone();
+        at_half
+            .nyphur_dispatcher
+            .step_sub_12e70(112, &mut at_half.entities, &at_half.players)
+            .expect("cadence rejects full-health Castle branch");
+        assert_eq!(at_half.nyphur_dispatcher.state_byte, 0);
+        assert_eq!(
+            at_half.entities[112].source_word_96(),
+            source_before.source_word_96()
+        );
+
+        // The owned entry gates are exercised without fabricating either of
+        // the unowned dependent carriers: sub_13C50 needs family 2 and then
+        // fails closed at sub_155E0; sub_13CE0 reaches its family-1 gate but
+        // fails closed at sub_148E0.
+        let mut castle = session.entities[70].clone();
+        castle.action = 4;
+        castle.activation_value = 0;
+        let source = session.entities[112].clone();
+        let mut branch_probe = session.nyphur_dispatcher.common_upkeep.clone();
+        branch_probe.castle_entity_index = 70;
+        branch_probe.max_mana = 1_000;
+        assert!(!branch_probe.step_sub_13c50(&source, Some(&castle), &session.entities));
+        assert!(!branch_probe.step_sub_13ce0(&source, &session.entities));
+
+        // The qualified constructor has no Castle, and its ordinary package
+        // route currently reaches the existing state-13 selector. No honest
+        // ordinary positive for sub_14630 is claimed in this focused vector;
+        // that reachability remains open pending its owning upstream seam.
+
+        // The new latch is part of the campaign digest and reset baseline.
+        session.nyphur_dispatcher.common_upkeep.word_0x1a4 = 1;
+        assert_ne!(session.campaign_state_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 }
