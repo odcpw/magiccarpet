@@ -1066,7 +1066,7 @@ impl Level2EconomyState {
         if self.castle.is_some_and(|castle| castle.active) {
             return None;
         }
-        let source_entity_index = self.allocate_slot()?;
+        let source_entity_index = self.allocate_castle_source_slot()?;
         // Preserve the root's live `rand_0x14` separately from the reclaim
         // stack seed.  Overflow and the stage-removal sentinel both advance
         // this stream, so falling back to `slot_rng` after the first call
@@ -1328,6 +1328,53 @@ impl Level2EconomyState {
                 y: child.position.y,
             })
             .expect("Castle child source slot fits the map chain");
+    }
+
+    /// Consume one source replaceable row from the retry side of
+    /// `sub_49F90`/`NewEvent_4A050`.
+    ///
+    /// The pinned allocator scans source slots from 999 down to 1 and keeps
+    /// rows carrying `byte[2] & 2` in a separate retry stack.  The next
+    /// `NewEvent` therefore reuses the lowest eligible slot after the normal
+    /// free stack is empty.  Castle model-15 rows are the replaceable rows
+    /// owned by this seam; their source relation is intentionally left in the
+    /// Castle auxiliary array until the following `sub_5FF50` walk observes
+    /// the replacement and clears that relation.
+    fn take_castle_retry_slot(&mut self) -> Option<u16> {
+        let (child_index, source_slot) = self
+            .castle_children
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| {
+                child.active
+                    && child.source_class == 5
+                    && child.model == 15
+                    && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+            })
+            .min_by_key(|(_, child)| child.source_entity_index)
+            .map(|(index, child)| (index, child.source_entity_index))?;
+        let child = self.castle_children.remove(child_index);
+        self.sync_castle_child_map(Level2CastleChild {
+            active: false,
+            ..child
+        });
+        // A retry reuses the same source row after NewEvent's memset.  It is
+        // a new cursor generation even though the numeric slot is preserved.
+        let generation = self.slot_generations.entry(source_slot).or_default();
+        *generation = generation.wrapping_add(1);
+        Some(source_slot)
+    }
+
+    /// Allocate a Castle-owned source row with the source free/retry order.
+    /// `sub_49F90` is the bounded rebuild between the normal free stack and
+    /// the replaceable retry stack; no second allocator authority is added.
+    fn allocate_castle_source_slot(&mut self) -> Option<u16> {
+        if let Some(slot) = self.allocate_slot() {
+            return Some(slot);
+        }
+        self.rebuild_free_arena();
+        self.allocate_slot()
+            .or_else(|| self.take_castle_retry_slot())
     }
 
     /// Retire the source `word_0x34_52` controller chain by following each
@@ -1624,7 +1671,7 @@ impl Level2EconomyState {
         let mut previous_child_index: Option<usize> = None;
         let mut previous_slot = snapshot.source_entity_index;
         for &(offset_x, offset_y) in level2_castle_controller_points(selected_level) {
-            let Some(stage_slot) = self.allocate_slot() else {
+            let Some(stage_slot) = self.allocate_castle_source_slot() else {
                 break;
             };
             let stage_position = Position {
@@ -1638,7 +1685,9 @@ impl Level2EconomyState {
                 entity_rng: self.new_event_rng(stage_slot),
                 id_entity_index: snapshot.source_id_entity_index,
                 source_class: 10,
-                parent_entity_index: snapshot.source_entity_index,
+                // `sub_613D0` links controller rows through word32/word34;
+                // NewEvent leaves parentId zero for this constructor.
+                parent_entity_index: 0,
                 owner_entity_index: snapshot.owner_entity_index,
                 player_entity_index: 0,
                 position: Position {
@@ -1702,76 +1751,92 @@ impl Level2EconomyState {
             return;
         };
         let target = usize::from(level2_castle_defender_count(snapshot.level));
-        let mut defenders = self
-            .castle_children
-            .iter()
-            .filter(|child| {
+        // `sub_5FF50` trusts the player's array_0x3C_60 relation slots. It
+        // does not discover holders by parentId, and NewEvent leaves that
+        // field zero for class-3/model-3 rows. Keep the relation array as the
+        // authority so a stale or wrong slot cannot release an unrelated
+        // live child merely because it shares a synthetic parent.
+        let mut defender_slots = snapshot.defender_slots;
+        let mut defenders = Vec::with_capacity(target);
+        for index in 0..target {
+            let related_slot = defender_slots[index];
+            let valid = related_slot != 0
+                && self.castle_children.iter().any(|child| {
+                    child.active
+                        && child.source_entity_index == related_slot
+                        && child.source_class == 3
+                        && child.model == 3
+                        && child.action == 9
+                });
+            if valid {
+                defenders.push(related_slot);
+                continue;
+            }
+            if let Some(slot) = self.allocate_castle_source_slot() {
+                let child = Level2CastleChild {
+                    source_entity_index: slot,
+                    entity_rng: self.new_event_rng(slot),
+                    id_entity_index: snapshot.source_id_entity_index,
+                    source_class: 3,
+                    parent_entity_index: 0,
+                    owner_entity_index: snapshot.owner_entity_index,
+                    player_entity_index: snapshot.source_id_entity_index,
+                    position: snapshot.position,
+                    model: 3,
+                    action: 9,
+                    mana: 0,
+                    max_mana: LEVEL2_CASTLE_DEFENDER_MAX_MANA,
+                    life: LEVEL2_CASTLE_DEFENDER_MAX_LIFE,
+                    max_life: LEVEL2_CASTLE_DEFENDER_MAX_LIFE,
+                    speed: LEVEL2_CASTLE_DEFENDER_SPEED,
+                    target_sphere_slot: 0,
+                    source_byte_3e: snapshot.phase,
+                    cave_collision_cooldown: 0,
+                    yaw: 0,
+                    roll: 0,
+                    control_flags: 0,
+                    chain_previous_slot: 0,
+                    chain_next_slot: 0,
+                    source_byte_43: 0,
+                    source_word_4a: 0,
+                    active: true,
+                };
+                self.sync_castle_child_map(child);
+                self.castle_children.push(child);
+                defender_slots[index] = slot;
+                defenders.push(slot);
+            } else {
+                defender_slots[index] = 0;
+            }
+        }
+        // The source walks the unused array_0x3C entries and disables them;
+        // they are reclaimed by the generation-time ApplyEvents pass. A
+        // wrong relation is deliberately not freed here.
+        for related_slot in defender_slots.iter_mut().skip(target) {
+            let slot = *related_slot;
+            if slot == 0 {
+                continue;
+            }
+            if let Some(child) = self.castle_children.iter_mut().find(|child| {
                 child.active
-                    && child.parent_entity_index == castle_slot
+                    && child.source_entity_index == slot
+                    && child.source_class == 3
                     && child.model == 3
                     && child.action == 9
-            })
-            .map(|child| child.source_entity_index)
-            .collect::<Vec<_>>();
-        for stale_slot in defenders.iter().skip(target).copied().collect::<Vec<_>>() {
-            if let Some(child) = self
-                .castle_children
-                .iter_mut()
-                .find(|child| child.source_entity_index == stale_slot)
-            {
+            }) {
                 child.active = false;
                 let inactive = *child;
                 self.sync_castle_child_map(inactive);
+                self.release_slot(slot, Some(inactive.entity_rng));
             }
-            self.release_slot(stale_slot, None);
-        }
-        defenders.truncate(target);
-        while defenders.len() < target {
-            let Some(slot) = self.allocate_slot() else {
-                break;
-            };
-            let child = Level2CastleChild {
-                source_entity_index: slot,
-                entity_rng: self.new_event_rng(slot),
-                id_entity_index: snapshot.source_id_entity_index,
-                source_class: 3,
-                parent_entity_index: castle_slot,
-                owner_entity_index: snapshot.owner_entity_index,
-                player_entity_index: snapshot.source_id_entity_index,
-                position: snapshot.position,
-                model: 3,
-                action: 9,
-                mana: 0,
-                max_mana: LEVEL2_CASTLE_DEFENDER_MAX_MANA,
-                life: LEVEL2_CASTLE_DEFENDER_MAX_LIFE,
-                max_life: LEVEL2_CASTLE_DEFENDER_MAX_LIFE,
-                speed: LEVEL2_CASTLE_DEFENDER_SPEED,
-                target_sphere_slot: 0,
-                source_byte_3e: snapshot.phase,
-                cave_collision_cooldown: 0,
-                yaw: 0,
-                roll: 0,
-                control_flags: 0,
-                chain_previous_slot: 0,
-                chain_next_slot: 0,
-                source_byte_43: 0,
-                source_word_4a: 0,
-                active: true,
-            };
-            self.sync_castle_child_map(child);
-            self.castle_children.push(child);
-            defenders.push(slot);
+            *related_slot = 0;
         }
         if let Some(castle) = self
             .castle
             .as_mut()
             .filter(|castle| castle.source_entity_index == castle_slot)
         {
-            castle.defender_slots = [
-                defenders.first().copied().unwrap_or_default(),
-                defenders.get(1).copied().unwrap_or_default(),
-                defenders.get(2).copied().unwrap_or_default(),
-            ];
+            castle.defender_slots = defender_slots;
             castle.defender_count = defenders.len() as u8;
         }
 
@@ -1886,13 +1951,15 @@ impl Level2EconomyState {
                         z: self.terrain.ground_height(child_position),
                         ..child_position
                     };
-                    if let Some(slot) = self.allocate_slot() {
+                    if let Some(slot) = self.allocate_castle_source_slot() {
                         let child = Level2CastleChild {
                             source_entity_index: slot,
                             entity_rng: self.new_event_rng(slot),
                             id_entity_index: snapshot.source_id_entity_index,
                             source_class: 5,
-                            parent_entity_index: castle_slot,
+                            // `sub_5FF50` owns this row through
+                            // array_0x5C_92, not parentId.
+                            parent_entity_index: 0,
                             owner_entity_index: snapshot.owner_entity_index,
                             player_entity_index: snapshot.source_id_entity_index,
                             position: child_position,
@@ -1908,7 +1975,10 @@ impl Level2EconomyState {
                             cave_collision_cooldown: 0,
                             yaw: 512,
                             roll: 512,
-                            control_flags: 0,
+                            // `sub_4C1E0` sets byte[2] & 2, making this
+                            // class-5/model-15 row eligible for the
+                            // `sub_49F90` retry sidecar.
+                            control_flags: SOURCE_REPLACEABLE_FLAG,
                             chain_previous_slot: 0,
                             chain_next_slot: 0,
                             source_byte_43: 0,
@@ -1938,30 +2008,10 @@ impl Level2EconomyState {
                 continue;
             }
 
-            // `sub_5FF50` drops an invalid tail relation before its root slot
-            // is cleared. The source dispatcher has already disabled the
-            // child row, so mirror that order here: unlink the renderable
-            // source state, mark the typed child inactive, and return its
-            // arena slot before clearing `array_0x5C_92[index]`.
-            if let Some(inactive) = self
-                .castle_children
-                .iter()
-                .find(|child| child.source_entity_index == slot)
-                .copied()
-            {
-                if let Some(child) = self
-                    .castle_children
-                    .iter_mut()
-                    .find(|child| child.source_entity_index == slot)
-                {
-                    child.active = false;
-                }
-                self.sync_castle_child_map(Level2CastleChild {
-                    active: false,
-                    ..inactive
-                });
-                self.release_slot(slot, Some(inactive.entity_rng));
-            }
+            // `sub_5FF50` clears the relation and cooldown only. It does not
+            // release an unrelated live row merely because the relation is
+            // stale or has the wrong class/model/action; ApplyEvents and the
+            // next allocator episode own that row's eventual reclamation.
             auxiliary_slots[index] = 0;
             auxiliary_positions[index] = Position::default();
             auxiliary_yaws[index] = 0;
@@ -2001,7 +2051,7 @@ impl Level2EconomyState {
         };
         match snapshot.action {
             5 if snapshot.build_state == 0 || snapshot.build_state == 3 => {
-                let Some(child_slot) = self.allocate_slot() else {
+                let Some(child_slot) = self.allocate_castle_source_slot() else {
                     self.advance_castle_phase(castle_slot);
                     return false;
                 };
@@ -2067,7 +2117,7 @@ impl Level2EconomyState {
                     let mut previous_child_index: Option<usize> = None;
                     let mut previous_slot = snapshot.source_entity_index;
                     for &(offset_x, offset_y) in level2_castle_controller_points(selected_level) {
-                        let Some(stage_slot) = self.allocate_slot() else {
+                        let Some(stage_slot) = self.allocate_castle_source_slot() else {
                             break;
                         };
                         let stage_position = Position {
@@ -2081,10 +2131,10 @@ impl Level2EconomyState {
                             entity_rng: self.new_event_rng(stage_slot),
                             id_entity_index: snapshot.source_id_entity_index,
                             source_class: 10,
-                            // Retain the root relation as the typed owner of
-                            // the chain; exact source word32/word34 links are
-                            // exposed separately below.
-                            parent_entity_index: snapshot.source_entity_index,
+                            // `sub_613D0` exposes the controller ownership
+                            // only through word32/word34; NewEvent leaves
+                            // parentId zero.
+                            parent_entity_index: 0,
                             owner_entity_index: snapshot.owner_entity_index,
                             player_entity_index: 0,
                             position: Position {
@@ -2202,7 +2252,7 @@ impl Level2EconomyState {
                 true
             }
             5 if snapshot.build_state == 5 => {
-                let Some(child_slot) = self.allocate_slot() else {
+                let Some(child_slot) = self.allocate_castle_source_slot() else {
                     self.advance_castle_phase(castle_slot);
                     return false;
                 };
@@ -3281,7 +3331,9 @@ mod tests {
             .iter()
             .find(|child| child.active && child.model == 79)
             .expect("source sub_613D0 stage controller");
-        assert_eq!(stage_child.parent_entity_index, lifecycle_slot);
+        // `sub_613D0` owns this row through word32/word34; NewEvent leaves
+        // parentId zero for the controller constructor.
+        assert_eq!(stage_child.parent_entity_index, 0);
         assert_eq!(stage_child.id_entity_index, 111);
         assert_eq!(
             stage_child.position.z,
@@ -3766,8 +3818,8 @@ mod tests {
             callback_child_rows,
             vec![
                 (116, 10, 42, 44, teardown_slot, 0, 0),
-                (117, 10, 79, 0, teardown_slot, teardown_slot, 0),
-                (128, 3, 3, 9, teardown_slot, 0, 0),
+                (117, 10, 79, 0, 0, teardown_slot, 0),
+                (128, 3, 3, 9, 0, 0, 0),
             ]
         );
 
@@ -4569,13 +4621,29 @@ mod tests {
             castle.phase &= !1;
         }
         maintenance.step_outer_turn(PlayerCommand::default(), 0);
+        let maintenance_defender_slot = maintenance
+            .economy()
+            .castle()
+            .expect("Castle")
+            .defender_slots
+            .iter()
+            .take(usize::from(
+                maintenance
+                    .economy()
+                    .castle()
+                    .expect("Castle")
+                    .defender_count,
+            ))
+            .copied()
+            .find(|slot| *slot != 0)
+            .expect("source defender relation");
         let defender = maintenance
             .economy()
             .castle_children()
             .iter()
             .find(|child| {
                 child.active
-                    && child.parent_entity_index == maintenance_slot
+                    && child.source_entity_index == maintenance_defender_slot
                     && child.model == 3
                     && child.action == 9
             })
@@ -5786,9 +5854,12 @@ mod tests {
         assert_eq!(castle.auxiliary_slots[0], 0);
         assert_eq!(castle.auxiliary_count, 4);
         assert_eq!(castle.auxiliary_cooldown, 16);
-        assert!(session.economy().free_slots.contains(&invalid_slot));
+        // `sub_5FF50` clears only the stale relation/cooldown. The wrong
+        // action row remains live and is not returned to the free arena by
+        // this maintenance walk.
+        assert!(!session.economy().free_slots.contains(&invalid_slot));
         assert!(
-            !session
+            session
                 .economy()
                 .map_chains()
                 .linked_entity_indices()
@@ -5800,17 +5871,9 @@ mod tests {
                 .castle_children()
                 .iter()
                 .find(|child| child.source_entity_index == invalid_slot)
-                .is_some_and(|child| !child.active)
+                .is_some_and(|child| child.active && child.action == 125)
         );
         assert_ne!(session.economy().reset_hash(), baseline_hash);
-        session.economy_mut().reclaim_inactive_slots();
-        assert!(
-            !session
-                .economy()
-                .castle_children()
-                .iter()
-                .any(|child| child.source_entity_index == invalid_slot)
-        );
         session.reset();
         assert_eq!(session.economy().reset_hash(), baseline_hash);
     }
@@ -7520,30 +7583,23 @@ mod tests {
         chain
             .economy_mut()
             .maintain_castle_defenders(chain_castle_slot);
-        let defender_slots = chain
-            .economy()
-            .castle_children()
-            .iter()
-            .filter(|child| {
-                child.active
-                    && child.parent_entity_index == chain_castle_slot
-                    && child.model == 3
-                    && child.action == 9
-            })
-            .map(|child| child.source_entity_index)
-            .collect::<Vec<_>>();
-        let auxiliary_slots = chain
-            .economy()
-            .castle_children()
-            .iter()
-            .filter(|child| {
-                child.active
-                    && child.parent_entity_index == chain_castle_slot
-                    && child.source_class == 5
-                    && child.model == 15
-            })
-            .map(|child| child.source_entity_index)
-            .collect::<Vec<_>>();
+        let (defender_slots, auxiliary_slots) = {
+            let castle = chain.economy().castle().expect("stage-two Castle");
+            let defender_count = usize::from(castle.defender_count);
+            let auxiliary_count = usize::from(castle.auxiliary_count);
+            (
+                castle.defender_slots[..defender_count]
+                    .iter()
+                    .copied()
+                    .filter(|slot| *slot != 0)
+                    .collect::<Vec<_>>(),
+                castle.auxiliary_slots[..auxiliary_count]
+                    .iter()
+                    .copied()
+                    .filter(|slot| *slot != 0)
+                    .collect::<Vec<_>>(),
+            )
+        };
         assert!(!defender_slots.is_empty());
         assert!(!auxiliary_slots.is_empty());
         for slot in defender_slots.iter().chain(auxiliary_slots.iter()) {
@@ -7629,6 +7685,102 @@ mod tests {
             castle_family_counts(chain.economy()),
             baseline_family_counts
         );
+        chain.reset();
+        assert_eq!(chain.campaign_state_hash(), baseline_hash);
+        assert_eq!(chain.terrain_hash(), baseline_terrain_hash);
+        assert_eq!(chain.economy().free_slots.len(), baseline_free_count);
+        assert_eq!(
+            castle_family_counts(chain.economy()),
+            baseline_family_counts
+        );
+
+        // Exhaust every ordinary arena row while retaining one live
+        // Castle-owned model-15 retry row. The qualified outer-turn route
+        // must leave the generic death-burst constructor unable to consume
+        // that retry row, then let the Castle construction constructor reuse
+        // it as `NewEvent_4A050` would.
+        chain.select_level2_campaign_entry_stage();
+        let retry_castle_slot = chain
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("retry allocator Castle");
+        {
+            let economy = chain.economy_mut();
+            let castle = economy.castle.as_mut().expect("retry allocator Castle");
+            castle.level = 3;
+            castle.action = 4;
+            castle.phase &= !1;
+            castle.auxiliary_cooldown = 0;
+        }
+        chain
+            .economy_mut()
+            .maintain_castle_defenders(retry_castle_slot);
+        let retry_slot = chain
+            .economy()
+            .castle()
+            .expect("retry allocator Castle")
+            .auxiliary_slots[0];
+        assert_ne!(retry_slot, 0);
+        assert!(chain.economy().castle_children().iter().any(|child| {
+            child.active
+                && child.source_entity_index == retry_slot
+                && child.source_class == 5
+                && child.model == 15
+                && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+                && child.parent_entity_index == 0
+        }));
+        let filled_rows = {
+            let economy = chain.economy_mut();
+            let mut filled_rows = 0_usize;
+            while economy
+                .spawn_mana_sphere_from_death(52, Position::default(), 0, 0x9876, 1, 111)
+                .is_some()
+            {
+                filled_rows += 1;
+            }
+            filled_rows
+        };
+        assert_eq!(filled_rows + 3, baseline_free_count);
+        assert!(chain.economy().free_slots.is_empty());
+        let death_burst_count = chain.economy().death_bursts().len();
+        assert!(
+            chain
+                .economy_mut()
+                .spawn_death_burst_from_death_with_id(retry_castle_slot, 111, Position::default(),)
+                .is_none()
+        );
+        assert_eq!(chain.economy().death_bursts().len(), death_burst_count);
+        assert!(chain.economy().castle_children().iter().any(|child| {
+            child.active && child.source_entity_index == retry_slot && child.model == 15
+        }));
+        let retry_generation_before = chain.economy().slot_generation(retry_slot);
+        {
+            let castle = chain
+                .economy_mut()
+                .castle
+                .as_mut()
+                .expect("retry allocator Castle");
+            castle.action = 5;
+            castle.build_state = 0;
+        }
+        chain.step_outer_turn(PlayerCommand::default(), 0);
+        let castle = chain.economy().castle().expect("retry allocator Castle");
+        assert_eq!(castle.construction_slot, retry_slot);
+        assert_eq!(castle.build_state, 4);
+        assert_eq!(castle.auxiliary_slots[0], retry_slot);
+        assert!(!chain.economy().castle_children().iter().any(|child| {
+            child.active
+                && child.source_entity_index == retry_slot
+                && child.source_class == 5
+                && child.model == 15
+        }));
+        assert_ne!(
+            chain.economy().slot_generation(retry_slot),
+            retry_generation_before
+        );
+        // The same outer pass may run a second allocation after the Castle
+        // child terminal callback; the source invariant is the newer cursor
+        // generation above, not a particular final free-stack occupant.
         chain.reset();
         assert_eq!(chain.campaign_state_hash(), baseline_hash);
         assert_eq!(chain.terrain_hash(), baseline_terrain_hash);
