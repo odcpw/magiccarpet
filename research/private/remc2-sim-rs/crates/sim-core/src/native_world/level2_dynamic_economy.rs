@@ -1542,6 +1542,20 @@ impl Level2EconomyState {
                 pending_delete: false,
             };
             self.spheres.push(sphere);
+            // `sub_5FD00` finishes the NewEvent row with
+            // `CopyEntityPosition_57CF0`, which keeps the rebuilt overflow
+            // sphere visible to the source map walk used by the next Castle
+            // pass.  The allocator retry may reuse an inactive typed row, so
+            // relink it after the source position is committed rather than
+            // relying on the stale row's prior topology.
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: sphere_slot,
+                    active: true,
+                    x: sphere_position.x,
+                    y: sphere_position.y,
+                })
+                .expect("Castle overflow sphere source slot fits the map chain");
             self.refresh_owner_mana_rows();
             self.events.push(Level2EconomyEvent::ManaSphereSpawned {
                 sphere_id: sphere.id,
@@ -7234,6 +7248,8 @@ mod tests {
             .economy_mut()
             .build_castle(Position::default(), 111)
             .expect("no-free teardown Castle");
+        let before_sphere_count = session.economy().spheres().len();
+        let before_linked_entities = session.economy().map_chains().linked_entity_indices();
         let before_ground = session.economy().terrain.planes.ground_heights.clone();
         let before_rng = session
             .economy()
@@ -7254,6 +7270,16 @@ mod tests {
         assert_eq!(
             session.economy().source_rng.get(&castle_slot).copied(),
             Some(before_rng)
+        );
+        assert_eq!(
+            session.economy().spheres().len(),
+            before_sphere_count,
+            "no-free teardown cannot manufacture an overflow sphere"
+        );
+        assert_eq!(
+            session.economy().map_chains().linked_entity_indices(),
+            before_linked_entities,
+            "no-free teardown cannot mutate the source map arena"
         );
         assert_eq!(
             session.economy().terrain.planes.ground_heights,
@@ -7384,6 +7410,10 @@ mod tests {
                 .spheres
                 .iter()
                 .any(|sphere| sphere.active && sphere.source_entity_index == stale_slot)
+        );
+        assert!(
+            rebuild.economy().map_chains().is_linked(stale_slot),
+            "sub_5FD00 CopyEntityPosition relinks a rebuilt overflow sphere"
         );
         assert!(!rebuild.economy().free_slots.contains(&stale_slot));
         assert!(!rebuild.economy().free_slots.contains(&rebuild_castle_slot));
