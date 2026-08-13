@@ -12583,6 +12583,33 @@ impl Level2SharedSpellResetSession {
         Some(damage)
     }
 
+    fn absorb_player_shield_damage(
+        &mut self,
+        target_entity_index: u16,
+        raw_damage: i32,
+        attacker_entity_index: u16,
+    ) -> Option<ShieldDamage> {
+        let shield = self.shield?;
+        if shield.parent_entity_index != target_entity_index
+            || raw_damage <= 0
+            || shield.parent_status_flags
+                & (crate::spell_activation::SHIELD_MANA_STATUS_BIT
+                    | crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT)
+                == 0
+        {
+            return None;
+        }
+        let damage = self.shield.as_mut()?.absorb_damage(raw_damage);
+        self.sync_shield_projection();
+        self.pickup_events
+            .push(Level2SharedSpellEvent::ShieldDamageApplied {
+                target_entity_index,
+                attacker_entity_index,
+                damage,
+            });
+        Some(damage)
+    }
+
     fn consume_shield_damage_mailbox(&mut self) {
         let Some(shield) = self.shield else {
             return;
@@ -12611,6 +12638,9 @@ impl Level2SharedSpellResetSession {
         {
             return;
         }
+        // The public ABI adapter retains its accepted holder-side consumer.
+        // Automatic collision does not use this side mailbox; it writes the
+        // player entity mailbox and is evaluated at the player source visit.
         self.consume_shield_damage_mailbox();
         if let Some(shield) = self.shield.as_mut() {
             let _step: ShieldStep = shield.step();
@@ -21156,8 +21186,9 @@ impl Level2ResetSession {
     }
 
     /// Queue the source `sub_11900` contact payload for the local player.
-    /// Contact writes overwrite an already-owned mailbox and otherwise add to
-    /// an unowned payload, matching the generic Level 1 contact primitive.
+    /// Contact writes overwrite an already-owned player mailbox and otherwise
+    /// add to an unowned payload, matching the source primitive.  Shield
+    /// status is evaluated later by the player's source callback.
     fn queue_level2_player_contact_damage(&mut self, damage: i32, attacker: u16) {
         if self.player_life < 0 || damage <= 0 || attacker == 0 {
             return;
@@ -21244,7 +21275,11 @@ impl Level2ResetSession {
             return None;
         }
 
-        self.player_life = self.player_life.wrapping_sub(damage);
+        let shield_damage =
+            self.shared_spells
+                .absorb_player_shield_damage(player_entity_index, damage, attacker);
+        let applied_damage = shield_damage.map_or(damage, |damage| damage.applied_damage);
+        self.player_life = self.player_life.wrapping_sub(applied_damage);
         self.shared_spells.set_player_hit_frame_time(4);
         let lethal = self.player_life < 0;
         let killer = if lethal && attacker_is_model67.is_some() {
@@ -21270,15 +21305,30 @@ impl Level2ResetSession {
             }
             entity.life = self.player_life;
             entity.record[12..16].copy_from_slice(&self.player_life.to_le_bytes());
+            entity.record[98..102].copy_from_slice(&applied_damage.to_le_bytes());
+            if let Some(shield) = self
+                .shared_spells
+                .shield_state()
+                .filter(|shield| shield.parent_entity_index == player_entity_index)
+            {
+                entity.mana = shield.parent_mana;
+                entity.mana_regen = shield.parent_mana_regen;
+                entity.control_flags = shield.parent_status_flags;
+                entity.record[16..20].copy_from_slice(&shield.parent_status_flags.to_le_bytes());
+                entity.record[140..144].copy_from_slice(&shield.parent_mana_regen.to_le_bytes());
+                entity.record[148..152].copy_from_slice(&shield.parent_mana.to_le_bytes());
+            }
         }
         self.player_pending_attacker = if lethal { attacker } else { 0 };
-        self.player_pending_damage = damage;
+        self.player_pending_damage = applied_damage;
         self.shared_spells.set_player_entity_life(self.player_life);
         self.shared_spells
-            .set_player_entity_damage_mailbox(damage, if lethal { attacker } else { 0 });
+            .set_player_entity_damage_mailbox(applied_damage, if lethal { attacker } else { 0 });
         self.shared_spells
             .set_player_entity_damage_result(killer, attacker, lethal);
-        Some((damage, attacker, lethal))
+        shield_damage
+            .is_none()
+            .then_some((damage, attacker, lethal))
     }
 
     /// Execute one source outer turn against the Day terrain and reset state.
@@ -39239,6 +39289,311 @@ mod tests {
 
         session.reset();
         assert!(session.shared_spells().shield_state().is_none());
+        assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 automatic Shield contact session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+        let baseline_hash = session.shared_spells().reset_hash();
+        let acquire_shield = |session: &mut Level2ResetSession| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let source = session
+                .economy()
+                .spell_pickups()
+                .iter()
+                .find(|source| source.authored_index == 155)
+                .copied()
+                .expect("authored family-6 source");
+            session
+                .set_level2_entity_position(session.state.entity_index, source.position)
+                .expect("ordinary local-player position carrier remains valid");
+            (0..4)
+                .find_map(|_| {
+                    session.step_outer_turn(PlayerCommand::default(), 0);
+                    session
+                        .dispatch_events()
+                        .iter()
+                        .find_map(|event| match event {
+                            Level2DispatchEvent::SpellAcquisition {
+                                family: 6,
+                                result: Some(outcome),
+                                ..
+                            } => Some(*outcome),
+                            _ => None,
+                        })
+                })
+                .expect("ordinary authored family-6 acquisition")
+        };
+
+        let outcome = acquire_shield(&mut session);
+        assert!(session.shared_spells_mut().activate_shield(256, false));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let active = session
+            .shared_spells()
+            .shield_state()
+            .expect("active family-6 Shield state");
+        assert_ne!(
+            active.parent_status_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+            0
+        );
+        let bee = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            .copied()
+            .expect("production row-229 Bee source");
+        assert_eq!(bee.subspell_index, 200);
+        assert!(session.state.entity_index < bee.source_entity_index);
+        assert!(bee.source_entity_index < outcome.source_slot);
+        let mut damage = None;
+        for _ in 0..128 {
+            let live_bee = session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
+                .copied()
+                .expect("production row-229 Bee remains live");
+            let mut target = live_bee.position;
+            crate::move_entity(&mut target, live_bee.yaw, 0, live_bee.actual_speed);
+            session
+                .set_level2_entity_position(session.state.entity_index, target)
+                .expect("ordinary local-player position carrier remains valid");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            damage = session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2SharedSpellEvent::ShieldDamageApplied {
+                        target_entity_index,
+                        attacker_entity_index,
+                        damage,
+                    } if *target_entity_index == session.state.entity_index
+                        && *attacker_entity_index == bee.entity_id =>
+                    {
+                        Some(*damage)
+                    }
+                    _ => None,
+                });
+            if damage.is_some() {
+                break;
+            }
+        }
+        let damage = damage.expect("ordinary Bee collision reaches the player Shield consumer");
+        assert_eq!(damage.raw_damage, 200);
+        assert_eq!(damage.applied_damage, 50);
+        assert_eq!(damage.mana_drained, 50);
+        assert_eq!(
+            session.player_life,
+            active.parent_life - damage.applied_damage
+        );
+        let assert_player_mailbox =
+            |session: &Level2ResetSession, expected_damage: i32, expected_owner: u16| {
+                let player_record =
+                    session.entities[usize::from(session.state.entity_index)].record_bytes();
+                assert_eq!(
+                    i32::from_le_bytes(
+                        player_record[98..102]
+                            .try_into()
+                            .expect("player payload bytes")
+                    ),
+                    expected_damage
+                );
+                assert_eq!(
+                    u16::from_le_bytes(
+                        player_record[102..104]
+                            .try_into()
+                            .expect("player owner bytes")
+                    ),
+                    expected_owner
+                );
+                let shared_player_record = session.shared_spells().player_entity.record_bytes();
+                assert_eq!(
+                    i32::from_le_bytes(
+                        shared_player_record[98..102]
+                            .try_into()
+                            .expect("shared player payload bytes")
+                    ),
+                    expected_damage
+                );
+                assert_eq!(
+                    u16::from_le_bytes(
+                        shared_player_record[102..104]
+                            .try_into()
+                            .expect("shared player owner bytes")
+                    ),
+                    expected_owner
+                );
+                let projected_player = session
+                    .shared_spells()
+                    .player_entities
+                    .iter()
+                    .find(|entity| entity.index == session.state.entity_index)
+                    .expect("shared player entity projection");
+                assert_eq!(
+                    i32::from_le_bytes(
+                        projected_player.record_bytes()[98..102]
+                            .try_into()
+                            .expect("projected player payload bytes")
+                    ),
+                    expected_damage
+                );
+                assert_eq!(
+                    u16::from_le_bytes(
+                        projected_player.record_bytes()[102..104]
+                            .try_into()
+                            .expect("projected player owner bytes")
+                    ),
+                    expected_owner
+                );
+                assert_eq!(session.player_pending_damage, expected_damage);
+                assert_eq!(session.player_pending_attacker, expected_owner);
+            };
+        assert_player_mailbox(&session, damage.applied_damage, 0);
+        session.queue_level2_player_contact_damage(7, bee.entity_id);
+        assert_player_mailbox(&session, damage.applied_damage + 7, bee.entity_id);
+        assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
+
+        session.reset();
+        assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel after replay");
+        let outcome = acquire_shield(&mut session);
+        let live_bee = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
+            .copied()
+            .expect("production row-229 Bee remains live before expiry");
+        let shield_ticks = session
+            .shared_spells()
+            .shield_state()
+            .expect("active family-6 Shield state before expiry alignment")
+            .activation_value;
+        let cadence = u16::try_from(live_bee.action_window).expect("Bee cadence fits");
+        let turns_to_last_live = u16::try_from(shield_ticks - 1).expect("Shield duration fits");
+        let warmup = (cadence
+            - (u16::from(live_bee.source_byte_3e) + turns_to_last_live) % cadence)
+            % cadence;
+        let set_player_outside_contact = |session: &mut Level2ResetSession| {
+            let live_bee = session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|candidate| candidate.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+                .copied()
+                .expect("production row-229 Bee remains live");
+            let mut position = live_bee.position;
+            crate::move_entity(&mut position, live_bee.yaw, 0, 1_500);
+            session
+                .set_level2_entity_position(session.state.entity_index, position)
+                .expect("ordinary local-player position carrier remains valid");
+        };
+        for _ in 0..warmup {
+            set_player_outside_contact(&mut session);
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(session.shared_spells_mut().activate_shield(256, false));
+        while session
+            .shared_spells()
+            .shield_state()
+            .is_some_and(|shield| shield.active_value > 2)
+        {
+            set_player_outside_contact(&mut session);
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let before_acquisition = session
+            .shared_spells()
+            .shield_state()
+            .expect("Shield remains live before expiry contact");
+        assert_eq!(before_acquisition.active_value, 2);
+        assert_eq!(outcome.source_slot, before_acquisition.holder_entity_index);
+        let bee_before_acquisition = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
+            .copied()
+            .expect("production row-229 Bee remains before expiry contact");
+        assert_eq!(
+            (u16::from(bee_before_acquisition.source_byte_3e) + 1) % cadence,
+            0
+        );
+        set_player_outside_contact(&mut session);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let last_live = session
+            .shared_spells()
+            .shield_state()
+            .expect("Shield remains live on the expiry contact turn");
+        assert_eq!(last_live.active_value, 1);
+        let bee_before_contact = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
+            .copied()
+            .expect("production row-229 Bee remains before expiry contact");
+        assert_eq!(bee_before_contact.action, 18);
+        assert_eq!(u16::from(bee_before_contact.source_byte_3e) % cadence, 0);
+        let life_before = session.player_life;
+        session
+            .set_level2_entity_position(session.state.entity_index, bee_before_contact.position)
+            .expect("ordinary local-player position carrier remains valid");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let expired = session
+            .shared_spells()
+            .shield_state()
+            .expect("Shield state remains projected through cleanup");
+        assert_eq!(expired.active_value, 0);
+        assert_eq!(
+            expired.parent_status_flags
+                & (crate::spell_activation::SHIELD_MANA_STATUS_BIT
+                    | crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT),
+            0
+        );
+        assert_eq!(session.player_pending_damage, 200);
+        assert!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .all(|event| !matches!(event, Level2SharedSpellEvent::ShieldDamageApplied { .. }))
+        );
+
+        set_player_outside_contact(&mut session);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.player_life, life_before - 200);
+        assert!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .all(|event| !matches!(event, Level2SharedSpellEvent::ShieldDamageApplied { .. }))
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Economy {
+                event: Level2EconomyEvent::DamageApplied {
+                    attacker_entity_index,
+                    damage: 200,
+                    ..
+                },
+                ..
+            } if *attacker_entity_index == bee.entity_id
+        )));
+        session.reset();
         assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
     }
 
