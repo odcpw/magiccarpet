@@ -5268,7 +5268,7 @@ pub struct Level2AuthoredClass5Source {
     /// Fallback/child link `word_0x24_36` written on the byte-0x3B-zero
     /// branch of `sub_2A6B0`.
     pub word_0x24: u16,
-    /// Source `byte_0x3B_59`, which selects the action-220 fallback branch.
+    /// Source `byte_0x3B_59`, retained for authored source mailbox branches.
     pub byte_0x3b: u8,
     /// Target relation `word_0x96_150` inspected by the action-25 wrapper.
     pub word_0x96_150: u16,
@@ -5595,7 +5595,7 @@ pub enum Level2EconomyEvent {
         lethal: bool,
     },
     /// Source `PrepareEventSound(root_slot, -1, sound)` emitted by the
-    /// class-5/model-3 action-216 and child callbacks.
+    /// reachable class-5/model-3 action callbacks.
     AuthoredClass5Model3Sound {
         source_entity_index: u16,
         sound_id: u16,
@@ -5770,6 +5770,10 @@ pub struct Level2EconomyState {
 
 mod level2_class5;
 mod level2_dynamic_economy;
+
+pub(crate) const MODEL3_TARGET_RANGE: u32 = 0x1400;
+pub(crate) const MODEL3_TARGET_HALF_ANGLE: i16 = 0x00aa;
+pub(crate) const MODEL3_RAW_SOURCE_DISABLED_BIT: u32 = 0x20;
 
 impl Level2EconomyState {
     #[cfg(test)]
@@ -15835,7 +15839,7 @@ impl Level2ResetSession {
         &self,
         source: &Level2AuthoredClass5Source,
     ) -> Option<EntitySnapshot> {
-        let radius_squared = 0x1400_u32 * 0x1400;
+        let radius_squared = MODEL3_TARGET_RANGE * MODEL3_TARGET_RANGE;
         let mut nearest: Option<(u32, EntitySnapshot)> = None;
         for (entity_index, position, control_flags) in self.level2_bee_class3_targets() {
             let Some(entity) = self.entities.get(usize::from(entity_index)) else {
@@ -15848,11 +15852,11 @@ impl Level2ResetSession {
                 .wrapping_add(dy.wrapping_mul(dy))
                 .cast_unsigned();
             if distance > radius_squared
-                || control_flags & ENTITY_DRAW_DISABLED_BIT != 0
+                || control_flags & MODEL3_RAW_SOURCE_DISABLED_BIT != 0
                 || angle_distance(
                     i32::from(source.yaw),
                     heading_for_positions(source.position, position),
-                ) >= 0x02aa
+                ) >= MODEL3_TARGET_HALF_ANGLE
             {
                 continue;
             }
@@ -20645,29 +20649,27 @@ impl Level2ResetSession {
                         .then(|| self.entities.get(usize::from(target_index)).cloned())
                         .flatten()
                 });
-                let model3_hit_callback =
-                    source.is_some_and(|source| source.model == 3 && source.action == 26);
                 if source.is_some_and(|source| {
-                    source.model == 3 && matches!(source.action, 26 | 27 | 28 | 30)
+                    source.model == 3 && matches!(source.action, 25 | 26 | 27 | 28 | 30)
                 }) {
+                    let event_start = self.economy.events.len();
+                    let hit_target = source
+                        .filter(|source| source.action == 26)
+                        .and_then(|_| target.as_ref().map(|target| target.index));
                     let live = self
                         .economy
                         .step_authored_class5_model3_slot_with_target(source_slot, target);
-                    if model3_hit_callback {
-                        if let Some(target_index) = self
-                            .economy
-                            .authored_class5()
-                            .iter()
-                            .find(|source| {
-                                source.active
-                                    && source.source_entity_index == source_slot
-                                    && source.action == 26
-                            })
-                            .map(|source| source.word_0x96_150)
-                            .filter(|target_index| *target_index != 0)
-                        {
-                            // `sub_1CC20` terminates in the established
-                            // class-5 player-feedback carrier (`sub_5EF70`).
+                    let hit = self.economy.events[event_start..].iter().any(|event| {
+                        matches!(
+                            event,
+                            Level2EconomyEvent::AuthoredClass5Model3Sound {
+                                source_entity_index,
+                                sound_id: 8,
+                            } if *source_entity_index == source_slot
+                        )
+                    });
+                    if hit {
+                        if let Some(target_index) = hit_target {
                             self.nyphur_dispatcher
                                 .apply_class5_player_feedback(target_index);
                         }
@@ -35237,20 +35239,78 @@ mod tests {
                 && source.drawing_enabled
                 && source.active
         }));
+        let production_vectors = class5_rows
+            .iter()
+            .map(|source| {
+                (
+                    source.authored_index,
+                    source.position,
+                    source.yaw,
+                    source.roll,
+                    source.entity_rng,
+                    source.phase,
+                    source.source_byte_3e,
+                    source.action,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            production_vectors,
+            vec![
+                (
+                    167,
+                    Position {
+                        x: 34_184,
+                        y: 4_452,
+                        z: 4_912,
+                    },
+                    88,
+                    88,
+                    47_601,
+                    2,
+                    2,
+                    25,
+                ),
+                (
+                    168,
+                    Position {
+                        x: 29_576,
+                        y: 29_796,
+                        z: 3_552,
+                    },
+                    124,
+                    414,
+                    23_492,
+                    2,
+                    3,
+                    25,
+                ),
+                (
+                    169,
+                    Position {
+                        x: 20_872,
+                        y: 29_796,
+                        z: 1_936,
+                    },
+                    124,
+                    414,
+                    51_829,
+                    2,
+                    4,
+                    25,
+                ),
+            ]
+        );
         for source in &class5_rows {
             let authored = feature(source.authored_index);
-            let mut expected_position = authored.world_position(0);
-            for _ in 0..source.phase {
-                crate::move_entity(&mut expected_position, source.yaw, 0, source.actual_speed);
-                expected_position.z = session.terrain.ground_height(expected_position);
-            }
-            assert_eq!(
-                (source.position.x, source.position.y, source.position.z),
-                (
-                    expected_position.x,
-                    expected_position.y,
-                    expected_position.z
-                )
+            // Model-3 turns after each accepted source move, so replaying
+            // every phase with the final yaw is not a valid oracle. The
+            // dedicated action-family test covers exact turn/RNG vectors;
+            // this production route proves source displacement.
+            assert!(source.phase > 0);
+            assert_ne!(
+                (source.position.x, source.position.y),
+                (authored.world_position(0).x, authored.world_position(0).y)
             );
             assert!(session.dispatch_events().iter().any(|event| matches!(
                 event,
@@ -36338,16 +36398,63 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![164, 165]
         );
+        let production_vectors = group5_class5
+            .iter()
+            .map(|source| {
+                (
+                    source.authored_index,
+                    source.position,
+                    source.yaw,
+                    source.roll,
+                    source.entity_rng,
+                    source.phase,
+                    source.source_byte_3e,
+                    source.action,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            production_vectors,
+            vec![
+                (
+                    164,
+                    Position {
+                        x: 11_272,
+                        y: 39_370,
+                        z: 2_205,
+                    },
+                    362,
+                    414,
+                    28_182,
+                    9,
+                    12,
+                    25,
+                ),
+                (
+                    165,
+                    Position {
+                        x: 55_791,
+                        y: 39_642,
+                        z: 29,
+                    },
+                    328,
+                    414,
+                    15_136,
+                    8,
+                    12,
+                    25,
+                ),
+            ]
+        );
         for source in &group5_class5 {
             let position = feature_position(source.authored_index);
-            let mut expected_position = position;
-            for _ in 0..source.phase {
-                crate::move_entity(&mut expected_position, source.yaw, 0, source.actual_speed);
-                expected_position.z = session.terrain.ground_height(expected_position);
-            }
             assert_eq!(source.model, 3);
             assert_eq!(source.action, 25);
-            assert_eq!(source.position, expected_position);
+            assert!(source.phase > 0);
+            assert_ne!(
+                (source.position.x, source.position.y),
+                (position.x, position.y)
+            );
             assert!(source.active && source.drawing_enabled);
             assert!(class5_source_slots.contains(&source.source_entity_index));
         }
@@ -36367,14 +36474,13 @@ mod tests {
         );
         for source in &group7_class5 {
             let position = feature_position(source.authored_index);
-            let mut expected_position = position;
-            for _ in 0..source.phase {
-                crate::move_entity(&mut expected_position, source.yaw, 0, source.actual_speed);
-                expected_position.z = session.terrain.ground_height(expected_position);
-            }
             assert_eq!(source.model, 3);
             assert_eq!(source.action, 25);
-            assert_eq!(source.position, expected_position);
+            assert!(source.phase > 0);
+            assert_ne!(
+                (source.position.x, source.position.y),
+                (position.x, position.y)
+            );
             assert!(source.active && source.drawing_enabled);
             assert!(session.dispatch_events().iter().any(|event| matches!(
                 event,
