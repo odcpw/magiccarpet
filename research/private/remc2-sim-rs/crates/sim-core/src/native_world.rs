@@ -951,11 +951,11 @@ impl EntitySnapshot {
         self.record[102..104].copy_from_slice(&parent_entity_id.to_le_bytes());
     }
 
-    /// Apply the `sub_10C80(a2 = 0)` class-3/model-2 branch used by the
-    /// Fire-Spheres callback. Unlike the wind pulse branch above, this source
-    /// path only replaces an empty owner mailbox and adds to an already-owned
-    /// payload; it does not write the wind cooldown/parent relation fields.
-    fn apply_model76_model2_mailbox(&mut self, owner_entity_id: u16, payload: u16) {
+    /// Apply one `sub_10C80(a2 = 0)` Fire-Spheres mailbox write. The model-2,
+    /// model-45, and generic map scans share this exact write after their
+    /// distinct admission predicates: replace an ownerless payload, otherwise
+    /// add, then record the colliding child identity.
+    fn apply_model76_mailbox(&mut self, owner_entity_id: u16, payload: u16) {
         let next_payload = if self.source_wind_spell_owner() != 0 {
             self.source_wind_spell_payload()
                 .wrapping_add(i32::from(payload))
@@ -964,6 +964,12 @@ impl EntitySnapshot {
         };
         self.record[98..102].copy_from_slice(&next_payload.to_le_bytes());
         self.record[102..104].copy_from_slice(&owner_entity_id.to_le_bytes());
+    }
+
+    /// Raw source `byte_0x38_56`, exported four bytes later in the lossless
+    /// entity record. Bit zero admits the `sub_10C80(a2 = 0)` generic scan.
+    fn source_byte_38(&self) -> u8 {
+        self.record[60]
     }
 
     /// Raw source `word_0x4A_74`, the return-side hand override consumed by
@@ -5401,6 +5407,10 @@ pub enum Level2EconomyEvent {
     /// The C ABI presents this through the existing Castle sound code until a
     /// versioned economy-event code is allocated.
     CastleDefenderCaveSound { defender_slot: u16, sound_id: u16 },
+    FireSphereCollisionSound {
+        source_entity_index: u16,
+        sound_id: u16,
+    },
     CastleStageDestroyed {
         source_entity_index: u16,
         previous_level: u8,
@@ -15367,6 +15377,7 @@ pub const fn level2_economy_event_family(event: Level2EconomyEvent) -> u8 {
         Level2EconomyEvent::DeathBurstSpawned { .. }
         | Level2EconomyEvent::DeathBurstExpired { .. } => 4,
         Level2EconomyEvent::DamageApplied { .. } => 5,
+        Level2EconomyEvent::FireSphereCollisionSound { .. } => 6,
     }
 }
 
@@ -15402,6 +15413,10 @@ fn level2_economy_event_source_slot(event: Level2EconomyEvent, fallback: u16) ->
             ..
         }
         | Level2EconomyEvent::CastleDestructionSound {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::FireSphereCollisionSound {
             source_entity_index,
             ..
         }
@@ -15508,6 +15523,62 @@ fn level2_model76_sub106c0_matches(
         && i32::from(dx) < pitch_limit
         && i32::from(dy) < roll_limit
         && dz < fov_limit
+}
+
+/// Source model-45 MSPRD probe inside `sub_10C80(a2 = 0)`. The qualified
+/// bank retains the runtime TAB dimensions and signed pixels; VGA selector 1
+/// halves the dimensions once more at this call site before the source uses
+/// the resulting width as its row stride.
+fn level2_model76_model45_occupancy(
+    bank: &CollisionMaskBank,
+    selector: u16,
+    source_position: Position,
+) -> bool {
+    let Some(mask) = bank.mask(selector) else {
+        return false;
+    };
+    let width = i32::from(mask.width() >> 1);
+    let height = i32::from(mask.height() >> 1);
+    let source_x = i32::from(source_position.x) >> 8;
+    let source_y = i32::from(source_position.y) >> 8;
+    let mut left = source_x - (width >> 1);
+    let top = source_y - (height >> 1);
+    if (top + left) % 2 != 0 {
+        left += 1;
+    }
+    let pixel_x = source_x - left;
+    let pixel_y = source_y - top;
+    let Some(pixel_index) = pixel_y
+        .checked_mul(width)
+        .and_then(|row| row.checked_add(pixel_x))
+        .and_then(|index| usize::try_from(index).ok())
+    else {
+        return false;
+    };
+    mask.pixels()
+        .get(pixel_index)
+        .is_some_and(|pixel| *pixel != -1)
+}
+
+fn level2_model76_map_search_slots(
+    map_chains: &RenderableMapChains,
+    child: Level2Model76Child,
+) -> Vec<u16> {
+    let center_x = ((u32::from(child.position.x) + 128) >> 8) as u8;
+    let center_y = ((u32::from(child.position.y) + 128) >> 8) as u8;
+    let pitch = i32::from(child.collision_pitch);
+    let sign_adjustment = if pitch + 255 < 0 { -255 } else { 0 };
+    let radius = (pitch + 255 - sign_adjustment) >> 8;
+    let mut slots = Vec::new();
+    for delta_y in -radius..=radius {
+        for delta_x in -radius..=radius {
+            slots.extend(map_chains.entity_chain(
+                i32::from(center_x).wrapping_add(delta_x) as u8,
+                i32::from(center_y).wrapping_add(delta_y) as u8,
+            ));
+        }
+    }
+    slots
 }
 
 /// Exact source target filter for remc2 `sub_33810(a1x, a2x)`.
@@ -16207,7 +16278,17 @@ impl Level2ResetSession {
                 "Level 2 entity index {entity_index} is out of bounds"
             )));
         };
+        let active = entity.active;
         entity.set_position(position);
+        self.economy
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index,
+                active,
+                x: position.x,
+                y: position.y,
+            })
+            .map_err(NativeWorldError::new)?;
         if entity_index == self.state.entity_index {
             self.state.position = position;
         }
@@ -19393,10 +19474,10 @@ impl Level2ResetSession {
         }
     }
 
-    /// Bounded `sub_33C00`/`sub_10C80(a2 = 0)` owner path for authored
-    /// Fire-Spheres. The source's first target scan is the live class-3/model-2
-    /// list; retain that exact branch here and leave the broader map/filter
-    /// scans for a separate collision-owner slice.
+    /// Complete `sub_33C00`/`sub_10C80(a2 = 0)` owner path for authored
+    /// Fire-Spheres. Each column-zero child scans the model-2 list, the
+    /// source-exact MSPRD-backed model-45 list, then the generic map chains.
+    /// One sound-3 event follows that child's scans iff any target was hit.
     fn step_level2_authored_model76_collision_effect(&mut self, source_slot: u16) {
         let Some(parent) = self
             .economy
@@ -19421,44 +19502,126 @@ impl Level2ResetSession {
         }
         let local_player_index = self.state.entity_index;
         let local_player_position = self.state.position;
-        let target_slots = self
-            .entities
-            .iter()
-            .filter(|entity| {
-                entity.active
-                    && entity.life >= 0
-                    && entity.class == 3
-                    && entity.model == 2
-                    && entity.index != parent.entity_id
-            })
-            .map(|entity| entity.index)
-            .collect::<Vec<_>>();
         for child in source_children {
-            for target_index in &target_slots {
-                let Some(target) = self.entities.get(usize::from(*target_index)) else {
-                    continue;
-                };
-                let target_position = if target.index == local_player_index {
-                    local_player_position
-                } else {
-                    target.position
-                };
-                if level2_model76_sub106c0_matches(
-                    child.position,
-                    child.collision_yaw,
-                    child.collision_pitch,
-                    child.collision_roll,
-                    child.collision_fov,
-                    target_position,
-                    target.array_yaw(),
-                    target.array_pitch(),
-                    target.array_roll(),
-                    target.array_fov(),
-                ) {
-                    if let Some(target) = self.entities.get_mut(usize::from(*target_index)) {
-                        target.apply_model76_model2_mailbox(child.entity_id, parent.subspell_index);
+            let mut hit_count = 0_u16;
+            let model2_slots = self
+                .entities
+                .iter()
+                .filter(|entity| {
+                    entity.active
+                        && entity.class == 3
+                        && entity.model == 2
+                        && entity.source_id != child.entity_id
+                })
+                .map(|entity| entity.index)
+                .collect::<Vec<_>>();
+            for target_index in model2_slots {
+                let hit = self
+                    .entities
+                    .get(usize::from(target_index))
+                    .is_some_and(|target| {
+                        let target_position = if target.index == local_player_index {
+                            local_player_position
+                        } else {
+                            target.position
+                        };
+                        level2_model76_sub106c0_matches(
+                            child.position,
+                            child.collision_yaw,
+                            child.collision_pitch,
+                            child.collision_roll,
+                            child.collision_fov,
+                            target_position,
+                            target.array_yaw(),
+                            target.array_pitch(),
+                            target.array_roll(),
+                            target.array_fov(),
+                        )
+                    });
+                if hit {
+                    if let Some(target) = self.entities.get_mut(usize::from(target_index)) {
+                        target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
+                        hit_count = hit_count.wrapping_add(1);
                     }
                 }
+            }
+
+            let model45_slots = self
+                .entities
+                .iter()
+                .filter(|entity| entity.active && entity.class == 10 && entity.model == 45)
+                .map(|entity| entity.index)
+                .collect::<Vec<_>>();
+            for target_index in model45_slots {
+                let hit = self
+                    .entities
+                    .get(usize::from(target_index))
+                    .is_some_and(|target| {
+                        let selector = u16::from(target.level_gate.cast_unsigned());
+                        level2_compare_axis_with_shift(
+                            child.position,
+                            child.collision_pitch,
+                            child.collision_roll,
+                            target.position,
+                            target.array_pitch(),
+                            target.array_roll(),
+                        ) && self.collision_masks.as_ref().is_some_and(|bank| {
+                            level2_model76_model45_occupancy(bank, selector, child.position)
+                        })
+                    });
+                if hit {
+                    if let Some(target) = self.entities.get_mut(usize::from(target_index)) {
+                        target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
+                        hit_count = hit_count.wrapping_add(1);
+                    }
+                }
+            }
+
+            let generic_slots = level2_model76_map_search_slots(&self.economy.map_chains, child);
+            for target_index in generic_slots {
+                let hit = self
+                    .entities
+                    .get(usize::from(target_index))
+                    .is_some_and(|target| {
+                        let target_position = if target.index == local_player_index {
+                            local_player_position
+                        } else {
+                            target.position
+                        };
+                        target.active
+                            && target.source_id != child.entity_id
+                            && (target.class != 3 || target.model != 2)
+                            && target.source_byte_38() & 1 != 0
+                            && target.control_flags & 8 != 0
+                            && (target.class != 10 || target.model != 45)
+                            && level2_model76_sub106c0_matches(
+                                child.position,
+                                child.collision_yaw,
+                                child.collision_pitch,
+                                child.collision_roll,
+                                child.collision_fov,
+                                target_position,
+                                target.array_yaw(),
+                                target.array_pitch(),
+                                target.array_roll(),
+                                target.array_fov(),
+                            )
+                    });
+                if hit {
+                    if let Some(target) = self.entities.get_mut(usize::from(target_index)) {
+                        target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
+                        hit_count = hit_count.wrapping_add(1);
+                    }
+                }
+            }
+
+            if hit_count != 0 {
+                self.economy
+                    .events
+                    .push(Level2EconomyEvent::FireSphereCollisionSound {
+                        source_entity_index: parent.source_entity_index,
+                        sound_id: 3,
+                    });
             }
         }
     }
@@ -20389,6 +20552,8 @@ impl Level2ResetSession {
                 &self.terrain,
                 &mut self.context,
             ));
+            self.set_level2_entity_position(self.state.entity_index, self.state.position)
+                .expect("qualified Level 2 local-player map carrier remains valid");
             // `AddPlayer03_00_5E010` runs once per complete entity pass after
             // the player body callback.  Keep this bounded to the qualified
             // outdoor/no-Castle Level 2 local-player branch; the source
@@ -37986,6 +38151,196 @@ mod tests {
             .map(|child| child.position)
             .expect("model-76 child after terminal state");
         assert_eq!(child_after, child_before);
+    }
+
+    #[test]
+    fn level_two_model76_generic_collision_callback_is_exact() {
+        // The model-45 branch consumes the qualified bank with the source's
+        // second VGA half-size and effective-width stride. This synthetic
+        // carrier isolates that arithmetic; package admission separately pins
+        // the real carrier byte identity.
+        let mask_bank = |occupied: bool| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"MCM1");
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&20_u16.to_le_bytes());
+            bytes.extend_from_slice(&1_u16.to_le_bytes());
+            bytes.extend_from_slice(&0_u16.to_le_bytes());
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&12_u32.to_le_bytes());
+            bytes.extend_from_slice(&64_u16.to_le_bytes());
+            bytes.extend_from_slice(&4_u16.to_le_bytes());
+            bytes.extend_from_slice(&5_u16.to_le_bytes());
+            bytes.extend_from_slice(&0_u16.to_le_bytes());
+            bytes.extend_from_slice(&40_u32.to_le_bytes());
+            let mut pixels = [-1_i16; 20];
+            if occupied {
+                pixels[3] = 0;
+            }
+            for pixel in pixels {
+                bytes.extend_from_slice(&pixel.to_le_bytes());
+            }
+            CollisionMaskBank::parse(&bytes).expect("bounded model-45 mask")
+        };
+        let mask_probe_position = Position {
+            x: 10 << 8,
+            y: 10 << 8,
+            z: 0,
+        };
+        assert!(level2_model76_model45_occupancy(
+            &mask_bank(true),
+            64,
+            mask_probe_position,
+        ));
+        assert!(!level2_model76_model45_occupancy(
+            &mask_bank(false),
+            64,
+            mask_probe_position,
+        ));
+
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+
+        // A production allocator with no admitted target must not invent a
+        // mailbox write or sound. The historical v3 fixture has no model-45
+        // authority, so its nearby model-45 row also fails closed.
+        let mut no_collision = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 no-collision session");
+        let no_collision_root = no_collision
+            .allocate_level2_authored_model76(112)
+            .expect("authored model-76 no-collision root");
+        no_collision
+            .level2_model76_activated
+            .extend([116_u16, 120, 124]);
+        let no_collision_rng = no_collision
+            .economy()
+            .model76_children()
+            .iter()
+            .filter(|child| child.parent_entity_index == no_collision_root.source_entity_index)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        no_collision.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !no_collision
+                .economy()
+                .events()
+                .iter()
+                .any(|event| matches!(event, Level2EconomyEvent::FireSphereCollisionSound { .. }))
+        );
+        assert_eq!(
+            no_collision_rng,
+            no_collision
+                .economy()
+                .model76_children()
+                .iter()
+                .filter(|child| {
+                    child.parent_entity_index == no_collision_root.source_entity_index
+                })
+                .map(|child| (child.source_entity_index, child.entity_rng))
+                .collect::<Vec<_>>()
+        );
+
+        // Reach row 112 through its ordinary imported switch. The local
+        // class-3/model-0 player is a genuine generic-map target, not the
+        // already-covered model-2 diagnostic branch.
+        let run_positive = || {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("Level 2 model-76 generic collision session");
+            let baseline_hash = session.campaign_state_hash();
+            let switch = session
+                .level2_group10_switch25
+                .expect("live group-10 switch slot 25");
+            let local_player = session.state.entity_index;
+            assert_eq!(
+                (
+                    session.entities[usize::from(local_player)].class,
+                    session.entities[usize::from(local_player)].model
+                ),
+                (3, 0)
+            );
+            session
+                .set_level2_entity_position(local_player, switch.position)
+                .expect("move local player through the public Level 2 carrier");
+            for _ in 0..level_two_model76_switch25_activation_turns(switch.phase) {
+                session.step_outer_turn(PlayerCommand::default(), 0);
+            }
+            let root = session
+                .economy()
+                .authored_model76()
+                .iter()
+                .find(|source| source.authored_index == 112)
+                .copied()
+                .expect("switch production route materializes row 112");
+            let mut preview = session.clone();
+            preview.step_outer_turn(PlayerCommand::default(), 0);
+            let positive_position = preview
+                .economy()
+                .model76_children()
+                .iter()
+                .find(|child| {
+                    child.parent_entity_index == root.source_entity_index && child.column_index == 0
+                })
+                .map(|child| child.position)
+                .expect("preview retains a column-zero child");
+            session
+                .set_level2_entity_position(local_player, positive_position)
+                .expect("move local player to the deterministic collision point");
+            let target_before = session.entities[usize::from(local_player)].clone();
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let root = session
+                .economy()
+                .authored_model76()
+                .iter()
+                .find(|source| source.authored_index == 112)
+                .copied()
+                .expect("row 112 remains live for the collision turn");
+            let target = &session.entities[usize::from(local_player)];
+            let payload_delta = target
+                .source_wind_spell_payload()
+                .wrapping_sub(target_before.source_wind_spell_payload());
+            assert!(payload_delta > 0);
+            assert_eq!(payload_delta % i32::from(root.subspell_index), 0);
+            let hit_children = usize::try_from(payload_delta / i32::from(root.subspell_index))
+                .expect("positive model-76 hit count fits usize");
+            assert_eq!(target.source_wind_spell_owner(), root.entity_id);
+            assert_eq!(target.entity_rng, target_before.entity_rng);
+            assert_eq!(target.class, 3);
+            assert_eq!(target.model, 0);
+
+            let sounds = session
+                .dispatch_events()
+                .iter()
+                .filter_map(|event| match event {
+                    Level2DispatchEvent::Economy {
+                        source_slot,
+                        event:
+                            Level2EconomyEvent::FireSphereCollisionSound {
+                                source_entity_index,
+                                sound_id,
+                            },
+                        ..
+                    } => Some((*source_slot, *source_entity_index, *sound_id)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(sounds.len(), hit_children);
+            assert!(sounds.iter().all(|sound| {
+                *sound == (root.source_entity_index, root.source_entity_index, 3)
+            }));
+            let state_hash = session.campaign_state_hash();
+            let event_hash = session.dispatch_observability_hash();
+            session.reset();
+            assert_eq!(session.campaign_state_hash(), baseline_hash);
+            assert!(session.economy().authored_model76().is_empty());
+            (state_hash, event_hash, hit_children)
+        };
+
+        let first = run_positive();
+        let replay = run_positive();
+        assert_eq!(first, replay);
+        assert_eq!(first.2, 1);
     }
 
     #[test]
