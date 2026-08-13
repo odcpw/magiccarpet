@@ -1036,19 +1036,189 @@ namespace MagicCarpet.Native.Tests
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
 
-            var stepped = session.Step(123, 456, 7);
-            var goatEvents = stepped.events
-                .Where(eventRow => eventRow.kind == NativeSim.CampaignEventGoat)
-                .ToArray();
+            var initialInfo = session.WorldInfo();
+            var initialGoats = session.Goats();
+            Assert.That(initialGoats, Has.Length.EqualTo(36));
+            CollectionAssert.AreEqual(
+                Enumerable.Range(39, 36).Select(index => (ushort)index).ToArray(),
+                initialGoats.Select(goat => goat.entityIndex).ToArray());
+            var action11 = initialGoats.Single(goat => goat.entityIndex == 39);
+            Assert.That(action11.action, Is.EqualTo(11));
+            Assert.That(action11.partnerEntityIndex, Is.EqualTo(66));
 
-            Assert.That(goatEvents, Is.Not.Empty);
-            Assert.That(goatEvents.Select(eventRow => eventRow.sourceSlot), Does.Contain(39));
-            Assert.That(goatEvents.Select(eventRow => eventRow.sourceSlot), Does.Contain(71));
+            var sawAction11Bleat = false;
+            for (var turn = 0; turn < 256 && !sawAction11Bleat; turn++)
+            {
+                var stepped = session.Step(123, 456, 7);
+                var goatEvents = session.GoatEvents();
+                foreach (var goatEvent in goatEvents)
+                {
+                    Assert.That(goatEvent.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+                    Assert.That(goatEvent.generation, Is.EqualTo(stepped.snapshot.generation));
+                    Assert.That(
+                        goatEvent.ordinal,
+                        Is.LessThan((uint)stepped.events.Length));
+                    var generic = stepped.events[(int)goatEvent.ordinal];
+                    Assert.That(generic.ordinal, Is.EqualTo(goatEvent.ordinal));
+                    Assert.That(generic.kind, Is.EqualTo(NativeSim.CampaignEventGoat));
+                    Assert.That(generic.pass, Is.EqualTo(goatEvent.pass));
+                    Assert.That(generic.family, Is.EqualTo(goatEvent.family));
+                    Assert.That(generic.sourceSlot, Is.EqualTo(goatEvent.sourceSlot));
+
+                    if (
+                        goatEvent.code == NativeSim.CampaignGoatBleat &&
+                        goatEvent.action == 11 &&
+                        goatEvent.soundId == 46 &&
+                        (goatEvent.sourceSlot == 39 || goatEvent.sourceSlot == 71))
+                    {
+                        Assert.That(goatEvent.entity0, Is.EqualTo(goatEvent.sourceSlot));
+                        sawAction11Bleat = true;
+                    }
+                }
+            }
+
             Assert.That(
-                goatEvents.All(eventRow =>
-                    eventRow.abiVersion == NativeSim.AbiVersion &&
-                    eventRow.generation == stepped.snapshot.generation),
+                sawAction11Bleat,
+                Is.True,
+                "managed production route must expose the source action-11 bleat");
+
+            session.Reset();
+            var hitBefore = session.Goats().Single(goat => goat.entityIndex == 39);
+            Assert.That(hitBefore.action, Is.EqualTo(11));
+            Assert.That(hitBefore.pendingDamage, Is.Zero);
+            session.SubmitGoatDamage(hitBefore.entityIndex, 100, 152);
+            Assert.That(
+                session.Goats().Single(goat => goat.entityIndex == hitBefore.entityIndex).pendingDamage,
+                Is.EqualTo(100));
+
+            var hitStep = session.Step(123, 456, 7);
+            var hitAfter = session.Goats().Single(goat => goat.entityIndex == hitBefore.entityIndex);
+            Assert.That(hitAfter.pendingDamage, Is.Zero);
+            Assert.That(hitAfter.life, Is.EqualTo(hitBefore.life - 100));
+            Assert.That(hitAfter.targetEntityIndex, Is.EqualTo(152));
+            Assert.That(new[] { (byte)10, (byte)14 }, Does.Contain(hitAfter.action));
+            Assert.That(
+                hitStep.events.Any(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventGoat &&
+                    eventRow.sourceSlot == hitBefore.entityIndex),
                 Is.True);
+
+            session.Reset();
+            var lethalBefore = session.Goats().Single(goat => goat.entityIndex == 39);
+            Assert.That(lethalBefore.action, Is.EqualTo(11));
+            session.SubmitGoatDamage(lethalBefore.entityIndex, 1_000_000, 152);
+
+            var sawRemoval = false;
+            var sawReclaim = false;
+            var sawExtraSphereRequest = false;
+            var sawDeathBurst = false;
+            for (var turn = 0; turn < 32 && (!sawRemoval || !sawReclaim); turn++)
+            {
+                var stepped = session.Step(123, 456, 7);
+                var goatEvents = session.GoatEvents();
+                var sidecarKeys = goatEvents
+                    .Select(goatEvent => (goatEvent.ordinal, goatEvent.eventIndex))
+                    .ToArray();
+                Assert.That(sidecarKeys.Distinct().Count(), Is.EqualTo(sidecarKeys.Length));
+                foreach (var goatEvent in goatEvents)
+                {
+                    Assert.That(goatEvent.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+                    Assert.That(goatEvent.generation, Is.EqualTo(stepped.snapshot.generation));
+                    Assert.That(
+                        goatEvent.ordinal,
+                        Is.LessThan((uint)stepped.events.Length));
+                    var generic = stepped.events[(int)goatEvent.ordinal];
+                    Assert.That(generic.ordinal, Is.EqualTo(goatEvent.ordinal));
+                    Assert.That(generic.kind, Is.EqualTo(NativeSim.CampaignEventGoat));
+                    Assert.That(generic.sourceSlot, Is.EqualTo(goatEvent.sourceSlot));
+                    if (
+                        goatEvent.sourceSlot == lethalBefore.entityIndex &&
+                        goatEvent.code == NativeSim.CampaignGoatRemovalQueued)
+                    {
+                        Assert.That(goatEvent.entity0, Is.EqualTo(lethalBefore.entityIndex));
+                        sawRemoval = true;
+                    }
+                    else if (
+                        goatEvent.sourceSlot == lethalBefore.entityIndex &&
+                        goatEvent.code == NativeSim.CampaignGoatReclaimed)
+                    {
+                        Assert.That(goatEvent.entity0, Is.EqualTo(lethalBefore.entityIndex));
+                        sawReclaim = true;
+                    }
+                    else if (
+                        goatEvent.sourceSlot == lethalBefore.entityIndex &&
+                        goatEvent.code == NativeSim.CampaignGoatExtraManaSphereRequest)
+                    {
+                        Assert.That(goatEvent.entity0, Is.EqualTo(lethalBefore.entityIndex));
+                        sawExtraSphereRequest = true;
+                    }
+                }
+
+                foreach (var economyEvent in session.EconomyEvents())
+                {
+                    Assert.That(economyEvent.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+                    Assert.That(
+                        economyEvent.generation,
+                        Is.EqualTo(stepped.snapshot.generation));
+                    Assert.That(
+                        economyEvent.ordinal,
+                        Is.LessThan((uint)stepped.events.Length));
+                    var generic = stepped.events[(int)economyEvent.ordinal];
+                    Assert.That(generic.ordinal, Is.EqualTo(economyEvent.ordinal));
+                    Assert.That(generic.kind, Is.EqualTo(NativeSim.CampaignEventEconomy));
+                    if (
+                        economyEvent.code == NativeSim.CampaignEconomyDeathBurstSpawned &&
+                        economyEvent.entity0 == lethalBefore.entityIndex)
+                    {
+                        sawDeathBurst = true;
+                    }
+                }
+            }
+
+            Assert.That(sawRemoval, Is.True);
+            Assert.That(sawReclaim, Is.True);
+            Assert.That(sawExtraSphereRequest, Is.True);
+            Assert.That(sawDeathBurst, Is.True);
+
+            var staleGeneration = session.Generation;
+            session.Reset();
+            Assert.That(session.Generation, Is.EqualTo(staleGeneration + 1));
+            var resetInfo = session.WorldInfo();
+            Assert.That(resetInfo.resetStateHash, Is.EqualTo(initialInfo.resetStateHash));
+            var resetGoats = session.Goats();
+            CollectionAssert.AreEqual(
+                initialGoats.Select(goat =>
+                    (
+                        goat.entityIndex,
+                        goat.targetEntityIndex,
+                        goat.action,
+                        goat.phase,
+                        goat.life,
+                        goat.maxLife,
+                        goat.mana,
+                        goat.pendingDamage,
+                        goat.controlFlags,
+                        goat.partnerEntityIndex)).ToArray(),
+                resetGoats.Select(goat =>
+                    (
+                        goat.entityIndex,
+                        goat.targetEntityIndex,
+                        goat.action,
+                        goat.phase,
+                        goat.life,
+                        goat.maxLife,
+                        goat.mana,
+                        goat.pendingDamage,
+                        goat.controlFlags,
+                        goat.partnerEntityIndex)).ToArray());
+            Assert.That(
+                NativeSim.mc_native_campaign_goat_damage_submit(
+                    session.Handle,
+                    staleGeneration,
+                    lethalBefore.entityIndex,
+                    1,
+                    152),
+                Is.EqualTo(NativeSim.GenerationMismatch));
         }
 
         [Test]

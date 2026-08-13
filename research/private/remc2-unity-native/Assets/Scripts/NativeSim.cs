@@ -54,6 +54,7 @@ namespace MagicCarpet.Native
         internal const byte CampaignEconomyManaSphereSpawned = 1;
         internal const byte CampaignEconomyDeathBurstSpawned = 8;
         internal const byte CampaignGoatBleat = 1;
+        internal const byte CampaignGoatExtraManaSphereRequest = 3;
         internal const byte CampaignGoatRemovalQueued = 4;
         internal const byte CampaignGoatReclaimed = 5;
         internal const uint EventLevel1ExitSequenceStarted = 35;
