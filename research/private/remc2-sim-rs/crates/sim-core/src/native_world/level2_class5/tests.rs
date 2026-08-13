@@ -1,5 +1,373 @@
 use super::super::tests::level_two_fixture_path;
 use super::super::*;
+use super::archer::{
+    ARCHER_ACTION_ATTACK, ARCHER_DESCRIPTOR_CADENCE, ARCHER_MODEL, ArcherChildRequest,
+};
+use std::collections::BTreeSet;
+
+fn activate_group20_archers() -> (Level2ResetSession, u64) {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 group-20 production session");
+    let baseline_hash = session.campaign_state_hash();
+    let authored_features = session.mission().authored_features().to_vec();
+    let feature_position = |index: u16| {
+        authored_features
+            .iter()
+            .copied()
+            .find(|feature| feature.index == index)
+            .expect("authored group-20 feature")
+            .world_position(0)
+    };
+
+    session.state.position = feature_position(11);
+    session.runtime.objectives[0].stage_selectors[1] = 2;
+    session.runtime.objectives[0].stage_selectors[2] = 2;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    session.runtime.objectives[0].stage_selectors[3] = 2;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    session.state.position = feature_position(214);
+
+    let expected = [
+        216_u16, 217, 218, 219, 220, 221, 222, 223, 232, 233, 234, 235,
+    ];
+    let activated = (0..8).any(|_| {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 20,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == expected
+            )
+        })
+    });
+    assert!(activated, "row 214 must activate group 20 in production");
+
+    let authored_rows = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .filter(|source| source.active && source.model == ARCHER_MODEL)
+        .map(|source| source.authored_index)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(authored_rows, BTreeSet::from([232, 233, 234, 235]));
+    (session, baseline_hash)
+}
+
+fn produce_archer_child(session: &mut Level2ResetSession) -> (u16, u16, i16) {
+    let root = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.authored_index == 232)
+        .copied()
+        .expect("group-20 row 232 Archer root");
+    let player_entity = session.state.entity_index;
+    session.state.position = root.position;
+    session
+        .set_level2_entity_position(player_entity, root.position)
+        .expect("local player accepts Archer target position");
+    let parent_roll = root.roll;
+    let source = session
+        .economy_mut()
+        .authored_class5
+        .iter_mut()
+        .find(|source| source.source_entity_index == root.source_entity_index)
+        .expect("Archer root remains mutable");
+    source.action = ARCHER_ACTION_ATTACK;
+    source.source_byte_3e = ARCHER_DESCRIPTOR_CADENCE;
+    source.word_0x96_150 = player_entity;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let child = session
+        .economy()
+        .authored_class5_archer_children()
+        .iter()
+        .find(|child| child.parent_entity_index == root.source_entity_index)
+        .copied()
+        .expect("ordinary Archer cursor retains a positive child");
+    (
+        root.source_entity_index,
+        child.source_entity_index,
+        parent_roll,
+    )
+}
+
+#[test]
+fn level_two_archers_complete_constructor_action_and_child_chain() {
+    let (mut session, baseline_hash) = activate_group20_archers();
+    let (root_slot, child_slot, parent_roll) = produce_archer_child(&mut session);
+
+    let roots = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .filter(|source| source.active && source.model == ARCHER_MODEL)
+        .map(|source| (source.authored_index, source.source_entity_index))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        roots.iter().map(|(row, _)| *row).collect::<BTreeSet<_>>(),
+        BTreeSet::from([232, 233, 234, 235])
+    );
+    assert_eq!(
+        roots
+            .iter()
+            .map(|(_, slot)| *slot)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        4
+    );
+    let root = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .copied()
+        .expect("row-232 root remains live");
+    let archer_state = session
+        .economy()
+        .authored_class5_archer()
+        .iter()
+        .find(|state| state.source_entity_index == root_slot)
+        .copied()
+        .expect("row-232 typed Archer state");
+    let child = session
+        .economy()
+        .authored_class5_archer_children()
+        .iter()
+        .find(|child| child.source_entity_index == child_slot)
+        .copied()
+        .expect("retained Archer child");
+    assert_eq!(archer_state.word_0x34, child_slot);
+    assert_eq!(child.parent_entity_index, root_slot);
+    assert_eq!(child.word_0x96, root.word_0x96_150);
+    assert_eq!(child.roll, parent_roll);
+    assert!(child.slot_generation > 0);
+    assert!(
+        child.phase > 0,
+        "child was visited by the live source cursor"
+    );
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .iter()
+            .any(|slot| *slot == root_slot)
+    );
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .iter()
+            .any(|slot| *slot == child_slot)
+    );
+    assert!(session.economy().live_arena_slots().contains(&(
+        child_slot,
+        Level2DynamicArenaKind::AuthoredClass5ArcherChild
+    )));
+    assert!(session.dispatch_events().iter().any(|event| {
+        matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::AuthoredClass5ArcherChild,
+                ..
+            } if *source_slot == child_slot
+        )
+    }));
+
+    let first_archers = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .filter(|source| source.model == ARCHER_MODEL)
+        .copied()
+        .collect::<Vec<_>>();
+    let first_states = session.economy().authored_class5_archer().to_vec();
+    let first_children = session.economy().authored_class5_archer_children().to_vec();
+    let first_hash = session.campaign_state_hash();
+
+    session.reset();
+    assert!(session.economy().authored_class5_archer().is_empty());
+    assert!(
+        session
+            .economy()
+            .authored_class5_archer_children()
+            .is_empty()
+    );
+    assert!(
+        session
+            .economy()
+            .authored_class5()
+            .iter()
+            .all(|source| !matches!(source.authored_index, 232 | 233 | 234 | 235))
+    );
+    assert_eq!(session.campaign_state_hash(), baseline_hash);
+
+    let (mut replay, replay_baseline_hash) = activate_group20_archers();
+    assert_eq!(replay_baseline_hash, baseline_hash);
+    produce_archer_child(&mut replay);
+    assert_eq!(
+        replay
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| source.model == ARCHER_MODEL)
+            .copied()
+            .collect::<Vec<_>>(),
+        first_archers
+    );
+    assert_eq!(replay.economy().authored_class5_archer(), first_states);
+    assert_eq!(
+        replay.economy().authored_class5_archer_children(),
+        first_children
+    );
+    assert_eq!(replay.campaign_state_hash(), first_hash);
+}
+
+#[test]
+fn archer_root_and_child_allocation_failures_are_atomic() {
+    let (mut session, _) = activate_group20_archers();
+    session.economy_mut().free_slots.clear();
+    let before_no_slot = session.economy().clone();
+    let hash_before_no_slot = session.campaign_state_hash();
+    assert!(
+        session
+            .economy_mut()
+            .allocate_authored_archer(235, Position { x: 0, y: 0, z: 0 })
+            .is_none()
+    );
+    assert_eq!(session.economy(), &before_no_slot);
+    assert_eq!(session.campaign_state_hash(), hash_before_no_slot);
+
+    session.economy_mut().free_slots = vec![u16::MAX];
+    let before_map_failure = session.economy().clone();
+    let hash_before_map_failure = session.campaign_state_hash();
+    assert!(
+        session
+            .economy_mut()
+            .allocate_authored_archer(235, Position { x: 0, y: 0, z: 0 })
+            .is_none()
+    );
+    assert_eq!(session.economy(), &before_map_failure);
+    assert_eq!(session.campaign_state_hash(), hash_before_map_failure);
+
+    let root = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.authored_index == 232)
+        .copied()
+        .expect("row-232 root for child rollback");
+    let request = ArcherChildRequest {
+        parent_entity_index: root.source_entity_index,
+        parent_entity_id: root.source_entity_index,
+        parent_word_0x96: root.word_0x96_150,
+        parent_roll: root.roll,
+        parent_position: root.position,
+        parent_fov: root.fov,
+        target_entity_index: session.state.entity_index,
+        target_class: 3,
+        target_model: 0,
+        target_position: root.position,
+    };
+    session.economy_mut().free_slots = vec![u16::MAX];
+    let before_child_map_failure = session.economy().clone();
+    let hash_before_child_map_failure = session.campaign_state_hash();
+    assert!(
+        session
+            .economy_mut()
+            .allocate_archer_child_packet(request)
+            .is_none()
+    );
+    assert_eq!(session.economy(), &before_child_map_failure);
+    assert_eq!(session.campaign_state_hash(), hash_before_child_map_failure);
+}
+
+#[test]
+fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
+    let (mut session, _) = activate_group20_archers();
+    let (root_slot, child_slot, _) = produce_archer_child(&mut session);
+    let root = session
+        .economy_mut()
+        .authored_class5
+        .iter_mut()
+        .find(|source| source.source_entity_index == root_slot)
+        .expect("Archer root for hit transition");
+    root.action = super::archer::ARCHER_ACTION_HIT;
+    root.dword_0x10 = 0;
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(
+        session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == root_slot)
+            .expect("root after pre-kill")
+            .action,
+        super::archer::ARCHER_ACTION_KILL
+    );
+    assert_eq!(
+        session
+            .economy()
+            .authored_class5_archer_children()
+            .iter()
+            .find(|child| child.source_entity_index == child_slot)
+            .expect("child after pre-kill")
+            .action,
+        super::archer::ARCHER_ACTION_KILL
+    );
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == root_slot)
+            .expect("root after terminal kill")
+            .drawing_enabled
+    );
+    assert!(
+        !session
+            .economy()
+            .authored_class5_archer_children()
+            .iter()
+            .find(|child| child.source_entity_index == child_slot)
+            .expect("child after terminal kill")
+            .drawing_enabled
+    );
+
+    session
+        .economy_mut()
+        .authored_class5
+        .iter_mut()
+        .find(|source| source.source_entity_index == root_slot)
+        .expect("root for reclaim")
+        .active = false;
+    session.economy_mut().reclaim_inactive_slots();
+    assert!(
+        session
+            .economy()
+            .authored_class5_archer_children()
+            .iter()
+            .all(|child| child.source_entity_index != child_slot)
+    );
+    assert!(
+        session
+            .economy()
+            .live_arena_slots()
+            .iter()
+            .all(|(slot, _)| *slot != child_slot && *slot != root_slot)
+    );
+}
 
 #[test]
 fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order() {

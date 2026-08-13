@@ -7,6 +7,7 @@
 
 use super::*;
 
+pub(super) mod archer;
 mod model3;
 mod model9;
 pub(super) mod trader;
@@ -29,6 +30,9 @@ impl Level2EconomyState {
         if model == trader::TRADER_MODEL {
             return self.allocate_authored_trader(authored_index, position);
         }
+        if model == archer::ARCHER_MODEL {
+            return self.allocate_authored_archer(authored_index, position);
+        }
         let (
             action,
             minimum_speed,
@@ -42,7 +46,6 @@ impl Level2EconomyState {
             particle_index,
         ) = match model {
             3 => (25, 64, 16, 30, 9_000, 2_250, 4_500, 0, 0, 88),
-            4 => (33, 30, 0, 30, 1_000, 500, 0, 500, 0, 0),
             9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
             _ => return None,
         };

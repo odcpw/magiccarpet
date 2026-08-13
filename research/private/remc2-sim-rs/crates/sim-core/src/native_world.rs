@@ -887,6 +887,13 @@ impl EntitySnapshot {
         u16::from_le_bytes([self.record[42], self.record[43]])
     }
 
+    /// Raw source `word_0x32_50`, the peer-link field consumed by the
+    /// class-5 Archer action-35 callback.
+    #[must_use]
+    pub fn word_32(&self) -> u16 {
+        u16::from_le_bytes([self.record[54], self.record[55]])
+    }
+
     /// Raw source `word_0x34_52`, the head/next link used by class-5 child
     /// chains. This is distinct from the class-list `next_relation` field.
     #[must_use]
@@ -5363,6 +5370,68 @@ pub struct Level2AuthoredClass5Model3Child {
     pub active: bool,
 }
 
+/// The model-4-only words owned by `AddArchers_4BA10`.  The root remains in
+/// `authored_class5`; this typed sidecar supplies the linked-peer/head words,
+/// constructor generation, and child-cursor guard without manufacturing a
+/// second root arena.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredClass5ArcherState {
+    pub source_entity_index: u16,
+    pub slot_generation: u32,
+    pub word_0x32: u16,
+    pub word_0x34: u16,
+    pub descriptor_index: u16,
+    pub byte_0x38: u8,
+    pub xtype: u8,
+    pub pending_damage: i32,
+    pub last_child_root_phase: u8,
+}
+
+/// Retained class-9/model-13 child emitted by Archer `sub_1CCE0`.  This is a
+/// real shared source-arena row: its parent, source RNG, slot generation,
+/// chain words, signed rotations, map position, cursor phase, and lifecycle
+/// are all reset/hash/reclaim inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredClass5ArcherChild {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub parent_entity_id: u16,
+    pub slot_generation: u32,
+    pub word_0x32: u16,
+    pub word_0x34: u16,
+    pub word_0x24: u16,
+    pub pending_word_0x62: u16,
+    pub word_0x26: u16,
+    pub word_0x96: u16,
+    pub dword_0x10: i32,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub actual_speed: i16,
+    pub max_life: i16,
+    pub life: i16,
+    pub subspell_index: u16,
+    pub particle_index: u16,
+    pub control_flags: u32,
+    pub xtype: u8,
+    pub xsubtype: u8,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub fov: i16,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub position: Position,
+    pub source_byte_3e: u8,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// A resident constructed by an ordinary Level 2 House source callback.
 /// The row is owned by the shared Level 2 arena, preserving source-slot,
 /// owner, parent, map, and reset identity with the other dynamic families.
@@ -5628,6 +5697,10 @@ pub struct Level2EconomyState {
     authored_class5_model3: Vec<Level2AuthoredClass5Model3State>,
     baseline_authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
     authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
+    baseline_authored_class5_archer: Vec<Level2AuthoredClass5ArcherState>,
+    authored_class5_archer: Vec<Level2AuthoredClass5ArcherState>,
+    baseline_authored_class5_archer_children: Vec<Level2AuthoredClass5ArcherChild>,
+    authored_class5_archer_children: Vec<Level2AuthoredClass5ArcherChild>,
     baseline_house_residents: Vec<Level2HouseResidentSource>,
     house_residents: Vec<Level2HouseResidentSource>,
     baseline_class5_model3_constructor_phase: u8,
@@ -5897,6 +5970,10 @@ impl Level2EconomyState {
             authored_class5_model3: Vec::new(),
             baseline_authored_class5_model3_children: Vec::new(),
             authored_class5_model3_children: Vec::new(),
+            baseline_authored_class5_archer: Vec::new(),
+            authored_class5_archer: Vec::new(),
+            baseline_authored_class5_archer_children: Vec::new(),
+            authored_class5_archer_children: Vec::new(),
             baseline_house_residents: Vec::new(),
             house_residents: Vec::new(),
             baseline_class5_model3_constructor_phase: 0,
@@ -6193,6 +6270,16 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_class5_model3_children(&self) -> &[Level2AuthoredClass5Model3Child] {
         &self.authored_class5_model3_children
+    }
+
+    #[must_use]
+    pub fn authored_class5_archer(&self) -> &[Level2AuthoredClass5ArcherState] {
+        &self.authored_class5_archer
+    }
+
+    #[must_use]
+    pub fn authored_class5_archer_children(&self) -> &[Level2AuthoredClass5ArcherChild] {
+        &self.authored_class5_archer_children
     }
 
     fn authored_class5_runtime_mut(
@@ -9913,6 +10000,16 @@ impl Level2EconomyState {
             );
         }
         for child in self
+            .authored_class5_archer_children
+            .iter()
+            .filter(|child| child.active)
+        {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::AuthoredClass5ArcherChild,
+            );
+        }
+        for child in self
             .authored_class5_model3_children
             .iter()
             .filter(|child| child.active)
@@ -10648,6 +10745,28 @@ impl Level2EconomyState {
                 child.active = false;
             }
         }
+        for child in &mut self.authored_class5_archer_children {
+            if inactive_class5_roots.contains(&child.parent_entity_index) {
+                child.active = false;
+            }
+        }
+        let reclaimed_class5_archer_children = self
+            .authored_class5_archer_children
+            .iter()
+            .filter(|child| !child.active)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_class5_archer_children
+            .retain(|child| child.active);
+        for (slot, entity_rng) in reclaimed_class5_archer_children {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_class5_model3_children = self
             .authored_class5_model3_children
             .iter()
@@ -10680,6 +10799,8 @@ impl Level2EconomyState {
         self.authored_class5_runtime
             .retain(|state| live_class5_slots.contains(&state.source_entity_index));
         self.authored_class5_model3
+            .retain(|state| live_class5_slots.contains(&state.source_entity_index));
+        self.authored_class5_archer
             .retain(|state| live_class5_slots.contains(&state.source_entity_index));
         for (slot, entity_rng) in reclaimed_class5 {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
@@ -11511,6 +11632,59 @@ impl Level2EconomyState {
                 u8::from(child.active),
             ]);
         }
+        hasher.update(b"authored-class5-archer-v1");
+        for state in &self.authored_class5_archer {
+            hasher.update(state.source_entity_index.to_le_bytes());
+            hasher.update(state.slot_generation.to_le_bytes());
+            hasher.update(state.word_0x32.to_le_bytes());
+            hasher.update(state.word_0x34.to_le_bytes());
+            hasher.update(state.descriptor_index.to_le_bytes());
+            hasher.update([state.byte_0x38, state.xtype, state.last_child_root_phase]);
+            hasher.update(state.pending_damage.to_le_bytes());
+        }
+        for child in &self.authored_class5_archer_children {
+            hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.entity_id.to_le_bytes());
+            hasher.update(child.entity_rng.to_le_bytes());
+            hasher.update(child.parent_entity_index.to_le_bytes());
+            hasher.update(child.parent_entity_id.to_le_bytes());
+            hasher.update(child.slot_generation.to_le_bytes());
+            hasher.update(child.word_0x32.to_le_bytes());
+            hasher.update(child.word_0x34.to_le_bytes());
+            hasher.update(child.word_0x24.to_le_bytes());
+            hasher.update(child.pending_word_0x62.to_le_bytes());
+            hasher.update(child.word_0x26.to_le_bytes());
+            hasher.update(child.word_0x96.to_le_bytes());
+            hasher.update(child.dword_0x10.to_le_bytes());
+            hasher.update([
+                child.source_class,
+                child.model,
+                child.action,
+                child.xtype,
+                child.xsubtype,
+                child.source_byte_3e,
+                child.phase,
+                u8::from(child.drawing_enabled),
+                u8::from(child.active),
+            ]);
+            hasher.update(child.minimum_speed.to_le_bytes());
+            hasher.update(child.maximum_speed.to_le_bytes());
+            hasher.update(child.actual_speed.to_le_bytes());
+            hasher.update(child.max_life.to_le_bytes());
+            hasher.update(child.life.to_le_bytes());
+            hasher.update(child.subspell_index.to_le_bytes());
+            hasher.update(child.particle_index.to_le_bytes());
+            hasher.update(child.control_flags.to_le_bytes());
+            hasher.update(child.yaw.to_le_bytes());
+            hasher.update(child.pitch.to_le_bytes());
+            hasher.update(child.roll.to_le_bytes());
+            hasher.update(child.fov.to_le_bytes());
+            hasher.update(child.shift_rot_x.to_le_bytes());
+            hasher.update(child.shift_rot_y.to_le_bytes());
+            hasher.update(child.position.x.to_le_bytes());
+            hasher.update(child.position.y.to_le_bytes());
+            hasher.update(child.position.z.to_le_bytes());
+        }
         for state in &self.authored_class5_runtime {
             hasher.update(state.source_entity_index.to_le_bytes());
             hasher.update([state.byte_0x38, state.xtype]);
@@ -11805,6 +11979,9 @@ impl Level2EconomyState {
         self.authored_class5_model3 = self.baseline_authored_class5_model3.clone();
         self.authored_class5_model3_children =
             self.baseline_authored_class5_model3_children.clone();
+        self.authored_class5_archer = self.baseline_authored_class5_archer.clone();
+        self.authored_class5_archer_children =
+            self.baseline_authored_class5_archer_children.clone();
         self.class5_model3_constructor_phase = self.baseline_class5_model3_constructor_phase;
         self.class5_model4_constructor_phase = self.baseline_class5_model4_constructor_phase;
         self.class5_model9_constructor_phase = self.baseline_class5_model9_constructor_phase;
@@ -15196,6 +15373,7 @@ pub enum Level2DynamicArenaKind {
     Model76TailSpawn,
     AuthoredClass14,
     AuthoredClass5,
+    AuthoredClass5ArcherChild,
     AuthoredClass5Model3Child,
     HouseResident,
     AuthoredSwitchProducer,
@@ -15338,6 +15516,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::AuthoredClass5 => 30,
+        Level2DynamicArenaKind::AuthoredClass5ArcherChild => 37,
         Level2DynamicArenaKind::AuthoredClass5Model3Child => 36,
         Level2DynamicArenaKind::HouseResident => 35,
         Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
@@ -15685,6 +15864,205 @@ impl Level2ResetSession {
         source
             .target_entity_index
             .and_then(|target_index| self.level2_bee_entity_target(target_index))
+    }
+
+    fn level2_archer_target(
+        &self,
+        entity_index: u16,
+    ) -> Option<level2_class5::archer::ArcherTarget> {
+        if entity_index == 0 {
+            return None;
+        }
+        if let Some(entity) = self
+            .entities
+            .get(usize::from(entity_index))
+            .filter(|entity| entity.active)
+        {
+            let record = entity.record_bytes();
+            return Some(level2_class5::archer::ArcherTarget {
+                entity_index: entity.index,
+                class: entity.class,
+                model: entity.model,
+                action: entity.action,
+                active: entity.active,
+                life: entity.life,
+                control_flags: entity.control_flags,
+                minimum_speed: entity.minimum_speed(),
+                maximum_speed: 0,
+                actual_speed: entity.actual_speed,
+                dword_0x10: entity.source_dword_10(),
+                word_0x248: u16::from_le_bytes([record[58], record[59]]),
+                word_0x32: entity.word_32(),
+                word_0x96_150: entity.source_word_96(),
+                position: entity.position,
+            });
+        }
+        if let Some(source) = self
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == entity_index)
+        {
+            let state = self
+                .economy
+                .authored_class5_archer()
+                .iter()
+                .find(|state| state.source_entity_index == entity_index)?;
+            return Some(level2_class5::archer::ArcherTarget {
+                entity_index,
+                class: level2_class5::archer::ARCHER_SOURCE_CLASS,
+                model: source.model,
+                action: source.action,
+                active: source.active,
+                life: source.life,
+                control_flags: 0,
+                minimum_speed: source.minimum_speed,
+                maximum_speed: source.maximum_speed,
+                actual_speed: source.actual_speed,
+                dword_0x10: source.dword_0x10,
+                word_0x248: 0,
+                word_0x32: state.word_0x32,
+                word_0x96_150: source.word_0x96_150,
+                position: source.position,
+            });
+        }
+        if let Some(child) = self
+            .economy
+            .authored_class5_archer_children()
+            .iter()
+            .find(|child| child.active && child.source_entity_index == entity_index)
+        {
+            return Some(level2_class5::archer::ArcherTarget {
+                entity_index,
+                class: child.source_class,
+                model: child.model,
+                action: child.action,
+                active: child.active,
+                life: i32::from(child.life),
+                control_flags: child.control_flags,
+                minimum_speed: child.minimum_speed,
+                maximum_speed: child.maximum_speed,
+                actual_speed: child.actual_speed,
+                dword_0x10: child.dword_0x10,
+                word_0x248: 0,
+                word_0x32: child.word_0x32,
+                word_0x96_150: child.word_0x96,
+                position: child.position,
+            });
+        }
+        self.economy
+            .authored_model45()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == entity_index)
+            .map(|source| level2_class5::archer::ArcherTarget {
+                entity_index,
+                class: source.source_class,
+                model: source.model,
+                action: source.action,
+                active: source.active,
+                life: source.life,
+                control_flags: source.control_flags,
+                minimum_speed: source.minimum_speed,
+                maximum_speed: 0,
+                actual_speed: source.actual_speed,
+                dword_0x10: source.dword_0x10,
+                word_0x248: 0,
+                word_0x32: 0,
+                word_0x96_150: 0,
+                position: source.position,
+            })
+    }
+
+    fn level2_archer_entity_rows(&self) -> Vec<level2_class5::archer::ArcherTarget> {
+        let mut rows = self
+            .entities
+            .iter()
+            .filter(|entity| entity.active)
+            .filter_map(|entity| self.level2_archer_target(entity.index))
+            .collect::<Vec<_>>();
+        rows.extend(
+            self.economy
+                .authored_class5()
+                .iter()
+                .filter(|source| {
+                    source.active && source.model == level2_class5::archer::ARCHER_MODEL
+                })
+                .filter_map(|source| self.level2_archer_target(source.source_entity_index)),
+        );
+        rows.extend(
+            self.economy
+                .authored_class5_archer_children()
+                .iter()
+                .filter(|child| child.active)
+                .filter_map(|child| self.level2_archer_target(child.source_entity_index)),
+        );
+        rows
+    }
+
+    fn level2_archer_linked_rows(
+        &self,
+        linked_head: u16,
+    ) -> Vec<level2_class5::archer::ArcherLinkedState> {
+        let mut rows = Vec::new();
+        let mut current = linked_head;
+        let mut visits = 0_usize;
+        let bound = self.economy.authored_class5_archer_children().len() + 1;
+        while current != 0 && visits <= bound {
+            if let Some(entity) = self
+                .entities
+                .get(usize::from(current))
+                .filter(|entity| entity.active)
+            {
+                rows.push(level2_class5::archer::ArcherLinkedState {
+                    entity_index: entity.index,
+                    next_entity_index: entity.word_34(),
+                    life: entity.life,
+                    current_attacker: entity.word_26(),
+                });
+                current = entity.word_34();
+            } else if let Some(child) = self
+                .economy
+                .authored_class5_archer_children()
+                .iter()
+                .find(|child| child.active && child.source_entity_index == current)
+            {
+                rows.push(level2_class5::archer::ArcherLinkedState {
+                    entity_index: child.source_entity_index,
+                    next_entity_index: child.word_0x34,
+                    life: i32::from(child.life),
+                    current_attacker: child.word_0x26,
+                });
+                current = child.word_0x34;
+            } else {
+                break;
+            }
+            visits = visits.wrapping_add(1);
+        }
+        rows
+    }
+
+    fn apply_level2_archer_target(&mut self, target: level2_class5::archer::ArcherTarget) {
+        if let Some(entity) = self.entities.get_mut(usize::from(target.entity_index)) {
+            entity.set_source_dword_10(target.dword_0x10);
+            return;
+        }
+        if let Some(source) = self
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.source_entity_index == target.entity_index)
+        {
+            source.dword_0x10 = target.dword_0x10;
+            return;
+        }
+        if let Some(child) = self
+            .economy
+            .authored_class5_archer_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == target.entity_index)
+        {
+            child.dword_0x10 = target.dword_0x10;
+        }
     }
 
     /// Project the source class-5 model list consumed by `sub_1C310`'s
@@ -20138,6 +20516,43 @@ impl Level2ResetSession {
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
                     .copied();
+                if let Some(source) =
+                    source.filter(|source| source.model == level2_class5::archer::ARCHER_MODEL)
+                {
+                    let archer_state = self
+                        .economy
+                        .authored_class5_archer()
+                        .iter()
+                        .find(|state| state.source_entity_index == source_slot)
+                        .copied();
+                    let Some(archer_state) = archer_state else {
+                        return false;
+                    };
+                    let target = self.level2_archer_target(source.word_0x96_150);
+                    let rows = self.level2_archer_entity_rows();
+                    let linked = self.level2_archer_linked_rows(archer_state.word_0x34);
+                    let context = level2_class5::archer::ArcherActionContext {
+                        pending_damage: archer_state.pending_damage,
+                        linked_head: archer_state.word_0x34,
+                        linked: &linked,
+                        target,
+                        entities: &rows,
+                        fallback_entities: &rows,
+                        peers: &rows,
+                    };
+                    let Some(step) = self.economy.step_authored_archer_slot(source_slot, context)
+                    else {
+                        return false;
+                    };
+                    if let Some(target) = step.target {
+                        self.apply_level2_archer_target(target);
+                    }
+                    if let Some(entity_index) = step.effects.target_feedback_entity {
+                        self.nyphur_dispatcher
+                            .apply_class5_player_feedback(entity_index);
+                    }
+                    return step.map_synced;
+                }
                 if let Some(source) = source
                     && source.model == level2_class5::trader::TRADER_MODEL
                     && source.action == level2_class5::trader::TRADER_ACTION
@@ -20194,6 +20609,9 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredClass5Model3Child => self
                 .economy
                 .step_authored_class5_model3_child_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredClass5ArcherChild => self
+                .economy
+                .step_authored_class5_archer_child_slot(source_slot),
             Level2DynamicArenaKind::HouseResident => {
                 self.economy.step_house_resident_slot(source_slot)
             }
@@ -36442,7 +36860,7 @@ mod tests {
             .find(|source| source.authored_index == 232)
             .copied()
             .expect("group-20 archer source");
-        assert_eq!((archer.model, archer.action), (4, 33));
+        assert_eq!((archer.model, archer.action), (4, 34));
         assert_eq!(
             (
                 archer.minimum_speed,
@@ -36465,16 +36883,7 @@ mod tests {
                 archer.shift_rot_x,
                 archer.shift_rot_y,
             ),
-            (
-                i32::from(archer.source_entity_index % 100),
-                0,
-                125,
-                66,
-                66,
-                125,
-                128,
-                256,
-            )
+            (0, 0, 125, 66, 171, 125, 128, 256,)
         );
         assert!(archer.active && archer.drawing_enabled);
 
@@ -36497,10 +36906,9 @@ mod tests {
         // The constructor proof above is not enough: the live source cursor
         // must visit the authored class-5/model-4 row after group activation.
         // The ordinary outer turn is the production route; no direct arena
-        // step is used here.  Model 4 has no movement branch in this bounded
-        // callback, so the visit advances phase while preserving the authored
-        // position and renderability.  This turn is deliberately after the
-        // model-1 cadence assertion so it cannot weaken that independent proof.
+        // step is used here. Action 34 owns pitch-aware movement and terrain
+        // projection. This turn is deliberately after the model-1 cadence
+        // assertion so it cannot weaken that independent proof.
         let archer_before_cursor = session
             .economy()
             .authored_class5()
@@ -36530,6 +36938,14 @@ mod tests {
                 } if *source_slot == archer_source_slot
             )
         }));
+        let mut expected_archer_position = archer_position;
+        crate::move_entity(
+            &mut expected_archer_position,
+            archer_before_cursor.yaw,
+            archer_before_cursor.pitch,
+            archer_before_cursor.actual_speed,
+        );
+        expected_archer_position.z = session.terrain.ground_height(expected_archer_position);
         assert_eq!(
             (
                 stepped_archer.position.x,
@@ -36537,9 +36953,9 @@ mod tests {
                 stepped_archer.position.z,
             ),
             (
-                archer_position.x,
-                archer_position.y,
-                session.terrain.ground_height(archer_position),
+                expected_archer_position.x,
+                expected_archer_position.y,
+                expected_archer_position.z,
             )
         );
         assert!(stepped_archer.active && stepped_archer.drawing_enabled);
