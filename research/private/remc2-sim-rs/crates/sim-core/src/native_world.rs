@@ -20556,6 +20556,10 @@ fn level2_nyphur_participant(
     let entity = entities
         .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
         .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
+    let source_relation_is_valid = entity.source_word_96() == 0
+        || entities
+            .get(usize::from(entity.source_word_96()))
+            .is_some_and(|target| entity.source_word_98() == level2_nyphur_source_identity(target));
     if !entity.active
         || entity.class != 3
         || entity.model != 1
@@ -20570,6 +20574,7 @@ fn level2_nyphur_participant(
         || entity.max_life != 3_085
         || entity.mana != 1_000
         || entity.max_mana != 1_000
+        || !source_relation_is_valid
         || !level2_nyphur_entity_record_matches_census(entity, baseline_entity)
     {
         return Err(NativeWorldError::new(
@@ -20661,11 +20666,15 @@ fn level2_nyphur_entity_record_matches_census(
         return false;
     }
     let mut normalized = record.to_vec();
-    // `sub_146F0` and its final terrain clamp own the position bytes during
-    // the ordinary source pass. Keep the reset bytes for the constructor hash
-    // while retaining the explicit class/action/owner checks above and every
-    // other record byte in the census.
+    // The ordinary Nyphur pass owns its entity RNG, yaw, target-heading roll,
+    // position, phase, and word-0x96/0x98 target relation. Keep reset bytes for
+    // the constructor hash while the caller separately validates any live
+    // relation and retains every unrelated census byte.
+    normalized[24..26].copy_from_slice(&baseline_record[24..26]);
+    normalized[32..34].copy_from_slice(&baseline_record[32..34]);
+    normalized[36..38].copy_from_slice(&baseline_record[36..38]);
     normalized[80..86].copy_from_slice(&baseline_record[80..86]);
+    normalized[154..158].copy_from_slice(&baseline_record[154..158]);
     normalized[66] = LEVEL2_NYPHUR_INITIAL_PHASE;
     let mut hasher = Sha256::new();
     hasher.update(normalized);

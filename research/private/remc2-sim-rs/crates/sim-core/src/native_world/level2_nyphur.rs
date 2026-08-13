@@ -2766,6 +2766,13 @@ mod tests {
         );
         assert_eq!(first.campaign_state_hash(), baseline_campaign_hash);
 
+        for _ in 0..282 {
+            first.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        first
+            .nyphur_participant()
+            .expect("ordinary live target selection preserves the Nyphur participant census");
+
         let mut relation_tampered = inspection
             .level2_reset_session()
             .expect("Nyphur relation negative session");
@@ -2941,6 +2948,17 @@ mod tests {
         assert!(level2_nyphur_source_identity_matches(&source, &target));
         assert_eq!(source.source_word_96(), target.index);
         assert!(target.model == 0 || target.model == 1);
+        assert!(
+            initial.nyphur_participant().is_ok(),
+            "the source-owned live target relation remains a valid participant census row"
+        );
+        let mut stale_relation = initial.clone();
+        stale_relation.entities[112].record[156..158]
+            .copy_from_slice(&source.source_word_98().wrapping_add(1).to_le_bytes());
+        assert!(stale_relation.nyphur_participant().is_err());
+        let mut unrelated_census_mutation = initial.clone();
+        unrelated_census_mutation.entities[112].record[158] ^= 1;
+        assert!(unrelated_census_mutation.nyphur_participant().is_err());
 
         let parameter_index = source
             .parameter_relation
