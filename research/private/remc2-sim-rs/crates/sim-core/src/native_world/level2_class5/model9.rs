@@ -1,4 +1,4 @@
-//! Level 2 class-5/model-9 movement for the authored action-72 roots.
+//! Level 2 class-5/model-9 action-72 transition and action-73 movement.
 
 use crate::{FlightWorld, Position, Tile, WATER_AMBIENCE_MASK};
 
@@ -14,6 +14,10 @@ const MODEL9_CAVE_CLEARANCE: i32 = 0x0200;
 const MODEL9_PARTICLE_FOV: i32 = 125;
 const MODEL9_TURN_LIMIT: i16 = 0x0016;
 const MODEL9_YAW_MASK: i32 = 0x07ff;
+const MODEL9_ACTION_COUNTDOWN: u8 = 72;
+const MODEL9_ACTION_MOVEMENT: u8 = 73;
+const MODEL9_MOVEMENT_COUNTDOWN: i32 = 400;
+const MODEL9_MOVEMENT_PARTICLE: u16 = 201;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Model9MoveResult {
@@ -24,11 +28,50 @@ enum Model9MoveResult {
 impl Level2EconomyState {
     #[inline]
     pub(super) fn step_authored_class5_model9(&self, source: &mut Level2AuthoredClass5Source) {
-        // The extracted Level 2 source cursor currently carries model-9 roots
-        // as the action-72 production rows.  Keep that route live while
-        // applying the source's movement/collision body to each callback.
-        let _ = model9_step_movement(source, &self.terrain);
+        let _ = model9_step(source, &self.terrain);
     }
+}
+
+/// Dispatch the model-9 action cursor in the same order as the pinned source:
+/// action 72 is only the countdown/transition callback, while action 73 owns
+/// the movement and collision retry body.
+fn model9_step<W: FlightWorld>(
+    source: &mut Level2AuthoredClass5Source,
+    world: &W,
+) -> Option<Model9MoveResult> {
+    match source.action {
+        MODEL9_ACTION_COUNTDOWN => {
+            model9_step_action72(source);
+            None
+        }
+        MODEL9_ACTION_MOVEMENT => Some(model9_step_action73(source, world)),
+        _ => None,
+    }
+}
+
+/// Port `sub_20370`'s countdown. The zero test uses the value before the
+/// decrement, so a source starting at 16 spends sixteen callbacks at action
+/// 72 and transitions on the seventeenth callback.
+fn model9_step_action72(source: &mut Level2AuthoredClass5Source) {
+    let previous_countdown = source.dword_0x10;
+    source.dword_0x10 = previous_countdown.wrapping_sub(1);
+    if previous_countdown == 0 {
+        // `sub_20F20` runs before the action/timer writes. These are the
+        // source fields represented by the class-5 carrier; the remaining
+        // presentation/target side effects are outside this model-local seam.
+        source.actual_speed = source.minimum_speed;
+        source.particle_index = MODEL9_MOVEMENT_PARTICLE;
+        source.action = MODEL9_ACTION_MOVEMENT;
+        source.dword_0x10 = MODEL9_MOVEMENT_COUNTDOWN;
+        source.byte_0x46_70 = 0;
+    }
+}
+
+fn model9_step_action73<W: FlightWorld>(
+    source: &mut Level2AuthoredClass5Source,
+    world: &W,
+) -> Model9MoveResult {
+    model9_step_movement(source, world)
 }
 
 /// Port the four candidate headings used by `sub_1B8C0`.
@@ -200,7 +243,7 @@ mod tests {
             entity_rng: 0x1234,
             authored_index: 245,
             model: 9,
-            action: 72,
+            action: MODEL9_ACTION_COUNTDOWN,
             minimum_speed: 20,
             maximum_speed: 0,
             actual_speed: 20,
@@ -248,28 +291,57 @@ mod tests {
         );
         source.actual_speed = 512;
         world.ceiling = Some(2_000);
-        let mut first_position = source.position;
+        let initial_position = source.position;
+        let initial_yaw = source.yaw;
+
+        // `sub_20370` decrements action 72 without moving. Its zero test is
+        // against the pre-decrement value, so the 16th tick reaches zero but
+        // remains action 72; only the next tick enters action 73.
+        for expected_countdown in (0..16).rev() {
+            assert_eq!(model9_step(&mut source, &world), None);
+            assert_eq!(source.action, MODEL9_ACTION_COUNTDOWN);
+            assert_eq!(source.dword_0x10, expected_countdown);
+            assert_eq!(source.position, initial_position);
+            assert_eq!(source.yaw, initial_yaw);
+        }
+        assert_eq!(model9_step(&mut source, &world), None);
+        assert_eq!(source.action, MODEL9_ACTION_MOVEMENT);
+        assert_eq!(source.dword_0x10, MODEL9_MOVEMENT_COUNTDOWN);
+        assert_eq!(source.actual_speed, source.minimum_speed);
+        assert_eq!(source.particle_index, MODEL9_MOVEMENT_PARTICLE);
+        assert_eq!(source.byte_0x46_70, 0);
+        assert_eq!(source.position, initial_position);
+        assert_eq!(source.yaw, initial_yaw);
+
+        // Action 73 owns the movement body. Block the first candidate tile so
+        // the source's second candidate is the committed retry.
+        let mut movement_source = model9_source(initial_position, 0, 1024);
+        movement_source.action = MODEL9_ACTION_MOVEMENT;
+        movement_source.dword_0x10 = MODEL9_MOVEMENT_COUNTDOWN;
+        movement_source.actual_speed = 512;
+        let mut first_position = movement_source.position;
         crate::move_entity(&mut first_position, 0, 0, 512);
         world.blocked_tile = Some((
             first_position.x.to_be_bytes()[0],
             first_position.y.to_be_bytes()[0],
         ));
         let expected_heading = model9_retry_headings(0)[1];
-        let mut expected_position = source.position;
+        let mut expected_position = movement_source.position;
         crate::move_entity(&mut expected_position, expected_heading, 0, 512);
         expected_position.z = 0;
-        let result = model9_step_movement(&mut source, &world);
+        let result = model9_step(&mut movement_source, &world);
         assert_eq!(
             result,
-            Model9MoveResult::Accepted {
+            Some(Model9MoveResult::Accepted {
                 heading: expected_heading,
                 position: expected_position,
-            }
+            })
         );
-        assert_eq!(source.position, expected_position);
-        assert_eq!(source.yaw, expected_heading + MODEL9_TURN_LIMIT);
+        assert_eq!(movement_source.position, expected_position);
+        assert_eq!(movement_source.yaw, expected_heading + MODEL9_TURN_LIMIT);
 
         // A 70-point corner delta is the descriptor's steep-terrain boundary.
+        world.blocked_tile = None;
         world.steep_corner = Some((2, 1, 2_240));
         assert!(model9_candidate_blocked(
             Position {
