@@ -42593,6 +42593,259 @@ mod tests {
     }
 
     #[test]
+    fn level_two_persistent_replacement_boundary_is_complete() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+
+        let persistent_spell_sources = |session: &Level2ResetSession| {
+            session
+                .shared_spells()
+                .pickups()
+                .iter()
+                .chain(session.shared_spells().dynamic_pickups().iter())
+                .filter(|entity| {
+                    entity.class == 15
+                        && matches!(entity.model, 6 | 11 | 12)
+                        && matches!(entity.action, 20 | 35 | 38)
+                })
+                .map(|entity| (entity.index, entity.model, entity.action))
+                .collect::<Vec<_>>()
+        };
+
+        let package_session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 package session");
+        let ordinary_authored_spell_rows = package_session
+            .mission()
+            .authored_features()
+            .iter()
+            .filter(|feature| feature.kind == 15 && matches!(feature.subtype, 6 | 11 | 12))
+            .map(|feature| (feature.index, feature.subtype, feature.stage_tag))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordinary_authored_spell_rows,
+            vec![(155, 6, 1), (156, 11, 1), (166, 12, 1)]
+        );
+        let stage_two_spell_rows = package_session
+            .mission()
+            .authored_features()
+            .iter()
+            .filter(|feature| {
+                feature.kind == 15
+                    && matches!(feature.subtype, 6 | 11 | 12)
+                    && feature.stage_tag == 2
+            })
+            .map(|feature| feature.index)
+            .collect::<Vec<_>>();
+        assert!(
+            stage_two_spell_rows.is_empty(),
+            "qualified Level 2 package unexpectedly contains stage-2 spell rows: {stage_two_spell_rows:?}"
+        );
+        assert_eq!(
+            physical_spell_action(6, PhysicalSpellActionRole::OrdinaryPickup),
+            Some(19)
+        );
+        assert_eq!(
+            physical_spell_action(11, PhysicalSpellActionRole::OrdinaryPickup),
+            Some(34)
+        );
+        assert_eq!(
+            physical_spell_action(12, PhysicalSpellActionRole::OrdinaryPickup),
+            Some(37)
+        );
+        assert_eq!(
+            [
+                physical_spell_action(6, PhysicalSpellActionRole::PersistentPickup),
+                physical_spell_action(11, PhysicalSpellActionRole::PersistentPickup),
+                physical_spell_action(12, PhysicalSpellActionRole::PersistentPickup),
+            ],
+            [Some(20), Some(35), Some(38)]
+        );
+
+        let acquire_ordinary = |session: &mut Level2ResetSession,
+                                authored_index: u16,
+                                family: u8,
+                                source_action: u8,
+                                holder_action: u8| {
+            let source = session
+                .economy()
+                .spell_pickups()
+                .iter()
+                .find(|source| source.authored_index == authored_index)
+                .copied()
+                .expect("authored ordinary spell source");
+            assert_eq!(source.family, family);
+            assert_eq!(source.action, source_action);
+            let source_slot = source.source_entity_index;
+            let baseline_replacements = session.economy().spell_replacements().to_vec();
+            let baseline_persistent_sources = persistent_spell_sources(session);
+            let player_entity_index = session.state.entity_index;
+            session
+                .set_level2_entity_position(player_entity_index, source.position)
+                .expect("qualified player-position input");
+            let acquired = (0..4).find_map(|_| {
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                session
+                    .dispatch_events()
+                    .iter()
+                    .find_map(|event| match event {
+                        Level2DispatchEvent::SpellAcquisition {
+                            family: observed_family,
+                            source_slot: observed_slot,
+                            result: Some(outcome),
+                            ..
+                        } if *observed_family == family && *observed_slot == source_slot => {
+                            Some(*outcome)
+                        }
+                        _ => None,
+                    })
+            });
+            let outcome = acquired.expect("ordinary spell source acquisition");
+            assert_eq!(outcome.family, family);
+            assert_eq!(outcome.source_slot, source_slot);
+            assert_eq!(outcome.holder_action, holder_action);
+            assert_eq!(outcome.replacement_action, None);
+            assert_eq!(
+                session.economy().spell_replacements(),
+                baseline_replacements
+            );
+            assert_eq!(
+                persistent_spell_sources(session),
+                baseline_persistent_sources
+            );
+            let holder = session
+                .shared_spells()
+                .dynamic_pickups()
+                .iter()
+                .find(|entity| entity.index == source_slot)
+                .expect("ordinary holder remains in the shared arena");
+            assert_eq!(holder.action, holder_action);
+            source_slot
+        };
+
+        for (authored_index, family, source_action, holder_action) in
+            [(155, 6, 19, 18), (156, 11, 34, 33)]
+        {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("qualified authored spell session");
+            let baseline_campaign_hash = session.campaign_state_hash();
+            let baseline_shared_hash = session.shared_spells().reset_hash();
+            let baseline_economy_hash = session.economy().reset_hash();
+            session
+                .set_level2_selected_objective_stage_state(2)
+                .expect("qualified Level 2 objective source selector");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let source_slot = acquire_ordinary(
+                &mut session,
+                authored_index,
+                family,
+                source_action,
+                holder_action,
+            );
+            assert!(persistent_spell_sources(&session).is_empty());
+            assert!(session.economy().spell_replacements().is_empty());
+            assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
+            assert_ne!(session.shared_spells().reset_hash(), baseline_shared_hash);
+            assert_ne!(session.economy().reset_hash(), baseline_economy_hash);
+            assert!(session.dispatch_events().iter().all(|event| {
+                !matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot: observed_slot,
+                        kind: Level2DynamicArenaKind::SpellReplacement,
+                        ..
+                    } if *observed_slot == source_slot
+                )
+            }));
+
+            session.reset();
+            assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+            assert_eq!(session.shared_spells().reset_hash(), baseline_shared_hash);
+            assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
+            assert!(session.economy().spell_replacements().is_empty());
+            assert!(persistent_spell_sources(&session).is_empty());
+        }
+
+        let mut family12_session = inspection
+            .level2_reset_session()
+            .expect("qualified family-12 spell session");
+        let baseline_campaign_hash = family12_session.campaign_state_hash();
+        let baseline_shared_hash = family12_session.shared_spells().reset_hash();
+        let baseline_economy_hash = family12_session.economy().reset_hash();
+        let baseline_persistent_sources = persistent_spell_sources(&family12_session);
+        let (source_class, source_model, source_action, source_position) = family12_session
+            .shared_spells()
+            .pickups()
+            .iter()
+            .find(|source| source.index == 38)
+            .map(|source| (source.class, source.model, source.action, source.position))
+            .expect("qualified reset family-12 source");
+        assert_eq!(source_class, 15);
+        assert_eq!(source_model, 12);
+        assert_eq!(source_action, 37);
+        let player_entity_index = family12_session.state.entity_index;
+        family12_session
+            .set_level2_entity_position(player_entity_index, source_position)
+            .expect("qualified player-position input");
+        let acquired = (0..4).find_map(|_| {
+            family12_session.step_outer_turn(PlayerCommand::default(), 0);
+            family12_session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 12,
+                        source_slot: 38,
+                        result: Some(outcome),
+                        ..
+                    } => Some(*outcome),
+                    _ => None,
+                })
+        });
+        let outcome = acquired.expect("ordinary family-12 source acquisition");
+        assert_eq!(outcome.family, 12);
+        assert_eq!(outcome.source_slot, 38);
+        assert_eq!(outcome.holder_action, 36);
+        assert_eq!(outcome.replacement_action, None);
+        assert_eq!(family12_session.shared_spells().pickups()[0].action, 36);
+        assert!(family12_session.economy().spell_replacements().is_empty());
+        assert_eq!(
+            persistent_spell_sources(&family12_session),
+            baseline_persistent_sources
+        );
+        assert_ne!(
+            family12_session.campaign_state_hash(),
+            baseline_campaign_hash
+        );
+        assert_ne!(
+            family12_session.shared_spells().reset_hash(),
+            baseline_shared_hash
+        );
+        assert_ne!(
+            family12_session.economy().reset_hash(),
+            baseline_economy_hash
+        );
+
+        family12_session.reset();
+        assert_eq!(
+            family12_session.campaign_state_hash(),
+            baseline_campaign_hash
+        );
+        assert_eq!(
+            family12_session.shared_spells().reset_hash(),
+            baseline_shared_hash
+        );
+        assert_eq!(
+            family12_session.economy().reset_hash(),
+            baseline_economy_hash
+        );
+        assert_eq!(family12_session.shared_spells().pickups()[0].action, 37);
+        assert!(family12_session.economy().spell_replacements().is_empty());
+        assert!(persistent_spell_sources(&family12_session).is_empty());
+    }
+
+    #[test]
     fn level_two_runagain_dispatches_reclaimed_slot_reuse_with_new_generation() {
         // Two overlapping live spheres make the first source handler retire
         // one arena occupant; the later persistent pickup then reuses that
