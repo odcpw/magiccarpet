@@ -639,6 +639,63 @@ def build() -> dict[str, Any]:
         row["subsystem"] = subsystem_for_family.get(anchor_family, "gameplay")
         row["source"] = source_anchor(anchor_family)
 
+    # This archive deliberately remains non-Exact until the whole matrix is
+    # closed, but accepted leaf evidence must not be represented as absent.
+    # Keep this override narrower than the sibling persistent-replacement leaf:
+    # ordinary owner selection is rooted through sub_68FF0/sub_692A0, while
+    # sub_69250 remains owned by mc-xcgi.1.2.
+    spell_owner_row = owner_row("mc-xcgi.1.1.1")
+    spell_owner_row["source"] = {
+        "commit": COMMIT,
+        "symbols": ["sub_68FF0", "sub_692A0"],
+        "path": "remc2/engine/EventsFunctions.cpp",
+        "lines": "55716-55810",
+        "dispatch": None,
+        "related": [{
+            "commit": COMMIT,
+            "symbols": ["SetSpell_6D5E0"],
+            "path": "remc2/engine/Level.cpp",
+            "lines": "1505",
+        }],
+    }
+    spell_owner_row["behavior_ordered"] = [
+        "scan live player ownership in source-list order",
+        "apply active/model/life/overlap/duplicate/full-hand gates",
+        "acquire authored family 6/11/12 ordinary actions 19/34/37",
+        "update the authoritative holder and emit typed acquisition state",
+    ]
+    spell_owner_row["implementation"] = {
+        "rust": [
+            "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+            "research/private/remc2-sim-rs/crates/sim-core/src/spell_activation.rs",
+        ],
+        "capi": [],
+        "unity": [],
+        "absent": False,
+    }
+    spell_owner_row["mismatch_detail"] = [
+        "Accepted runtime evidence exists; this historical matrix remains Missing by open-matrix policy."
+    ]
+    spell_owner_row["evidence_bindings"].extend([
+        {
+            "kind": "rust-test",
+            "file": "research/private/remc2-sim-rs",
+            "test": "native_world::tests::level_two_spell_owner_scan_and_source_gates_are_complete",
+            "command": "cd research/private/remc2-sim-rs && cargo test -p sim-core --lib --locked native_world::tests::level_two_spell_owner_scan_and_source_gates_are_complete -- --exact",
+            "proves": "source-list owner selection, source-field gates, fail-closed negatives, reset and replay",
+        },
+        {
+            "kind": "rust-test",
+            "file": "research/private/remc2-sim-rs",
+            "test": "native_world::tests::level_two_outer_turn_family12_honors_remote_owner_and_return_hand_override",
+            "command": "cd research/private/remc2-sim-rs && cargo test -p sim-core --lib --locked native_world::tests::level_two_outer_turn_family12_honors_remote_owner_and_return_hand_override -- --exact",
+            "proves": "ordinary Level 2 outer-turn acquisition and source-ordered return-hand selection",
+        },
+    ])
+    spell_owner_row["unresolved"] = [
+        "Archive-wide Exact promotion remains intentionally unavailable; this row has no remaining Level 2 implementation gap."
+    ]
+
     # Generic authored/dispatch fields remain an exact partition of the rows
     # that are candidates for implementation; the full 1,200/845 denominator is
     # checked by validate_level2_matrix.py through the coverage maps above.

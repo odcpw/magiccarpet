@@ -58,7 +58,7 @@
     ],
     "test_inventory": {
       "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list",
-      "count": 856
+      "count": 871
     },
     "census_method": "independent join of L2-04 authored/reset census, L2-05 rooted activation closure, and L2-06 dispatch/RNG/audio/presentation ledger",
     "totals": {
@@ -4993,7 +4993,7 @@
       "id": "ROW-mc-38gs.1",
       "subsystem": "gameplay",
       "family": "authored",
-      "title": "[L2-29A] Finish class-5 model-3 actions 25 and 216-220",
+      "title": "[L2-29A] Finish class-5 model-3 action-25 creature family",
       "reachability": {
         "status": "reachable",
         "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
@@ -8085,7 +8085,7 @@
       "id": "ROW-mc-oiaa.2",
       "subsystem": "gameplay",
       "family": "dispatch",
-      "title": "[L2-37B2] Present buildings, vault destruction, scenery, and rooted class-10 effects",
+      "title": "[L2-37B2] Present rooted class-10 effects from Rust events and qualified owner assets",
       "reachability": {
         "status": "reachable",
         "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
@@ -9829,11 +9829,22 @@
       "source": {
         "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
         "symbols": [
-          "sub_56D60"
+          "sub_68FF0",
+          "sub_692A0"
         ],
         "path": "remc2/engine/EventsFunctions.cpp",
-        "lines": "39441-39480",
-        "dispatch": null
+        "lines": "55716-55810",
+        "dispatch": null,
+        "related": [
+          {
+            "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+            "symbols": [
+              "SetSpell_6D5E0"
+            ],
+            "path": "remc2/engine/Level.cpp",
+            "lines": "1505"
+          }
+        ]
       },
       "preconditions": [
         "external level 2",
@@ -9842,21 +9853,23 @@
         "owner English data"
       ],
       "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
+        "scan live player ownership in source-list order",
+        "apply active/model/life/overlap/duplicate/full-hand gates",
+        "acquire authored family 6/11/12 ordinary actions 19/34/37",
+        "update the authoritative holder and emit typed acquisition state"
       ],
       "implementation": {
         "rust": [
-          "research/private/remc2-sim-rs"
+          "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+          "research/private/remc2-sim-rs/crates/sim-core/src/spell_activation.rs"
         ],
         "capi": [],
         "unity": [],
-        "absent": true
+        "absent": false
       },
       "classification": "Missing",
       "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
+        "Accepted runtime evidence exists; this historical matrix remains Missing by open-matrix policy."
       ],
       "evidence_bindings": [
         {
@@ -9865,6 +9878,20 @@
           "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
           "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
           "proves": "production denominator builders and discriminating joins, not gameplay closure"
+        },
+        {
+          "kind": "rust-test",
+          "file": "research/private/remc2-sim-rs",
+          "test": "native_world::tests::level_two_spell_owner_scan_and_source_gates_are_complete",
+          "command": "cd research/private/remc2-sim-rs && cargo test -p sim-core --lib --locked native_world::tests::level_two_spell_owner_scan_and_source_gates_are_complete -- --exact",
+          "proves": "source-list owner selection, source-field gates, fail-closed negatives, reset and replay"
+        },
+        {
+          "kind": "rust-test",
+          "file": "research/private/remc2-sim-rs",
+          "test": "native_world::tests::level_two_outer_turn_family12_honors_remote_owner_and_return_hand_override",
+          "command": "cd research/private/remc2-sim-rs && cargo test -p sim-core --lib --locked native_world::tests::level_two_outer_turn_family12_honors_remote_owner_and_return_hand_override -- --exact",
+          "proves": "ordinary Level 2 outer-turn acquisition and source-ordered return-hand selection"
         }
       ],
       "negative_coverage_required": [
@@ -9876,7 +9903,7 @@
       "plan_item": "mc-xcgi.1.1.1",
       "confidence": "high",
       "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
+        "Archive-wide Exact promotion remains intentionally unavailable; this row has no remaining Level 2 implementation gap."
       ],
       "coverage": {
         "authored": [],
@@ -9917,7 +9944,7 @@
       "id": "ROW-mc-yawx.1",
       "subsystem": "rng-audio",
       "family": "rng",
-      "title": "[L2-33A] Build the global Level 2 RNG draw-order ledger and route-level mismatch detector",
+      "title": "[L2-33A] Enforce exact RNG draw order across the ordinary Level 2 production route",
       "reachability": {
         "status": "reachable",
         "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
@@ -10074,7 +10101,7 @@
       "id": "ROW-mc-yawx.2",
       "subsystem": "rng-audio",
       "family": "audio",
-      "title": "[L2-33B] Reclassify reachable Level 2 sound occurrences and exact audio parameters",
+      "title": "[L2-33B] Emit every reachable Level 2 sound with exact source parameters and ordering",
       "reachability": {
         "status": "reachable",
         "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
@@ -15335,7 +15362,7 @@
     },
     {
       "id": "mc-38gs.1",
-      "title": "[L2-29A] Finish class-5 model-3 actions 25 and 216-220",
+      "title": "[L2-29A] Finish class-5 model-3 action-25 creature family",
       "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
@@ -15472,6 +15499,7 @@
       "id": "mc-4ipu.3",
       "title": "[L2-21C] Port basic Nyphur modes 3-4, 11, and 12 plus default/fallthrough behavior",
       "depends_on": [
+        "mc-1g06.1",
         "mc-4ipu.1",
         "mc-app8.2"
       ],
@@ -15882,7 +15910,10 @@
     {
       "id": "mc-k5js.1",
       "title": "[L2-22A] Port Nyphur combat modes 6 and 7 with exact target-loss thresholds",
-      "depends_on": [],
+      "depends_on": [
+        "mc-1g06.1",
+        "mc-6dqd.1"
+      ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -15926,7 +15957,9 @@
     {
       "id": "mc-mmv3",
       "title": "[L2-28] Implement Bee actions 20-23 and exact objective death identity",
-      "depends_on": [],
+      "depends_on": [
+        "mc-jmcp.2"
+      ],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -15993,7 +16026,7 @@
     },
     {
       "id": "mc-oiaa.2",
-      "title": "[L2-37B2] Present buildings, vault destruction, scenery, and rooted class-10 effects",
+      "title": "[L2-37B2] Present rooted class-10 effects from Rust events and qualified owner assets",
       "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
@@ -16016,9 +16049,7 @@
     {
       "id": "mc-oiaa.3",
       "title": "[L2-37B3] Present Level 2 scenery, buildings, and vault destruction",
-      "depends_on": [
-        "mc-oiaa.2"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -16201,7 +16232,7 @@
     },
     {
       "id": "mc-yawx.1",
-      "title": "[L2-33A] Build the global Level 2 RNG draw-order ledger and route-level mismatch detector",
+      "title": "[L2-33A] Enforce exact RNG draw order across the ordinary Level 2 production route",
       "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
@@ -16223,7 +16254,7 @@
     },
     {
       "id": "mc-yawx.2",
-      "title": "[L2-33B] Reclassify reachable Level 2 sound occurrences and exact audio parameters",
+      "title": "[L2-33B] Emit every reachable Level 2 sound with exact source parameters and ordering",
       "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",

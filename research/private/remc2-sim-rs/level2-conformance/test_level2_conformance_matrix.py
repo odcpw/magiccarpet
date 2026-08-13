@@ -104,6 +104,28 @@ class Level2ConformanceMatrixTests(unittest.TestCase):
             with mock.patch.object(builder, "BEADS", registry):
                 self.assertEqual(set(builder.beads()), set(builder.DENOMINATOR_OWNER_IDS))
 
+    def test_closed_spell_owner_row_retains_runtime_evidence_without_claiming_exact(self) -> None:
+        row = next(
+            row for row in self.matrix["rows"]
+            if row["id"] == "ROW-mc-xcgi.1.1.1"
+        )
+        self.assertEqual(row["classification"], "Missing")
+        self.assertFalse(row["implementation"]["absent"])
+        self.assertEqual(row["source"]["symbols"], ["sub_68FF0", "sub_692A0"])
+        tests = {
+            binding["test"]
+            for binding in row["evidence_bindings"]
+            if binding["kind"] == "rust-test"
+        }
+        self.assertEqual(
+            tests,
+            {
+                "native_world::tests::level_two_spell_owner_scan_and_source_gates_are_complete",
+                "native_world::tests::level_two_outer_turn_family12_honors_remote_owner_and_return_hand_override",
+            },
+        )
+        self.assertNotIn("allocate_level2_spell_replacement", json.dumps(row))
+
     def test_reset_and_constructor_owners_are_exact_stable_ids(self) -> None:
         census = json.loads(
             (builder.HERE / "census" / "level2-authored-reset-census.json").read_text()
