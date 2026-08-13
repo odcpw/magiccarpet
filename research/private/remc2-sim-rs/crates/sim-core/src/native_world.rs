@@ -17758,18 +17758,9 @@ impl Level2ResetSession {
             self.activate_level2_authored_class14_group(pass, producer_slot, target_group, 5);
             return;
         }
-        let rows = if (1..=8).contains(&target_group) {
-            let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(target_group)
-            else {
-                self.dispatch_events.push(Level2DispatchEvent::Error {
-                    pass,
-                    source_slot: producer_slot,
-                    message: format!(
-                        "Level 2 activation artifact has no group-{target_group} membership"
-                    ),
-                });
-                return;
-            };
+        let rows = if let Some(group_row_indices) =
+            self.mission.level2_dispatch_group_rows(target_group)
+        {
             group_row_indices
                 .iter()
                 .filter_map(|authored_index| {
@@ -17914,6 +17905,25 @@ impl Level2ResetSession {
                     continue;
                 };
                 self.level2_model22_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
+            if feature.kind == 10 && feature.subtype == 76 {
+                if self.level2_model76_activated.contains(&feature.index) {
+                    continue;
+                }
+                let Some(source) = self.allocate_level2_authored_model76(feature.index) else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored model76 group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_model76_activated.insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
@@ -18154,16 +18164,36 @@ impl Level2ResetSession {
     {
         let producer_groups = self.live_level2_class11_producers(producer_matches);
         for (producer_slot, producer_group) in producer_groups {
-            let rows = self
+            let candidate_rows = self
                 .mission
-                .authored_features()
-                .iter()
-                .copied()
-                .filter(|feature| {
-                    feature.activation_group == producer_group.cast_signed()
-                        && matches_feature(*feature)
-                        && !already_seen(self, feature.index)
-                })
+                .level2_dispatch_group_rows(producer_group)
+                .map_or_else(
+                    || {
+                        self.mission
+                            .authored_features()
+                            .iter()
+                            .copied()
+                            .filter(|feature| {
+                                feature.activation_group == producer_group.cast_signed()
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                    |authored_indices| {
+                        authored_indices
+                            .iter()
+                            .filter_map(|authored_index| {
+                                self.mission
+                                    .authored_features()
+                                    .iter()
+                                    .copied()
+                                    .find(|feature| feature.index == *authored_index)
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                );
+            let rows = candidate_rows
+                .into_iter()
+                .filter(|feature| matches_feature(*feature) && !already_seen(self, feature.index))
                 .collect::<Vec<_>>();
             for feature in rows {
                 let Some(source_slot) = allocate(self, feature.index) else {
@@ -33993,9 +34023,16 @@ mod tests {
             .mission()
             .level2_activation_plan()
             .expect("artifact-derived owned activation plan");
-        assert_eq!(plan.owned_rows().len(), 138);
-        assert_eq!(plan.edges().len(), 8);
-        let mut expected = plan.owned_rows().to_vec();
+        assert_eq!(plan.owned_rows().len(), 151);
+        assert_eq!(plan.edges().len(), 18);
+        let mut expected = (1_u16..=8)
+            .flat_map(|group| {
+                plan.group_rows(group)
+                    .expect("band-A artifact group")
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
         expected.sort_unstable();
         let mut actual = activation_trace
             .iter()
@@ -34213,6 +34250,196 @@ mod tests {
         );
         allocation_failure.reset();
         assert_eq!(allocation_failure.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 switch-band-B production session");
+        let baseline_hash = session.campaign_state_hash();
+        let local_player = session.state.entity_index;
+
+        let drive_band = |session: &mut Level2ResetSession| {
+            let mut trace = Vec::<(u16, u16)>::new();
+            let step_at = |session: &mut Level2ResetSession,
+                           position: Position,
+                           turns: usize,
+                           trace: &mut Vec<(u16, u16)>| {
+                for _ in 0..turns {
+                    session
+                        .set_level2_entity_position(local_player, position)
+                        .expect("public local-player position input");
+                    session.step_outer_turn(PlayerCommand::default(), 0);
+                    for event in session.dispatch_events() {
+                        if let Level2DispatchEvent::AuthoredGroupActivated {
+                            group,
+                            authored_indices,
+                            ..
+                        } = event
+                            && (9..=18).contains(group)
+                        {
+                            trace.extend(
+                                authored_indices
+                                    .iter()
+                                    .copied()
+                                    .map(|authored_index| (*group, authored_index)),
+                            );
+                        }
+                    }
+                }
+            };
+
+            // The four wind roots are live group-zero model-0 source rows.
+            // Their ordinary overlap callbacks cover the alternating odd
+            // groups; the same first source pass also consumes the already
+            // live model-76 producers for groups 12, 14, and 16.
+            for target_group in [9_u16, 11, 13, 15] {
+                let root = session
+                    .level2_imported_switch_roots
+                    .iter()
+                    .find(|root| root.target_group == target_group)
+                    .copied()
+                    .expect("band-B imported switch root");
+                step_at(
+                    session,
+                    root.position,
+                    level_two_switch_turns_until_cadence(root.phase),
+                    &mut trace,
+                );
+            }
+
+            // Slot 25 is remc2's dedicated group-10 model-76 switch. It uses
+            // the same public player-position input but retains its distinct
+            // source phase and transactional allocator.
+            let switch25 = session
+                .level2_group10_switch25
+                .expect("live group-10 switch slot 25");
+            step_at(
+                session,
+                switch25.position,
+                level_two_model76_switch25_activation_turns(switch25.phase),
+                &mut trace,
+            );
+
+            // Row 11's real group-1 callback materializes row 206. The two
+            // source objective completion sentinels then let the dynamic
+            // source cursor consume row 206 -> 208 -> 213 in order; no group
+            // activator or authored constructor is called by this proof.
+            session
+                .runtime
+                .set_level2_objective_stage_selector_for(0, 1, 2);
+            session
+                .runtime
+                .set_level2_objective_stage_selector_for(0, 2, 2);
+            let row11 = session
+                .level2_imported_switch_roots
+                .iter()
+                .find(|root| root.authored_index == 11)
+                .copied()
+                .expect("row-11 group-1 production root");
+            step_at(
+                session,
+                row11.position,
+                level_two_switch_turns_until_cadence(row11.phase),
+                &mut trace,
+            );
+            trace
+        };
+
+        let first_trace = drive_band(&mut session);
+        let first_final_hash = session.campaign_state_hash();
+        let plan = session
+            .mission()
+            .level2_activation_plan()
+            .expect("artifact-derived activation plan");
+        assert_eq!((plan.owned_rows().len(), plan.edges().len()), (151, 18));
+        let mut expected = (9_u16..=18)
+            .flat_map(|group| {
+                plan.group_rows(group)
+                    .expect("band-B artifact group")
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        let mut actual = first_trace
+            .iter()
+            .map(|(_, authored_index)| *authored_index)
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        assert_eq!(actual, expected, "all 13 band-B rows activate once");
+        let counts = first_trace.iter().fold(
+            BTreeMap::<u16, usize>::new(),
+            |mut counts, (_, authored_index)| {
+                *counts.entry(*authored_index).or_default() += 1;
+                counts
+            },
+        );
+        assert_eq!(counts.len(), 13);
+        assert!(counts.values().all(|count| *count == 1));
+        assert_eq!(
+            session
+                .economy()
+                .authored_model22()
+                .iter()
+                .map(|source| source.authored_index)
+                .filter(|index| matches!(index, 110 | 114 | 118 | 122))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([110, 114, 118, 122])
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_model76()
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([112, 116, 120, 124])
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_model32()
+                .iter()
+                .map(|source| source.authored_index)
+                .filter(|index| matches!(index, 208 | 213))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([208, 213])
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .map(|source| source.authored_index)
+                .filter(|index| matches!(index, 236 | 237 | 257))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([236, 237, 257])
+        );
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        let replay_trace = drive_band(&mut session);
+        assert_eq!(replay_trace, first_trace, "reset preserves source order");
+        assert_eq!(session.campaign_state_hash(), first_final_hash);
+
+        let mut tampered_member = session.mission().authored_features().to_vec();
+        tampered_member
+            .iter_mut()
+            .find(|feature| feature.index == 110)
+            .expect("group-9 member row 110")
+            .activation_group = 8;
+        assert!(checked_in_level2_activation_plan(&tampered_member).is_err());
+        let mut tampered_edge = session.mission().authored_features().to_vec();
+        tampered_edge
+            .iter_mut()
+            .find(|feature| feature.index == 109)
+            .expect("group-9 producer row 109")
+            .stage_tag = 8;
+        assert!(checked_in_level2_activation_plan(&tampered_edge).is_err());
     }
 
     #[test]

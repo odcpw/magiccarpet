@@ -183,6 +183,10 @@ pub(crate) fn validate_level2_activation_closure_json(
     closure_json: &str,
     authored_features: &[AuthoredFeature],
 ) -> Result<Level2ActivationPlan, String> {
+    const FIRST_OWNED_GROUP: u16 = 1;
+    const LAST_OWNED_GROUP: u16 = 18;
+    const OWNED_GROUP_COUNT: usize = 18;
+
     let root: Value = serde_json::from_str(closure_json)
         .map_err(|error| format!("invalid Level 2 activation artifact JSON: {error}"))?;
     let groups = activation_artifact_array(&root, "groups")?;
@@ -191,7 +195,7 @@ pub(crate) fn validate_level2_activation_closure_json(
     let mut seen_rows = BTreeSet::new();
     let mut parsed_groups = Vec::new();
 
-    for group_id in 1_u16..=8 {
+    for group_id in FIRST_OWNED_GROUP..=LAST_OWNED_GROUP {
         let group = groups
             .iter()
             .find(|candidate| {
@@ -265,7 +269,9 @@ pub(crate) fn validate_level2_activation_closure_json(
     for edge in producer_edges {
         let source_group = artifact_index(edge, "source_group")?;
         let target_group = artifact_index(edge, "target_group")?;
-        if source_group > 8 || !(1..=8).contains(&target_group) {
+        if source_group > LAST_OWNED_GROUP
+            || !(FIRST_OWNED_GROUP..=LAST_OWNED_GROUP).contains(&target_group)
+        {
             continue;
         }
         if edge.get("producer").and_then(Value::as_str) != Some("class11.stageTag") {
@@ -297,9 +303,9 @@ pub(crate) fn validate_level2_activation_closure_json(
             producer_index,
         });
     }
-    if edge_targets.len() != 8 {
+    if edge_targets.len() != OWNED_GROUP_COUNT {
         return Err(format!(
-            "activation closure has {} of 8 owned producer targets",
+            "activation closure has {} of {OWNED_GROUP_COUNT} owned producer targets",
             edge_targets.len()
         ));
     }
@@ -699,8 +705,8 @@ mod tests {
         let plan = session
             .level2_activation_plan()
             .expect("Level 2 activation plan is present");
-        assert_eq!(plan.owned_rows().len(), 138);
-        assert_eq!(plan.edges().len(), 8);
+        assert_eq!(plan.owned_rows().len(), 151);
+        assert_eq!(plan.edges().len(), 18);
 
         let mut member_tamper: Value = serde_json::from_str(LEVEL2_ACTIVATION_CLOSURE_JSON)
             .expect("checked-in activation artifact JSON");
@@ -708,11 +714,11 @@ mod tests {
             .as_array_mut()
             .expect("activation groups")
             .iter_mut()
-            .find(|group| group["group"] == 1)
-            .expect("group 1");
+            .find(|group| group["group"] == 9)
+            .expect("group 9");
         group["authored_ids"]
             .as_array_mut()
-            .expect("group 1 authored ids")
+            .expect("group 9 authored ids")
             .pop();
         assert!(
             validate_level2_activation_closure_json(
@@ -729,8 +735,8 @@ mod tests {
             .expect("producer edges");
         let owned_edge = edges
             .iter()
-            .position(|edge| edge["target_group"] == 7)
-            .expect("owned target group 7 producer edge");
+            .position(|edge| edge["target_group"] == 18)
+            .expect("owned target group 18 producer edge");
         edges.remove(owned_edge);
         assert!(
             validate_level2_activation_closure_json(
