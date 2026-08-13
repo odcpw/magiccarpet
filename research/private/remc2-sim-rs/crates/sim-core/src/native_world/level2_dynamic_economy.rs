@@ -7788,6 +7788,150 @@ mod tests {
             castle_family_counts(chain.economy()),
             baseline_family_counts
         );
+
+        // Source `sub_49F90` orders every flagged live row by arena slot, not
+        // by producer family. A lower authored model-6 row must therefore
+        // beat the later Castle model-15 auxiliary when the generic death
+        // burst constructor reaches the shared NewEvent fallback.
+        chain.select_level2_campaign_entry_stage();
+        let lower_model6 = chain
+            .economy_mut()
+            .allocate_authored_model6(361, Position::default())
+            .expect("lower flagged authored model-6 row");
+        let lower_model6_slot = lower_model6.source_entity_index;
+        let lower_model6_rng = chain
+            .economy()
+            .source_rng
+            .get(&lower_model6_slot)
+            .copied()
+            .expect("authored model-6 source RNG");
+        assert_eq!(
+            chain.economy().source_rng.get(&lower_model6_slot),
+            Some(&lower_model6_rng)
+        );
+        let lower_model6_generation = chain.economy().slot_generation(lower_model6_slot);
+        let lower_castle_slot = chain
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("lower-slot discriminator Castle");
+        {
+            let economy = chain.economy_mut();
+            let castle = economy
+                .castle
+                .as_mut()
+                .expect("lower-slot discriminator Castle");
+            castle.level = 3;
+            castle.action = 4;
+            castle.phase &= !1;
+            castle.auxiliary_cooldown = 0;
+        }
+        chain
+            .economy_mut()
+            .maintain_castle_defenders(lower_castle_slot);
+        let lower_case_auxiliary_slot = chain
+            .economy()
+            .castle()
+            .expect("lower-slot discriminator Castle")
+            .auxiliary_slots[0];
+        assert_ne!(lower_case_auxiliary_slot, 0);
+        assert!(lower_model6_slot < lower_case_auxiliary_slot);
+        assert_eq!(
+            chain
+                .economy()
+                .authored_model6
+                .iter()
+                .filter(|source| {
+                    source.active
+                        && source.source_entity_index == lower_model6_slot
+                        && source.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+                })
+                .count(),
+            1
+        );
+        assert!(chain.economy().castle_children().iter().any(|child| {
+            child.active
+                && child.source_entity_index == lower_case_auxiliary_slot
+                && child.source_class == 5
+                && child.model == 15
+                && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+        }));
+        chain.economy_mut().free_slots.clear();
+        let replacement_global_rng = chain.economy().global_rng;
+        let consumed_slot = chain
+            .economy_mut()
+            .spawn_death_burst_from_death_with_id(lower_castle_slot, 111, Position::default())
+            .expect("global fallback consumes lower authored model-6 row");
+        assert_eq!(consumed_slot, lower_model6_slot);
+        assert_eq!(
+            chain
+                .economy()
+                .authored_model6
+                .iter()
+                .filter(|source| source.source_entity_index == lower_model6_slot)
+                .count(),
+            0,
+            "typed authored model-6 row was evicted in place"
+        );
+        assert!(chain.economy().castle_children().iter().any(|child| {
+            child.active
+                && child.source_entity_index == lower_case_auxiliary_slot
+                && child.source_class == 5
+                && child.model == 15
+        }));
+        let replacement_burst = chain
+            .economy()
+            .death_bursts()
+            .iter()
+            .find(|burst| burst.active && burst.source_entity_index == lower_model6_slot)
+            .expect("replacement death burst at authored model-6 slot");
+        assert_eq!(
+            replacement_burst.entity_rng,
+            lower_model6_slot.wrapping_add(replacement_global_rng as u16)
+        );
+        assert_eq!(
+            chain.economy().source_rng.get(&lower_model6_slot),
+            None,
+            "eviction clears the old authored model-6 source RNG"
+        );
+        assert_eq!(
+            chain.economy().slot_rng.get(&lower_model6_slot),
+            None,
+            "eviction clears the old slot RNG"
+        );
+        assert_ne!(
+            chain.economy().slot_generation(lower_model6_slot),
+            lower_model6_generation
+        );
+        assert!(chain.economy().map_chains().is_linked(lower_model6_slot));
+        assert_eq!(
+            chain
+                .economy()
+                .castle()
+                .expect("lower-slot discriminator Castle")
+                .auxiliary_slots[0],
+            lower_case_auxiliary_slot,
+            "Castle auxiliary relation remains until sub_5FF50 maintenance"
+        );
+        chain
+            .economy_mut()
+            .maintain_castle_defenders(lower_castle_slot);
+        assert_eq!(
+            chain
+                .economy()
+                .castle()
+                .expect("lower-slot discriminator Castle")
+                .auxiliary_slots[0],
+            lower_case_auxiliary_slot,
+            "maintenance preserves the still-live higher Castle auxiliary"
+        );
+        chain.reset();
+        assert_eq!(chain.campaign_state_hash(), baseline_hash);
+        assert_eq!(chain.terrain_hash(), baseline_terrain_hash);
+        assert_eq!(chain.economy().free_slots.len(), baseline_free_count);
+        assert_eq!(
+            castle_family_counts(chain.economy()),
+            baseline_family_counts
+        );
     }
 
     #[test]

@@ -6039,6 +6039,51 @@ impl Level2EconomyState {
         Ok(state)
     }
 
+    fn for_each_live_replaceable_arena_row(
+        &self,
+        mut visit: impl FnMut(u16, Level2DynamicArenaKind),
+    ) {
+        for child in self.castle_children.iter().filter(|child| {
+            child.active
+                && child.source_class == 5
+                && child.model == 15
+                && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+        }) {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::CastleAuxiliary,
+            );
+        }
+
+        macro_rules! visit_flagged_rows {
+            ($rows:expr, $kind:ident) => {
+                for row in $rows
+                    .iter()
+                    .filter(|row| row.active && row.control_flags & SOURCE_REPLACEABLE_FLAG != 0)
+                {
+                    visit(row.source_entity_index, Level2DynamicArenaKind::$kind);
+                }
+            };
+        }
+
+        // These are the explicitly modeled economy-arena carriers whose
+        // stored control dword carries byte[2] & 2. This owner-local scan does
+        // not claim authority over Level 2 rows outside this economy arena.
+        visit_flagged_rows!(self.spheres, ManaSphere);
+        visit_flagged_rows!(self.death_bursts, DeathBurst);
+        visit_flagged_rows!(self.authored_model1, AuthoredModel1);
+        visit_flagged_rows!(self.model59_smoke_children, Model59SmokeChild);
+        visit_flagged_rows!(
+            self.authored_model5_water_splashes,
+            AuthoredModel5WaterSplash
+        );
+        visit_flagged_rows!(self.authored_model13, AuthoredModel13);
+        visit_flagged_rows!(self.authored_model6, AuthoredModel6);
+        visit_flagged_rows!(self.model13_spawned_children, Model13SpawnedChild);
+        visit_flagged_rows!(self.model17_spawned_children, Model17SpawnedChild);
+        visit_flagged_rows!(self.model76_tail_spawns, Model76TailSpawn);
+    }
+
     fn allocate_slot(&mut self) -> Option<u16> {
         if let Some(slot) = self.free_slots.pop() {
             let generation = self.slot_generations.entry(slot).or_default();
@@ -6047,57 +6092,67 @@ impl Level2EconomyState {
         }
 
         // `NewEvent_4A050` falls through to the lowest live replaceable row
-        // when `sub_49F90` has no ordinary free slot. The current Level 2
-        // producers carrying byte[2] & 2 are death bursts and Castle
-        // class-5/model-15 auxiliaries. Evict the typed projection directly;
-        // `release_slot` would incorrectly add this row to the ordinary free
-        // stack and would lose the source relation that `sub_5FF50` cleans.
-        let death_burst_slot = self
-            .death_bursts
-            .iter()
-            .filter(|burst| burst.active && burst.control_flags & SOURCE_REPLACEABLE_FLAG != 0)
-            .map(|burst| burst.source_entity_index)
-            .min();
-        let castle_auxiliary_slot = self
-            .castle_children
-            .iter()
-            .filter(|child| {
-                child.active
-                    && child.source_class == 5
-                    && child.model == 15
-                    && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
-            })
-            .map(|child| child.source_entity_index)
-            .min();
-        let (slot, evict_death_burst) = match (death_burst_slot, castle_auxiliary_slot) {
-            (Some(death_burst), Some(castle_auxiliary)) if death_burst <= castle_auxiliary => {
-                (death_burst, true)
+        // when `sub_49F90` has no ordinary free slot. Evict the typed
+        // projection directly; `release_slot` would incorrectly add this row
+        // to the ordinary free stack and would lose the source relation that
+        // `sub_5FF50` cleans for Castle auxiliaries.
+        let mut candidate = None;
+        self.for_each_live_replaceable_arena_row(|slot, kind| {
+            if candidate.map_or(true, |(current, _)| slot < current) {
+                candidate = Some((slot, kind));
             }
-            (Some(_), Some(castle_auxiliary)) => (castle_auxiliary, false),
-            (Some(death_burst), None) => (death_burst, true),
-            (None, Some(castle_auxiliary)) => (castle_auxiliary, false),
-            (None, None) => return None,
-        };
+        });
+        let (slot, kind) = candidate?;
 
-        if evict_death_burst {
-            let Some(index) = self
-                .death_bursts
-                .iter()
-                .position(|burst| burst.active && burst.source_entity_index == slot)
-            else {
-                return None;
-            };
-            self.death_bursts.remove(index);
-        } else {
-            let Some(index) = self.castle_children.iter().position(|child| {
-                child.active
-                    && child.source_entity_index == slot
-                    && child.source_class == 5
-                    && child.model == 15
-            }) else {
-                return None;
-            };
-            self.castle_children.remove(index);
+        macro_rules! remove_flagged_row {
+            ($rows:expr) => {{
+                let Some(index) = $rows.iter().position(|row| {
+                    row.active
+                        && row.source_entity_index == slot
+                        && row.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+                }) else {
+                    return None;
+                };
+                $rows.remove(index);
+            }};
+        }
+
+        match kind {
+            Level2DynamicArenaKind::CastleAuxiliary => {
+                let Some(index) = self.castle_children.iter().position(|child| {
+                    child.active
+                        && child.source_entity_index == slot
+                        && child.source_class == 5
+                        && child.model == 15
+                        && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+                }) else {
+                    return None;
+                };
+                self.castle_children.remove(index);
+            }
+            Level2DynamicArenaKind::ManaSphere => remove_flagged_row!(self.spheres),
+            Level2DynamicArenaKind::DeathBurst => remove_flagged_row!(self.death_bursts),
+            Level2DynamicArenaKind::AuthoredModel1 => remove_flagged_row!(self.authored_model1),
+            Level2DynamicArenaKind::Model59SmokeChild => {
+                remove_flagged_row!(self.model59_smoke_children);
+            }
+            Level2DynamicArenaKind::AuthoredModel5WaterSplash => {
+                remove_flagged_row!(self.authored_model5_water_splashes);
+            }
+            Level2DynamicArenaKind::AuthoredModel13 => {
+                remove_flagged_row!(self.authored_model13);
+            }
+            Level2DynamicArenaKind::AuthoredModel6 => remove_flagged_row!(self.authored_model6),
+            Level2DynamicArenaKind::Model13SpawnedChild => {
+                remove_flagged_row!(self.model13_spawned_children);
+            }
+            Level2DynamicArenaKind::Model17SpawnedChild => {
+                remove_flagged_row!(self.model17_spawned_children);
+            }
+            Level2DynamicArenaKind::Model76TailSpawn => {
+                remove_flagged_row!(self.model76_tail_spawns);
+            }
+            _ => return None,
         }
         let _ = self.map_chains.sync_entity(RenderableMapSeed {
             entity_index: slot,
@@ -6106,6 +6161,7 @@ impl Level2EconomyState {
             y: 0,
         });
         self.slot_rng.remove(&slot);
+        self.source_rng.remove(&slot);
         let generation = self.slot_generations.entry(slot).or_default();
         *generation = generation.wrapping_add(1);
         Some(slot)
