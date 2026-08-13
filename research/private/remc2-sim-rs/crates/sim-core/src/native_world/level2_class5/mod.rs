@@ -9,6 +9,7 @@ use super::*;
 
 mod model3;
 mod model9;
+pub(super) mod trader;
 
 #[cfg(test)]
 mod tests;
@@ -25,6 +26,9 @@ impl Level2EconomyState {
         model: u8,
         position: Position,
     ) -> Option<Level2AuthoredClass5Source> {
+        if model == trader::TRADER_MODEL {
+            return self.allocate_authored_trader(authored_index, position);
+        }
         let (
             action,
             minimum_speed,
@@ -40,7 +44,6 @@ impl Level2EconomyState {
             3 => (25, 64, 16, 30, 9_000, 2_250, 4_500, 0, 0, 88),
             4 => (33, 30, 0, 30, 1_000, 500, 0, 500, 0, 0),
             9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
-            14 => (113, 54, 18, 18, 1_000, 0, 0, 500, 2, 219),
             _ => return None,
         };
         let source_entity_index = self.allocate_slot()?;
@@ -62,11 +65,6 @@ impl Level2EconomyState {
                 self.class5_model9_constructor_phase = phase.wrapping_add(1);
                 phase
             }
-            14 => {
-                let phase = self.class5_model14_constructor_phase;
-                self.class5_model14_constructor_phase = phase.wrapping_add(1);
-                phase
-            }
             _ => unreachable!("validated authored class-5 model"),
         };
         // AddArchers consumes the random orientation draw, then
@@ -74,9 +72,6 @@ impl Level2EconomyState {
         // pose: rotation_speed/2 = 125 and speed/2 = 66.
         let (yaw, pitch, roll, fov) = if model == 4 {
             (125, 66, 66, 125)
-        } else if model == 14 {
-            let angle = i16::try_from(entity_rng & 0x07ff).expect("Trader angle fits") - 1;
-            (angle, angle, angle, 0)
         } else {
             (0, 0, 0, 0)
         };
@@ -122,21 +117,21 @@ impl Level2EconomyState {
             byte_0x46_70: 0,
             particle_index,
             source_byte_3e,
-            source_byte_39: if model == 14 { 64 } else { 0 },
+            source_byte_39: 0,
             yaw,
             pitch,
             roll,
             fov,
             shift_rot_x: if model == 4 {
                 128
-            } else if matches!(model, 9 | 14) {
+            } else if model == 9 {
                 128
             } else {
                 0
             },
             shift_rot_y: if model == 4 {
                 256
-            } else if matches!(model, 9 | 14) {
+            } else if model == 9 {
                 128
             } else {
                 0
@@ -178,7 +173,7 @@ impl Level2EconomyState {
         let mut source = self.authored_class5[source_index];
         if source.authored_index == 238 && source.model == 3 && source.action == 25 {
             self.step_authored_class5_model3(&mut source, target);
-        } else if source.model == 9 && source.action == 72 {
+        } else if source.model == 9 && matches!(source.action, 72 | 73) {
             self.step_authored_class5_model9(&mut source);
         }
         // `ApplyEvents_498A0` advances the live class-5 cursor after every

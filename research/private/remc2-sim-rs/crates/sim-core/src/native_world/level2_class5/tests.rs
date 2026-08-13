@@ -59,41 +59,58 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         .find(|source| source.authored_index == 245)
         .copied()
         .expect("model-9 row 245 materialized");
-    let mut expected_row245_position = row245_before.position;
-    crate::move_entity(
-        &mut expected_row245_position,
-        row245_before.yaw,
-        0,
-        row245_before.actual_speed,
-    );
-    expected_row245_position.z = session.terrain.ground_height(expected_row245_position);
+    // The same outer turn that allocates group 22 also reaches the dynamic
+    // arena once, so the captured production row has consumed callback one.
+    assert_eq!(row245_before.dword_0x10, 15);
 
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let row245_after_first_step = session
+    // `sub_20370` owns action 72 and only decrements the countdown. The
+    // zero test uses the pre-decrement value, so the remaining fifteen
+    // callbacks stay stationary and the following callback changes to action
+    // 73 without moving.
+    for _ in 0..15 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let row245_after_countdown = session
         .economy()
         .authored_class5()
         .iter()
         .find(|source| source.authored_index == 245)
         .copied()
-        .expect("model-9 row 245 remains live after first callback");
-    assert_eq!(row245_after_first_step.position, expected_row245_position);
+        .expect("model-9 row 245 remains live after countdown callbacks");
+    assert_eq!(row245_after_countdown.action, 72);
+    assert_eq!(row245_after_countdown.dword_0x10, 0);
+    assert_eq!(row245_after_countdown.position, row245_before.position);
     assert_eq!(
-        row245_after_first_step.phase,
-        row245_before.phase.wrapping_add(1)
+        row245_after_countdown.phase,
+        row245_before.phase.wrapping_add(15)
     );
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let row245_after_transition = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.authored_index == 245)
+        .copied()
+        .expect("model-9 row 245 remains live after action-73 transition");
+    assert_eq!(row245_after_transition.action, 73);
+    assert_eq!(row245_after_transition.dword_0x10, 400);
+    assert_eq!(row245_after_transition.particle_index, 201);
+    assert_eq!(row245_after_transition.position, row245_before.position);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::DynamicArena {
             source_slot,
             kind: Level2DynamicArenaKind::AuthoredClass5,
             ..
-        } if *source_slot == row245_after_first_step.source_entity_index
+        } if *source_slot == row245_after_transition.source_entity_index
     )));
 
-    // The qualified witness crosses a tile boundary after seven free
-    // callbacks. This distinguishes remc2's non-collision commit branch
-    // from a phase-only callback that leaves cross-tile candidates fixed.
-    for _ in 0..6 {
+    // Action 73 owns the movement/collision body. The qualified witness
+    // crosses a tile boundary after seven action-73 callbacks, distinguishing
+    // its accepted candidate from both the stationary countdown and a
+    // phase-only placeholder.
+    for _ in 0..7 {
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
     let mut expected_row245_after_seven = row245_before.position;
@@ -119,7 +136,7 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
     );
     assert_eq!(
         row245_after_seven_steps.phase,
-        row245_before.phase.wrapping_add(7)
+        row245_before.phase.wrapping_add(23)
     );
     assert_ne!(
         row245_after_seven_steps.position.y >> 8,

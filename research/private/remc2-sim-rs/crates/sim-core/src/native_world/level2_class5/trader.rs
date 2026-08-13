@@ -220,6 +220,15 @@ impl Level2EconomyState {
         self.source_rng
             .insert(source_entity_index, source.entity_rng);
         self.authored_class5.push(source);
+        self.authored_class5_runtime
+            .push(Level2AuthoredClass5RuntimeState {
+                source_entity_index,
+                byte_0x38: payload.byte_0x38,
+                xtype: payload.xtype,
+                descriptor_index: payload.descriptor_index,
+                pending_damage: 0,
+                linked_head: 0,
+            });
         Some(source)
     }
 
@@ -243,7 +252,7 @@ impl Level2EconomyState {
                 && source.action == TRADER_ACTION
         })?;
         let mut source = self.authored_class5[source_index];
-        let ground_height = self.terrain.ground_height(source.position);
+        let consumed_mailbox = source.pending_word_0x62 != 0;
         let mut context = TraderAction113Context {
             pending_damage,
             linked_head,
@@ -251,7 +260,13 @@ impl Level2EconomyState {
             target,
             buildings,
         };
-        let effects = step_trader_action113(&mut source, &mut context, ground_height);
+        let effects = step_trader_action113(&mut source, &mut context);
+        if effects.moved {
+            source.position.z = self.terrain.ground_height(source.position);
+        }
+        if consumed_mailbox && let Some(runtime) = self.authored_class5_runtime_mut(source_slot) {
+            runtime.pending_damage = 0;
+        }
         source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
         self.source_rng.insert(source_slot, source.entity_rng);
@@ -332,7 +347,6 @@ pub(crate) struct TraderAction113Step {
 pub(crate) fn step_trader_action113(
     source: &mut Level2AuthoredClass5Source,
     context: &mut TraderAction113Context<'_>,
-    ground_height: i16,
 ) -> TraderAction113Effects {
     debug_assert_eq!(source.model, TRADER_MODEL);
     debug_assert_eq!(source.action, TRADER_ACTION);
@@ -405,7 +419,6 @@ pub(crate) fn step_trader_action113(
     // descriptor cadence gate.  The Level 2 terrain seam supplies its
     // ground result; the integer movement primitive preserves wrapping.
     crate::move_entity(&mut source.position, source.yaw, 0, source.actual_speed);
-    source.position.z = ground_height;
     effects.moved = true;
 
     if !source
@@ -429,7 +442,7 @@ pub(crate) fn step_trader_action113(
                     context.target = Some(target);
                     return effects;
                 }
-                if target.minimum_speed > target.dword_0x10 {
+                if i32::from(target.minimum_speed) > target.dword_0x10 {
                     source.dword_0x10 = 1;
                     source.action = TRADER_PRE_KILL_ACTION;
                     target.dword_0x10 = target.dword_0x10.wrapping_add(1);
@@ -506,7 +519,6 @@ fn level2_trader_distance_3d(left: Position, right: Position) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::super::super::tests::level_two_fixture_path;
-    use super::super::super::*;
     use super::*;
 
     fn trader_position() -> Position {
@@ -532,13 +544,17 @@ mod tests {
         assert_eq!(TRADER_AUTHORED_ROWS.len(), 27);
         assert_eq!(TRADER_AUTHORED_ROWS[0], 125);
         assert_eq!(TRADER_AUTHORED_ROWS[26], 151);
-        assert!(TRADER_AUTHORED_ROWS
-            .windows(2)
-            .all(|rows| rows[1] == rows[0].wrapping_add(1)));
-        assert!(TRADER_AUTHORED_ROWS
-            .iter()
-            .copied()
-            .all(is_authored_trader_row));
+        assert!(
+            TRADER_AUTHORED_ROWS
+                .windows(2)
+                .all(|rows| rows[1] == rows[0].wrapping_add(1))
+        );
+        assert!(
+            TRADER_AUTHORED_ROWS
+                .iter()
+                .copied()
+                .all(is_authored_trader_row)
+        );
         assert!(!is_authored_trader_row(124));
         assert!(!is_authored_trader_row(152));
     }
@@ -622,14 +638,30 @@ mod tests {
                 && source.active
                 && source.drawing_enabled
         }));
+        assert_eq!(session.economy().authored_class5_runtime().len(), 27);
+        assert!(
+            session
+                .economy()
+                .authored_class5_runtime()
+                .iter()
+                .all(|state| {
+                    state.byte_0x38 == TRADER_BYTE_0X38
+                        && state.xtype == TRADER_XTYPE
+                        && state.descriptor_index == TRADER_DESCRIPTOR_INDEX
+                        && state.pending_damage == 0
+                        && state.linked_head == 0
+                })
+        );
 
         let no_slot_phase = session.economy().class5_model14_constructor_phase;
         let no_slot_rng = session.economy().source_rng.clone();
         session.economy_mut().free_slots.clear();
-        assert!(session
-            .economy_mut()
-            .allocate_authored_trader(151, trader_position())
-            .is_none());
+        assert!(
+            session
+                .economy_mut()
+                .allocate_authored_trader(151, trader_position())
+                .is_none()
+        );
         assert!(session.economy().authored_class5().len() >= 27);
         assert!(session.economy().free_slots.is_empty());
         assert_eq!(
@@ -653,7 +685,7 @@ mod tests {
         )
         .expect("roll fits");
         let mut context = empty_context();
-        let effects = step_trader_action113(&mut source, &mut context, source_before.position.z);
+        let effects = step_trader_action113(&mut source, &mut context);
         assert!(effects.moved);
         assert_eq!(source.action, TRADER_ACTION);
         assert_eq!(source.word_0x96_150, 0);
@@ -665,8 +697,7 @@ mod tests {
 
         let mut replay = source_before;
         let mut replay_context = empty_context();
-        let replay_effects =
-            step_trader_action113(&mut replay, &mut replay_context, source_before.position.z);
+        let replay_effects = step_trader_action113(&mut replay, &mut replay_context);
         assert_eq!(source, replay);
         assert_eq!(effects, replay_effects);
 
@@ -688,8 +719,7 @@ mod tests {
             target: Some(attacker),
             buildings: &[],
         };
-        let hit_effects =
-            step_trader_action113(&mut hit_source, &mut hit_context, source_before.position.z);
+        let hit_effects = step_trader_action113(&mut hit_source, &mut hit_context);
         assert_eq!(hit_source.life, 900);
         assert_eq!(hit_source.pending_word_0x62, 0);
         assert_eq!(hit_source.word_0x26, attacker.entity_index);
@@ -700,6 +730,50 @@ mod tests {
             hit_effects.player_feedback_entity,
             Some(attacker.entity_index)
         );
+
+        // Bind the mailbox effect through the real dynamic-arena dispatcher:
+        // the Trader consumes its sidecar damage and the existing Nyphur
+        // authority receives the source player-feedback word.
+        let trader_slot = rows[0].source_entity_index;
+        let player_slot = session.nyphur_dispatcher.common_upkeep(0).source_slot;
+        session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == trader_slot)
+            .expect("production Trader row")
+            .pending_word_0x62 = player_slot;
+        session
+            .economy_mut()
+            .authored_class5_runtime_mut(trader_slot)
+            .expect("production Trader sidecar")
+            .pending_damage = 100;
+        assert!(session.step_level2_dynamic_arena(
+            0,
+            trader_slot,
+            Level2DynamicArenaKind::AuthoredClass5,
+        ));
+        let production_after = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == trader_slot)
+            .copied()
+            .expect("production Trader remains live after contact");
+        assert_eq!(production_after.life, 900);
+        assert_eq!(production_after.action, TRADER_HIT_ACTION);
+        assert_eq!(production_after.word_0x96_150, player_slot);
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5_runtime()
+                .iter()
+                .find(|state| state.source_entity_index == trader_slot)
+                .expect("production Trader sidecar remains keyed")
+                .pending_damage,
+            0
+        );
+        assert_eq!(session.nyphur_dispatcher.common_upkeep(0).word_0x248, 200);
 
         session.reset();
         assert_eq!(session.campaign_state_hash(), baseline_hash);

@@ -759,6 +759,23 @@ impl EntitySnapshot {
         self.record[20..22].copy_from_slice(&value.to_le_bytes());
     }
 
+    /// Raw source `dword_0x10_16`, used by the Trader when it reserves a
+    /// class-10/model-45 building target.
+    fn source_dword_10(&self) -> i32 {
+        i32::from_le_bytes([
+            self.record[20],
+            self.record[21],
+            self.record[22],
+            self.record[23],
+        ])
+    }
+
+    /// Keep all four bytes of source `dword_0x10_16` in lockstep with a
+    /// Trader target-reservation write.
+    fn set_source_dword_10(&mut self, value: i32) {
+        self.record[20..24].copy_from_slice(&value.to_le_bytes());
+    }
+
     /// Keep the local-player damage/killer words in the lossless source
     /// record when `sub_5EFA0` applies a contact mailbox.
     fn set_damage_result_words(&mut self, killer: u16, attacker: u16) {
@@ -868,6 +885,13 @@ impl EntitySnapshot {
     #[must_use]
     pub fn word_26(&self) -> u16 {
         u16::from_le_bytes([self.record[42], self.record[43]])
+    }
+
+    /// Raw source `word_0x34_52`, the head/next link used by class-5 child
+    /// chains. This is distinct from the class-list `next_relation` field.
+    #[must_use]
+    pub fn word_34(&self) -> u16 {
+        u16::from_le_bytes([self.record[56], self.record[57]])
     }
 
     /// Raw source `word_0x2E_46` used by `sub_5F890` for the spell-holder
@@ -5260,6 +5284,20 @@ pub struct Level2AuthoredClass5Source {
     pub active: bool,
 }
 
+/// Source fields required by class-5 families that are not shared by every
+/// class-5 constructor. Keeping this keyed sidecar separate avoids forcing
+/// unrelated model-3/model-9 rows to manufacture Trader-only state while the
+/// source slot remains the single identity joining both records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredClass5RuntimeState {
+    pub source_entity_index: u16,
+    pub byte_0x38: u8,
+    pub xtype: u8,
+    pub descriptor_index: u16,
+    pub pending_damage: i32,
+    pub linked_head: u16,
+}
+
 /// A resident constructed by an ordinary Level 2 House source callback.
 /// The row is owned by the shared Level 2 arena, preserving source-slot,
 /// owner, parent, map, and reset identity with the other dynamic families.
@@ -5513,6 +5551,8 @@ pub struct Level2EconomyState {
     authored_class14: Vec<Level2AuthoredClass14Source>,
     baseline_authored_class5: Vec<Level2AuthoredClass5Source>,
     authored_class5: Vec<Level2AuthoredClass5Source>,
+    baseline_authored_class5_runtime: Vec<Level2AuthoredClass5RuntimeState>,
+    authored_class5_runtime: Vec<Level2AuthoredClass5RuntimeState>,
     baseline_house_residents: Vec<Level2HouseResidentSource>,
     house_residents: Vec<Level2HouseResidentSource>,
     baseline_class5_model3_constructor_phase: u8,
@@ -5776,6 +5816,8 @@ impl Level2EconomyState {
             authored_class14: Vec::new(),
             baseline_authored_class5: Vec::new(),
             authored_class5: Vec::new(),
+            baseline_authored_class5_runtime: Vec::new(),
+            authored_class5_runtime: Vec::new(),
             baseline_house_residents: Vec::new(),
             house_residents: Vec::new(),
             baseline_class5_model3_constructor_phase: 0,
@@ -6057,6 +6099,20 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_class5(&self) -> &[Level2AuthoredClass5Source] {
         &self.authored_class5
+    }
+
+    #[must_use]
+    pub fn authored_class5_runtime(&self) -> &[Level2AuthoredClass5RuntimeState] {
+        &self.authored_class5_runtime
+    }
+
+    fn authored_class5_runtime_mut(
+        &mut self,
+        source_entity_index: u16,
+    ) -> Option<&mut Level2AuthoredClass5RuntimeState> {
+        self.authored_class5_runtime
+            .iter_mut()
+            .find(|state| state.source_entity_index == source_entity_index)
     }
 
     #[must_use]
@@ -10489,6 +10545,13 @@ impl Level2EconomyState {
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
         self.authored_class5.retain(|source| source.active);
+        let live_class5_slots = self
+            .authored_class5
+            .iter()
+            .map(|source| source.source_entity_index)
+            .collect::<BTreeSet<_>>();
+        self.authored_class5_runtime
+            .retain(|state| live_class5_slots.contains(&state.source_entity_index));
         for (slot, entity_rng) in reclaimed_class5 {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
@@ -11214,7 +11277,7 @@ impl Level2EconomyState {
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
         }
-        hasher.update(b"authored-class5-v3");
+        hasher.update(b"authored-class5-v4");
         hasher.update([
             self.class5_model3_constructor_phase,
             self.class5_model4_constructor_phase,
@@ -11259,6 +11322,13 @@ impl Level2EconomyState {
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
+        }
+        for state in &self.authored_class5_runtime {
+            hasher.update(state.source_entity_index.to_le_bytes());
+            hasher.update([state.byte_0x38, state.xtype]);
+            hasher.update(state.descriptor_index.to_le_bytes());
+            hasher.update(state.pending_damage.to_le_bytes());
+            hasher.update(state.linked_head.to_le_bytes());
         }
         hasher.update(b"level2-house-resident-v1");
         for source in &self.house_residents {
@@ -11543,6 +11613,7 @@ impl Level2EconomyState {
         self.authored_class14 = self.baseline_authored_class14.clone();
         self.class14_model3_handle = self.baseline_class14_model3_handle;
         self.authored_class5 = self.baseline_authored_class5.clone();
+        self.authored_class5_runtime = self.baseline_authored_class5_runtime.clone();
         self.class5_model3_constructor_phase = self.baseline_class5_model3_constructor_phase;
         self.class5_model4_constructor_phase = self.baseline_class5_model4_constructor_phase;
         self.class5_model9_constructor_phase = self.baseline_class5_model9_constructor_phase;
@@ -15444,6 +15515,118 @@ impl Level2ResetSession {
                 .map(|source| (source.entity_id, source.position)),
         );
         peers
+    }
+
+    fn level2_trader_target(
+        &self,
+        entity_index: u16,
+    ) -> Option<level2_class5::trader::TraderTarget> {
+        if entity_index == 0 {
+            return None;
+        }
+        if let Some(entity) = self.entities.get(usize::from(entity_index)) {
+            return Some(level2_class5::trader::TraderTarget {
+                entity_index: entity.index,
+                class: entity.class,
+                model: entity.model,
+                active: entity.active,
+                minimum_speed: entity.minimum_speed(),
+                dword_0x10: entity.source_dword_10(),
+                position: entity.position,
+            });
+        }
+        self.economy
+            .authored_model45()
+            .iter()
+            .find(|source| source.source_entity_index == entity_index)
+            .map(|source| level2_class5::trader::TraderTarget {
+                entity_index: source.source_entity_index,
+                class: source.source_class,
+                model: source.model,
+                active: source.active,
+                minimum_speed: source.minimum_speed,
+                dword_0x10: source.dword_0x10,
+                position: source.position,
+            })
+    }
+
+    fn apply_level2_trader_target(&mut self, target: level2_class5::trader::TraderTarget) {
+        if let Some(entity) = self.entities.get_mut(usize::from(target.entity_index)) {
+            entity.set_source_dword_10(target.dword_0x10);
+            return;
+        }
+        if let Some(source) = self
+            .economy
+            .authored_model45
+            .iter_mut()
+            .find(|source| source.source_entity_index == target.entity_index)
+        {
+            source.dword_0x10 = target.dword_0x10;
+        }
+    }
+
+    fn level2_trader_linked_rows(
+        &self,
+        linked_head: u16,
+    ) -> Vec<level2_class5::trader::TraderLinkedState> {
+        let mut current = linked_head;
+        let mut visited = BTreeSet::new();
+        let mut linked = Vec::new();
+        while current != 0 && visited.insert(current) {
+            let Some(entity) = self.entities.get(usize::from(current)) else {
+                break;
+            };
+            linked.push(level2_class5::trader::TraderLinkedState {
+                entity_index: entity.index,
+                next_entity_index: entity.word_34(),
+                life: entity.life,
+                current_attacker: entity.word_26(),
+                model: entity.model,
+            });
+            current = entity.word_34();
+        }
+        linked
+    }
+
+    fn level2_trader_building_candidates(
+        &self,
+    ) -> Vec<level2_class5::trader::TraderBuildingCandidate> {
+        let eligible = self
+            .entities
+            .iter()
+            .filter(|entity| entity.index != 0 && entity.active && entity.class == 10)
+            .map(|entity| entity.index)
+            .collect::<BTreeSet<_>>();
+        let linked = eligible
+            .iter()
+            .filter_map(|index| self.entities.get(usize::from(*index)))
+            .filter_map(|entity| entity.next_relation)
+            .collect::<BTreeSet<_>>();
+        let Some(mut current) = eligible
+            .iter()
+            .copied()
+            .find(|index| !linked.contains(index))
+        else {
+            return Vec::new();
+        };
+        let mut visited = BTreeSet::new();
+        let mut buildings = Vec::new();
+        while current != 0 && visited.insert(current) {
+            let Some(entity) = self.entities.get(usize::from(current)) else {
+                break;
+            };
+            if eligible.contains(&current) && entity.model == HOUSE_MODEL {
+                let building_index = entity.level_gate.cast_unsigned();
+                buildings.push(level2_class5::trader::TraderBuildingCandidate {
+                    entity_index: entity.index,
+                    position: entity.position,
+                    eligible: HouseParameter::level_two(building_index)
+                        .is_some_and(HouseParameter::produces_villagers),
+                });
+            }
+            current = entity.next_relation.unwrap_or(0);
+        }
+        buildings
     }
 
     fn level2_goat_player_targets(&self) -> Vec<GoatPlayerTarget> {
@@ -19751,22 +19934,62 @@ impl Level2ResetSession {
                 self.step_level2_authored_class14(source_slot)
             }
             Level2DynamicArenaKind::AuthoredClass5 => {
-                let target = self
+                let source = self
                     .economy
                     .authored_class5()
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
-                    .and_then(|source| {
-                        let target_index = if source.pending_word_0x62 != 0 && source.byte_0x3b != 0
-                        {
-                            source.pending_word_0x62
-                        } else {
-                            source.word_0x96_150
-                        };
-                        (target_index != 0)
-                            .then(|| self.entities.get(usize::from(target_index)).cloned())
-                            .flatten()
-                    });
+                    .copied();
+                if let Some(source) = source
+                    && source.model == level2_class5::trader::TRADER_MODEL
+                    && source.action == level2_class5::trader::TRADER_ACTION
+                {
+                    let Some(runtime) = self
+                        .economy
+                        .authored_class5_runtime()
+                        .iter()
+                        .find(|state| state.source_entity_index == source_slot)
+                        .copied()
+                    else {
+                        return false;
+                    };
+                    let target_index = if source.pending_word_0x62 != 0 {
+                        source.pending_word_0x62
+                    } else {
+                        source.word_0x96_150
+                    };
+                    let target = self.level2_trader_target(target_index);
+                    let linked = self.level2_trader_linked_rows(runtime.linked_head);
+                    let buildings = self.level2_trader_building_candidates();
+                    let Some(step) = self.economy.step_authored_trader_slot(
+                        source_slot,
+                        target,
+                        runtime.pending_damage,
+                        runtime.linked_head,
+                        &linked,
+                        &buildings,
+                    ) else {
+                        return false;
+                    };
+                    if let Some(target) = step.target {
+                        self.apply_level2_trader_target(target);
+                    }
+                    if let Some(entity_index) = step.effects.player_feedback_entity {
+                        self.nyphur_dispatcher
+                            .apply_class5_player_feedback(entity_index);
+                    }
+                    return step.map_synced;
+                }
+                let target = source.and_then(|source| {
+                    let target_index = if source.pending_word_0x62 != 0 && source.byte_0x3b != 0 {
+                        source.pending_word_0x62
+                    } else {
+                        source.word_0x96_150
+                    };
+                    (target_index != 0)
+                        .then(|| self.entities.get(usize::from(target_index)).cloned())
+                        .flatten()
+                });
                 self.economy
                     .step_authored_class5_slot_with_target(source_slot, target)
             }
@@ -33742,18 +33965,37 @@ mod tests {
             .filter(|source| (125..=151).contains(&source.authored_index))
             .collect::<Vec<_>>();
         assert_eq!(traders.len(), 27);
-        assert!(traders.iter().all(|source| {
-            source.model == 14
-                && source.action == 113
-                && source.minimum_speed == 54
-                && source.maximum_speed == 18
-                && source.actual_speed == 18
-                && source.max_life == 1_000
-                && source.life == 1_000
-                && source.mana == 0
-                && source.subspell_index == 500
-                && source.source_byte_39 == 64
-                && source.active
+        for source in &traders {
+            assert!(
+                source.model == 14
+                    && source.action == 113
+                    && source.minimum_speed == 54
+                    && source.maximum_speed == 18
+                    && source.actual_speed == if source.word_0x96_150 == 0 { 18 } else { 30 }
+                    && source.max_life == 1_000
+                    && source.life == 1_000
+                    && source.mana == 0
+                    && source.subspell_index == 500
+                    && source.source_byte_39 == 64
+                    && source.phase > 0
+                    && source.active,
+                "ordinary group-3 Trader diverged from its source packet: {source:?}"
+            );
+        }
+        assert!(
+            traders
+                .iter()
+                .any(|source| source.word_0x96_150 != 0 && source.actual_speed == 30),
+            "ordinary outer turns must reach Trader action 113 target acquisition"
+        );
+        let trader_runtime = session.economy().authored_class5_runtime();
+        assert_eq!(trader_runtime.len(), 27);
+        assert!(trader_runtime.iter().all(|state| {
+            state.byte_0x38 == 1
+                && state.xtype == 3
+                && state.descriptor_index == 100
+                && state.pending_damage == 0
+                && state.linked_head == 0
         }));
 
         let first_trace = activation_trace.clone();
@@ -33761,6 +34003,7 @@ mod tests {
         session.select_level2_campaign_entry_stage();
         assert_eq!(session.campaign_state_hash(), baseline_hash);
         assert!(session.economy().authored_class5().is_empty());
+        assert!(session.economy().authored_class5_runtime().is_empty());
         activation_trace.clear();
         step_at(&mut session, feature_position(11), 1, &mut activation_trace);
         wait_for_row42(&mut session, feature_position(11), &mut activation_trace);
@@ -33912,6 +34155,13 @@ mod tests {
                 .authored_class5()
                 .iter()
                 .all(|source| !(125..=151).contains(&source.authored_index))
+        );
+        assert!(
+            allocation_failure
+                .economy
+                .authored_class5_runtime()
+                .is_empty(),
+            "transactional Trader failure must not leave sidecar rows"
         );
         assert!(
             (125_u16..=151)

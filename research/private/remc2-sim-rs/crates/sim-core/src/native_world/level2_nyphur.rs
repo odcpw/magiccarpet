@@ -1689,6 +1689,18 @@ impl Level2NyphurDispatcher {
         self.state_byte
     }
 
+    /// Apply the class-5 contact feedback written by source `sub_237B0` to
+    /// the one player record owned by this dispatcher. Non-player entity
+    /// indices are deliberately ignored rather than creating a second
+    /// authority for the player field in the class-5 arena.
+    pub(super) fn apply_class5_player_feedback(&mut self, entity_index: u16) -> bool {
+        if self.common_upkeep.source_slot != entity_index {
+            return false;
+        }
+        self.common_upkeep.word_0x248 = 200;
+        true
+    }
+
     /// Execute the production `sub_12910` carrier. The selected state is
     /// latched after the common callback, exactly where the source switch
     /// reads it; source case zero invokes the tail twice even if the first
