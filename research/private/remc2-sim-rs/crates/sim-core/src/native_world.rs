@@ -15831,6 +15831,45 @@ impl Level2ResetSession {
         targets
     }
 
+    fn level2_model3_class3_target(
+        &self,
+        source: &Level2AuthoredClass5Source,
+    ) -> Option<EntitySnapshot> {
+        let radius_squared = 0x1400_u32 * 0x1400;
+        let mut nearest: Option<(u32, EntitySnapshot)> = None;
+        for (entity_index, position, control_flags) in self.level2_bee_class3_targets() {
+            let Some(entity) = self.entities.get(usize::from(entity_index)) else {
+                continue;
+            };
+            let dx = i32::from(position.x.wrapping_sub(source.position.x).cast_signed());
+            let dy = i32::from(position.y.wrapping_sub(source.position.y).cast_signed());
+            let distance = dx
+                .wrapping_mul(dx)
+                .wrapping_add(dy.wrapping_mul(dy))
+                .cast_unsigned();
+            if distance > radius_squared
+                || control_flags & ENTITY_DRAW_DISABLED_BIT != 0
+                || angle_distance(
+                    i32::from(source.yaw),
+                    heading_for_positions(source.position, position),
+                ) >= 0x02aa
+            {
+                continue;
+            }
+            if nearest
+                .as_ref()
+                .is_some_and(|(nearest_distance, _)| distance >= *nearest_distance)
+            {
+                continue;
+            }
+            let mut target = entity.clone();
+            target.position = position;
+            target.control_flags = control_flags;
+            nearest = Some((distance, target));
+        }
+        nearest.map(|(_, target)| target)
+    }
+
     /// Resolve the source `word_0x96` relation used by Bee action 18. The
     /// source falls back to action 17 for a missing, dead, or draw-disabled
     /// target, but retains the stale relation so the next action-17 scan may
@@ -20594,6 +20633,9 @@ impl Level2ResetSession {
                     return step.map_synced;
                 }
                 let target = source.and_then(|source| {
+                    if source.model == 3 && source.action == 25 {
+                        return self.level2_model3_class3_target(&source);
+                    }
                     let target_index = if source.pending_word_0x62 != 0 && source.byte_0x3b != 0 {
                         source.pending_word_0x62
                     } else {
@@ -20603,6 +20645,35 @@ impl Level2ResetSession {
                         .then(|| self.entities.get(usize::from(target_index)).cloned())
                         .flatten()
                 });
+                let model3_hit_callback =
+                    source.is_some_and(|source| source.model == 3 && source.action == 26);
+                if source.is_some_and(|source| {
+                    source.model == 3 && matches!(source.action, 26 | 27 | 28 | 30)
+                }) {
+                    let live = self
+                        .economy
+                        .step_authored_class5_model3_slot_with_target(source_slot, target);
+                    if model3_hit_callback {
+                        if let Some(target_index) = self
+                            .economy
+                            .authored_class5()
+                            .iter()
+                            .find(|source| {
+                                source.active
+                                    && source.source_entity_index == source_slot
+                                    && source.action == 26
+                            })
+                            .map(|source| source.word_0x96_150)
+                            .filter(|target_index| *target_index != 0)
+                        {
+                            // `sub_1CC20` terminates in the established
+                            // class-5 player-feedback carrier (`sub_5EF70`).
+                            self.nyphur_dispatcher
+                                .apply_class5_player_feedback(target_index);
+                        }
+                    }
+                    return live;
+                }
                 self.economy
                     .step_authored_class5_slot_with_target(source_slot, target)
             }
@@ -35168,12 +35239,17 @@ mod tests {
         }));
         for source in &class5_rows {
             let authored = feature(source.authored_index);
+            let mut expected_position = authored.world_position(0);
+            for _ in 0..source.phase {
+                crate::move_entity(&mut expected_position, source.yaw, 0, source.actual_speed);
+                expected_position.z = session.terrain.ground_height(expected_position);
+            }
             assert_eq!(
                 (source.position.x, source.position.y, source.position.z),
                 (
-                    authored.world_position(0).x,
-                    authored.world_position(0).y,
-                    session.terrain.ground_height(authored.world_position(0))
+                    expected_position.x,
+                    expected_position.y,
+                    expected_position.z
                 )
             );
             assert!(session.dispatch_events().iter().any(|event| matches!(
@@ -36264,11 +36340,14 @@ mod tests {
         );
         for source in &group5_class5 {
             let position = feature_position(source.authored_index);
+            let mut expected_position = position;
+            for _ in 0..source.phase {
+                crate::move_entity(&mut expected_position, source.yaw, 0, source.actual_speed);
+                expected_position.z = session.terrain.ground_height(expected_position);
+            }
             assert_eq!(source.model, 3);
             assert_eq!(source.action, 25);
-            assert_eq!(source.position.x, position.x);
-            assert_eq!(source.position.y, position.y);
-            assert_eq!(source.position.z, session.terrain.ground_height(position));
+            assert_eq!(source.position, expected_position);
             assert!(source.active && source.drawing_enabled);
             assert!(class5_source_slots.contains(&source.source_entity_index));
         }
@@ -36288,11 +36367,14 @@ mod tests {
         );
         for source in &group7_class5 {
             let position = feature_position(source.authored_index);
+            let mut expected_position = position;
+            for _ in 0..source.phase {
+                crate::move_entity(&mut expected_position, source.yaw, 0, source.actual_speed);
+                expected_position.z = session.terrain.ground_height(expected_position);
+            }
             assert_eq!(source.model, 3);
             assert_eq!(source.action, 25);
-            assert_eq!(source.position.x, position.x);
-            assert_eq!(source.position.y, position.y);
-            assert_eq!(source.position.z, session.terrain.ground_height(position));
+            assert_eq!(source.position, expected_position);
             assert!(source.active && source.drawing_enabled);
             assert!(session.dispatch_events().iter().any(|event| matches!(
                 event,

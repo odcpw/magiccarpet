@@ -403,7 +403,7 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
             .iter()
             .map(|source| source.action)
             .collect::<Vec<_>>(),
-        vec![217, 72, 72, 72, 72, 72, 72]
+        vec![25, 72, 72, 72, 72, 72, 72]
     );
     assert!(sources.iter().all(|source| source.active));
     assert!(sources.iter().all(|source| source.drawing_enabled));
@@ -512,12 +512,9 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         "free branch must commit a cross-tile model-9 movement"
     );
 
-    // Row 238 is the model-3/action-25 root.  This bounded fragment of
-    // its `sub_29710` callback is not a phase-only no-op:
-    // `sub_2AF10(a1, 0)` re-snaps the root to terrain even when movement
-    // is disabled.  Tamper only the live source height, then exercise the
-    // ordinary outer cursor and require the source-backed correction,
-    // target retention, sprite selector, and typed dispatch event.
+    // Row 238 is the model-3/action-25 root.  Exercise the real production
+    // target projection at the source cadence rather than the obsolete
+    // action-25 target-loss wrapper.
     let row238_before = session
         .economy()
         .authored_class5()
@@ -526,18 +523,20 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         .copied()
         .expect("model-3 row 238 remains live after model-9 callbacks");
     let row238_ground = session.terrain.ground_height(row238_before.position);
-    let fragment_z = row238_ground.wrapping_add(17);
-    let tracked_target = 111_u16;
-    let tracked_target_position = Position {
-        x: row238_before.position.x.wrapping_add(1_024),
-        y: row238_before.position.y,
-        z: row238_ground,
-    };
+    let player_entity = session.state.entity_index;
+    for entity in &mut session.entities {
+        if entity.class == 3 {
+            entity.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        }
+    }
     session
-        .set_level2_entity_position(tracked_target, tracked_target_position)
-        .expect("live imported target row accepts a position update");
-    let tracked_target_heading =
-        heading_for_positions(row238_before.position, tracked_target_position);
+        .set_level2_entity_position(player_entity, row238_before.position)
+        .expect("production player target position");
+    session
+        .entities
+        .get_mut(usize::from(player_entity))
+        .expect("production player target")
+        .control_flags &= !ENTITY_DRAW_DISABLED_BIT;
     let row238_mut = session
         .economy_mut()
         .authored_class5
@@ -545,11 +544,11 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         .find(|source| source.authored_index == 238)
         .expect("model-3 row 238 remains mutable for terrain fragment");
     row238_mut.action = 25;
-    row238_mut.word_0x96_150 = tracked_target;
-    row238_mut.byte_0x46_70 = 0;
     row238_mut.source_byte_3e = 0;
-    row238_mut.yaw = i16::try_from(tracked_target_heading).expect("target heading fits i16");
-    row238_mut.position.z = fragment_z;
+    row238_mut.source_byte_39 = 1;
+    row238_mut.actual_speed = 0;
+    row238_mut.yaw = 0;
+    row238_mut.word_0x96_150 = 0;
     session.step_outer_turn(PlayerCommand::default(), 0);
     let row238_after = session
         .economy()
@@ -559,16 +558,13 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         .copied()
         .expect("model-3 row 238 remains live after terrain-resnap fragment");
     assert_eq!(row238_after.phase, row238_before.phase.wrapping_add(1));
-    assert_eq!(row238_after.action, 25);
+    assert_eq!(row238_after.action, 30);
     assert_eq!(
         (row238_after.position.x, row238_after.position.y),
         (row238_before.position.x, row238_before.position.y)
     );
     assert_eq!(row238_after.position.z, row238_ground);
-    assert_eq!(row238_after.word_0x96_150, tracked_target);
-    assert_eq!(row238_after.byte_0x46_70, 1);
-    assert_eq!(row238_after.particle_index, 337);
-    assert_eq!(row238_after.roll, tracked_target_heading as i16);
+    assert_eq!(row238_after.word_0x96_150, player_entity);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::DynamicArena {
@@ -578,157 +574,52 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         } if *source_slot == row238_after.source_entity_index
     )));
 
-    // Moving only the live target beyond the descriptor range must take
-    // the source target-loss branch and clear both relation and sprite
-    // selector rather than retaining stale engagement state.
-    let out_of_range_target_position = Position {
-        x: row238_after.position.x.wrapping_add(6_000),
-        y: row238_after.position.y,
-        z: row238_ground,
-    };
-    session
-        .set_level2_entity_position(tracked_target, out_of_range_target_position)
-        .expect("live imported target row accepts the out-of-range position");
-    let row238_before_out_of_range = row238_after;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let row238_after_non_cadence = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.authored_index == 238)
-        .copied()
-        .expect("model-3 row 238 remains live before target-loss cadence");
-    assert_eq!(
-        row238_after_non_cadence.phase,
-        row238_before_out_of_range.phase.wrapping_add(1)
-    );
-    assert_eq!(row238_after_non_cadence.action, 25);
-    assert_eq!(row238_after_non_cadence.word_0x96_150, tracked_target);
-    assert_eq!(row238_after_non_cadence.byte_0x46_70, 1);
-    assert_eq!(row238_after_non_cadence.particle_index, 337);
-    assert_eq!(row238_after_non_cadence.source_byte_3e, 2);
-    // The source callback keeps the stale engagement through the
-    // non-cadence visits. Advance the ordinary cursor to the next
-    // 0x1f-gated callback without changing the live target again.
-    for _ in 0..30 {
-        session.step_outer_turn(PlayerCommand::default(), 0);
+    // A qualified class-3 target that moves out of range is rejected by the
+    // source acquisition predicate, while the cadence still consumes the
+    // two LCG draws.  The old wrapper incorrectly waited for action 217 and
+    // cleared a stale relation here.
+    for entity in &mut session.entities {
+        if entity.class == 3 {
+            entity.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        }
     }
-    let row238_before_cadence = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.authored_index == 238)
-        .copied()
-        .expect("model-3 row 238 remains live at target-loss cadence");
-    assert_eq!(row238_before_cadence.action, 25);
-    assert_eq!(row238_before_cadence.source_byte_3e, 32);
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let row238_after_out_of_range = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.authored_index == 238)
-        .copied()
-        .expect("model-3 row 238 remains live after target loss");
-    assert_eq!(
-        row238_after_out_of_range.phase,
-        row238_before_cadence.phase.wrapping_add(1)
-    );
-    assert_eq!(
-        row238_after_out_of_range.source_byte_3e,
-        row238_before_cadence.source_byte_3e.wrapping_add(1)
-    );
-    assert_eq!(
-        row238_after_out_of_range.action, 217,
-        "target loss is committed on the source 0x1f cadence"
-    );
-    assert_eq!(row238_after_out_of_range.word_0x96_150, 0);
-    assert_eq!(row238_after_out_of_range.byte_0x46_70, 0);
-    assert_eq!(row238_after_out_of_range.particle_index, 315);
-
-    // The nonzero byte-0x3B branch must promote the pending mailbox word
-    // into the target relation before the wrapper runs.  This prevents a
-    // cleared preexisting relation from taking the action-217 fallback in
-    // place of the source's tracked-target path.
-    let handoff_target = tracked_target;
     session
-        .set_level2_entity_position(tracked_target, tracked_target_position)
-        .expect("tracked target returns to the in-range position");
-    let row238_before_handoff = row238_after_out_of_range;
+        .set_level2_entity_position(
+            player_entity,
+            Position {
+                x: row238_after.position.x.wrapping_add(0x2000),
+                y: row238_after.position.y,
+                z: row238_ground,
+            },
+        )
+        .expect("production out-of-range target position");
     let row238_mut = session
         .economy_mut()
         .authored_class5
         .iter_mut()
         .find(|source| source.authored_index == 238)
-        .expect("model-3 row 238 remains mutable for target handoff");
-    row238_mut.pending_word_0x62 = handoff_target;
-    row238_mut.byte_0x3b = 1;
+        .expect("model-3 row 238 remains mutable for source rejection");
     row238_mut.action = 25;
-    row238_mut.byte_0x46_70 = 0;
+    row238_mut.source_byte_3e = 0;
+    row238_mut.source_byte_39 = 1;
+    row238_mut.actual_speed = 0;
+    row238_mut.yaw = 0;
+    row238_mut.entity_rng = 0x1357;
+    row238_mut.roll = 0;
     row238_mut.word_0x96_150 = 0;
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let row238_after_handoff = session
+    let row238_after_rejection = session
         .economy()
         .authored_class5()
         .iter()
         .find(|source| source.authored_index == 238)
         .copied()
-        .expect("model-3 row 238 remains live after target handoff");
+        .expect("model-3 row 238 remains live after source rejection");
+    assert_ne!(row238_after_rejection.action, 30);
+    assert_eq!(row238_after_rejection.word_0x96_150, 0);
     assert_eq!(
-        row238_after_handoff.phase,
-        row238_before_handoff.phase.wrapping_add(1)
-    );
-    assert_eq!(row238_after_handoff.action, 25);
-    assert_eq!(row238_after_handoff.pending_word_0x62, 0);
-    assert_eq!(row238_after_handoff.word_0x26, handoff_target);
-    assert_eq!(row238_after_handoff.word_0x96_150, handoff_target);
-    assert_eq!(row238_after_handoff.life, 1_000_000);
-
-    // The preceding production activation had no target relation, so the
-    // source wrapper took its action-217 target-loss fallback.  The
-    // fragment proof above restores a nonzero relation only to isolate
-    // the terrain branch without importing the child graph.
-    // Isolate the preceding `sub_2A6B0` mailbox transfer on the same
-    // production row.  With byte 0x3B clear, the source selects action
-    // 220, copies the pending word into both target/fallback links, and
-    // clears the mailbox before returning to the cursor.
-    let pending_target = 0x3456_u16;
-    let row238_before_fallback = row238_after_handoff;
-    let fallback_z = row238_ground.wrapping_add(19);
-    session
-        .economy_mut()
-        .authored_class5
-        .iter_mut()
-        .find(|source| source.authored_index == 238)
-        .expect("model-3 row 238 remains mutable for pre-pass")
-        .pending_word_0x62 = pending_target;
-    let row238_mut = session
-        .economy_mut()
-        .authored_class5
-        .iter_mut()
-        .find(|source| source.authored_index == 238)
-        .expect("model-3 row 238 pre-pass source");
-    row238_mut.byte_0x3b = 0;
-    row238_mut.position.z = fallback_z;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let row238_after_fallback = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.authored_index == 238)
-        .copied()
-        .expect("model-3 row 238 remains live after pre-pass");
-    assert_eq!(
-        row238_after_fallback.phase,
-        row238_before_fallback.phase.wrapping_add(1)
-    );
-    assert_eq!(row238_after_fallback.action, 220);
-    assert_eq!(row238_after_fallback.pending_word_0x62, 0);
-    assert_eq!(row238_after_fallback.word_0x26, pending_target);
-    assert_eq!(row238_after_fallback.word_0x24, pending_target);
-    assert_eq!(
-        row238_after_fallback.position.z, fallback_z,
-        "action-220 fallback must skip the later terrain-resnap fragment"
+        row238_after_rejection.entity_rng,
+        level2_next_rng16(level2_next_rng16(0x1357))
     );
 
     session.reset();
@@ -808,31 +699,397 @@ fn level_two_model3_actions_25_216_220_are_source_complete() {
             >= 16
     );
 
-    // Action 25's target-loss branch is source-visible before the action-217
-    // idle path.  An inactive imported target must clear both relations.
+    let expected_roll = |initial_rng: u16, initial_roll: i16| {
+        let first = level2_next_rng16(initial_rng);
+        let second = level2_next_rng16(first);
+        let direction = 2 * (i32::from(first % 0x009d) / 79) - 1;
+        let delta = (i32::from(second & 0x00ff) + 85) * direction;
+        (i32::from(initial_roll).wrapping_add(delta) & 0x07ff) as i16
+    };
+
+    let player_slot = session.state.entity_index;
+    let root_position = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .expect("model-3 root remains live")
+        .position;
+
+    // The real class-3 projection is reduced to one qualified target.  At
+    // the descriptor cadence, source action 25 consumes two draws, writes
+    // word 0x96, and enters action 30 because the row-74 flags include 8.
+    for entity in &mut session.entities {
+        if entity.class == 3 {
+            entity.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        }
+    }
+    session
+        .set_level2_entity_position(player_slot, root_position)
+        .expect("qualified player target position");
+    session
+        .entities
+        .get_mut(usize::from(player_slot))
+        .expect("qualified player target")
+        .control_flags &= !ENTITY_DRAW_DISABLED_BIT;
+    let initial_rng = 0x2468;
     {
         let root = session
             .economy_mut()
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root remains live");
+            .expect("model-3 root for qualified target");
         root.action = 25;
         root.source_byte_3e = 0;
-        root.word_0x96_150 = 999;
-        root.byte_0x46_70 = 0;
+        root.source_byte_39 = 1;
+        root.actual_speed = 0;
+        root.yaw = 0;
+        root.entity_rng = initial_rng;
+        root.roll = 0;
+        root.life = root.max_life;
+        root.pending_word_0x62 = 0;
+        root.word_0x96_150 = 0;
     }
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_action25 = session
+    let after_qualified_target = session
         .economy()
         .authored_class5()
         .iter()
         .find(|source| source.source_entity_index == root_slot)
         .copied()
-        .expect("model-3 action-25 root");
-    assert_eq!(after_action25.action, 217);
-    assert_eq!(after_action25.word_0x96_150, 0);
-    assert_eq!(after_action25.particle_index, 315);
+        .expect("model-3 root after qualified target");
+    assert_eq!(after_qualified_target.action, 30);
+    assert_eq!(after_qualified_target.word_0x96_150, player_slot);
+    assert_eq!(
+        after_qualified_target.entity_rng,
+        level2_next_rng16(level2_next_rng16(initial_rng))
+    );
+    assert_eq!(after_qualified_target.roll, expected_roll(initial_rng, 0));
+    let action30_phase = after_qualified_target.phase;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let after_action30 = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .copied()
+        .expect("model-3 root after action-30 handoff");
+    assert_eq!(after_action30.action, 30);
+    assert_eq!(after_action30.phase, action30_phase.wrapping_add(1));
+
+    // A mailbox hit followed by a lower-life linked child transfers the
+    // child's attacker relation to the root and takes the same action-30
+    // handoff without consuming the cadence RNG.
+    let child_slot = chain[0].source_entity_index;
+    let child_attacker = 0x4242;
+    let child_life = 8_900;
+    {
+        let root = session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.source_entity_index == root_slot)
+            .expect("model-3 root for child transfer");
+        root.action = 25;
+        root.source_byte_3e = 0;
+        root.entity_rng = initial_rng;
+        root.life = root.max_life;
+        root.pending_word_0x62 = 0x1111;
+        root.word_0x96_150 = 0;
+    }
+    session
+        .economy_mut()
+        .authored_class5_model3
+        .iter_mut()
+        .find(|state| state.source_entity_index == root_slot)
+        .expect("model-3 sidecar for child transfer")
+        .damage_dword_0x5e_94 = 7;
+    session
+        .economy_mut()
+        .authored_class5_model3_children
+        .iter_mut()
+        .find(|child| child.source_entity_index == child_slot)
+        .expect("model-3 child for lower-life transfer")
+        .life = child_life;
+    session
+        .economy_mut()
+        .authored_class5_model3_children
+        .iter_mut()
+        .find(|child| child.source_entity_index == child_slot)
+        .expect("model-3 child attacker relation")
+        .word_0x26 = child_attacker;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let after_child_transfer = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .copied()
+        .expect("model-3 root after child transfer");
+    assert_eq!(after_child_transfer.life, child_life);
+    assert_eq!(after_child_transfer.word_0x26, child_attacker);
+    assert_eq!(after_child_transfer.word_0x96_150, child_attacker);
+    assert_eq!(after_child_transfer.action, 30);
+    assert_eq!(after_child_transfer.entity_rng, initial_rng);
+    assert_eq!(
+        session
+            .economy()
+            .authored_class5_model3()
+            .iter()
+            .find(|state| state.source_entity_index == root_slot)
+            .expect("model-3 sidecar after child transfer")
+            .damage_dword_0x5e_94,
+        0
+    );
+
+    // A negative root life records word 0x24 and selects the source
+    // pre-kill handoff without movement or RNG draws.
+    let death_attacker = 0x5151;
+    {
+        let root = session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.source_entity_index == root_slot)
+            .expect("model-3 root for negative-life handoff");
+        root.action = 25;
+        root.source_byte_3e = 0;
+        root.entity_rng = initial_rng;
+        root.roll = 0;
+        root.life = 1;
+        root.pending_word_0x62 = death_attacker;
+    }
+    session
+        .economy_mut()
+        .authored_class5_model3
+        .iter_mut()
+        .find(|state| state.source_entity_index == root_slot)
+        .expect("model-3 sidecar for negative-life handoff")
+        .damage_dword_0x5e_94 = 2;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let after_negative_life = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .copied()
+        .expect("model-3 root after negative-life handoff");
+    assert_eq!(after_negative_life.life, -1);
+    assert_eq!(after_negative_life.word_0x24, death_attacker);
+    assert_eq!(after_negative_life.action, 28);
+    assert_eq!(after_negative_life.entity_rng, initial_rng);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let after_action28 = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .copied()
+        .expect("model-3 root after action-28 handoff");
+    assert_eq!(after_action28.action, 29);
+    assert!(
+        session
+            .economy()
+            .authored_class5_model3_children()
+            .iter()
+            .filter(|child| child.parent_entity_index == root_slot)
+            .all(|child| child.action == 29)
+    );
+
+    // With the class-3 projection rejected, the same-model source chain
+    // selects the nearest eligible model-3 peer and enters action 27.
+    for entity in &mut session.entities {
+        if entity.class == 3 {
+            entity.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        }
+    }
+    let peer = session
+        .economy_mut()
+        .allocate_authored_class5(164, 3, root_position)
+        .expect("model-3 peer constructor");
+    let peer_slot = peer.source_entity_index;
+    {
+        let root = session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.source_entity_index == root_slot)
+            .expect("model-3 root for peer selection");
+        root.action = 25;
+        root.source_byte_3e = 0;
+        root.source_byte_39 = 1;
+        root.actual_speed = 0;
+        root.yaw = 0;
+        root.entity_rng = initial_rng;
+        root.roll = 0;
+        root.life = root.max_life;
+        root.pending_word_0x62 = 0;
+        root.word_0x96_150 = 0;
+    }
+    let root_max_life = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .expect("model-3 root life for peer selection")
+        .max_life;
+    for child in &mut session.economy_mut().authored_class5_model3_children {
+        if child.parent_entity_index == root_slot {
+            child.life = root_max_life;
+            child.word_0x26 = 0;
+        }
+    }
+    assert!(session.economy_mut().step_authored_class5_slot(root_slot));
+    let after_peer_selection = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .copied()
+        .expect("model-3 root after peer selection");
+    assert_eq!(after_peer_selection.action, 27);
+    assert_eq!(
+        session
+            .economy()
+            .authored_class5_model3()
+            .iter()
+            .find(|state| state.source_entity_index == root_slot)
+            .expect("model-3 sidecar after peer selection")
+            .word_0x32,
+        peer_slot
+    );
+
+    // Out-of-range, disabled, and out-of-FOV class-3 candidates never win,
+    // but each cadence still consumes exactly the two source LCG draws and
+    // applies the masked roll update.
+    let rejected_target_cases = [
+        (
+            "out-of-range",
+            Position {
+                x: root_position.x.wrapping_add(0x2000),
+                y: root_position.y,
+                z: root_position.z,
+            },
+            false,
+        ),
+        ("disabled", root_position, true),
+        (
+            "out-of-fov",
+            Position {
+                x: root_position.x,
+                y: root_position.y.wrapping_add(1_024),
+                z: root_position.z,
+            },
+            false,
+        ),
+    ];
+    for (label, target_position, disabled) in rejected_target_cases {
+        for entity in &mut session.entities {
+            if entity.class == 3 {
+                entity.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+            }
+        }
+        session
+            .set_level2_entity_position(player_slot, target_position)
+            .expect("rejected class-3 target position");
+        if !disabled {
+            session
+                .entities
+                .get_mut(usize::from(player_slot))
+                .expect("rejected class-3 target")
+                .control_flags &= !ENTITY_DRAW_DISABLED_BIT;
+        }
+        let target_heading = heading_for_positions(root_position, target_position);
+        let initial_rng = 0x1357;
+        {
+            let root = session
+                .economy_mut()
+                .authored_class5
+                .iter_mut()
+                .find(|source| source.source_entity_index == root_slot)
+                .expect("model-3 root for rejected target");
+            root.action = 25;
+            root.source_byte_3e = 0;
+            root.source_byte_39 = 1;
+            root.actual_speed = 0;
+            root.yaw = if label == "out-of-fov" {
+                i16::try_from((target_heading + 0x0400) & 0x07ff)
+                    .expect("rejected target heading fits")
+            } else {
+                0
+            };
+            root.entity_rng = initial_rng;
+            root.roll = 0;
+            root.life = root.max_life;
+            root.pending_word_0x62 = 0;
+            root.word_0x96_150 = 0;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after_rejection = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == root_slot)
+            .copied()
+            .expect("model-3 root after rejected target");
+        assert_ne!(after_rejection.action, 30, "{label} target must not win");
+        assert_eq!(after_rejection.word_0x96_150, 0, "{label} target relation");
+        assert_eq!(
+            after_rejection.entity_rng,
+            level2_next_rng16(level2_next_rng16(initial_rng)),
+            "{label} RNG draw count"
+        );
+        assert_eq!(
+            after_rejection.roll,
+            expected_roll(initial_rng, 0),
+            "{label} roll update"
+        );
+    }
+
+    // The acquired target's action-26 hit callback remains reachable through
+    // the native dynamic dispatcher and invokes the source sound-8 helper.
+    session
+        .set_level2_entity_position(player_slot, root_position)
+        .expect("action-26 target position");
+    session
+        .entities
+        .get_mut(usize::from(player_slot))
+        .expect("action-26 target")
+        .control_flags &= !ENTITY_DRAW_DISABLED_BIT;
+    {
+        let root = session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.source_entity_index == root_slot)
+            .expect("model-3 root for action 26");
+        root.action = 26;
+        root.source_byte_3e = 0;
+        root.actual_speed = 0;
+        root.yaw = 0;
+        root.life = root.max_life;
+        root.word_0x96_150 = player_slot;
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let after_action26 = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .copied()
+        .expect("model-3 root after action-26 hit");
+    assert_eq!(after_action26.action, 26);
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::Economy {
+            event: Level2EconomyEvent::AuthoredClass5Model3Sound {
+                source_entity_index,
+                sound_id: 8,
+            },
+            ..
+        } if *source_entity_index == root_slot
+    )));
 
     // Action 216 consumes the two ordered RNG draws at counter 9 and emits
     // the source audio sink. Action 219 then enters action 217 in the same
