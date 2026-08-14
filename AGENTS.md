@@ -56,6 +56,19 @@ pinned remc2 + owner data
   -> Unity desktop presentation
 ```
 
+- The mission is one complete, independently authored Rust simulation plus
+  Unity presentation port of MC2, not a sequence of level-specific demos.
+  Levels are validated content over one shared campaign engine: source-keyed
+  behavior handlers, terrain/flight, entity scheduling, RNG, combat, economy,
+  spells, objectives, reset/replay/hash, and the ABI are implemented once and
+  reused. Every feature slice must both deliver its current playable behavior
+  and leave the next level easier; a level-only branch that adds no reusable
+  capability is incomplete unless the pinned source proves the rule is truly
+  level-specific. While Level 2 remains open, this means adding no new
+  duplicate authority or Level-N API; it does not authorize reopening sealed
+  Level 1 or starting the broad campaign fold before accepted Level 2
+  receipts. Track P implementation remains private and does not cross into the
+  independently authored Track S successor.
 - The bounded Level 1 profile is closed; preserve its accepted identities and
   nonclaims. Current feature work advances Level 2 on the same production
   route rather than reopening unrelated Level 1 fidelity details.
@@ -105,6 +118,12 @@ pinned remc2 + owner data
 - Preserve fixed-width and wrapping arithmetic, source-slot order, entity-pass
   order, RNG draw order, event/audio order, reset isolation, generation/tick
   binding, and deterministic hashes for every touched state surface.
+- A remc2 behavior identity is temporal, not merely a class/model/action label:
+  pin the ordinary producer or constructor, the actual runtime loop and
+  dispatcher/table entry, the handler, its same-pass epilogue or hide, and the
+  following-pass prologue/reclaim. A terminal branch in `ApplyEvents_498A0`
+  may still be a live callback in `UpdateEntities_57730`; inspect both before
+  declaring the lifecycle complete.
 - Keep simulation logic in Rust. C# validates/copies ABI data and presents it;
   it must not become a second gameplay implementation.
 - Treat tests, validators, matrices, fixtures, goldens, schemas, and ABI headers
@@ -234,6 +253,11 @@ Rust/Unity engine gate.
 - A direct Oliver request governs work selection. Otherwise, when work already
   has Beads dependencies, use `br ready --json`, `br show <id> --json`, and
   update only through `br`; never run bare `bv`.
+- `worker-ready` means the exact remc2 identity above is bounded, a qualified
+  ordinary producer reaches the positive Rust -> C ABI -> Unity route as far
+  as the capability requires, and at least one following pass or consumer is
+  specified. A helper, direct test setter, fixture-only entity, isolated
+  callback, or friendly family name is not readiness evidence.
 - Use CM context once when prior repository learning can answer a concrete
   question. For a specific historical gap, load the `cass` skill, check status,
   and use bounded lexical searches with minimal fields. Stop when the question
@@ -287,6 +311,12 @@ Rust/Unity engine gate.
   changed-file findings rather than launching a blanket repository scan. State
   the exact proof layer and any unverified surface; solo verification is
   self-verification, never independent review.
+- The large Rust and Unity composition files contain substantial legacy scan
+  noise. If UBS `--diff`/explicit-file output covers the same whole files and
+  reports the same totals as the baseline, say it was non-discriminating and
+  do not count those findings against the candidate. Use focused compile/test
+  evidence and changed-hunk inspection; open scanner work only for a concrete
+  defect class it can newly distinguish.
 - Commit or push only when landing is requested and identity, branch, remote,
   and exact evidence revision are verified.
 - Remove a local rule when it becomes global or ceases to be true. Update this
