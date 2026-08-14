@@ -22416,6 +22416,234 @@ mod tests {
     }
 
     #[test]
+    fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
+        let handle =
+            open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: McCommandV2 {
+                flags: 0x40,
+                requested_spell: 2,
+                ..valid_command()
+            },
+            player_slot: 0,
+            speed_index: 0,
+            player_x: 384,
+            player_y: 62_080,
+            player_z: 256,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(snapshot.generation, 0);
+        assert_eq!(snapshot.revision, 1);
+        assert!(event_count > 0);
+        assert!(
+            events[..event_count as usize]
+                .iter()
+                .all(|event| event.abi_version == MC_NATIVE_ABI_VERSION)
+        );
+        let first_step_flyer = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Castle proof requires a Level 2 campaign session",
+                ));
+            };
+            Ok((
+                reset
+                    .economy()
+                    .castle_projectiles()
+                    .iter()
+                    .find(|projectile| projectile.active)
+                    .copied(),
+                reset.economy().castle().is_none(),
+                reset.economy().player_castle_entity_index(),
+            ))
+        })
+        .expect("read public Castle state after the first step");
+        let (first_step_flyer, no_root_after_first_step, first_step_relation) = first_step_flyer;
+        let first_step_flyer =
+            first_step_flyer.expect("the first public step leaves the class-9/model-10 flyer live");
+        assert_eq!(
+            (first_step_flyer.source_class, first_step_flyer.source_model),
+            (9, 10)
+        );
+        assert_eq!(
+            (
+                first_step_flyer.source_byte_43,
+                first_step_flyer.source_byte_44
+            ),
+            (3, 2)
+        );
+        assert!(
+            no_root_after_first_step,
+            "the first public step does not allocate the class-3/model-2 root"
+        );
+        assert_eq!(
+            first_step_relation, 0,
+            "flyer-only public step keeps Castle relation zero"
+        );
+        assert!(
+            events[..event_count as usize]
+                .iter()
+                .all(|event| !(event.kind == 8 && event.family == 1)),
+            "the first public request does not allocate the Castle root"
+        );
+
+        input.command = valid_command();
+        event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert!(
+            events[..event_count as usize]
+                .iter()
+                .any(|event| event.kind == 8 && event.family == 38),
+            "the flyer remains live for its first gate-only callback"
+        );
+        assert!(
+            events[..event_count as usize]
+                .iter()
+                .all(|event| !(event.kind == 8 && event.family == 1)),
+            "the first flyer callback does not allocate the Castle root"
+        );
+        let second_step_relation = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Castle proof requires a Level 2 campaign session",
+                ));
+            };
+            Ok(reset.economy().player_castle_entity_index())
+        })
+        .expect("read public Castle relation after the flyer gate callback");
+        assert_eq!(
+            second_step_relation, 0,
+            "the flyer-only gate callback keeps Castle relation zero"
+        );
+        let mut root_event = None;
+        for _ in 0..32 {
+            event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+            root_event = events[..event_count as usize]
+                .iter()
+                .find(|event| event.kind == 8 && event.family == 1)
+                .copied();
+            if root_event.is_some() {
+                break;
+            }
+        }
+        let root_event = root_event.expect("a later flyer landing allocates the Castle root");
+        assert_eq!(root_event.generation, 0);
+        assert_ne!(root_event.source_slot, 0);
+        let seed_relation = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Castle proof requires a Level 2 campaign session",
+                ));
+            };
+            Ok(reset.economy().player_castle_entity_index())
+        })
+        .expect("read public Castle relation after seed allocation");
+        assert_eq!(
+            seed_relation, 0,
+            "seed allocation leaves Castle relation zero before sub_60480"
+        );
+
+        event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert!(
+            events[..event_count as usize]
+                .iter()
+                .any(|event| { event.kind == 7 && event.source_slot == root_event.source_slot })
+        );
+        let construction_relation = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Castle proof requires a Level 2 campaign session",
+                ));
+            };
+            Ok(reset.economy().player_castle_entity_index())
+        })
+        .expect("read public Castle relation after sub_60480 child allocation");
+        assert_eq!(
+            construction_relation, root_event.source_slot,
+            "successful construction child binds the public Castle relation"
+        );
+        let mut economy_events = [McCampaignEconomyEventV2::default(); 64];
+        let mut economy_event_count = 0;
+        assert_eq!(
+            mc_native_campaign_economy_events(
+                handle,
+                economy_events.as_mut_ptr(),
+                economy_events.len() as u32,
+                struct_size::<McCampaignEconomyEventV2>(),
+                &raw mut economy_event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert!(
+            economy_events[..economy_event_count as usize]
+                .iter()
+                .all(|event| event.code != MC_CAMPAIGN_ECONOMY_CASTLE_BUILT)
+        );
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn level2_campaign_step_projects_family12_source_slot38() {
         let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/l2-debug3.fJ3PaM/level2");
@@ -22479,8 +22707,8 @@ mod tests {
             ),
             MC_STATUS_OK
         );
-        assert_eq!(initial_hud.left.raw_spell_selector, -1);
-        assert_eq!(initial_hud.right.raw_spell_selector, -1);
+        assert_eq!(initial_hud.left.raw_spell_selector, 0);
+        assert_eq!(initial_hud.right.raw_spell_selector, 1);
         let mut initial_hud_repeat = McCampaignDayHudSnapshotV2::default();
         assert_eq!(
             mc_native_campaign_day_hud_state(
@@ -22610,7 +22838,7 @@ mod tests {
         assert_eq!(hud.left.level_text_selector, 0);
         assert_eq!(hud.left.tier, 0);
         assert_eq!(hud.left.draw_admitted, 1);
-        assert_eq!(hud.right.raw_spell_selector, -1);
+        assert_eq!(hud.right.raw_spell_selector, 1);
         assert_eq!(
             (
                 hud.life_palette_index,
@@ -22656,8 +22884,8 @@ mod tests {
             ),
             MC_STATUS_OK
         );
-        assert_eq!(reset_hud.left.raw_spell_selector, -1);
-        assert_eq!(reset_hud.right.raw_spell_selector, -1);
+        assert_eq!(reset_hud.left.raw_spell_selector, 0);
+        assert_eq!(reset_hud.right.raw_spell_selector, 1);
         assert_eq!(reset_hud.generation, 1);
         assert_eq!(reset_hud.player_panel_selector, 41);
 

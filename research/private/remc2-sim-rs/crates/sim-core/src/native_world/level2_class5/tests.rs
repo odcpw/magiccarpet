@@ -233,8 +233,25 @@ fn level_two_archers_complete_constructor_action_and_child_chain() {
 
 #[test]
 fn archer_root_and_child_allocation_failures_are_atomic() {
+    // An empty ordinary free stack follows NewEvent's lowest-replaceable
+    // fallback. Clearing the stack is not itself an exhaustion negative.
+    let (mut fallback_session, _) = activate_group20_archers();
+    fallback_session.economy_mut().free_slots.clear();
+    let fallback = fallback_session
+        .economy_mut()
+        .allocate_authored_archer(235, Position { x: 0, y: 0, z: 0 })
+        .expect("empty free stack evicts the lowest replaceable source row");
+    assert!(
+        fallback_session
+            .economy()
+            .authored_class5()
+            .iter()
+            .any(|source| source.source_entity_index == fallback.source_entity_index)
+    );
+    assert!(fallback_session.economy().free_slots.is_empty());
+
     let (mut session, _) = activate_group20_archers();
-    session.economy_mut().free_slots.clear();
+    session.economy_mut().free_slots = vec![u16::MAX];
     let before_no_slot = session.economy().clone();
     let hash_before_no_slot = session.campaign_state_hash();
     assert!(
