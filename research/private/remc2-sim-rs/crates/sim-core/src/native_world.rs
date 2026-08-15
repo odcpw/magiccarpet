@@ -8090,7 +8090,13 @@ impl Level2EconomyState {
                 // authored L2-06 selector-2 callback before its own roll
                 // tail. Other selectors remain deliberately fail-closed.
                 if source.stage_var2 == 2 {
-                    if let Some(stage_target) = source.stage_target {
+                    if source.life < 0 {
+                        // Both selector-2 helpers select their terminal
+                        // branch before `sub_1B8C0`. A helper which itself
+                        // exhausts movement retries remains action 23 until
+                        // the following callback reaches here.
+                        source.action = 20;
+                    } else if let Some(stage_target) = source.stage_target {
                         let outside_point_band = (i32::from(stage_target.x as i16)
                             - i32::from(source.position.x as i16))
                         .abs()
@@ -8100,12 +8106,7 @@ impl Level2EconomyState {
                             .abs()
                                 > 3_072;
                         move_level2_bee_source(&mut source, &self.terrain);
-                        if source.life < 0 {
-                            // `sub_1DDA0`/`sub_1E1C0` hand a terminal
-                            // movement result back to action 20. The broader
-                            // damage/death tail remains owned elsewhere.
-                            source.action = 20;
-                        } else if outside_point_band {
+                        if outside_point_band {
                             if source.source_byte_3e & 7 == 0 {
                                 if source.control_flags & LEVEL2_BEE_OBSTRUCTION_BIT == 0 {
                                     source.roll = i16::try_from(heading_for_positions(
@@ -33687,6 +33688,154 @@ mod tests {
             .expect("target-lost Bee");
         assert_eq!(target_lost.action, 17);
         assert_eq!(target_lost.actual_speed, target_lost.minimum_speed);
+    }
+
+    #[test]
+    fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callback() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 terminal selector-2 Bee session");
+
+        // The primary witness is still the ordinary row-228/group-21 route;
+        // this test changes no action or StageVar field after construction.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.authored_index == 229)
+            .map(|source| source.source_entity_index)
+            .expect("ordinary group-21 row-229 Bee");
+        let mut configured = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("live ordinary Bee");
+        assert_eq!(
+            (
+                configured.action,
+                configured.stage_var1,
+                configured.stage_var2
+            ),
+            (23, 6, 2)
+        );
+        configured.position = Position {
+            x: 0x2080,
+            y: 0x1080,
+            z: 0,
+        };
+        configured.yaw = 0;
+        configured.roll = 0;
+        configured.actual_speed = 512;
+        configured.source_byte_3e = 1;
+        configured.source_byte_39 = 0;
+        configured.control_flags &= !(LEVEL2_BEE_MOVEMENT_SKIP_BIT | LEVEL2_BEE_OBSTRUCTION_BIT);
+        assert!(
+            session
+                .economy_mut()
+                .replace_authored_bee_for_test(configured)
+        );
+
+        // A vertical 0/255 terrain stripe makes every crossed tile source-
+        // steep. This forces `sub_1B8C0`'s four retry headings to exhaust
+        // without using a fabricated Bee or a direct terminal action.
+        for y in 0..=u8::MAX {
+            for x in 0..=u8::MAX {
+                session.terrain.planes.ground_heights[terrain_index(x, y)] =
+                    if x & 1 == 0 { 0 } else { u8::MAX };
+            }
+        }
+        for heading in level2_bee_retry_headings(configured.yaw) {
+            let mut candidate = configured.position;
+            let ground = session.terrain.ground_height(candidate);
+            if candidate.z > ground {
+                candidate = Position {
+                    z: candidate.z.wrapping_add(LEVEL2_BEE_GROUND_RELAXATION),
+                    ..candidate
+                };
+            }
+            if candidate.z <= ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE) {
+                candidate = Position {
+                    z: ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE),
+                    ..candidate
+                };
+            }
+            crate::move_entity(&mut candidate, heading, 0, configured.actual_speed);
+            assert_ne!(
+                level2_bee_source_tile(candidate),
+                level2_bee_source_tile(configured.position),
+                "each forced retry crosses into a source-slope tile"
+            );
+            assert!(
+                level2_bee_slope_measure(&session.terrain, candidate)
+                    >= LEVEL2_BEE_TERRAIN_THRESHOLD,
+                "each retry candidate is source-blocked"
+            );
+        }
+
+        // The helper itself may make the Bee terminal, but `sub_1DDA0` picked
+        // v2=0 before it called the helper. The first callback therefore
+        // remains action 23 and only the normal outer epilogue advances.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let helper_terminal = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("movement-terminal Bee remains live for the next callback");
+        assert_eq!((helper_terminal.action, helper_terminal.life), (23, -1));
+        assert_eq!(helper_terminal.position, configured.position);
+        assert_eq!(helper_terminal.entity_rng, configured.entity_rng);
+        assert_eq!(helper_terminal.roll, configured.roll);
+        assert_eq!(
+            (helper_terminal.source_byte_3e, helper_terminal.phase),
+            (
+                configured.source_byte_3e.wrapping_add(1),
+                configured.phase.wrapping_add(1)
+            )
+        );
+
+        // On the next visit both source helpers see entry-dead state and take
+        // v2=2 before `sub_1B8C0`: action becomes 20 with no movement-helper
+        // position/yaw/RNG/roll/control changes, while dispatcher epilogue
+        // still advances the source cursor and phase.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let entry_terminal = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("entry-terminal Bee remains for action-20 callback");
+        assert_eq!((entry_terminal.action, entry_terminal.life), (20, -1));
+        assert_eq!(
+            (
+                entry_terminal.position,
+                entry_terminal.yaw,
+                entry_terminal.roll,
+                entry_terminal.entity_rng,
+                entry_terminal.control_flags,
+            ),
+            (
+                helper_terminal.position,
+                helper_terminal.yaw,
+                helper_terminal.roll,
+                helper_terminal.entity_rng,
+                helper_terminal.control_flags,
+            )
+        );
+        assert_eq!(
+            (entry_terminal.source_byte_3e, entry_terminal.phase),
+            (
+                helper_terminal.source_byte_3e.wrapping_add(1),
+                helper_terminal.phase.wrapping_add(1)
+            )
+        );
     }
 
     #[test]
