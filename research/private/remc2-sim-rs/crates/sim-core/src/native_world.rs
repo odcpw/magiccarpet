@@ -70,12 +70,18 @@ use crate::{
         ManaCarrier, ManaSphere, PLAYER_DEATH_BURST_MAX_LIFE, PLAYER_DEATH_BURST_SUBSPELL_INDEX,
         POSSESSION_ATTRACTION_BASE_TMAP, POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
         POSSESSION_ATTRACTION_RENDER_INDEX, POSSESSION_ATTRACTION_RENDER_MODE,
-        POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT,
-        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE, SOURCE_REPLACEABLE_FLAG,
-        SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY, SPEED_SPELL_MANA_COST,
-        SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
-        SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal, source_map_search_slots,
-        source_search_offsets,
+        POSSESSION_IMPACT_ACTION, POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_CLASS,
+        POSSESSION_IMPACT_COLLISION_HALF_HEIGHT, POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+        POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET, POSSESSION_IMPACT_LIFE,
+        POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL, POSSESSION_IMPACT_RENDER_INDEX,
+        POSSESSION_IMPACT_RENDER_MODE, POSSESSION_PROJECTILE_ACTION, POSSESSION_PROJECTILE_CLASS,
+        POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT, POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
+        POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET, POSSESSION_PROJECTILE_LIFETIME_TICKS,
+        POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_SPEED, POSSESSION_SPELL_FAMILY,
+        SOURCE_REPLACEABLE_FLAG, SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY,
+        SPEED_SPELL_MANA_COST, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
+        SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal,
+        source_map_search_slots, source_search_offsets,
     },
     mark_source_audio_call,
     mission_content::{
@@ -1441,6 +1447,45 @@ fn level2_first_colliding_mana_sphere_slot(
             ) {
                 return Some(candidate_slot);
             }
+        }
+    }
+    None
+}
+
+/// Pinned `sub_108B0` map-chain walk for the ordinary tier-0 Possession
+/// flyer. The source returns the first eligible strict-overlap model-39 row;
+/// allocation order never substitutes for the chain order.
+fn level2_first_possession_target_sphere_slot(
+    map_chains: &RenderableMapChains,
+    spheres: &[ManaSphere],
+    projectile: Level2PossessionProjectile,
+) -> Option<u16> {
+    for candidate_slot in source_map_search_slots(
+        map_chains,
+        projectile.position,
+        &LEVEL2_MANA_SPHERE_SEARCH_OFFSETS,
+    ) {
+        let Some(candidate) = spheres.iter().find(|candidate| {
+            candidate.active
+                && !candidate.pending_delete
+                && candidate.source_entity_index == candidate_slot
+                && u16::try_from(candidate.id).ok() != Some(projectile.source_id_entity_index)
+                && candidate.player_entity_index != projectile.source_id_entity_index
+        }) else {
+            continue;
+        };
+        let dimension = level2_mana_sphere_dimension(candidate.mana);
+        if crate::level1_mission::source_entities_overlap(
+            projectile.position,
+            POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
+            POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
+            POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
+            candidate.position,
+            dimension,
+            dimension,
+            dimension,
+        ) {
+            return Some(candidate_slot);
         }
     }
     None
@@ -4280,6 +4325,58 @@ pub struct Level2CastleState {
     pub active: bool,
 }
 
+/// The ordinary tier-0 Possession flyer created by `sub_69900`.
+///
+/// This deliberately carries its source class/model/action and output tuple
+/// instead of sharing Castle or Fireball state. `CastPosses_65F60` only
+/// retires the flyer after its model-12 allocation succeeds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2PossessionProjectile {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    /// Source `id_0x1A_26`, copied to the model-12 effect.  This is the
+    /// mailbox writer identity; it is not a shortcut ownership relation.
+    pub source_id_entity_index: u16,
+    pub holder_entity_index: u16,
+    pub source_class: u8,
+    pub source_model: u8,
+    pub action: u8,
+    pub output_class: u8,
+    pub output_model: u8,
+    pub position: Position,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub actual_speed: i16,
+    pub minimum_speed: i16,
+    pub life: i16,
+    pub max_life: i16,
+    pub phase: u8,
+    pub active: bool,
+}
+
+/// The class-10/model-12 ownership mailbox pulse created by `NewAdd0A0C`.
+/// `PossesHitMana_320E0` re-scans the live map on every callback; it does not
+/// retain the collision candidate that caused the flyer to land.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2PossessionEffect {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    /// Source `id_0x1A_26` copied from the flyer and written into every
+    /// qualifying model-39 mailbox by this callback.
+    pub source_id_entity_index: u16,
+    pub projectile_entity_index: u16,
+    pub source_class: u8,
+    pub source_model: u8,
+    pub action: u8,
+    pub position: Position,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub life: i16,
+    pub max_life: i16,
+    pub phase: u8,
+    pub active: bool,
+}
+
 /// The ordinary human Castle spell flyer created by `sub_69AB0`.
 ///
 /// This class-9/model-10 row is deliberately separate from the later
@@ -5931,6 +6028,10 @@ pub struct Level2EconomyState {
     beyond_sight_effects: Vec<Level2BeyondSightPulseEffect>,
     baseline_mana_attraction_fields: Vec<Level2ManaAttractionField>,
     mana_attraction_fields: Vec<Level2ManaAttractionField>,
+    baseline_possession_projectiles: Vec<Level2PossessionProjectile>,
+    possession_projectiles: Vec<Level2PossessionProjectile>,
+    baseline_possession_effects: Vec<Level2PossessionEffect>,
+    possession_effects: Vec<Level2PossessionEffect>,
     baseline_carriers: Vec<ManaCarrier>,
     carriers: Vec<ManaCarrier>,
     baseline_castle_projectiles: Vec<Level2CastleProjectile>,
@@ -6208,6 +6309,10 @@ impl Level2EconomyState {
             beyond_sight_effects: Vec::new(),
             baseline_mana_attraction_fields: Vec::new(),
             mana_attraction_fields: Vec::new(),
+            baseline_possession_projectiles: Vec::new(),
+            possession_projectiles: Vec::new(),
+            baseline_possession_effects: Vec::new(),
+            possession_effects: Vec::new(),
             baseline_carriers: Vec::new(),
             carriers: Vec::new(),
             baseline_castle_projectiles: Vec::new(),
@@ -6431,6 +6536,22 @@ impl Level2EconomyState {
             .live_arena_cursor_rows()
             .into_iter()
             .map(|row| row.source_slot)
+            // Possession callbacks disable their row in the landing pass but
+            // source `UpdateEntities_57730` does not free it until the next
+            // pass prologue. It is inactive (and therefore absent from the
+            // live cursor) yet must remain unavailable to `NewEvent`.
+            .chain(
+                self.possession_projectiles
+                    .iter()
+                    .filter(|projectile| !projectile.active)
+                    .map(|projectile| projectile.source_entity_index),
+            )
+            .chain(
+                self.possession_effects
+                    .iter()
+                    .filter(|effect| !effect.active)
+                    .map(|effect| effect.source_entity_index),
+            )
             .collect::<BTreeSet<_>>();
         self.free_slots = self
             .baseline_free_slots
@@ -10222,6 +10343,16 @@ impl Level2EconomyState {
     }
 
     #[must_use]
+    pub fn possession_projectiles(&self) -> &[Level2PossessionProjectile] {
+        &self.possession_projectiles
+    }
+
+    #[must_use]
+    pub fn possession_effects(&self) -> &[Level2PossessionEffect] {
+        &self.possession_effects
+    }
+
+    #[must_use]
     pub fn player_castle_shift_aabb_overlap(&self, player: &EntitySnapshot) -> bool {
         let Some(castle) = self.castle.filter(|castle| {
             castle.active && self.player_castle_entity_index == castle.source_entity_index
@@ -10264,6 +10395,26 @@ impl Level2EconomyState {
             visit(
                 projectile.source_entity_index,
                 Level2DynamicArenaKind::CastleProjectile,
+            );
+        }
+        for projectile in self
+            .possession_projectiles
+            .iter()
+            .filter(|projectile| projectile.active)
+        {
+            visit(
+                projectile.source_entity_index,
+                Level2DynamicArenaKind::PossessionProjectile,
+            );
+        }
+        for effect in self
+            .possession_effects
+            .iter()
+            .filter(|effect| effect.active)
+        {
+            visit(
+                effect.source_entity_index,
+                Level2DynamicArenaKind::PossessionEffect,
             );
         }
         if let Some(castle) = self.castle.filter(|castle| castle.active) {
@@ -12274,6 +12425,52 @@ impl Level2EconomyState {
             hasher.update(field.life.to_le_bytes());
             hasher.update([field.action, u8::from(field.active)]);
         }
+        hasher.update(b"level2-possession-projectile-v1");
+        for projectile in &self.possession_projectiles {
+            hasher.update(projectile.source_entity_index.to_le_bytes());
+            hasher.update(projectile.entity_rng.to_le_bytes());
+            hasher.update(projectile.source_id_entity_index.to_le_bytes());
+            hasher.update(projectile.holder_entity_index.to_le_bytes());
+            hasher.update([
+                projectile.source_class,
+                projectile.source_model,
+                projectile.action,
+                projectile.output_class,
+                projectile.output_model,
+                projectile.phase,
+                u8::from(projectile.active),
+            ]);
+            hasher.update(projectile.position.x.to_le_bytes());
+            hasher.update(projectile.position.y.to_le_bytes());
+            hasher.update(projectile.position.z.to_le_bytes());
+            hasher.update(projectile.yaw.to_le_bytes());
+            hasher.update(projectile.pitch.to_le_bytes());
+            hasher.update(projectile.actual_speed.to_le_bytes());
+            hasher.update(projectile.minimum_speed.to_le_bytes());
+            hasher.update(projectile.life.to_le_bytes());
+            hasher.update(projectile.max_life.to_le_bytes());
+        }
+        hasher.update(b"level2-possession-effect-v1");
+        for effect in &self.possession_effects {
+            hasher.update(effect.source_entity_index.to_le_bytes());
+            hasher.update(effect.entity_rng.to_le_bytes());
+            hasher.update(effect.source_id_entity_index.to_le_bytes());
+            hasher.update(effect.projectile_entity_index.to_le_bytes());
+            hasher.update([
+                effect.source_class,
+                effect.source_model,
+                effect.action,
+                effect.phase,
+                u8::from(effect.active),
+            ]);
+            hasher.update(effect.position.x.to_le_bytes());
+            hasher.update(effect.position.y.to_le_bytes());
+            hasher.update(effect.position.z.to_le_bytes());
+            hasher.update(effect.yaw.to_le_bytes());
+            hasher.update(effect.pitch.to_le_bytes());
+            hasher.update(effect.life.to_le_bytes());
+            hasher.update(effect.max_life.to_le_bytes());
+        }
         if self.carriers.is_empty() {
             hasher.update([0]);
         }
@@ -12571,6 +12768,8 @@ impl Level2EconomyState {
         self.house_residents = self.baseline_house_residents.clone();
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
         self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
+        self.possession_projectiles = self.baseline_possession_projectiles.clone();
+        self.possession_effects = self.baseline_possession_effects.clone();
         self.carriers = self.baseline_carriers.clone();
         self.castle_projectiles = self.baseline_castle_projectiles.clone();
         self.castle = self.baseline_castle;
@@ -16292,6 +16491,8 @@ pub enum Level2DispatchEvent {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Level2DynamicArenaKind {
     CastleProjectile,
+    PossessionProjectile,
+    PossessionEffect,
     CastleRoot,
     CastleChild,
     CastleAuxiliary,
@@ -16436,6 +16637,10 @@ impl Level2DispatchEvent {
 pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
     match kind {
         Level2DynamicArenaKind::CastleProjectile => 38,
+        // Appended production family codes. Existing consumer projections
+        // retain their established values.
+        Level2DynamicArenaKind::PossessionProjectile => 39,
+        Level2DynamicArenaKind::PossessionEffect => 40,
         Level2DynamicArenaKind::CastleRoot => 1,
         Level2DynamicArenaKind::CastleChild => 2,
         Level2DynamicArenaKind::CastleAuxiliary => 3,
@@ -17357,6 +17562,78 @@ impl Level2ResetSession {
                     .copy_from_slice(&holder.activation_value.to_le_bytes());
                 authoritative.record[64] = holder.action_marker.cast_unsigned();
             }
+        }
+    }
+
+    /// Source `sub_69640` for the ordinary direct Level 2 holder 116. The
+    /// holder's allocation attempt is deliberately separate from its
+    /// expenditure/decrement: remc2 advances the countdown even when the
+    /// class-9/model-1 arena allocation fails.
+    fn step_level2_possession_holder_source_slot(&mut self, holder_index: u16) {
+        let Some(holder) = self
+            .shared_spells
+            .dynamic_pickups
+            .iter()
+            .find(|holder| {
+                holder.index == holder_index
+                    && holder.active
+                    && holder.class == 15
+                    && holder.model == POSSESSION_SPELL_FAMILY
+                    && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                    && holder.source_spell_parent_entity_index() == self.state.entity_index
+                    && holder.active_value > 0
+            })
+            .cloned()
+        else {
+            return;
+        };
+
+        let mana_regen = if self.shared_spells.player_entity.mana_regen >= 0 {
+            -holder.mana_cost
+        } else {
+            self.shared_spells
+                .player_entity
+                .mana_regen
+                .wrapping_sub(holder.mana_cost)
+        };
+        self.shared_spells.player_entity.mana_regen = mana_regen;
+        self.shared_spells.player_entity.record[140..144]
+            .copy_from_slice(&mana_regen.to_le_bytes());
+        for entity in &mut self.shared_spells.player_entities {
+            if entity.index == self.shared_spells.player_entity.index {
+                entity.mana_regen = mana_regen;
+                entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
+            }
+        }
+
+        let activation_value = i16::try_from(holder.activation_value).unwrap_or(i16::MAX);
+        if holder.active_value == activation_value && holder.life == 0 {
+            let _ = self.economy.spawn_possession_projectile(
+                self.state.position,
+                self.state.entity_index,
+                holder_index,
+                self.state.yaw,
+                self.state.effective_pitch,
+                self.state.actual_speed,
+            );
+        }
+        let next_active_value = holder.active_value.saturating_sub(1);
+        if let Some(authoritative) = self
+            .shared_spells
+            .dynamic_pickups
+            .iter_mut()
+            .find(|candidate| candidate.index == holder_index)
+        {
+            authoritative.active_value = next_active_value;
+            authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
+        }
+        if let Some(fire) = self.context.spell_fire.as_mut()
+            && let Some(in_flight) = fire
+                .holders
+                .iter_mut()
+                .find(|candidate| candidate.entity_index == holder_index)
+        {
+            in_flight.active_value = next_active_value;
         }
     }
 
@@ -20428,6 +20705,66 @@ impl Level2ResetSession {
         }
     }
 
+    /// Dispatch one newly allocated Possession row before the source cursor
+    /// reaches the next existing slot. This is deliberately limited to the
+    /// class-9/model-1 -> class-10/model-12 chain: it preserves the source
+    /// runagain cursor without turning the economy arena into a second
+    /// scheduler.
+    fn step_level2_pending_possession_dynamic_row(
+        &mut self,
+        pass: u8,
+        row: Level2DynamicArenaCursorRow,
+    ) {
+        debug_assert!(matches!(
+            row.kind,
+            Level2DynamicArenaKind::PossessionProjectile | Level2DynamicArenaKind::PossessionEffect
+        ));
+        let source_slot = row.source_slot;
+        let live = self.step_level2_dynamic_arena(pass, source_slot, row.kind);
+        self.append_new_economy_events(pass, source_slot);
+        if live {
+            self.dispatch_events
+                .push(Level2DispatchEvent::DynamicArena {
+                    pass,
+                    source_slot,
+                    kind: row.kind,
+                });
+        }
+    }
+
+    /// Record only newly allocated Possession rows against the still-moving
+    /// source cursor. Rows at or below the callback that allocated them are
+    /// deferred to the next outer pass; a higher row is inserted before the
+    /// next existing source slot, exactly as `UpdateEntities_57730`'s
+    /// ascending array walk observes it.
+    fn schedule_new_possession_rows_in_source_order(
+        &self,
+        live_before: &BTreeSet<(u16, u32)>,
+        source_slot: u16,
+        dispatched_dynamic_slots: &BTreeSet<(u16, u32)>,
+        deferred_dynamic_slots: &mut BTreeSet<(u16, u32)>,
+        pending_possession_rows: &mut BTreeMap<(u16, u32), Level2DynamicArenaCursorRow>,
+    ) {
+        for row in self.economy.live_arena_cursor_rows() {
+            let key = (row.source_slot, row.generation);
+            if live_before.contains(&key)
+                || !matches!(
+                    row.kind,
+                    Level2DynamicArenaKind::PossessionProjectile
+                        | Level2DynamicArenaKind::PossessionEffect
+                )
+                || dispatched_dynamic_slots.contains(&key)
+            {
+                continue;
+            }
+            if row.source_slot <= source_slot {
+                deferred_dynamic_slots.insert(key);
+            } else {
+                pending_possession_rows.insert(key, row);
+            }
+        }
+    }
+
     /// Dispatch the authored Level 2 rows in source-slot order alongside the
     /// generic player-flight pass. Each typed family remains authoritative for
     /// its own mutable state; unknown mission rows are not coerced into a
@@ -20441,6 +20778,7 @@ impl Level2ResetSession {
         self.shared_spells.pickup_events.clear();
         let goat_players = self.level2_goat_player_targets();
         self.economy.advance_global_rng();
+        self.economy.reclaim_possession_rows_at_source_boundary();
         // `UpdateEntities_57730` scans every hidden active entity and calls
         // `sub_57F20` before rebuilding lists or dispatching any root. Keep
         // this generic prepass independent of Castle root/model/parent state
@@ -20480,6 +20818,18 @@ impl Level2ResetSession {
             .into_iter()
             .chain([75_u16].into_iter().map(|slot| (slot, 0_u8)))
             .chain([38_u16].into_iter().map(|slot| (slot, 8_u8)))
+            .chain(
+                self.shared_spells
+                    .dynamic_pickups
+                    .iter()
+                    .filter(|holder| {
+                        holder.active
+                            && holder.class == 15
+                            && holder.model == POSSESSION_SPELL_FAMILY
+                            && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                    })
+                    .map(|holder| (holder.index, 11_u8)),
+            )
             .chain(
                 self.bad_stones
                     .iter()
@@ -20535,7 +20885,39 @@ impl Level2ResetSession {
         // without replaying an already observed row indefinitely.
         let mut dispatched_dynamic_slots = BTreeSet::new();
         let mut deferred_dynamic_slots = BTreeSet::new();
+        let mut pending_possession_rows =
+            BTreeMap::<(u16, u32), Level2DynamicArenaCursorRow>::new();
         for (source_slot, kind) in routes {
+            // A NewEvent row with a higher source slot joins the same ascending
+            // source pass before this next existing row. A lower row was
+            // already passed and is intentionally deferred by the helper.
+            loop {
+                let Some((key, row)) = pending_possession_rows
+                    .first_key_value()
+                    .map(|(key, row)| (*key, *row))
+                else {
+                    break;
+                };
+                if row.source_slot >= source_slot {
+                    break;
+                }
+                pending_possession_rows.remove(&key);
+                let live_dynamic_before = self
+                    .economy
+                    .live_arena_cursor_rows()
+                    .into_iter()
+                    .map(|row| (row.source_slot, row.generation))
+                    .collect::<BTreeSet<_>>();
+                dispatched_dynamic_slots.insert(key);
+                self.step_level2_pending_possession_dynamic_row(pass, row);
+                self.schedule_new_possession_rows_in_source_order(
+                    &live_dynamic_before,
+                    row.source_slot,
+                    &dispatched_dynamic_slots,
+                    &mut deferred_dynamic_slots,
+                    &mut pending_possession_rows,
+                );
+            }
             let source_is_authored_switch = kind == 6
                 && dynamic_rows
                     .get(&source_slot)
@@ -20869,18 +21251,52 @@ impl Level2ResetSession {
                         entity.set_phase(entity.phase.wrapping_add(1));
                     }
                 }
+                11 => self.step_level2_possession_holder_source_slot(source_slot),
                 _ => unreachable!("bounded Level 2 source route"),
             }
             for row in self.economy.live_arena_cursor_rows() {
                 let key = (row.source_slot, row.generation);
-                if !live_dynamic_before.contains(&key)
-                    && source_is_authored_switch
-                    && row.source_slot <= source_slot
-                    && !dispatched_dynamic_slots.contains(&key)
-                {
+                if live_dynamic_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
+                    continue;
+                }
+                if matches!(
+                    row.kind,
+                    Level2DynamicArenaKind::PossessionProjectile
+                        | Level2DynamicArenaKind::PossessionEffect
+                ) {
+                    if row.source_slot <= source_slot {
+                        deferred_dynamic_slots.insert(key);
+                    } else {
+                        pending_possession_rows.insert(key, row);
+                    }
+                } else if source_is_authored_switch && row.source_slot <= source_slot {
                     deferred_dynamic_slots.insert(key);
                 }
             }
+        }
+        // The final source slot has no following static route, so drain the
+        // remaining higher Possession rows in ascending order. Any row born
+        // behind this moving cursor is deferred by the same helper.
+        while let Some((key, row)) = pending_possession_rows
+            .first_key_value()
+            .map(|(key, row)| (*key, *row))
+        {
+            pending_possession_rows.remove(&key);
+            let live_dynamic_before = self
+                .economy
+                .live_arena_cursor_rows()
+                .into_iter()
+                .map(|row| (row.source_slot, row.generation))
+                .collect::<BTreeSet<_>>();
+            dispatched_dynamic_slots.insert(key);
+            self.step_level2_pending_possession_dynamic_row(pass, row);
+            self.schedule_new_possession_rows_in_source_order(
+                &live_dynamic_before,
+                row.source_slot,
+                &dispatched_dynamic_slots,
+                &mut deferred_dynamic_slots,
+                &mut pending_possession_rows,
+            );
         }
         self.activate_level2_authored_mana_attraction_fields(pass);
         // A root/typed handler may have allocated a Castle child, carrier, or
@@ -20957,7 +21373,12 @@ impl Level2ResetSession {
                 for live_row in self.economy.live_arena_cursor_rows() {
                     let live_key = (live_row.source_slot, live_row.generation);
                     if !live_dynamic_before.contains(&live_key)
-                        && row.kind == Level2DynamicArenaKind::AuthoredSwitchProducer
+                        && (row.kind == Level2DynamicArenaKind::AuthoredSwitchProducer
+                            || matches!(
+                                live_row.kind,
+                                Level2DynamicArenaKind::PossessionProjectile
+                                    | Level2DynamicArenaKind::PossessionEffect
+                            ))
                         && live_row.source_slot <= source_slot
                         && !dispatched_dynamic_slots.contains(&live_key)
                     {
@@ -21626,6 +22047,12 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::CastleProjectile => self
                 .economy
                 .step_castle_projectile_slot(source_slot, &self.entities),
+            Level2DynamicArenaKind::PossessionProjectile => {
+                self.economy.step_possession_projectile_slot(source_slot)
+            }
+            Level2DynamicArenaKind::PossessionEffect => {
+                self.economy.step_possession_effect_slot(source_slot)
+            }
             Level2DynamicArenaKind::CastleDefender => {
                 self.economy.step_castle_defender_slot(source_slot)
             }

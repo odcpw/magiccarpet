@@ -14,6 +14,39 @@ const LEVEL2_CASTLE_MODEL41_MSPRD_RECTS: [(u8, u8); 8] = [
     (1, 0),
 ];
 const LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT: u32 = 0x2;
+/// `sub_65580` adds the model-39 source yaw (28 in the pinned Level 2
+/// package) while a Possession flyer copies its collision contact.
+const POSSESSION_TARGET_Z_SHIFT: i16 = 28;
+/// `sub_112D0` scans the source effect's complete five-by-five map-cell
+/// square when model 12 has pitch 512: Y is the outer source loop and X the
+/// inner loop.
+const POSSESSION_IMPACT_SEARCH_OFFSETS: [(i8, i8); 25] = [
+    (-2, -2),
+    (-1, -2),
+    (0, -2),
+    (1, -2),
+    (2, -2),
+    (-2, -1),
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (2, -1),
+    (-2, 0),
+    (-1, 0),
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (-2, 1),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+    (2, 1),
+    (-2, 2),
+    (-1, 2),
+    (0, 2),
+    (1, 2),
+    (2, 2),
+];
 
 fn level2_castle_model41_msprd_rect(stage: u8) -> Option<(u8, u8)> {
     (1..=7)
@@ -105,6 +138,270 @@ impl Level2EconomyState {
             .get(&source_entity_index)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Source `sub_69900`: allocate the ordinary tier-0 class-9/model-1
+    /// flyer. The caller deliberately performs the holder's expenditure and
+    /// decrement independently, because source does both even when this
+    /// allocation cannot obtain an arena row.
+    pub fn spawn_possession_projectile(
+        &mut self,
+        player_position: Position,
+        source_id_entity_index: u16,
+        holder_entity_index: u16,
+        yaw: i16,
+        pitch: i16,
+        player_speed: i16,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut position = player_position;
+        position.z = position.z.wrapping_add(100);
+        let projectile = Level2PossessionProjectile {
+            source_entity_index,
+            entity_rng,
+            source_id_entity_index,
+            holder_entity_index,
+            source_class: POSSESSION_PROJECTILE_CLASS,
+            source_model: POSSESSION_PROJECTILE_MODEL,
+            action: POSSESSION_PROJECTILE_ACTION,
+            output_class: POSSESSION_IMPACT_CLASS,
+            output_model: POSSESSION_IMPACT_MODEL,
+            position,
+            yaw: yaw & 0x07ff,
+            pitch: pitch & 0x07ff,
+            actual_speed: POSSESSION_PROJECTILE_SPEED.wrapping_add(player_speed),
+            minimum_speed: POSSESSION_PROJECTILE_SPEED,
+            life: POSSESSION_PROJECTILE_LIFETIME_TICKS,
+            max_life: POSSESSION_PROJECTILE_LIFETIME_TICKS,
+            phase: 0,
+            active: true,
+        };
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, Some(entity_rng));
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.possession_projectiles.push(projectile);
+        Some(source_entity_index)
+    }
+
+    /// Source `NewAdd0A0C_4E8C0` product for a successful possession flyer
+    /// collision. This is intentionally private to the projectile callback:
+    /// public production routes cannot create an ownership pulse directly.
+    fn allocate_possession_effect(
+        &mut self,
+        projectile: Level2PossessionProjectile,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let effect = Level2PossessionEffect {
+            source_entity_index,
+            entity_rng,
+            source_id_entity_index: projectile.source_id_entity_index,
+            projectile_entity_index: projectile.source_entity_index,
+            source_class: projectile.output_class,
+            source_model: projectile.output_model,
+            action: POSSESSION_IMPACT_ACTION,
+            position: projectile.position,
+            yaw: projectile.yaw,
+            pitch: projectile.pitch,
+            life: POSSESSION_IMPACT_LIFE,
+            max_life: POSSESSION_IMPACT_LIFE,
+            phase: 0,
+            active: true,
+        };
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: effect.position.x,
+                y: effect.position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, Some(entity_rng));
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.possession_effects.push(effect);
+        Some(source_entity_index)
+    }
+
+    /// Source `CastPosses_65F60`: move first, scan the live map chain in
+    /// source order, and retire only after model-12 allocation succeeds.
+    /// A target contact shifts to that target's temporary +28 source Z before
+    /// allocation; allocation failure preserves that shifted flyer and its
+    /// unchanged life for the next callback.  The no-target expiry branch
+    /// attempts the same model-12 allocation and likewise retries on failure.
+    pub fn step_possession_projectile_slot(&mut self, source_slot: u16) -> bool {
+        let Some(projectile_index) = self.possession_projectiles.iter().position(|projectile| {
+            projectile.active && projectile.source_entity_index == source_slot
+        }) else {
+            return false;
+        };
+        let mut moved = self.possession_projectiles[projectile_index];
+        crate::move_entity(
+            &mut moved.position,
+            moved.yaw,
+            moved.pitch,
+            moved.actual_speed,
+        );
+        moved.phase = moved.phase.wrapping_add(1);
+
+        let target =
+            level2_first_possession_target_sphere_slot(&self.map_chains, &self.spheres, moved);
+        if let Some(target_sphere_slot) = target {
+            if let Some(target) = self
+                .spheres
+                .iter()
+                .find(|sphere| sphere.active && sphere.source_entity_index == target_sphere_slot)
+            {
+                moved.position = target.position;
+                moved.position.z = moved.position.z.wrapping_add(POSSESSION_TARGET_Z_SHIFT);
+            }
+            self.possession_projectiles[projectile_index] = moved;
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: moved.position.x,
+                y: moved.position.y,
+            });
+            if self.allocate_possession_effect(moved).is_some() {
+                let projectile = &mut self.possession_projectiles[projectile_index];
+                projectile.active = false;
+                return false;
+            }
+            return true;
+        }
+
+        // `CastPosses_65F60` decrements life only after its target scan and
+        // only on the no-target branch.  The signed expiry value remains on a
+        // live flyer when allocating model 12 fails, so the following source
+        // callback retries rather than silently consuming the cast.
+        moved.life = moved.life.wrapping_sub(1);
+        self.possession_projectiles[projectile_index] = moved;
+        let _ = self.map_chains.sync_entity(RenderableMapSeed {
+            entity_index: source_slot,
+            active: true,
+            x: moved.position.x,
+            y: moved.position.y,
+        });
+        if moved.life < 0 && self.allocate_possession_effect(moved).is_some() {
+            self.possession_projectiles[projectile_index].active = false;
+            return false;
+        }
+        true
+    }
+
+    /// Source `PossesHitMana_320E0`: every live model-12 callback walks its
+    /// complete map-search square and writes every qualifying model-39
+    /// mailbox through strict overlap, then advances phase and applies the
+    /// signed `life-- < 0` terminal test.
+    pub fn step_possession_effect_slot(&mut self, source_slot: u16) -> bool {
+        let Some(effect_index) = self
+            .possession_effects
+            .iter()
+            .position(|effect| effect.active && effect.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let mut effect = self.possession_effects[effect_index];
+        effect.phase = effect.phase.wrapping_add(1);
+        let terminal = effect.life < 0;
+        if !terminal {
+            for candidate_slot in crate::level1_mission::source_map_search_slots(
+                &self.map_chains,
+                effect.position,
+                &POSSESSION_IMPACT_SEARCH_OFFSETS,
+            ) {
+                let Some(sphere_index) = self.spheres.iter().position(|sphere| {
+                    sphere.active
+                        && !sphere.pending_delete
+                        && sphere.source_entity_index == candidate_slot
+                        && u16::try_from(sphere.id).ok() != Some(effect.source_id_entity_index)
+                }) else {
+                    continue;
+                };
+                let sphere = self.spheres[sphere_index];
+                let dimension = level2_mana_sphere_dimension(sphere.mana);
+                if crate::level1_mission::source_entities_overlap(
+                    effect.position,
+                    POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+                    POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
+                    POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
+                    sphere.position,
+                    dimension,
+                    dimension,
+                    dimension,
+                ) {
+                    let sphere = &mut self.spheres[sphere_index];
+                    sphere.incoming_owner_entity_index = effect.source_id_entity_index;
+                    sphere.incoming_possession_payload = 0;
+                }
+            }
+        }
+        effect.life = effect.life.wrapping_sub(1);
+        if terminal {
+            effect.active = false;
+        }
+        self.possession_effects[effect_index] = effect;
+        // `DisableEntityDrawing04_57F10` marks a row hidden but leaves its
+        // map relation and arena slot intact until the next `UpdateEntities`
+        // prologue.  `reclaim_possession_rows_at_source_boundary` alone
+        // performs that unlink/release.
+        effect.active
+    }
+
+    /// Source `UpdateEntities_57730` performs the later `sub_57F20` unlink
+    /// and free before the next pass begins. Possession landing callbacks may
+    /// clear their draw/live state during a pass, but their source slot is not
+    /// reusable until this one narrowly scoped prologue sweep.
+    pub(super) fn reclaim_possession_rows_at_source_boundary(&mut self) {
+        let reclaimed_projectiles = self
+            .possession_projectiles
+            .iter()
+            .filter(|projectile| !projectile.active)
+            .map(|projectile| (projectile.source_entity_index, projectile.entity_rng))
+            .collect::<Vec<_>>();
+        self.possession_projectiles
+            .retain(|projectile| projectile.active);
+        for (slot, entity_rng) in reclaimed_projectiles {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+
+        let reclaimed_effects = self
+            .possession_effects
+            .iter()
+            .filter(|effect| !effect.active)
+            .map(|effect| (effect.source_entity_index, effect.entity_rng))
+            .collect::<Vec<_>>();
+        self.possession_effects.retain(|effect| effect.active);
+        for (slot, entity_rng) in reclaimed_effects {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
     }
 
     /// Source `TransformEntityToManaSphere_36BA0` with `use_mana_fraction`
@@ -878,6 +1175,39 @@ impl Level2EconomyState {
         else {
             return false;
         };
+        // `TransformArcherToMana_35940` consumes the model-12 mailbox before
+        // movement. A tier-0 pulse transfers only when the raw protected bit
+        // is clear; both owner projections are authoritative consumers in
+        // the Level 2 economy, so they must change together.
+        let claimed_owner = {
+            let sphere = &mut self.spheres[sphere_index];
+            let pending_owner = sphere.incoming_owner_entity_index;
+            if pending_owner == 0 {
+                None
+            } else {
+                let payload = sphere.incoming_possession_payload;
+                sphere.incoming_owner_entity_index = 0;
+                sphere.incoming_possession_payload = 0;
+                let protected = sphere.control_flags & 0x0020_0000 != 0;
+                if sphere.owner_entity_index != pending_owner && (payload != 0 || !protected) {
+                    sphere.owner_entity_index = pending_owner;
+                    sphere.player_entity_index = pending_owner;
+                    sphere.control_flags &= !0x40;
+                    if payload != 0 {
+                        sphere.control_flags |= 0x0020_0000;
+                    }
+                    Some((sphere.id, pending_owner))
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some((sphere_id, owner_entity_index)) = claimed_owner {
+            self.events.push(Level2EconomyEvent::ManaSphereClaimed {
+                sphere_id,
+                owner_entity_index,
+            });
+        }
         // `TransformArcherToMana_35940` consumes the source-linked attraction
         // mailbox before the ordinary sphere physics and clears it after one
         // movement attempt. A field that expired before this row's cursor
@@ -3977,6 +4307,616 @@ impl Level2EconomyState {
 mod tests {
     use super::super::tests::level_two_fixture_path;
     use super::*;
+
+    fn level_two_possession_lifecycle_session() -> Level2ResetSession {
+        let package = level_two_fixture_path();
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+            .expect("qualified Level 2 gameplay component")
+            .level2_reset_session()
+            .expect("Level 2 possession lifecycle session")
+    }
+
+    #[test]
+    fn level_two_possession_contact_retry_preserves_shifted_life_and_prologue_reclaim() {
+        let mut session = level_two_possession_lifecycle_session();
+        let source_id_entity_index = session.state.entity_index;
+        session.activate_level2_authored_switch_group(0, 23, 1);
+        let target = session
+            .economy()
+            .spheres()
+            .iter()
+            .copied()
+            .find(|sphere| {
+                sphere.active
+                    && !sphere.pending_delete
+                    && u16::try_from(sphere.id).ok() != Some(source_id_entity_index)
+                    && sphere.player_entity_index != source_id_entity_index
+            })
+            .expect("fixture has an eligible model-39 possession target");
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == target.source_entity_index)
+            .expect("eligible contact target remains mutable")
+            .owner_entity_index = source_id_entity_index;
+        let projectile_slot = session
+            .economy_mut()
+            .spawn_possession_projectile(
+                target.position,
+                source_id_entity_index,
+                116,
+                0,
+                0,
+                -POSSESSION_PROJECTILE_SPEED,
+            )
+            .expect("source arena admits possession flyer");
+        {
+            let economy = session.economy_mut();
+            let projectile = economy
+                .possession_projectiles
+                .iter_mut()
+                .find(|projectile| projectile.source_entity_index == projectile_slot)
+                .expect("spawned possession flyer");
+            projectile.position = target.position;
+            projectile.actual_speed = 0;
+            economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: projectile_slot,
+                    active: true,
+                    x: target.position.x,
+                    y: target.position.y,
+                })
+                .expect("flyer source slot links to the live map");
+            let projectile = *economy
+                .possession_projectiles
+                .iter()
+                .find(|projectile| projectile.source_entity_index == projectile_slot)
+                .expect("source predicate probe flyer");
+            assert_eq!(
+                level2_first_possession_target_sphere_slot(
+                    &economy.map_chains,
+                    &economy.spheres,
+                    projectile,
+                ),
+                Some(target.source_entity_index),
+                "an already player-owned target remains eligible when its raw id differs"
+            );
+            economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == target.source_entity_index)
+                .expect("source predicate target row")
+                .player_entity_index = source_id_entity_index;
+            assert!(
+                level2_first_possession_target_sphere_slot(
+                    &economy.map_chains,
+                    &economy.spheres,
+                    projectile,
+                )
+                .is_none(),
+                "the raw playerEntityIndex relation, not owner equality, excludes the target"
+            );
+            economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == target.source_entity_index)
+                .expect("source predicate target row")
+                .player_entity_index = 0;
+        }
+        let free_after_flyer = session.economy().free_slots.clone();
+        let life_before_contact = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .expect("live flyer before failed contact")
+            .life;
+        session.economy_mut().free_slots.clear();
+
+        assert!(
+            session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "failed model-12 allocation keeps the collision flyer live"
+        );
+        let retry = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("failed contact retains flyer for a later source callback");
+        assert!(retry.active);
+        assert_eq!(
+            retry.life, life_before_contact,
+            "contact does not decrement life"
+        );
+        assert_eq!(
+            retry.position.z,
+            target.position.z.wrapping_add(POSSESSION_TARGET_Z_SHIFT),
+            "source contact copies the temporary model-39 +28 Z without mutating the target"
+        );
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == target.source_entity_index)
+                .expect("contact target remains live")
+                .position,
+            target.position,
+            "sub_655A0 restores the model-39 raw position after contact"
+        );
+        assert!(session.economy().possession_effects().is_empty());
+
+        session.economy_mut().free_slots = free_after_flyer;
+        assert!(
+            !session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "the unchanged-life contact retries model-12 allocation"
+        );
+        let retired = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("disabled flyer remains represented until the next prologue");
+        assert!(!retired.active);
+        assert!(
+            session.economy().map_chains().is_linked(projectile_slot),
+            "DisableEntityDrawing leaves the disabled source row map-linked in this pass"
+        );
+        assert!(
+            !session.economy().free_slots.contains(&projectile_slot),
+            "disabled source slot remains unavailable before the next prologue"
+        );
+        assert_eq!(
+            session
+                .economy()
+                .possession_effects()
+                .iter()
+                .find(|effect| effect.projectile_entity_index == projectile_slot)
+                .expect("successful contact creates one model-12 effect")
+                .position
+                .z,
+            target.position.z.wrapping_add(POSSESSION_TARGET_Z_SHIFT),
+            "model-12 is created at the shifted contact position"
+        );
+
+        session
+            .economy_mut()
+            .reclaim_possession_rows_at_source_boundary();
+        assert!(session.economy().possession_projectiles().is_empty());
+        assert!(
+            !session.economy().map_chains().is_linked(projectile_slot),
+            "the following source-pass prologue alone unlinks the disabled flyer"
+        );
+        assert!(
+            session.economy().free_slots.contains(&projectile_slot),
+            "the following source-pass prologue alone releases the slot"
+        );
+    }
+
+    #[test]
+    fn level_two_possession_expiry_retries_model12_allocation() {
+        let mut session = level_two_possession_lifecycle_session();
+        let source_id_entity_index = session.state.entity_index;
+        let no_target_position = Position {
+            x: 32_000,
+            y: 32_000,
+            z: 30_000,
+        };
+        let projectile_slot = session
+            .economy_mut()
+            .spawn_possession_projectile(
+                no_target_position,
+                source_id_entity_index,
+                116,
+                0,
+                0,
+                -POSSESSION_PROJECTILE_SPEED,
+            )
+            .expect("source arena admits possession flyer");
+        {
+            let economy = session.economy_mut();
+            let projectile = economy
+                .possession_projectiles
+                .iter_mut()
+                .find(|projectile| projectile.source_entity_index == projectile_slot)
+                .expect("spawned possession flyer");
+            projectile.position = no_target_position;
+            projectile.actual_speed = 0;
+            projectile.life = 0;
+            assert!(
+                level2_first_possession_target_sphere_slot(
+                    &economy.map_chains,
+                    &economy.spheres,
+                    *projectile,
+                )
+                .is_none(),
+                "expiry fixture is outside every eligible model-39 collision volume"
+            );
+            economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: projectile_slot,
+                    active: true,
+                    x: no_target_position.x,
+                    y: no_target_position.y,
+                })
+                .expect("expiry flyer source slot links to the live map");
+        }
+        let free_after_flyer = session.economy().free_slots.clone();
+        session.economy_mut().free_slots.clear();
+
+        assert!(
+            session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "expired flyer remains live when model-12 allocation fails"
+        );
+        let retry = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("failed expiry retains flyer");
+        assert_eq!(
+            retry.life, -1,
+            "no-target expiry decrements before allocation"
+        );
+        assert!(session.economy().possession_effects().is_empty());
+
+        session.economy_mut().free_slots = free_after_flyer;
+        assert!(
+            !session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "the expiry branch retries model-12 allocation on its next callback"
+        );
+        assert!(
+            session
+                .economy()
+                .possession_effects()
+                .iter()
+                .any(|effect| effect.projectile_entity_index == projectile_slot),
+            "no-target expiry produces the same typed model-12 effect"
+        );
+    }
+
+    #[test]
+    fn level_two_possession_effect_writes_every_overlapping_live_sphere_mailbox() {
+        let mut session = level_two_possession_lifecycle_session();
+        let source_id_entity_index = session.state.entity_index;
+        session.activate_level2_authored_switch_group(0, 23, 1);
+        let first = session
+            .economy()
+            .spheres()
+            .iter()
+            .copied()
+            .find(|sphere| {
+                sphere.active
+                    && !sphere.pending_delete
+                    && u16::try_from(sphere.id).ok() != Some(source_id_entity_index)
+                    && sphere.player_entity_index != source_id_entity_index
+            })
+            .expect("group-1 model-39 source for Possession effect fan-out");
+        let second = session
+            .economy_mut()
+            .allocate_authored_model39(0, 23, first.position)
+            .expect("second live model-39 source in the same effect volume");
+        let projectile_slot = session
+            .economy_mut()
+            .spawn_possession_projectile(
+                first.position,
+                source_id_entity_index,
+                116,
+                0,
+                0,
+                -POSSESSION_PROJECTILE_SPEED,
+            )
+            .expect("source arena admits possession flyer");
+        {
+            let economy = session.economy_mut();
+            let projectile = economy
+                .possession_projectiles
+                .iter_mut()
+                .find(|projectile| projectile.source_entity_index == projectile_slot)
+                .expect("spawned possession flyer");
+            projectile.position = first.position;
+            projectile.actual_speed = 0;
+            economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: projectile_slot,
+                    active: true,
+                    x: first.position.x,
+                    y: first.position.y,
+                })
+                .expect("flyer source slot links to the live map");
+        }
+        assert!(
+            !session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "contact creates model-12 through the real flyer callback"
+        );
+        let effect_slot = session
+            .economy()
+            .possession_effects()
+            .iter()
+            .find(|effect| effect.projectile_entity_index == projectile_slot)
+            .expect("contact effect")
+            .source_entity_index;
+        assert!(
+            session
+                .economy_mut()
+                .step_possession_effect_slot(effect_slot),
+            "first model-12 callback remains live after mailbox writes"
+        );
+        for sphere_slot in [first.source_entity_index, second.source_entity_index] {
+            let sphere = session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == sphere_slot)
+                .expect("overlapping map-linked model-39 source");
+            assert_eq!(
+                sphere.incoming_owner_entity_index, source_id_entity_index,
+                "model-12 writes its source id to every overlapping sphere, not only its collision target"
+            );
+            assert_eq!(sphere.incoming_possession_payload, 0);
+        }
+    }
+
+    #[test]
+    fn level_two_possession_new_rows_follow_the_remaining_ascending_source_cursor() {
+        fn run_case(target_after_projectile: bool) -> (u16, u16, u16, u16) {
+            let mut session = level_two_possession_lifecycle_session();
+            // Let the owned Level 2 bootstrap materialize its pre-existing
+            // source rows first. The cursor cases below then isolate a real
+            // later `NewEvent` insertion without competing with unrelated
+            // first-pass authored constructors.
+            session.step_level2_source_pass(0);
+            let source_id_entity_index = session.state.entity_index;
+            let mut static_route_slots = BTreeSet::from([source_id_entity_index, 38_u16, 75_u16]);
+            static_route_slots.extend(
+                session
+                    .shared_spells
+                    .dynamic_pickups
+                    .iter()
+                    .filter(|holder| {
+                        holder.active
+                            && holder.class == 15
+                            && holder.model == POSSESSION_SPELL_FAMILY
+                            && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                    })
+                    .map(|holder| holder.index),
+            );
+            static_route_slots.extend(
+                session
+                    .entities
+                    .iter()
+                    .filter(|entity| {
+                        entity.active
+                            && entity.class == 3
+                            && entity.model == 1
+                            && entity.action == 1
+                    })
+                    .map(|entity| entity.index),
+            );
+            static_route_slots.extend(session.bad_stones.iter().map(|stone| stone.entity.index));
+            static_route_slots.extend(
+                session
+                    .ordinary
+                    .houses()
+                    .iter()
+                    .map(|house| house.entity_index),
+            );
+            static_route_slots.extend(
+                session
+                    .ordinary
+                    .villagers()
+                    .iter()
+                    .map(|villager| villager.entity_index),
+            );
+            static_route_slots.extend(
+                session
+                    .ordinary
+                    .dolmens()
+                    .iter()
+                    .map(|dolmen| dolmen.entity.index),
+            );
+            static_route_slots.extend(
+                session
+                    .economy()
+                    .castle()
+                    .filter(|castle| castle.active)
+                    .map(|castle| castle.source_entity_index),
+            );
+            static_route_slots.extend(LEVEL_TWO_GOAT_INDICES);
+            let mut slots = session
+                .economy()
+                .free_slots
+                .iter()
+                .copied()
+                .filter(|slot| !static_route_slots.contains(slot))
+                .collect::<Vec<_>>();
+            slots.sort_unstable();
+            assert!(
+                slots.len() >= 3,
+                "fixture provides three non-static source slots for cursor ordering"
+            );
+            let (projectile_slot, effect_slot, target_slot) = if target_after_projectile {
+                (slots[0], slots[1], slots[2])
+            } else {
+                (slots[1], slots[2], slots[0])
+            };
+            let mut position = Position {
+                x: 30_000,
+                y: 30_000,
+                z: 0,
+            };
+            position.z = session.terrain.ground_height(position);
+            {
+                let economy = session.economy_mut();
+                economy.spheres.push(ManaSphere {
+                    id: u32::from(target_slot),
+                    source_entity_index: target_slot,
+                    entity_rng: 0,
+                    position,
+                    velocity_x: 0,
+                    velocity_y: 0,
+                    vertical_velocity: 0,
+                    yaw: 0,
+                    mana: 512,
+                    owner_entity_index: 0,
+                    player_entity_index: 0,
+                    incoming_owner_entity_index: 0,
+                    incoming_possession_payload: 0,
+                    attraction_source_entity_index: 0,
+                    attraction_step: 0,
+                    attraction_distance_high: 0,
+                    assigned_carrier_id: 0,
+                    assigned_defender_slot: 0,
+                    control_flags: 0,
+                    phase: 0,
+                    active: true,
+                    pending_delete: false,
+                });
+                economy
+                    .possession_projectiles
+                    .push(Level2PossessionProjectile {
+                        source_entity_index: projectile_slot,
+                        entity_rng: 0,
+                        source_id_entity_index,
+                        holder_entity_index: 116,
+                        source_class: POSSESSION_PROJECTILE_CLASS,
+                        source_model: POSSESSION_PROJECTILE_MODEL,
+                        action: POSSESSION_PROJECTILE_ACTION,
+                        output_class: POSSESSION_IMPACT_CLASS,
+                        output_model: POSSESSION_IMPACT_MODEL,
+                        position,
+                        yaw: 0,
+                        pitch: 0,
+                        actual_speed: 0,
+                        minimum_speed: POSSESSION_PROJECTILE_SPEED,
+                        life: POSSESSION_PROJECTILE_LIFETIME_TICKS,
+                        max_life: POSSESSION_PROJECTILE_LIFETIME_TICKS,
+                        phase: 0,
+                        active: true,
+                    });
+                economy
+                    .map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: target_slot,
+                        active: true,
+                        x: position.x,
+                        y: position.y,
+                    })
+                    .expect("synthetic model-39 is map-linked in source order");
+                economy
+                    .map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: projectile_slot,
+                        active: true,
+                        x: position.x,
+                        y: position.y,
+                    })
+                    .expect("synthetic possession flyer is map-linked in source order");
+                // `allocate_slot` pops the last element. Force the effect
+                // into the source slot between or after the two existing rows
+                // without changing the actual flyer/effect constructor.
+                economy.free_slots = vec![effect_slot];
+                let projectile = economy
+                    .possession_projectiles
+                    .iter()
+                    .find(|projectile| projectile.source_entity_index == projectile_slot)
+                    .copied()
+                    .expect("synthetic possession flyer remains live before source pass");
+                assert_eq!(
+                    level2_first_possession_target_sphere_slot(
+                        &economy.map_chains,
+                        &economy.spheres,
+                        projectile,
+                    ),
+                    Some(target_slot),
+                    "the controlled source-map fixture has one eligible collision target"
+                );
+                assert!(
+                    economy
+                        .live_arena_cursor_rows()
+                        .iter()
+                        .any(|row| row.source_slot == projectile_slot),
+                    "the controlled flyer is visible to the initial dynamic cursor"
+                );
+            }
+
+            session.step_level2_source_pass(1);
+            let sphere_after_first = session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .expect("target sphere remains in the source arena after first pass");
+            let owner_after_first = sphere_after_first.owner_entity_index;
+            let mailbox_after_first = sphere_after_first.incoming_owner_entity_index;
+            assert!(
+                session
+                    .economy()
+                    .possession_effects()
+                    .iter()
+                    .any(|effect| effect.source_entity_index == effect_slot),
+                "real collision allocation consumes the forced effect slot"
+            );
+            session.step_level2_source_pass(2);
+            let owner_after_second = session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .expect("target sphere remains in the source arena after second pass")
+                .owner_entity_index;
+            (
+                source_id_entity_index,
+                owner_after_first,
+                mailbox_after_first,
+                owner_after_second,
+            )
+        }
+
+        let (source_id, higher_owner, higher_mailbox, higher_owner_next) = run_case(true);
+        assert_eq!(
+            higher_owner, source_id,
+            "S>E consumes the model-12 mailbox in the same source pass"
+        );
+        assert_eq!(
+            higher_mailbox, 0,
+            "same-pass sphere action clears its mailbox"
+        );
+        assert_eq!(higher_owner_next, source_id);
+
+        let (source_id, lower_owner, lower_mailbox, lower_owner_next) = run_case(false);
+        assert_ne!(
+            lower_owner, source_id,
+            "S<E has already passed its model-39 action when the effect is born"
+        );
+        assert_eq!(
+            lower_mailbox, source_id,
+            "S<E receives the source-id mailbox but cannot consume it early"
+        );
+        assert_eq!(
+            lower_owner_next, source_id,
+            "the following ascending source pass consumes the deferred mailbox"
+        );
+    }
 
     #[test]
     fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {

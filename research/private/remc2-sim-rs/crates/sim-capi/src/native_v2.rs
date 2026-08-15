@@ -22672,6 +22672,182 @@ mod tests {
     }
 
     #[test]
+    fn level2_campaign_public_tier0_possession_claims_group1_mana_from_grounded_flight() {
+        let handle =
+            open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+        let row11_position = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Possession proof requires a Level 2 campaign session",
+                ));
+            };
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .copied()
+                .find(|feature| feature.index == 11)
+                .map(|feature| feature.world_position(0))
+                .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "missing authored row 11"))
+        })
+        .expect("read Level 2 row-11 objective position");
+
+        let step = |input: McCampaignStepInputV2| {
+            let mut snapshot = McCampaignStepSnapshotV2::default();
+            let mut events = [McCampaignEventV2::default(); 1024];
+            let mut event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+            (snapshot, events[..event_count as usize].to_vec())
+        };
+        let copy_spheres = || {
+            let mut rows = [McManaSphereSnapshotV2::default(); 64];
+            let mut batch = McCampaignManaBatchV2::default();
+            assert_eq!(
+                mc_native_campaign_mana_spheres_copy(
+                    handle,
+                    0,
+                    0,
+                    rows.as_mut_ptr(),
+                    rows.len() as u32,
+                    struct_size::<McManaSphereSnapshotV2>(),
+                    &raw mut batch,
+                    struct_size::<McCampaignManaBatchV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            rows[..batch.written as usize].to_vec()
+        };
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: valid_command(),
+            player_slot: 0,
+            speed_index: 0,
+            player_x: row11_position.x,
+            player_y: row11_position.y,
+            // This is the regular Day flight height at the row-11 objective,
+            // not a target-height or mailbox shortcut.
+            player_z: 256,
+            ..McCampaignStepInputV2::default()
+        };
+        let (_, group_events) = step(input);
+        assert!(group_events.iter().any(|event| {
+            event.kind == MC_CAMPAIGN_EVENT_AUTHORED_GROUP
+                && event.source_slot == 23
+                && event.flags != 0
+        }));
+        let target = copy_spheres()
+            .into_iter()
+            .find(|sphere| {
+                sphere.active != 0
+                    && sphere.model == 39
+                    && sphere.mana == 512
+                    && sphere.owner_entity_index == 0
+            })
+            .expect("ordinary row-11 producer exposes a neutral group-1 model-39 sphere");
+
+        // Drive pitch and forward speed through McCampaignStepInputV2 only.
+        // No test code mutates `Level2ResetSession` or a target sphere.
+        input.player_x = target.x;
+        input.player_y = target.y;
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            pitch: 127,
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+        let _ = step(input);
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            pitch: 127,
+            flags: 0x41,
+            requested_spell: 1,
+            ..McCommandV2::default()
+        };
+        let _ = step(input);
+        let (yaw, pitch, actual_speed, player_entity_index) =
+            with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                    return Err(AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "Possession proof requires a Level 2 campaign session",
+                    ));
+                };
+                Ok((
+                    reset.state.yaw,
+                    reset.state.effective_pitch,
+                    reset.state.actual_speed,
+                    reset.state.entity_index,
+                ))
+            })
+            .expect("read public-input flight state");
+        assert_eq!(yaw, 0, "the pinned reset route faces source yaw zero");
+        assert!(
+            pitch > 0 && actual_speed > 0,
+            "public pitch/forward input arms descent"
+        );
+        let projectile_speed = 384_i16.wrapping_add(actual_speed);
+        let launch_distance = u16::try_from(i32::from(projectile_speed) * 2)
+            .expect("two ordinary flyer steps fit the source coordinate range");
+        input.player_x = target.x;
+        input.player_y = target.y.wrapping_add(launch_distance);
+        input.player_z = 256;
+        input.command = valid_command();
+        let (_, launch_events) = step(input);
+        assert!(
+            launch_events
+                .iter()
+                .any(|event| event.kind == 8 && event.family == 39)
+        );
+        assert!(
+            copy_spheres()
+                .iter()
+                .all(|sphere| sphere.owner_entity_index == 0)
+        );
+
+        let mut saw_effect = false;
+        let mut claimed = None;
+        for _ in 0..8 {
+            let (_, events) = step(input);
+            saw_effect |= events
+                .iter()
+                .any(|event| event.kind == 8 && event.family == 40);
+            claimed = copy_spheres()
+                .into_iter()
+                .find(|sphere| sphere.owner_entity_index == player_entity_index)
+                .or(claimed);
+            if claimed.is_some() {
+                break;
+            }
+        }
+        assert!(
+            saw_effect,
+            "strict grounded flight collision allocates typed model-12 effect"
+        );
+        let claimed = claimed.expect("model-12 mailbox reaches model-39/action-41 ownership");
+        assert_eq!(claimed.model, 39);
+        assert_eq!(claimed.owner_entity_index, player_entity_index);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn level2_campaign_step_projects_family12_source_slot38() {
         let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/l2-debug3.fJ3PaM/level2");
