@@ -1413,6 +1413,11 @@ const LEVEL2_MANA_SPHERE_SEARCH_OFFSETS: [(i8, i8); 16] = [
     (2, 2),
 ];
 
+/// Pinned `sub_108B0` uses `AddE7EE0x_10080(0, ...)` for the tier-0
+/// Possession flyer.  That class-0 query is only the first four SEARCH.DAT
+/// cells; the remaining twelve cells belong to the wider class-1 sphere walk.
+const LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS: [(i8, i8); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
+
 fn level2_first_colliding_mana_sphere_slot(
     map_chains: &RenderableMapChains,
     spheres: &[ManaSphere],
@@ -1463,7 +1468,7 @@ fn level2_first_possession_target_sphere_slot(
     for candidate_slot in source_map_search_slots(
         map_chains,
         projectile.position,
-        &LEVEL2_MANA_SPHERE_SEARCH_OFFSETS,
+        &LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS,
     ) {
         let Some(candidate) = spheres.iter().find(|candidate| {
             candidate.active
@@ -17588,25 +17593,33 @@ impl Level2ResetSession {
             return;
         };
 
-        let mana_regen = if self.shared_spells.player_entity.mana_regen >= 0 {
-            -holder.mana_cost
+        let activation_value = i16::try_from(holder.activation_value).unwrap_or(i16::MAX);
+        let mana_regen = if holder.active_value == activation_value {
+            Some(if self.shared_spells.player_entity.mana_regen >= 0 {
+                -holder.mana_cost
+            } else {
+                self.shared_spells
+                    .player_entity
+                    .mana_regen
+                    .wrapping_sub(holder.mana_cost)
+            })
+        } else if holder.active_value != 0 && self.shared_spells.player_entity.mana_regen > 0 {
+            Some(0)
         } else {
-            self.shared_spells
-                .player_entity
-                .mana_regen
-                .wrapping_sub(holder.mana_cost)
+            None
         };
-        self.shared_spells.player_entity.mana_regen = mana_regen;
-        self.shared_spells.player_entity.record[140..144]
-            .copy_from_slice(&mana_regen.to_le_bytes());
-        for entity in &mut self.shared_spells.player_entities {
-            if entity.index == self.shared_spells.player_entity.index {
-                entity.mana_regen = mana_regen;
-                entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
+        if let Some(mana_regen) = mana_regen {
+            self.shared_spells.player_entity.mana_regen = mana_regen;
+            self.shared_spells.player_entity.record[140..144]
+                .copy_from_slice(&mana_regen.to_le_bytes());
+            for entity in &mut self.shared_spells.player_entities {
+                if entity.index == self.shared_spells.player_entity.index {
+                    entity.mana_regen = mana_regen;
+                    entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
+                }
             }
         }
 
-        let activation_value = i16::try_from(holder.activation_value).unwrap_or(i16::MAX);
         if holder.active_value == activation_value && holder.life == 0 {
             let _ = self.economy.spawn_possession_projectile(
                 self.state.position,

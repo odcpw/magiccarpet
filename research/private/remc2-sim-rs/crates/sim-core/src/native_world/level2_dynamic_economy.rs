@@ -259,6 +259,30 @@ impl Level2EconomyState {
         );
         moved.phase = moved.phase.wrapping_add(1);
 
+        // `CastPosses_65F60` clamps the flyer before its `sub_108B0` scan.
+        // Ground or cave-ceiling contact takes the model-12 branch without a
+        // life decrement.  Equality remains contact so an allocation failure
+        // retries from the clamped source position on the next callback.
+        let ground_height = self.terrain.ground_height(moved.position);
+        let ground_contact = ground_height >= moved.position.z;
+        if ground_contact {
+            moved.position.z = ground_height;
+        }
+        let cave_contact = if let Some(ceiling_height) = self.terrain.ceiling_height(moved.position)
+        {
+            let cave_limit =
+                ceiling_height.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT);
+            if cave_limit <= moved.position.z {
+                moved.position.z = cave_limit;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let terrain_or_cave_contact = ground_contact || cave_contact;
+
         let target =
             level2_first_possession_target_sphere_slot(&self.map_chains, &self.spheres, moved);
         if let Some(target_sphere_slot) = target {
@@ -286,10 +310,15 @@ impl Level2EconomyState {
         }
 
         // `CastPosses_65F60` decrements life only after its target scan and
-        // only on the no-target branch.  The signed expiry value remains on a
-        // live flyer when allocating model 12 fails, so the following source
-        // callback retries rather than silently consuming the cast.
-        moved.life = moved.life.wrapping_sub(1);
+        // only when neither terrain nor cave contact routed it to model 12.
+        // The terminal source state remains live when model-12 allocation
+        // fails, so the following callback retries rather than consuming it.
+        let terminal = if terrain_or_cave_contact {
+            true
+        } else {
+            moved.life = moved.life.wrapping_sub(1);
+            moved.life < 0
+        };
         self.possession_projectiles[projectile_index] = moved;
         let _ = self.map_chains.sync_entity(RenderableMapSeed {
             entity_index: source_slot,
@@ -297,7 +326,7 @@ impl Level2EconomyState {
             x: moved.position.x,
             y: moved.position.y,
         });
-        if moved.life < 0 && self.allocate_possession_effect(moved).is_some() {
+        if terminal && self.allocate_possession_effect(moved).is_some() {
             self.possession_projectiles[projectile_index].active = false;
             return false;
         }
@@ -4342,10 +4371,19 @@ mod tests {
             .find(|sphere| sphere.source_entity_index == target.source_entity_index)
             .expect("eligible contact target remains mutable")
             .owner_entity_index = source_id_entity_index;
+        // `sub_108B0` starts at the rounded map cell while map linking uses
+        // the source position's high bytes.  Put the test flyer in the
+        // target's class-0 cell rather than relying on the now-forbidden
+        // class-1 backtrack for a low-byte edge position.
+        let projectile_position = Position {
+            x: target.position.x & 0xff00,
+            y: target.position.y & 0xff00,
+            z: target.position.z,
+        };
         let projectile_slot = session
             .economy_mut()
             .spawn_possession_projectile(
-                target.position,
+                projectile_position,
                 source_id_entity_index,
                 116,
                 0,
@@ -4360,15 +4398,15 @@ mod tests {
                 .iter_mut()
                 .find(|projectile| projectile.source_entity_index == projectile_slot)
                 .expect("spawned possession flyer");
-            projectile.position = target.position;
+            projectile.position = projectile_position;
             projectile.actual_speed = 0;
             economy
                 .map_chains
                 .sync_entity(RenderableMapSeed {
                     entity_index: projectile_slot,
                     active: true,
-                    x: target.position.x,
-                    y: target.position.y,
+                    x: projectile_position.x,
+                    y: projectile_position.y,
                 })
                 .expect("flyer source slot links to the live map");
             let projectile = *economy
@@ -4455,10 +4493,44 @@ mod tests {
 
         session.economy_mut().free_slots = free_after_flyer;
         assert!(
-            !session
+            session
                 .economy_mut()
                 .step_possession_projectile_slot(projectile_slot),
-            "the unchanged-life contact retries model-12 allocation"
+            "the next ordinary callback is not forced to re-hit a target after its snapped map-cell position changes"
+        );
+        let ordinary_next_callback = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("ordinary callback keeps the no-longer-contacting flyer live");
+        assert!(ordinary_next_callback.active);
+        assert_eq!(
+            ordinary_next_callback.life,
+            life_before_contact.wrapping_sub(1),
+            "after leaving target contact, the ordinary no-target branch resumes its signed life decrement"
+        );
+        assert!(
+            session.economy().possession_effects().is_empty(),
+            "a fresh callback does not synthesize a second forced target impact"
+        );
+
+        let mut retired_from_expiry = false;
+        for _ in 0..=usize::try_from(life_before_contact)
+            .expect("possession fixture lifetime is non-negative")
+        {
+            if !session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot)
+            {
+                retired_from_expiry = true;
+                break;
+            }
+        }
+        assert!(
+            retired_from_expiry,
+            "the ordinary no-target lifetime eventually allocates its one model-12 effect"
         );
         let retired = session
             .economy()
@@ -4482,7 +4554,7 @@ mod tests {
                 .possession_effects()
                 .iter()
                 .find(|effect| effect.projectile_entity_index == projectile_slot)
-                .expect("successful contact creates one model-12 effect")
+                .expect("eventual no-target expiry creates one model-12 effect")
                 .position
                 .z,
             target.position.z.wrapping_add(POSSESSION_TARGET_Z_SHIFT),
@@ -4588,6 +4660,353 @@ mod tests {
                 .iter()
                 .any(|effect| effect.projectile_entity_index == projectile_slot),
             "no-target expiry produces the same typed model-12 effect"
+        );
+    }
+
+    #[test]
+    fn level_two_possession_terrain_and_cave_contact_retry_without_life_decrement() {
+        fn assert_contact_retry(
+            session: &mut Level2ResetSession,
+            position: Position,
+            expected_z: i16,
+            contact_kind: &str,
+        ) {
+            let source_id_entity_index = session.state.entity_index;
+            let projectile_slot = session
+                .economy_mut()
+                .spawn_possession_projectile(
+                    position,
+                    source_id_entity_index,
+                    116,
+                    0,
+                    0,
+                    -POSSESSION_PROJECTILE_SPEED,
+                )
+                .expect("source arena admits possession flyer");
+            {
+                let economy = session.economy_mut();
+                let projectile = economy
+                    .possession_projectiles
+                    .iter_mut()
+                    .find(|projectile| projectile.source_entity_index == projectile_slot)
+                    .expect("spawned possession flyer");
+                projectile.position = position;
+                projectile.actual_speed = 0;
+                projectile.life = 4;
+                assert!(
+                    level2_first_possession_target_sphere_slot(
+                        &economy.map_chains,
+                        &economy.spheres,
+                        *projectile,
+                    )
+                    .is_none(),
+                    "{contact_kind} fixture is outside every eligible model-39 collision volume"
+                );
+                economy
+                    .map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: projectile_slot,
+                        active: true,
+                        x: position.x,
+                        y: position.y,
+                    })
+                    .expect("contact flyer source slot links to the live map");
+            }
+            let free_after_flyer = session.economy().free_slots.clone();
+            session.economy_mut().free_slots.clear();
+
+            assert!(
+                session
+                    .economy_mut()
+                    .step_possession_projectile_slot(projectile_slot),
+                "failed model-12 allocation preserves the {contact_kind} flyer"
+            );
+            let retry = session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .find(|projectile| projectile.source_entity_index == projectile_slot)
+                .copied()
+                .expect("failed contact retains flyer for retry");
+            assert!(retry.active);
+            assert_eq!(
+                retry.life, 4,
+                "{contact_kind} contact does not decrement life"
+            );
+            assert_eq!(
+                retry.position.z, expected_z,
+                "{contact_kind} contact clamps source Z"
+            );
+            assert!(session.economy().possession_effects().is_empty());
+
+            session.economy_mut().free_slots = free_after_flyer;
+            assert!(
+                !session
+                    .economy_mut()
+                    .step_possession_projectile_slot(projectile_slot),
+                "the clamped {contact_kind} flyer retries model-12 allocation"
+            );
+            assert!(
+                session
+                    .economy()
+                    .possession_effects()
+                    .iter()
+                    .any(|effect| effect.projectile_entity_index == projectile_slot),
+                "successful retry creates the model-12 effect"
+            );
+        }
+
+        let contact_position = Position {
+            x: 32_128,
+            y: 32_000,
+            z: 1_599,
+        };
+        let mut ground_session = level_two_possession_lifecycle_session();
+        ground_session
+            .economy_mut()
+            .terrain
+            .planes
+            .ground_heights
+            .fill(50);
+        assert_contact_retry(&mut ground_session, contact_position, 1_600, "ground");
+
+        let mut cave_session = level_two_possession_lifecycle_session();
+        {
+            let terrain = &mut cave_session.economy_mut().terrain;
+            terrain.map_type = MapType::Cave;
+            terrain.planes.ground_heights.fill(0);
+            terrain.planes.secondary_heights.fill(255);
+        }
+        assert_contact_retry(
+            &mut cave_session,
+            Position {
+                z: 8_000,
+                ..contact_position
+            },
+            8_160_i16.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT),
+            "cave ceiling",
+        );
+    }
+
+    #[test]
+    fn level_two_possession_uses_only_class0_search_cells_before_first_target() {
+        let mut session = level_two_possession_lifecycle_session();
+        let source_id_entity_index = session.state.entity_index;
+        let projectile_position = Position {
+            x: 32_000,
+            y: 32_000,
+            z: 30_000,
+        };
+        let projectile_slot = session
+            .economy_mut()
+            .spawn_possession_projectile(
+                projectile_position,
+                source_id_entity_index,
+                116,
+                0,
+                0,
+                -POSSESSION_PROJECTILE_SPEED,
+            )
+            .expect("source arena admits possession flyer");
+        {
+            let economy = session.economy_mut();
+            let projectile = economy
+                .possession_projectiles
+                .iter_mut()
+                .find(|projectile| projectile.source_entity_index == projectile_slot)
+                .expect("spawned possession flyer");
+            projectile.position = projectile_position;
+            projectile.actual_speed = 0;
+            economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: projectile_slot,
+                    active: true,
+                    x: projectile_position.x,
+                    y: projectile_position.y,
+                })
+                .expect("projectile source row links to the live map");
+        }
+        let class1_only_position = Position {
+            x: projectile_position.x.wrapping_sub(1),
+            ..projectile_position
+        };
+        let class1_only = session
+            .economy_mut()
+            .allocate_authored_model39(0, 23, class1_only_position)
+            .expect("source arena admits class-1-only candidate");
+        {
+            let candidate = session
+                .economy_mut()
+                .spheres
+                .iter_mut()
+                .find(|sphere| {
+                    sphere.source_entity_index == class1_only.source_entity_index
+                        && sphere.position == class1_only_position
+                })
+                .expect("class-1-only candidate remains mutable");
+            candidate.id = 0xfeed;
+            candidate.player_entity_index = source_id_entity_index.wrapping_add(1);
+        }
+        let projectile = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .copied()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .expect("live possession flyer");
+        let economy = session.economy();
+        assert!(
+            source_map_search_slots(
+                economy.map_chains(),
+                projectile_position,
+                &LEVEL2_MANA_SPHERE_SEARCH_OFFSETS,
+            )
+            .contains(&class1_only.source_entity_index),
+            "the discriminating candidate is visible to the wider class-1 sphere walk"
+        );
+        assert!(
+            !source_map_search_slots(
+                economy.map_chains(),
+                projectile_position,
+                &LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS,
+            )
+            .contains(&class1_only.source_entity_index),
+            "the discriminating candidate is outside the class-0 possession envelope"
+        );
+        assert_eq!(
+            level2_first_possession_target_sphere_slot(
+                economy.map_chains(),
+                economy.spheres(),
+                projectile
+            ),
+            None,
+            "a class-1-only model-39 must not become a Possession target"
+        );
+
+        let class0_first = session
+            .economy_mut()
+            .allocate_authored_model39(0, 23, projectile_position)
+            .expect("source arena admits first class-0 candidate");
+        {
+            let candidate = session
+                .economy_mut()
+                .spheres
+                .iter_mut()
+                .find(|sphere| {
+                    sphere.source_entity_index == class0_first.source_entity_index
+                        && sphere.position == projectile_position
+                })
+                .expect("class-0 candidate remains mutable");
+            candidate.id = 0xbeef;
+            candidate.player_entity_index = source_id_entity_index.wrapping_add(1);
+        }
+        let economy = session.economy();
+        assert!(
+            source_map_search_slots(
+                economy.map_chains(),
+                projectile_position,
+                &LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS,
+            )
+            .contains(&class0_first.source_entity_index),
+            "first class-0 candidate must be in the possession envelope"
+        );
+        assert_eq!(
+            level2_first_possession_target_sphere_slot(
+                economy.map_chains(),
+                economy.spheres(),
+                projectile
+            ),
+            Some(class0_first.source_entity_index),
+            "the first eligible class-0 model-39 is the sole target candidate"
+        );
+    }
+
+    #[test]
+    fn level_two_possession_holder_charges_once_then_clears_positive_cooldown_regen() {
+        let mut session = level_two_possession_lifecycle_session();
+        let holder_index = 116;
+        let (activation_value, mana_cost) = {
+            let holder = session
+                .shared_spells_mut()
+                .dynamic_pickups
+                .iter_mut()
+                .find(|holder| holder.index == holder_index)
+                .expect("ordinary Level 2 Possession holder");
+            let activation_value = i16::try_from(holder.activation_value)
+                .expect("ordinary Possession activation value fits signed source field");
+            holder.active = true;
+            holder.active_value = activation_value;
+            holder.life = 0;
+            (activation_value, holder.mana_cost)
+        };
+        assert!(mana_cost > 0, "fixture retains a positive source mana cost");
+        {
+            let shared = session.shared_spells_mut();
+            shared.player_entity.mana_regen = 37;
+            shared.player_entity.record[140..144].copy_from_slice(&37_i32.to_le_bytes());
+            for entity in &mut shared.player_entities {
+                if entity.index == shared.player_entity.index {
+                    entity.mana_regen = 37;
+                    entity.record[140..144].copy_from_slice(&37_i32.to_le_bytes());
+                }
+            }
+        }
+
+        session.step_level2_possession_holder_source_slot(holder_index);
+        assert_eq!(
+            session.shared_spells().player_entity.mana_regen,
+            -mana_cost,
+            "the activation tick applies the one source mana charge"
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .dynamic_pickups
+                .iter()
+                .find(|holder| holder.index == holder_index)
+                .expect("active possession holder after source callback")
+                .active_value,
+            activation_value - 1,
+            "spawn attempt still precedes the source countdown decrement"
+        );
+        assert_eq!(
+            session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .filter(|projectile| projectile.holder_entity_index == holder_index)
+                .count(),
+            1,
+            "the activation tick creates exactly one possession flyer"
+        );
+
+        {
+            let shared = session.shared_spells_mut();
+            shared.player_entity.mana_regen = 37;
+            shared.player_entity.record[140..144].copy_from_slice(&37_i32.to_le_bytes());
+            for entity in &mut shared.player_entities {
+                if entity.index == shared.player_entity.index {
+                    entity.mana_regen = 37;
+                    entity.record[140..144].copy_from_slice(&37_i32.to_le_bytes());
+                }
+            }
+        }
+        session.step_level2_possession_holder_source_slot(holder_index);
+        assert_eq!(
+            session.shared_spells().player_entity.mana_regen,
+            0,
+            "a positive regeneration value is cleared on a later active cooldown tick"
+        );
+        assert_eq!(
+            session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .filter(|projectile| projectile.holder_entity_index == holder_index)
+                .count(),
+            1,
+            "cooldown ticks do not create a second possession flyer"
         );
     }
 
