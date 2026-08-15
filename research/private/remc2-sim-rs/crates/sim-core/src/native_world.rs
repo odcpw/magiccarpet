@@ -21264,7 +21264,23 @@ impl Level2ResetSession {
                         entity.set_phase(entity.phase.wrapping_add(1));
                     }
                 }
-                11 => self.step_level2_possession_holder_source_slot(source_slot),
+                11 => {
+                    self.step_level2_possession_holder_source_slot(source_slot);
+                    // `UpdateEntities_57730` advances `byte_0x3E_62` only
+                    // after the dispatched callback has returned.  Keep this
+                    // outside `sub_69640`'s typed body: an active holder with
+                    // a zero countdown still receives the callback and the
+                    // dispatcher epilogue, while an inactive row never
+                    // enters this route at all.
+                    if let Some(holder) = self
+                        .shared_spells
+                        .dynamic_pickups
+                        .iter_mut()
+                        .find(|holder| holder.index == source_slot)
+                    {
+                        holder.set_phase(holder.phase.wrapping_add(1));
+                    }
+                }
                 _ => unreachable!("bounded Level 2 source route"),
             }
             for row in self.economy.live_arena_cursor_rows() {
@@ -48344,6 +48360,120 @@ mod tests {
         )
         .unwrap();
         assert!(NativeWorld::load(&temp.package, &temp.closure).is_err());
+    }
+
+    #[test]
+    fn level_two_possession_holder_dispatch_phase_advances_once_and_replays_after_reset() {
+        let package = level_two_fixture_path();
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+            .expect("qualified Level 2 gameplay component");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Possession holder session");
+        session.select_level2_campaign_entry_stage();
+
+        let holder = |session: &Level2ResetSession| {
+            session
+                .shared_spells()
+                .dynamic_pickups
+                .iter()
+                .find(|candidate| {
+                    candidate.index == 116
+                        && candidate.active
+                        && candidate.class == 15
+                        && candidate.model == POSSESSION_SPELL_FAMILY
+                        && candidate.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                })
+                .cloned()
+                .expect("ordinary local Possession holder 116")
+        };
+        let baseline_holder = holder(&session);
+        let baseline_hash = session.campaign_state_hash();
+        let baseline_shared_hash = session.shared_spells().reset_hash();
+        assert_eq!(baseline_holder.active_value, 0);
+        assert_eq!(baseline_holder.record[66], baseline_holder.phase);
+
+        // The requested-spell command is latched after this source pass.  In
+        // this first ordinary pass `sub_69640` sees its zero countdown and
+        // performs no projectile allocation, but `UpdateEntities_57730`
+        // still advances byte_0x3E after the callback returns.
+        let request = PlayerCommand {
+            opcode: 6,
+            argument_1: 1,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        };
+        session.step_outer_turn(request, 0);
+        let armed_holder = holder(&session);
+        assert_eq!(
+            armed_holder.active_value,
+            i16::try_from(armed_holder.activation_value)
+                .expect("Possession activation value fits its signed source field")
+        );
+        assert_eq!(
+            armed_holder.phase,
+            baseline_holder.phase.wrapping_add(1),
+            "one zero-countdown holder callback advances byte_0x3E exactly once"
+        );
+        assert_eq!(armed_holder.record[66], armed_holder.phase);
+        assert!(
+            session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .all(|projectile| !projectile.active),
+            "zero-countdown dispatch does not bypass the ordinary arming boundary"
+        );
+        assert_ne!(session.shared_spells().reset_hash(), baseline_shared_hash);
+
+        // The following ordinary source pass consumes the now-armed holder.
+        // The typed callback's countdown/decrement happens before the shared
+        // dispatcher epilogue writes the next phase byte.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let launched_holder = holder(&session);
+        assert_eq!(launched_holder.active_value, armed_holder.active_value - 1);
+        assert_eq!(
+            launched_holder.phase,
+            armed_holder.phase.wrapping_add(1),
+            "the armed holder callback advances exactly one additional phase"
+        );
+        assert_eq!(launched_holder.record[66], launched_holder.phase);
+        assert!(
+            session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .any(|projectile| projectile.active),
+            "ordinary holder lifecycle produces its source class-9/model-1 row"
+        );
+        let stepped_hash = session.campaign_state_hash();
+        let stepped_shared_hash = session.shared_spells().reset_hash();
+        assert_ne!(stepped_hash, baseline_hash);
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert_eq!(session.shared_spells().reset_hash(), baseline_shared_hash);
+        assert_eq!(holder(&session), baseline_holder);
+
+        session.step_outer_turn(request, 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.campaign_state_hash(), stepped_hash);
+        assert_eq!(session.shared_spells().reset_hash(), stepped_shared_hash);
+        assert_eq!(holder(&session), launched_holder);
+
+        // The source field is a byte, so the dispatcher uses byte wrapping
+        // rather than saturating after every ordinary callback.  The first
+        // two assertions above exclude skipped/double callbacks; this full
+        // byte orbit pins the wrapping rule without a test-only phase setter.
+        session.reset();
+        for _ in 0..=u8::MAX {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let wrapped_holder = holder(&session);
+        assert_eq!(wrapped_holder.phase, baseline_holder.phase);
+        assert_eq!(wrapped_holder.record[66], baseline_holder.phase);
     }
 
     #[test]
