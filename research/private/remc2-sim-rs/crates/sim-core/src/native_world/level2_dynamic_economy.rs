@@ -238,12 +238,12 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
-    /// Source `CastPosses_65F60`: move first, scan the live map chain in
-    /// source order, and retire only after model-12 allocation succeeds.
-    /// A target contact shifts to that target's temporary +28 source Z before
-    /// allocation; allocation failure preserves that shifted flyer and its
-    /// unchanged life for the next callback.  The no-target expiry branch
-    /// attempts the same model-12 allocation and likewise retries on failure.
+    /// Source `CastPosses_65F60`: move first, strictly clamp the flyer before
+    /// its source-ordered map scan, and retire only after model-12 allocation
+    /// succeeds. A target contact shifts to that target's temporary +28 source
+    /// Z before allocation; allocation failure preserves that shifted flyer and
+    /// its unchanged life for the next callback. On a miss, only a boundary
+    /// still violated after the scan or signed lifetime expiry attempts model 12.
     pub fn step_possession_projectile_slot(&mut self, source_slot: u16) -> bool {
         let Some(projectile_index) = self.possession_projectiles.iter().position(|projectile| {
             projectile.active && projectile.source_entity_index == source_slot
@@ -259,29 +259,24 @@ impl Level2EconomyState {
         );
         moved.phase = moved.phase.wrapping_add(1);
 
-        // `CastPosses_65F60` clamps the flyer before its `sub_108B0` scan.
-        // Ground or cave-ceiling contact takes the model-12 branch without a
-        // life decrement.  Equality remains contact so an allocation failure
-        // retries from the clamped source position on the next callback.
+        // `CastPosses_65F60` strictly clamps the flyer before its `sub_108B0`
+        // scan. These constraints only choose the scan position: an ordinary
+        // initial clamp is not a model-12 impact and equality is not contact.
         let ground_height = self.terrain.ground_height(moved.position);
-        let ground_contact = ground_height >= moved.position.z;
-        if ground_contact {
+        if ground_height > moved.position.z {
             moved.position.z = ground_height;
         }
-        let cave_contact = if let Some(ceiling_height) = self.terrain.ceiling_height(moved.position)
-        {
-            let cave_limit =
-                ceiling_height.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT);
-            if cave_limit <= moved.position.z {
+        let cave_limit = self
+            .terrain
+            .ceiling_height(moved.position)
+            .map(|ceiling_height| {
+                ceiling_height.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT)
+            });
+        if let Some(cave_limit) = cave_limit {
+            if cave_limit < moved.position.z {
                 moved.position.z = cave_limit;
-                true
-            } else {
-                false
             }
-        } else {
-            false
-        };
-        let terrain_or_cave_contact = ground_contact || cave_contact;
+        }
 
         let target =
             level2_first_possession_target_sphere_slot(&self.map_chains, &self.spheres, moved);
@@ -309,11 +304,13 @@ impl Level2EconomyState {
             return true;
         }
 
-        // `CastPosses_65F60` decrements life only after its target scan and
-        // only when neither terrain nor cave contact routed it to model 12.
-        // The terminal source state remains live when model-12 allocation
-        // fails, so the following callback retries rather than consuming it.
-        let terminal = if terrain_or_cave_contact {
+        // A source-ordered clamp normally makes both strict comparisons false.
+        // Recheck them after the miss because a representable ground/ceiling
+        // conflict can leave the second clamp outside the first bound. Only
+        // that still-violated state, or signed lifetime expiry, reaches model 12.
+        let terminal = if ground_height > moved.position.z
+            || cave_limit.is_some_and(|limit| limit < moved.position.z)
+        {
             true
         } else {
             moved.life = moved.life.wrapping_sub(1);
@@ -4664,12 +4661,12 @@ mod tests {
     }
 
     #[test]
-    fn level_two_possession_terrain_and_cave_contact_retry_without_life_decrement() {
-        fn assert_contact_retry(
+    fn level_two_possession_strict_terrain_and_cave_clamps_still_decrement_life() {
+        fn assert_no_target_clamp_steps_lifetime(
             session: &mut Level2ResetSession,
             position: Position,
             expected_z: i16,
-            contact_kind: &str,
+            boundary_case: &str,
         ) {
             let source_id_entity_index = session.state.entity_index;
             let projectile_slot = session
@@ -4700,7 +4697,7 @@ mod tests {
                         *projectile,
                     )
                     .is_none(),
-                    "{contact_kind} fixture is outside every eligible model-39 collision volume"
+                    "{boundary_case} fixture is outside every eligible model-39 collision volume"
                 );
                 economy
                     .map_chains
@@ -4712,47 +4709,36 @@ mod tests {
                     })
                     .expect("contact flyer source slot links to the live map");
             }
-            let free_after_flyer = session.economy().free_slots.clone();
-            session.economy_mut().free_slots.clear();
 
             assert!(
                 session
                     .economy_mut()
                     .step_possession_projectile_slot(projectile_slot),
-                "failed model-12 allocation preserves the {contact_kind} flyer"
+                "an initial {boundary_case} clamp keeps the no-target flyer live"
             );
-            let retry = session
+            let stepped = session
                 .economy()
                 .possession_projectiles()
                 .iter()
                 .find(|projectile| projectile.source_entity_index == projectile_slot)
                 .copied()
-                .expect("failed contact retains flyer for retry");
-            assert!(retry.active);
+                .expect("clamped flyer remains live after its ordinary callback");
+            assert!(stepped.active);
             assert_eq!(
-                retry.life, 4,
-                "{contact_kind} contact does not decrement life"
+                stepped.life, 3,
+                "{boundary_case} clamps still take the signed no-target life decrement"
             );
             assert_eq!(
-                retry.position.z, expected_z,
-                "{contact_kind} contact clamps source Z"
+                stepped.position.z, expected_z,
+                "{boundary_case} applies only its strict source Z clamp"
             );
-            assert!(session.economy().possession_effects().is_empty());
-
-            session.economy_mut().free_slots = free_after_flyer;
             assert!(
                 !session
-                    .economy_mut()
-                    .step_possession_projectile_slot(projectile_slot),
-                "the clamped {contact_kind} flyer retries model-12 allocation"
-            );
-            assert!(
-                session
                     .economy()
                     .possession_effects()
                     .iter()
                     .any(|effect| effect.projectile_entity_index == projectile_slot),
-                "successful retry creates the model-12 effect"
+                "{boundary_case} does not manufacture model 12 before target, post-scan conflict, or expiry"
             );
         }
 
@@ -4768,7 +4754,21 @@ mod tests {
             .planes
             .ground_heights
             .fill(50);
-        assert_contact_retry(&mut ground_session, contact_position, 1_600, "ground");
+        assert_no_target_clamp_steps_lifetime(
+            &mut ground_session,
+            contact_position,
+            1_600,
+            "below ground",
+        );
+        assert_no_target_clamp_steps_lifetime(
+            &mut ground_session,
+            Position {
+                z: 1_600,
+                ..contact_position
+            },
+            1_600,
+            "equal ground",
+        );
 
         let mut cave_session = level_two_possession_lifecycle_session();
         {
@@ -4777,14 +4777,24 @@ mod tests {
             terrain.planes.ground_heights.fill(0);
             terrain.planes.secondary_heights.fill(255);
         }
-        assert_contact_retry(
+        let cave_limit = 8_160_i16.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT);
+        assert_no_target_clamp_steps_lifetime(
             &mut cave_session,
             Position {
                 z: 8_000,
                 ..contact_position
             },
-            8_160_i16.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT),
-            "cave ceiling",
+            cave_limit,
+            "above cave limit",
+        );
+        assert_no_target_clamp_steps_lifetime(
+            &mut cave_session,
+            Position {
+                z: cave_limit,
+                ..contact_position
+            },
+            cave_limit,
+            "equal cave limit",
         );
     }
 
@@ -5014,27 +5024,40 @@ mod tests {
     fn level_two_possession_effect_writes_every_overlapping_live_sphere_mailbox() {
         let mut session = level_two_possession_lifecycle_session();
         let source_id_entity_index = session.state.entity_index;
-        session.activate_level2_authored_switch_group(0, 23, 1);
+        let probe_position = Position {
+            x: 32_000,
+            y: 32_000,
+            z: 0,
+        };
+        let collision_position = Position {
+            z: session.economy().terrain.ground_height(probe_position),
+            ..probe_position
+        };
         let first = session
-            .economy()
-            .spheres()
-            .iter()
-            .copied()
-            .find(|sphere| {
-                sphere.active
-                    && !sphere.pending_delete
-                    && u16::try_from(sphere.id).ok() != Some(source_id_entity_index)
-                    && sphere.player_entity_index != source_id_entity_index
-            })
-            .expect("group-1 model-39 source for Possession effect fan-out");
+            .economy_mut()
+            .allocate_authored_model39(0, 23, collision_position)
+            .expect("first map-linked model-39 source for Possession effect fan-out");
         let second = session
             .economy_mut()
-            .allocate_authored_model39(0, 23, first.position)
+            .allocate_authored_model39(0, 23, collision_position)
             .expect("second live model-39 source in the same effect volume");
+        for (sphere_slot, fixture_id) in [
+            (first.source_entity_index, 0xfeed_0001),
+            (second.source_entity_index, 0xfeed_0002),
+        ] {
+            let sphere = session
+                .economy_mut()
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == sphere_slot)
+                .expect("map-linked fan-out fixture remains mutable");
+            sphere.id = fixture_id;
+            sphere.player_entity_index = source_id_entity_index.wrapping_add(1);
+        }
         let projectile_slot = session
             .economy_mut()
             .spawn_possession_projectile(
-                first.position,
+                collision_position,
                 source_id_entity_index,
                 116,
                 0,
@@ -5049,15 +5072,15 @@ mod tests {
                 .iter_mut()
                 .find(|projectile| projectile.source_entity_index == projectile_slot)
                 .expect("spawned possession flyer");
-            projectile.position = first.position;
+            projectile.position = collision_position;
             projectile.actual_speed = 0;
             economy
                 .map_chains
                 .sync_entity(RenderableMapSeed {
                     entity_index: projectile_slot,
                     active: true,
-                    x: first.position.x,
-                    y: first.position.y,
+                    x: collision_position.x,
+                    y: collision_position.y,
                 })
                 .expect("flyer source slot links to the live map");
         }
@@ -5065,14 +5088,14 @@ mod tests {
             !session
                 .economy_mut()
                 .step_possession_projectile_slot(projectile_slot),
-            "contact creates model-12 through the real flyer callback"
+            "a real model-39 target creates model-12 through the flyer callback"
         );
         let effect_slot = session
             .economy()
             .possession_effects()
             .iter()
             .find(|effect| effect.projectile_entity_index == projectile_slot)
-            .expect("contact effect")
+            .expect("target collision effect")
             .source_entity_index;
         assert!(
             session

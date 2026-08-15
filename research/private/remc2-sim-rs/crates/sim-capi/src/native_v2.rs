@@ -22897,7 +22897,7 @@ mod tests {
     }
 
     #[test]
-    fn level2_campaign_public_tier0_possession_claims_group1_mana_from_grounded_flight() {
+    fn level2_campaign_public_tier0_possession_claims_group1_mana_from_strict_target_flight() {
         let handle =
             open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
         let row11_position = with_campaign_session(handle, |session| {
@@ -22972,6 +22972,7 @@ mod tests {
             "the public multi-claim route selects six distinct model-39 sphere identities"
         );
         let target = targets[0];
+        let selected_target_sphere_id = target.sphere_id;
 
         // Drive one ordinary public flight geometry. The model-12 callback
         // deliberately fans its mailbox to every overlapping neutral model-39
@@ -23028,6 +23029,14 @@ mod tests {
             armed_holder.activation_value, 3,
             "Tier-0 Possession preserves its source activation value"
         );
+        // The source cursor visits holder 116 before the higher-slot model-39
+        // rows. Refresh the ordinary public snapshot after the arming turn so
+        // the launch origin follows the live target rather than its now-stale
+        // group-spawn position.
+        let target = campaign_mana_spheres_public(handle, 0)
+            .into_iter()
+            .find(|sphere| sphere.sphere_id == selected_target_sphere_id)
+            .expect("armed Possession target remains visible through the public ABI");
         let player_entity_index = armed_snapshot.player_entity_index;
         let (yaw, pitch, actual_speed) = with_campaign_session(handle, |session| {
             let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
@@ -23053,7 +23062,9 @@ mod tests {
             .expect("two ordinary flyer steps fit the source coordinate range");
         input.player_x = target.x;
         input.player_y = target.y.wrapping_add(launch_distance);
-        input.player_z = 256;
+        // This is ordinary public flight input aligned to the public model-39
+        // target, so the flyer reaches a real strict-overlap source collision.
+        input.player_z = target.z;
         // Repeat the request while active. The source pass creates the one
         // already-armed flyer; the following dynamic evidence must never show
         // another allocation source slot.
@@ -23065,7 +23076,7 @@ mod tests {
             requested_spell: 1,
             ..McCommandV2::default()
         };
-        let (_, launch_events) = step_level2_campaign_public(handle, input);
+        let (_launch_snapshot, launch_events) = step_level2_campaign_public(handle, input);
         let launch_projectile_events = launch_events
             .iter()
             .filter(|event| event.kind == 8 && event.family == 39)
@@ -23139,7 +23150,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert!(
             saw_effect,
-            "strict grounded flight collision allocates a typed model-12 effect"
+            "strict model-39 flight collision allocates a typed model-12 effect"
         );
         assert_eq!(
             claimed_group1_sphere_ids.len(),
@@ -23173,14 +23184,120 @@ mod tests {
                 snapshot.generation,
                 snapshot.revision,
             ));
+            latest_snapshot = snapshot;
         }
         assert_eq!(
             holder.active_value, 0,
             "the public Possession cooldown reaches zero before re-arm"
         );
 
-        input.player_x = target.x;
-        input.player_y = target.y;
+        // Continue the same public session through the known-valid Castle
+        // route.  The six claimed model-39 rows are now live campaign inputs
+        // for the Castle defender, not a fixture-only claim assertion.
+        input.player_x = 384;
+        input.player_y = 62_080;
+        input.player_z = 256;
+        input.command = valid_command();
+        while latest_snapshot.revision < 27 {
+            let (snapshot, _) = step_level2_campaign_public(handle, input);
+            latest_snapshot = snapshot;
+        }
+        assert_eq!(
+            latest_snapshot.revision, 27,
+            "the neutral public route reaches the Castle recovery turn"
+        );
+        let recovered_hud =
+            campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
+        assert!(
+            recovered_hud.local_player_mana >= 1_000,
+            "neutral public turns recover enough Day mana for Castle"
+        );
+
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 0x40,
+            requested_spell: 2,
+            ..McCommandV2::default()
+        };
+        let (castle_armed_snapshot, castle_arm_events) = step_level2_campaign_public(handle, input);
+        assert_eq!(castle_armed_snapshot.revision, 28);
+        assert!(
+            castle_arm_events
+                .iter()
+                .all(|event| !(event.kind == 8 && event.family == 38)),
+            "the public Castle request arms before its flyer source pass"
+        );
+
+        input.command = valid_command();
+        let (castle_flyer_snapshot, castle_flyer_events) =
+            step_level2_campaign_public(handle, input);
+        assert_eq!(castle_flyer_snapshot.revision, 29);
+        assert!(
+            castle_flyer_events
+                .iter()
+                .any(|event| event.kind == 8 && event.family == 38),
+            "the armed public Castle route emits its family-38 flyer"
+        );
+        let (mut castle_snapshot, castle_root_events) = step_level2_campaign_public(handle, input);
+        assert_eq!(castle_snapshot.revision, 30);
+        assert!(
+            castle_root_events
+                .iter()
+                .any(|event| event.kind == 8 && event.family == 1),
+            "the known-valid public Castle route allocates its root"
+        );
+
+        let public_economy_events = || {
+            let mut rows = [McCampaignEconomyEventV2::default(); 64];
+            let mut count = 0;
+            assert_eq!(
+                mc_native_campaign_economy_events(
+                    handle,
+                    rows.as_mut_ptr(),
+                    rows.len() as u32,
+                    struct_size::<McCampaignEconomyEventV2>(),
+                    &raw mut count,
+                ),
+                MC_STATUS_OK
+            );
+            rows[..count as usize].to_vec()
+        };
+        let mut defender_collection = None;
+        let mut castle_deposit = None;
+        while castle_snapshot.revision < 819 {
+            let (snapshot, _) = step_level2_campaign_public(handle, input);
+            castle_snapshot = snapshot;
+            let economy_events = public_economy_events();
+            if castle_snapshot.revision == 451 {
+                defender_collection = economy_events
+                    .iter()
+                    .find(|event| {
+                        event.code == MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_COLLECTED_SPHERE
+                    })
+                    .map(|event| event.value_0);
+            }
+            if castle_snapshot.revision == 819 {
+                castle_deposit = economy_events
+                    .iter()
+                    .find(|event| event.code == MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED)
+                    .map(|event| event.value_0);
+            }
+        }
+        assert_eq!(
+            defender_collection,
+            Some(2_560),
+            "the public Castle defender collects the six claimed model-39 route at turn 451"
+        );
+        assert_eq!(
+            castle_deposit,
+            Some(2_560),
+            "the public Castle arrival receipt deposits the collected mana at turn 819"
+        );
+
+        input.player_x = 384;
+        input.player_y = 62_080;
+        input.player_z = 256;
         input.command = McCommandV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCommandV2>(),
@@ -23206,9 +23323,6 @@ mod tests {
             3,
             "the public holder re-arms at cooldown zero"
         );
-        input.player_x = target.x;
-        input.player_y = target.y.wrapping_add(launch_distance);
-        input.player_z = 256;
         input.command = valid_command();
         let (_, rearm_launch_events) = step_level2_campaign_public(handle, input);
         assert_eq!(
