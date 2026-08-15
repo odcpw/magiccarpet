@@ -775,6 +775,56 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2RuntimeHandCastMarshalsToRust()
+        {
+            var root = new GameObject("Level 2 hand cast command route");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
+
+                var initial = runtime.Level2ProductionDayHud;
+                AssertDayHudStartingSpell(
+                    initial.right,
+                    initial.localPlayerEntityIndex,
+                    1,
+                    116,
+                    3);
+
+                // This is the ordinary player hand route.  It must be consumed
+                // by the production FixedUpdate and reflected by Rust's Day HUD,
+                // not a managed spell implementation or direct native helper.
+                runtime.QualificationRequestSpellCast(rightHand: true);
+                runtime.QualificationDriveLevel2Frames(1);
+                var armed = runtime.Level2ProductionDayHud;
+                Assert.That(armed.right.rawSpellSelector, Is.EqualTo(1));
+                Assert.That(armed.right.activeValue, Is.EqualTo(armed.right.activationValue));
+                Assert.That(armed.right.activeValue, Is.EqualTo(3));
+
+                runtime.QualificationDriveLevel2Frames(1);
+                var pulsed = runtime.Level2ProductionDayHud;
+                Assert.That(pulsed.right.activeValue, Is.EqualTo(armed.right.activeValue - 1));
+                Assert.That(
+                    runtime.Level2ProductionStepEvents.Any(eventRow =>
+                        eventRow.kind == NativeSim.CampaignEventDynamicArena &&
+                        eventRow.family == 39),
+                    Is.True,
+                    "the following Rust source pass emits the Possession dynamic effect");
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
         public void Level2MinimapUsesAuthoritativeVisibilityAndSourceOrder()
         {
             var root = new GameObject("Level 2 authoritative minimap route");
@@ -1677,6 +1727,27 @@ namespace MagicCarpet.Native.Tests
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
 
+            // Distinguish optional managed roll/pitch forwarding from a
+            // wrapper that silently substitutes zeros. Both sessions take the
+            // same ordinary campaign step, so only the real C-ABI command
+            // payload can change this Rust-owned hash.
+            using (var neutral = NativeCampaignSession.OpenLevel2(Level2Package))
+            using (var steered = NativeCampaignSession.OpenLevel2(Level2Package))
+            {
+                var neutralSnapshot = neutral.Step(384, 62080, 256, flags: 1);
+                var steeredSnapshot = steered.Step(
+                    384,
+                    62080,
+                    256,
+                    flags: 1,
+                    roll: 17,
+                    pitch: -13);
+                Assert.That(
+                    steeredSnapshot.snapshot.stateHash,
+                    Is.Not.EqualTo(neutralSnapshot.snapshot.stateHash),
+                    "managed roll/pitch reaches the authoritative campaign command");
+            }
+
             Assert.That(session.SpellPickups(), Is.Empty);
             var objective = session.ObjectiveStageState();
             session.Step((ushort)objective.axisX, (ushort)objective.axisY, 7);
@@ -1720,7 +1791,22 @@ namespace MagicCarpet.Native.Tests
             Assert.That(acquired.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
             Assert.That(acquired.generation, Is.EqualTo(session.Generation));
 
-            var activated = session.ActivateShield();
+            // The managed wrapper must carry command roll/pitch, selected
+            // family, and the ordinary selected-spell flag into the existing
+            // C ABI step.  Do not use the direct activation helper as positive
+            // evidence: the player route is the contract under test.
+            var activatedSnapshot = session.Step(
+                source.x,
+                source.y,
+                source.z,
+                flags: 0x41,
+                requestedSpell: 6,
+                roll: 17,
+                pitch: -13);
+            Assert.That(
+                activatedSnapshot.snapshot.revision,
+                Is.GreaterThan(snapshot.revision));
+            var activated = session.ShieldState();
             Assert.That(activated.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
             Assert.That(activated.structSize, Is.EqualTo(72));
             Assert.That(activated.active, Is.EqualTo(1));

@@ -98,12 +98,12 @@ use crate::{
     },
     spell_activation::{
         BEYOND_SIGHT_ACTIVE_ACTION, BEYOND_SIGHT_FAMILY, BeyondSightState, BeyondSightStep,
-        INVISIBLE_ACTIVE_ACTION, INVISIBLE_STATUS_BIT, InvisibleState, InvisibleStep,
-        Level2SetSpellProfile, PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldDamage,
-        ShieldState, ShieldStep, SpellActivationHolder, SpellCasterState,
-        SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
-        acquire_level2_spell_holder_with_return_side, activate_spell, level2_applied_tier,
-        level2_set_spell_profile, physical_spell_action,
+        INVISIBLE_ACTIVE_ACTION, INVISIBLE_FAMILY, INVISIBLE_STATUS_BIT, InvisibleState,
+        InvisibleStep, Level2SetSpellProfile, PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION,
+        SHIELD_FAMILY, ShieldDamage, ShieldState, ShieldStep, SpellActivationHolder,
+        SpellCasterState, SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult,
+        SpellHolderAcquisitionState, acquire_level2_spell_holder_with_return_side, activate_spell,
+        level2_applied_tier, level2_set_spell_profile, physical_spell_action,
     },
     state_hash,
     static_world_tmap::StaticWorldTmapBank,
@@ -13684,6 +13684,93 @@ impl Level2SharedSpellResetSession {
         }
     }
 
+    /// Find a generic command mutation that aliases one already-modeled typed
+    /// lifecycle. The C ABI command context is local-only, so both holder and
+    /// caster identities must agree before it can hand state back to a source
+    /// lifecycle.
+    fn matching_typed_spell_fire_holder(
+        caster: SpellCasterState,
+        holders: &[SpellActivationHolder],
+        parent_entity_index: u16,
+        holder_entity_index: u16,
+        family: u8,
+    ) -> Option<SpellActivationHolder> {
+        if caster.entity_index != parent_entity_index {
+            return None;
+        }
+        holders
+            .iter()
+            .copied()
+            .find(|holder| holder.entity_index == holder_entity_index && holder.model == family)
+    }
+
+    /// `sub_5F660` mutates the shared command holder after the typed source
+    /// callback. Reconcile the matching family-6 alias so the next ordinary
+    /// `sub_6A480` visit sees the same active state; remote holders never
+    /// enter this local command mirror.
+    fn sync_shield_from_spell_fire(
+        &mut self,
+        caster: SpellCasterState,
+        holders: &[SpellActivationHolder],
+    ) {
+        let Some(shield) = self.shield else {
+            return;
+        };
+        let Some(holder) = Self::matching_typed_spell_fire_holder(
+            caster,
+            holders,
+            shield.parent_entity_index,
+            shield.holder_entity_index,
+            SHIELD_FAMILY,
+        ) else {
+            return;
+        };
+        let shield = self.shield.as_mut().expect("Shield state remains present");
+        shield.active_value = holder.active_value;
+        shield.activation_value = holder.activation_value.cast_signed();
+        shield.parent_mana = caster.mana;
+        shield.parent_status_flags = caster.control_flags & !0x3;
+        if holder.active_value != 0 {
+            shield.action = SHIELD_ACTIVE_ACTION;
+            shield.cleanup_requested = false;
+        }
+        self.sync_shield_projection();
+    }
+
+    /// `sub_5F660` mutates the shared command holder before the next
+    /// family-11 source visit. Keep the existing typed lifecycle as the
+    /// authority for that following `sub_6B1C0` pulse by reconciling only the
+    /// matching local holder; remote player holders never enter this command
+    /// mirror.
+    fn sync_invisible_from_spell_fire(
+        &mut self,
+        caster: SpellCasterState,
+        holders: &[SpellActivationHolder],
+    ) {
+        let Some(invisible) = self.invisible.as_mut() else {
+            return;
+        };
+        let Some(holder) = Self::matching_typed_spell_fire_holder(
+            caster,
+            holders,
+            invisible.parent_entity_index,
+            invisible.holder_entity_index,
+            INVISIBLE_FAMILY,
+        ) else {
+            return;
+        };
+
+        invisible.active_value = holder.active_value;
+        invisible.activation_value = holder.activation_value.cast_signed();
+        invisible.parent_mana = caster.mana;
+        invisible.parent_status_flags = caster.control_flags & !0x3;
+        if holder.active_value != 0 {
+            invisible.action = INVISIBLE_ACTIVE_ACTION;
+            invisible.cleanup_requested = false;
+        }
+        self.sync_invisible_projection();
+    }
+
     fn apply_invisible_cleanup(&mut self) {
         let Some(invisible) = self.invisible else {
             return;
@@ -13834,6 +13921,40 @@ impl Level2SharedSpellResetSession {
         if beyond_sight.parent_entity_index == self.player_entity.index {
             self.player_mana = beyond_sight.parent_mana;
         }
+    }
+
+    /// Reconcile the generic `sub_5F660` holder mutation with the modeled
+    /// family-12 lifecycle before its following ordinary source pulse. The
+    /// typed state remains the authority for the later pulse/effect path.
+    fn sync_beyond_sight_from_spell_fire(
+        &mut self,
+        caster: SpellCasterState,
+        holders: &[SpellActivationHolder],
+    ) {
+        let Some(beyond_sight) = self.beyond_sight else {
+            return;
+        };
+        let Some(holder) = Self::matching_typed_spell_fire_holder(
+            caster,
+            holders,
+            beyond_sight.parent_entity_index,
+            beyond_sight.holder_entity_index,
+            BEYOND_SIGHT_FAMILY,
+        ) else {
+            return;
+        };
+        let beyond_sight = self
+            .beyond_sight
+            .as_mut()
+            .expect("Beyond Sight state remains present");
+        beyond_sight.active_value = holder.active_value;
+        beyond_sight.activation_value = holder.activation_value.cast_signed();
+        beyond_sight.parent_mana = caster.mana;
+        if holder.active_value != 0 {
+            beyond_sight.action = BEYOND_SIGHT_ACTIVE_ACTION;
+            beyond_sight.cleanup_requested = false;
+        }
+        self.sync_beyond_sight_projection();
     }
 
     fn apply_beyond_sight_cleanup(&mut self) {
@@ -17531,10 +17652,36 @@ impl Level2ResetSession {
         player_order
     }
 
-    fn sync_level2_spell_fire_authority(&mut self) {
+    /// Commit only the spell holder(s) the latched input could have mutated.
+    ///
+    /// Source handlers run before the generic entity pass.  Writing every
+    /// pre-source `SpellFireContext` holder back afterwards would replay stale
+    /// timer state over a source-owned pulse (notably family 11's 181 -> 180
+    /// transition).  The command flags identify the only holder mirrors the
+    /// generic pass is permitted to hand back to the source authority.
+    fn sync_level2_spell_fire_authority(&mut self, command_flags: u8) {
         let Some(fire) = self.context.spell_fire.as_ref() else {
             return;
         };
+        let mut holder_indices = Vec::with_capacity(3);
+        for (flag, holder_index) in [
+            (0x10, fire.left_holder_index),
+            (0x20, fire.right_holder_index),
+            (0x40, fire.selected_holder_index),
+        ] {
+            if command_flags & flag != 0 && !holder_indices.contains(&holder_index) {
+                holder_indices.push(holder_index);
+            }
+        }
+        let holders = fire
+            .holders
+            .iter()
+            .copied()
+            .filter(|holder| holder_indices.contains(&holder.entity_index))
+            .collect::<Vec<_>>();
+        if holders.is_empty() {
+            return;
+        }
         let caster = fire.caster;
         self.shared_spells.caster = caster;
         self.shared_spells.player_mana = caster.mana;
@@ -17549,7 +17696,7 @@ impl Level2ResetSession {
                 entity.record[16..20].copy_from_slice(&caster.control_flags.to_le_bytes());
             }
         }
-        for holder in &fire.holders {
+        for holder in &holders {
             for authoritative in self
                 .shared_spells
                 .holders
@@ -17568,6 +17715,12 @@ impl Level2ResetSession {
                 authoritative.record[64] = holder.action_marker.cast_unsigned();
             }
         }
+        self.shared_spells
+            .sync_shield_from_spell_fire(caster, &holders);
+        self.shared_spells
+            .sync_invisible_from_spell_fire(caster, &holders);
+        self.shared_spells
+            .sync_beyond_sight_from_spell_fire(caster, &holders);
     }
 
     /// Source `sub_69640` for the ordinary direct Level 2 holder 116. The
@@ -17737,23 +17890,97 @@ impl Level2ResetSession {
     }
 
     fn sync_level2_spell_fire_context(&mut self) {
+        // `SetSpell_6D5E0` owns the player hand relations and may add a
+        // dynamic class-15 holder after the reset-time command mirror was
+        // constructed. Rebuild that mirror from the authoritative local
+        // player relation on every outer-pass boundary: the next ordinary
+        // opcode-6/bit-0x40 latch must be able to select a newly acquired
+        // holder, while a remote player's acquisition must remain absent from
+        // the local command path.
+        let local_player = self.shared_spells.local_player.clone();
+        let enabled_holder_indices = local_player.enabled_spell_holders;
+        let left_slot = usize::from(local_player.left_spell_slot);
+        let right_slot = usize::from(local_player.right_spell_slot);
+        let left_holder_index = enabled_holder_indices[left_slot];
+        let right_holder_index = enabled_holder_indices[right_slot];
+        let selected_family = SOURCE_SPELL_INDEX_MAP
+            .get(usize::from(local_player.selected_spell_ui_index))
+            .copied()
+            .unwrap_or(CASTLE_SPELL_FAMILY);
+        let selected_holder_index = enabled_holder_indices[usize::from(selected_family)];
+        let mut holders = Vec::new();
+        for authoritative in self
+            .shared_spells
+            .holders
+            .iter()
+            .chain(self.shared_spells.dynamic_pickups.iter())
+        {
+            if !enabled_holder_indices.contains(&authoritative.index)
+                || holders.iter().any(|holder: &SpellActivationHolder| {
+                    holder.entity_index == authoritative.index
+                })
+            {
+                continue;
+            }
+            holders.push(SpellActivationHolder {
+                entity_index: authoritative.index,
+                model: authoritative.model,
+                level_gate: authoritative.level_gate,
+                active_value: authoritative.active_value,
+                activation_value: authoritative.activation_value,
+                mana_cost: authoritative.mana_cost,
+                action_marker: authoritative.action_marker,
+            });
+        }
         let Some(fire) = self.context.spell_fire.as_mut() else {
             return;
         };
         fire.caster = self.shared_spells.caster;
+        fire.left_holder_index = left_holder_index;
+        fire.right_holder_index = right_holder_index;
+        fire.selected_holder_index = selected_holder_index;
+        fire.left_subspell_index = local_player.left_subspell_index;
+        fire.right_subspell_index = local_player.right_subspell_index;
+        fire.selected_spell_ui_index = local_player.selected_spell_ui_index;
+        fire.selected_subspell_index = local_player.selected_subspell_index;
+        fire.spell_hand_eligibility = local_player.spell_hand_eligibility;
+        fire.family_selected_tiers = local_player.family_selected_tiers;
+        fire.enabled_holder_indices = enabled_holder_indices;
+        fire.holders = holders;
+    }
+
+    /// Refresh source-owned holder fields after the source pass without
+    /// rebuilding hand or selected-command relations.  The latter were latched
+    /// before the pass and must remain intact until the generic command pass
+    /// consumes them.
+    fn refresh_level2_spell_fire_holder_projection(&mut self) {
+        let caster = self.shared_spells.caster;
+        let holders = self
+            .shared_spells
+            .holders
+            .iter()
+            .chain(self.shared_spells.dynamic_pickups.iter())
+            .map(|authoritative| SpellActivationHolder {
+                entity_index: authoritative.index,
+                model: authoritative.model,
+                level_gate: authoritative.level_gate,
+                active_value: authoritative.active_value,
+                activation_value: authoritative.activation_value,
+                mana_cost: authoritative.mana_cost,
+                action_marker: authoritative.action_marker,
+            })
+            .collect::<Vec<_>>();
+        let Some(fire) = self.context.spell_fire.as_mut() else {
+            return;
+        };
+        fire.caster = caster;
         for holder in &mut fire.holders {
-            let authoritative = self
-                .shared_spells
-                .holders
+            if let Some(authoritative) = holders
                 .iter()
-                .chain(self.shared_spells.dynamic_pickups.iter())
-                .find(|candidate| candidate.index == holder.entity_index);
-            let Some(authoritative) = authoritative else {
-                continue;
-            };
-            holder.active_value = authoritative.active_value;
-            holder.activation_value = authoritative.activation_value;
-            holder.action_marker = authoritative.action_marker;
+                .find(|authoritative| authoritative.entity_index == holder.entity_index)
+            {
+                *holder = *authoritative;
+            }
         }
     }
 
@@ -22927,6 +23154,7 @@ impl Level2ResetSession {
             self.economy
                 .reclaim_castle_upgrade_products_at_source_boundary();
             self.step_level2_source_pass(u8::try_from(pass).unwrap_or(u8::MAX));
+            self.refresh_level2_spell_fire_holder_projection();
             evidence.push(crate::step_entity_pass_with_context(
                 &mut self.state,
                 latched_command,
@@ -22934,7 +23162,7 @@ impl Level2ResetSession {
                 &self.terrain,
                 &mut self.context,
             ));
-            self.sync_level2_spell_fire_authority();
+            self.sync_level2_spell_fire_authority(latched_command.flags);
             let castle_holder_index = self
                 .context
                 .spell_fire
@@ -41909,11 +42137,22 @@ mod tests {
             .expect("family-6 acquisition seeds Shield state");
         assert_eq!(cold.holder_entity_index, outcome.source_slot);
         assert_eq!(cold.active_value, 0);
-        assert!(session.shared_spells_mut().activate_shield(256, false));
+        // The public selected-spell command is latched after this source
+        // pass. It must hand the generic family-6 holder back to Shield's
+        // typed lifecycle, rather than relying on the direct test helper.
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 6,
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
         let active = session
             .shared_spells()
             .shield_state()
-            .expect("activated family-6 Shield state");
+            .expect("selected family-6 Shield state");
         assert_eq!(active.active_value, active.activation_value);
         assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
 
@@ -42481,6 +42720,190 @@ mod tests {
     }
 
     #[test]
+    fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Invisible command session");
+        let baseline_hash = session.campaign_state_hash();
+        let selected_invisible = PlayerCommand {
+            opcode: 6,
+            argument_1: 11,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        };
+
+        // No acquired local holder remains the source sentinel: the ordinary
+        // selected-spell command must not manufacture family-11 state.
+        session.step_outer_turn(selected_invisible, 0);
+        assert!(session.shared_spells().invisible_state().is_none());
+        let no_holder_fire = session
+            .context
+            .spell_fire
+            .as_ref()
+            .expect("Level 2 command context");
+        assert_eq!(no_holder_fire.enabled_holder_indices[11], 0);
+        assert!(!no_holder_fire.accepted_models.contains(&11));
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+
+        // Group-8's ordinary objective route materializes authored row 156;
+        // collision with the local flight body executes SetSpell_6D5E0 and
+        // installs the dynamic family-11 holder.
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 156)
+            .copied()
+            .expect("authored family-11 source");
+        session.state.position = source.position;
+        let outcome = (0..4).find_map(|_| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 11,
+                        result: Some(outcome),
+                        ..
+                    } => Some(*outcome),
+                    _ => None,
+                })
+        });
+        let outcome = outcome.expect("ordinary local family-11 acquisition");
+        assert_eq!(outcome.source_slot, source.source_entity_index);
+        assert_eq!(outcome.parent_entity_index, session.state.entity_index);
+        let acquired_fire = session
+            .context
+            .spell_fire
+            .as_ref()
+            .expect("acquisition refreshes Level 2 command context");
+        assert_eq!(
+            acquired_fire.enabled_holder_indices[11], outcome.source_slot,
+            "the next selected-spell command resolves the newly acquired holder"
+        );
+        assert!(
+            acquired_fire
+                .holders
+                .iter()
+                .any(|holder| { holder.entity_index == outcome.source_slot && holder.model == 11 })
+        );
+
+        // The actual campaign supplies this mana through Castle/economy. The
+        // narrow command-bridge regression seeds only the existing owner
+        // carriers so it can isolate SetSpell -> sub_5F660 -> family-11
+        // state reconciliation without a second economy journey.
+        let local_entity_index = session.state.entity_index;
+        {
+            let shared = session.shared_spells_mut();
+            shared.player_entity.set_mana(5_000);
+            shared.player_entity.mana_regen = 0;
+            shared.player_entity.record[140..144].fill(0);
+            shared.player_entities[0] = shared.player_entity.clone();
+            shared.caster.mana = 5_000;
+            shared.player_mana = 5_000;
+        }
+        session
+            .entities
+            .get_mut(usize::from(local_entity_index))
+            .expect("local source entity")
+            .set_mana(5_000);
+        let castle_slot = session
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                local_entity_index,
+                false,
+                true,
+            )
+            .expect("existing Level 2 Castle authority");
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("allocated Castle")
+            .mana = 5_000;
+
+        session.step_outer_turn(selected_invisible, 0);
+        let armed_fire = session
+            .context
+            .spell_fire
+            .as_ref()
+            .expect("selected-spell context remains live");
+        assert!(armed_fire.accepted_models.contains(&11));
+        let armed_holder = armed_fire
+            .holders
+            .iter()
+            .find(|holder| holder.entity_index == outcome.source_slot)
+            .expect("selected command retains the family-11 registry holder");
+        assert_eq!(
+            armed_holder.active_value,
+            i16::try_from(armed_holder.activation_value).expect("source timer fits i16")
+        );
+        let armed = session
+            .shared_spells()
+            .invisible_state()
+            .expect("ordinary command retains acquired Invisible authority");
+        assert_eq!(armed.active_value, armed.activation_value);
+        assert_eq!(armed.parent_mana, 5_000);
+        assert_eq!(
+            session
+                .shared_spells()
+                .acquisitions
+                .iter()
+                .find(|state| state.family == 11)
+                .expect("family-11 acquisition state")
+                .source_slot,
+            outcome.source_slot
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .dynamic_pickups()
+                .iter()
+                .find(|holder| holder.index == outcome.source_slot)
+                .expect("active family-11 holder")
+                .action,
+            INVISIBLE_ACTIVE_ACTION
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::SpellAcquisition {
+                family: 11,
+                source_slot,
+                result: None,
+                ..
+            } if *source_slot == outcome.source_slot
+        )));
+        let first_pulse = session
+            .shared_spells()
+            .invisible_state()
+            .expect("family-11 remains authoritative on its following source pass");
+        assert_eq!(first_pulse.active_value, armed.activation_value - 1);
+        assert_eq!(first_pulse.parent_visibility_mode, 1);
+        assert_ne!(first_pulse.spell_status_flags & INVISIBLE_STATUS_BIT, 0);
+        assert!(
+            session
+                .economy()
+                .castle()
+                .is_some_and(|castle| castle.source_entity_index == castle_slot)
+        );
+        assert_ne!(session.campaign_state_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -42673,6 +43096,42 @@ mod tests {
             session.shared_spells().local_player.record[447],
             local_visibility
         );
+
+        // A normal local selected-spell request must not borrow the remote
+        // owner's dynamically acquired family-11 holder.  Give the local
+        // command caster enough mana so this would be an accepted cast if the
+        // local registry leaked that remote identity into `sub_5F660`.
+        {
+            let shared = session.shared_spells_mut();
+            shared.player_entity.set_mana(5_000);
+            shared.player_entity.mana_regen = 0;
+            shared.player_entity.record[140..144].fill(0);
+            shared.player_entities[0] = shared.player_entity.clone();
+            shared.caster.mana = 5_000;
+            shared.player_mana = 5_000;
+        }
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 11,
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let local_fire = session
+            .context
+            .spell_fire
+            .as_ref()
+            .expect("Level 2 local command context");
+        assert_eq!(local_fire.enabled_holder_indices[11], 0);
+        assert!(!local_fire.accepted_models.contains(&11));
+        let remote_invisible = session
+            .shared_spells()
+            .invisible_state()
+            .expect("remote Invisible remains authoritative");
+        assert_eq!(remote_invisible.parent_entity_index, 112);
+        assert_eq!(remote_invisible.active_value, 0);
     }
 
     #[test]

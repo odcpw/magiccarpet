@@ -1280,7 +1280,9 @@ namespace MagicCarpet.Native
         internal void QualificationRequestSpellCast(bool rightHand)
         {
             Require(
-                qualifiedMode && session != null && !spellMenuOpen,
+                (qualifiedMode || level2Mode) &&
+                (session != null || campaignSession != null) &&
+                !spellMenuOpen,
                 "qualified spell-cast input request");
             LatchSpellCastInput(rightHand);
         }
@@ -1288,7 +1290,9 @@ namespace MagicCarpet.Native
         internal void QualificationRequestSelectedSpellCast()
         {
             Require(
-                qualifiedMode && session != null && !spellMenuOpen,
+                (qualifiedMode || level2Mode) &&
+                (session != null || campaignSession != null) &&
+                !spellMenuOpen,
                 "qualified selected-spell input request");
             selectedSpellRequested = true;
             fireInputLatchedCount++;
@@ -2197,13 +2201,56 @@ namespace MagicCarpet.Native
             level2LastStepInputX = level2StepInputX;
             level2LastStepInputY = level2StepInputY;
             level2LastStepInputZ = level2StepInputZ;
+            // The Level 2 ABI already accepts a selected-spell UI index.  The
+            // menu buffer is presentation input; retain only the valid source
+            // index until the next ordinary selected-spell request consumes it.
+            if (spellMenuCommands.TryDequeue(out var spellMenuCommand) &&
+                spellMenuCommand.Opcode is 31 or 32 or 40 &&
+                spellMenuCommand.Argument1 is >= 0 and <= 28)
+            {
+                requestedSpell = spellMenuCommand.Argument1;
+            }
+
+            // Preserve the existing live Level 2 movement bit and consume each
+            // actual input latch exactly once in the next native campaign turn.
+            var flags = 1;
+            if (fireRequested)
+            {
+                flags |= 0x10;
+                fireRequested = false;
+            }
+            if (rightSpellRequested)
+            {
+                flags |= 0x20;
+                rightSpellRequested = false;
+            }
+            short selectedSpell = NativeSim.NoRequestedSpell;
+            if (selectedSpellRequested)
+            {
+                selectedSpellRequested = false;
+                if (requestedSpell is >= 0 and <= 28)
+                {
+                    flags |= 0x40;
+                    selectedSpell = requestedSpell;
+                }
+                requestedSpell = NativeSim.NoRequestedSpell;
+            }
+            appliedRoll = Cursor.lockState == CursorLockMode.Locked
+                ? ClampToSByte(steeringRoll)
+                : (sbyte)0;
+            appliedPitch = Cursor.lockState == CursorLockMode.Locked
+                ? ClampToSByte(steeringPitch)
+                : (sbyte)0;
             var result = campaignSession.Step(
                 level2StepInputX,
                 level2StepInputY,
                 level2StepInputZ,
                 playerSlot: 0,
                 speedIndex: 0,
-                flags: 1);
+                flags: unchecked((sbyte)flags),
+                requestedSpell: selectedSpell,
+                roll: appliedRoll,
+                pitch: appliedPitch);
             level2StepSnapshot = result.snapshot;
             level2StepEvents = result.events;
             UpdateLevel2DayMusicPresentation();

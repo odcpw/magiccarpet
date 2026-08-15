@@ -19157,6 +19157,45 @@ mod tests {
         rows[..batch.written as usize].to_vec()
     }
 
+    fn campaign_spell_pickups_public(
+        handle: u64,
+        generation: u64,
+    ) -> Vec<McCampaignSpellPickupSnapshotV2> {
+        let mut rows = [McCampaignSpellPickupSnapshotV2::default(); 64];
+        let mut batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_spell_pickups_copy(
+                handle,
+                generation,
+                0,
+                rows.as_mut_ptr(),
+                rows.len() as u32,
+                struct_size::<McCampaignSpellPickupSnapshotV2>(),
+                &raw mut batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        rows[..batch.written as usize].to_vec()
+    }
+
+    fn campaign_invisible_state_public(
+        handle: u64,
+        generation: u64,
+    ) -> McCampaignInvisibleSnapshotV2 {
+        let mut state = McCampaignInvisibleSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_invisible_state(
+                handle,
+                generation,
+                &raw mut state,
+                struct_size::<McCampaignInvisibleSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        state
+    }
+
     fn campaign_world_hash_public(handle: u64) -> u64 {
         let mut info = McCampaignWorldInfoV2::default();
         assert_eq!(
@@ -19168,6 +19207,251 @@ mod tests {
             MC_STATUS_OK
         );
         info.reset_state_hash
+    }
+
+    struct Level2PublicPossessionClaimRoute {
+        input: McCampaignStepInputV2,
+        latest_snapshot: McCampaignStepSnapshotV2,
+        player_entity_index: u16,
+    }
+
+    /// Shared public route used by the Possession predecessor proof and the
+    /// Invisible consumer.  It retains the predecessor's strict-flight and
+    /// six-claim assertions so later capability tests never replace that
+    /// evidence with a synthetic mana setup.
+    fn drive_level2_public_group1_possession_claims(
+        handle: u64,
+        mut input: McCampaignStepInputV2,
+        selected_target_sphere_id: u32,
+        group1_sphere_ids: &BTreeSet<u32>,
+    ) -> Level2PublicPossessionClaimRoute {
+        let possession_holder = |hud: McCampaignDayHudSnapshotV2| {
+            [hud.left, hud.right]
+                .into_iter()
+                .find(|slot| slot.raw_spell_selector == 1)
+                .expect("Day HUD exposes the Possession holder")
+        };
+        let target = campaign_mana_spheres_public(handle, 0)
+            .into_iter()
+            .find(|sphere| sphere.sphere_id == selected_target_sphere_id)
+            .expect("selected Possession target remains visible through the public ABI");
+
+        // Drive one ordinary public flight geometry. The model-12 callback
+        // deliberately fans its mailbox to every overlapping neutral model-39
+        // sphere, so this one source/effect chain must expose six distinct
+        // public claims rather than a synthetic one-target shortcut.
+        input.player_x = target.x;
+        input.player_y = target.y;
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            pitch: 127,
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+        let (_, approach_events) = step_level2_campaign_public(handle, input);
+        assert!(
+            approach_events
+                .iter()
+                .all(|event| !(event.kind == 8 && event.family == 39)),
+            "the approach step does not create a Possession projectile"
+        );
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            pitch: 127,
+            flags: 0x41,
+            requested_spell: 1,
+            ..McCommandV2::default()
+        };
+        let (armed_snapshot, arm_events) = step_level2_campaign_public(handle, input);
+        assert!(
+            arm_events
+                .iter()
+                .all(|event| !(event.kind == 8 && event.family == 39)),
+            "the request step arms Possession before the following source pass launches it"
+        );
+        let armed_holder = possession_holder(campaign_day_hud_public(
+            handle,
+            armed_snapshot.generation,
+            armed_snapshot.revision,
+        ));
+        assert_eq!(
+            armed_holder.active_value, 3,
+            "Tier-0 Possession exposes its three-pass source cooldown"
+        );
+        assert_eq!(
+            armed_holder.activation_value, 3,
+            "Tier-0 Possession preserves its source activation value"
+        );
+        // The source cursor visits holder 116 before the higher-slot model-39
+        // rows. Refresh the ordinary public snapshot after the arming turn so
+        // the launch origin follows the live target rather than its now-stale
+        // group-spawn position.
+        let target = campaign_mana_spheres_public(handle, 0)
+            .into_iter()
+            .find(|sphere| sphere.sphere_id == selected_target_sphere_id)
+            .expect("armed Possession target remains visible through the public ABI");
+        let player_entity_index = armed_snapshot.player_entity_index;
+        let (yaw, pitch, actual_speed) = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Possession proof requires a Level 2 campaign session",
+                ));
+            };
+            Ok((
+                reset.state.yaw,
+                reset.state.effective_pitch,
+                reset.state.actual_speed,
+            ))
+        })
+        .expect("read public-input flight state");
+        assert_eq!(yaw, 0, "the pinned reset route faces source yaw zero");
+        assert!(
+            pitch > 0 && actual_speed > 0,
+            "public pitch/forward input arms descent"
+        );
+        let projectile_speed = 384_i16.wrapping_add(actual_speed);
+        let launch_distance = u16::try_from(i32::from(projectile_speed) * 2)
+            .expect("two ordinary flyer steps fit the source coordinate range");
+        input.player_x = target.x;
+        input.player_y = target.y.wrapping_add(launch_distance);
+        // This is ordinary public flight input aligned to the public model-39
+        // target, so the flyer reaches a real strict-overlap source collision.
+        input.player_z = target.z;
+        // Repeat the request while active. The source pass creates the one
+        // already-armed flyer; the following dynamic evidence must never show
+        // another allocation source slot.
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            pitch: 127,
+            flags: 0x41,
+            requested_spell: 1,
+            ..McCommandV2::default()
+        };
+        let (_launch_snapshot, launch_events) = step_level2_campaign_public(handle, input);
+        let launch_projectile_events = launch_events
+            .iter()
+            .filter(|event| event.kind == 8 && event.family == 39)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            launch_projectile_events.len(),
+            1,
+            "the active-repeat source pass creates its one already-armed Possession flyer"
+        );
+        let projectile_source_slot = launch_projectile_events[0].source_slot;
+        let mut possession_projectile_source_slots = [projectile_source_slot]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+
+        input.command = valid_command();
+        let (mut latest_snapshot, no_second_events) = step_level2_campaign_public(handle, input);
+        possession_projectile_source_slots.extend(
+            no_second_events
+                .iter()
+                .filter(|event| event.kind == 8 && event.family == 39)
+                .map(|event| event.source_slot),
+        );
+        assert_eq!(
+            possession_projectile_source_slots.len(),
+            1,
+            "the active-repeat path may advance its flyer but cannot allocate a second source slot"
+        );
+        let mut saw_effect = no_second_events
+            .iter()
+            .any(|event| event.kind == 8 && event.family == 40);
+        for _ in 0..8 {
+            let claimed_group1_sphere_ids = campaign_mana_spheres_public(handle, 0)
+                .into_iter()
+                .filter(|sphere| {
+                    sphere.active != 0
+                        && sphere.model == 39
+                        && sphere.owner_entity_index == player_entity_index
+                        && group1_sphere_ids.contains(&sphere.sphere_id)
+                })
+                .map(|sphere| sphere.sphere_id)
+                .collect::<BTreeSet<_>>();
+            if claimed_group1_sphere_ids.len() >= 6 {
+                break;
+            }
+            let (snapshot, events) = step_level2_campaign_public(handle, input);
+            possession_projectile_source_slots.extend(
+                events
+                    .iter()
+                    .filter(|event| event.kind == 8 && event.family == 39)
+                    .map(|event| event.source_slot),
+            );
+            assert_eq!(
+                possession_projectile_source_slots.len(),
+                1,
+                "only the activated Possession flyer may remain in the dynamic route"
+            );
+            saw_effect |= events
+                .iter()
+                .any(|event| event.kind == 8 && event.family == 40);
+            latest_snapshot = snapshot;
+        }
+        let claimed_group1_sphere_ids = campaign_mana_spheres_public(handle, 0)
+            .into_iter()
+            .filter(|sphere| {
+                sphere.active != 0
+                    && sphere.model == 39
+                    && sphere.owner_entity_index == player_entity_index
+                    && group1_sphere_ids.contains(&sphere.sphere_id)
+            })
+            .map(|sphere| sphere.sphere_id)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            saw_effect,
+            "strict model-39 flight collision allocates a typed model-12 effect"
+        );
+        assert_eq!(
+            claimed_group1_sphere_ids.len(),
+            6,
+            "one C-ABI source/effect chain claims six distinct model-39 group-1 spheres"
+        );
+
+        let mut holder = possession_holder(campaign_day_hud_public(
+            handle,
+            latest_snapshot.generation,
+            latest_snapshot.revision,
+        ));
+        for _ in 0..3 {
+            if holder.active_value == 0 {
+                break;
+            }
+            let (snapshot, events) = step_level2_campaign_public(handle, input);
+            possession_projectile_source_slots.extend(
+                events
+                    .iter()
+                    .filter(|event| event.kind == 8 && event.family == 39)
+                    .map(|event| event.source_slot),
+            );
+            assert_eq!(
+                possession_projectile_source_slots.len(),
+                1,
+                "cooldown ticks do not create a second Possession projectile source slot"
+            );
+            holder = possession_holder(campaign_day_hud_public(
+                handle,
+                snapshot.generation,
+                snapshot.revision,
+            ));
+            latest_snapshot = snapshot;
+        }
+        assert_eq!(
+            holder.active_value, 0,
+            "the public Possession cooldown reaches zero before re-arm"
+        );
+
+        Level2PublicPossessionClaimRoute {
+            input,
+            latest_snapshot,
+            player_entity_index,
+        }
     }
 
     fn campaign_goat_events(handle: u64) -> Vec<McCampaignGoatEventV2> {
@@ -22918,7 +23202,7 @@ mod tests {
         })
         .expect("read Level 2 row-11 objective position");
 
-        let mut input = McCampaignStepInputV2 {
+        let input = McCampaignStepInputV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCampaignStepInputV2>(),
             generation: 0,
@@ -22974,221 +23258,15 @@ mod tests {
         let target = targets[0];
         let selected_target_sphere_id = target.sphere_id;
 
-        // Drive one ordinary public flight geometry. The model-12 callback
-        // deliberately fans its mailbox to every overlapping neutral model-39
-        // sphere, so this one source/effect chain must expose six distinct
-        // public claims rather than a synthetic one-target shortcut.
-        let possession_holder = |hud: McCampaignDayHudSnapshotV2| {
-            [hud.left, hud.right]
-                .into_iter()
-                .find(|slot| slot.raw_spell_selector == 1)
-                .expect("Day HUD exposes the Possession holder")
-        };
-        input.player_x = target.x;
-        input.player_y = target.y;
-        input.command = McCommandV2 {
-            abi_version: MC_NATIVE_ABI_VERSION,
-            struct_size: struct_size::<McCommandV2>(),
-            pitch: 127,
-            flags: 1,
-            requested_spell: MC_REQUESTED_SPELL_NONE,
-            ..McCommandV2::default()
-        };
-        let (_, approach_events) = step_level2_campaign_public(handle, input);
-        assert!(
-            approach_events
-                .iter()
-                .all(|event| !(event.kind == 8 && event.family == 39)),
-            "the approach step does not create a Possession projectile"
-        );
-        input.command = McCommandV2 {
-            abi_version: MC_NATIVE_ABI_VERSION,
-            struct_size: struct_size::<McCommandV2>(),
-            pitch: 127,
-            flags: 0x41,
-            requested_spell: 1,
-            ..McCommandV2::default()
-        };
-        let (armed_snapshot, arm_events) = step_level2_campaign_public(handle, input);
-        assert!(
-            arm_events
-                .iter()
-                .all(|event| !(event.kind == 8 && event.family == 39)),
-            "the request step arms Possession before the following source pass launches it"
-        );
-        let armed_holder = possession_holder(campaign_day_hud_public(
+        let Level2PublicPossessionClaimRoute {
+            mut input,
+            mut latest_snapshot,
+            ..
+        } = drive_level2_public_group1_possession_claims(
             handle,
-            armed_snapshot.generation,
-            armed_snapshot.revision,
-        ));
-        assert_eq!(
-            armed_holder.active_value, 3,
-            "Tier-0 Possession exposes its three-pass source cooldown"
-        );
-        assert_eq!(
-            armed_holder.activation_value, 3,
-            "Tier-0 Possession preserves its source activation value"
-        );
-        // The source cursor visits holder 116 before the higher-slot model-39
-        // rows. Refresh the ordinary public snapshot after the arming turn so
-        // the launch origin follows the live target rather than its now-stale
-        // group-spawn position.
-        let target = campaign_mana_spheres_public(handle, 0)
-            .into_iter()
-            .find(|sphere| sphere.sphere_id == selected_target_sphere_id)
-            .expect("armed Possession target remains visible through the public ABI");
-        let player_entity_index = armed_snapshot.player_entity_index;
-        let (yaw, pitch, actual_speed) = with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-                return Err(AbiError::new(
-                    MC_STATUS_INVALID_ARGUMENT,
-                    "Possession proof requires a Level 2 campaign session",
-                ));
-            };
-            Ok((
-                reset.state.yaw,
-                reset.state.effective_pitch,
-                reset.state.actual_speed,
-            ))
-        })
-        .expect("read public-input flight state");
-        assert_eq!(yaw, 0, "the pinned reset route faces source yaw zero");
-        assert!(
-            pitch > 0 && actual_speed > 0,
-            "public pitch/forward input arms descent"
-        );
-        let projectile_speed = 384_i16.wrapping_add(actual_speed);
-        let launch_distance = u16::try_from(i32::from(projectile_speed) * 2)
-            .expect("two ordinary flyer steps fit the source coordinate range");
-        input.player_x = target.x;
-        input.player_y = target.y.wrapping_add(launch_distance);
-        // This is ordinary public flight input aligned to the public model-39
-        // target, so the flyer reaches a real strict-overlap source collision.
-        input.player_z = target.z;
-        // Repeat the request while active. The source pass creates the one
-        // already-armed flyer; the following dynamic evidence must never show
-        // another allocation source slot.
-        input.command = McCommandV2 {
-            abi_version: MC_NATIVE_ABI_VERSION,
-            struct_size: struct_size::<McCommandV2>(),
-            pitch: 127,
-            flags: 0x41,
-            requested_spell: 1,
-            ..McCommandV2::default()
-        };
-        let (_launch_snapshot, launch_events) = step_level2_campaign_public(handle, input);
-        let launch_projectile_events = launch_events
-            .iter()
-            .filter(|event| event.kind == 8 && event.family == 39)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            launch_projectile_events.len(),
-            1,
-            "the active-repeat source pass creates its one already-armed Possession flyer"
-        );
-        let projectile_source_slot = launch_projectile_events[0].source_slot;
-        let mut possession_projectile_source_slots = [projectile_source_slot]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-
-        input.command = valid_command();
-        let (mut latest_snapshot, no_second_events) = step_level2_campaign_public(handle, input);
-        possession_projectile_source_slots.extend(
-            no_second_events
-                .iter()
-                .filter(|event| event.kind == 8 && event.family == 39)
-                .map(|event| event.source_slot),
-        );
-        assert_eq!(
-            possession_projectile_source_slots.len(),
-            1,
-            "the active-repeat path may advance its flyer but cannot allocate a second source slot"
-        );
-        let mut saw_effect = no_second_events
-            .iter()
-            .any(|event| event.kind == 8 && event.family == 40);
-        for _ in 0..8 {
-            let claimed_group1_sphere_ids = campaign_mana_spheres_public(handle, 0)
-                .into_iter()
-                .filter(|sphere| {
-                    sphere.active != 0
-                        && sphere.model == 39
-                        && sphere.owner_entity_index == player_entity_index
-                        && group1_sphere_ids.contains(&sphere.sphere_id)
-                })
-                .map(|sphere| sphere.sphere_id)
-                .collect::<BTreeSet<_>>();
-            if claimed_group1_sphere_ids.len() >= 6 {
-                break;
-            }
-            let (snapshot, events) = step_level2_campaign_public(handle, input);
-            possession_projectile_source_slots.extend(
-                events
-                    .iter()
-                    .filter(|event| event.kind == 8 && event.family == 39)
-                    .map(|event| event.source_slot),
-            );
-            assert_eq!(
-                possession_projectile_source_slots.len(),
-                1,
-                "only the activated Possession flyer may remain in the dynamic route"
-            );
-            saw_effect |= events
-                .iter()
-                .any(|event| event.kind == 8 && event.family == 40);
-            latest_snapshot = snapshot;
-        }
-        let claimed_group1_sphere_ids = campaign_mana_spheres_public(handle, 0)
-            .into_iter()
-            .filter(|sphere| {
-                sphere.active != 0
-                    && sphere.model == 39
-                    && sphere.owner_entity_index == player_entity_index
-                    && group1_sphere_ids.contains(&sphere.sphere_id)
-            })
-            .map(|sphere| sphere.sphere_id)
-            .collect::<BTreeSet<_>>();
-        assert!(
-            saw_effect,
-            "strict model-39 flight collision allocates a typed model-12 effect"
-        );
-        assert_eq!(
-            claimed_group1_sphere_ids.len(),
-            6,
-            "one C-ABI source/effect chain claims six distinct model-39 group-1 spheres"
-        );
-
-        let mut holder = possession_holder(campaign_day_hud_public(
-            handle,
-            latest_snapshot.generation,
-            latest_snapshot.revision,
-        ));
-        for _ in 0..3 {
-            if holder.active_value == 0 {
-                break;
-            }
-            let (snapshot, events) = step_level2_campaign_public(handle, input);
-            possession_projectile_source_slots.extend(
-                events
-                    .iter()
-                    .filter(|event| event.kind == 8 && event.family == 39)
-                    .map(|event| event.source_slot),
-            );
-            assert_eq!(
-                possession_projectile_source_slots.len(),
-                1,
-                "cooldown ticks do not create a second Possession projectile source slot"
-            );
-            holder = possession_holder(campaign_day_hud_public(
-                handle,
-                snapshot.generation,
-                snapshot.revision,
-            ));
-            latest_snapshot = snapshot;
-        }
-        assert_eq!(
-            holder.active_value, 0,
-            "the public Possession cooldown reaches zero before re-arm"
+            input,
+            selected_target_sphere_id,
+            &group1_sphere_ids,
         );
 
         // Continue the same public session through the known-valid Castle
@@ -23248,6 +23326,11 @@ mod tests {
             "the known-valid public Castle route allocates its root"
         );
 
+        input.player_x = 384;
+        input.player_y = 62_080;
+        input.player_z = 256;
+        input.command = valid_command();
+
         let public_economy_events = || {
             let mut rows = [McCampaignEconomyEventV2::default(); 64];
             let mut count = 0;
@@ -23298,6 +23381,12 @@ mod tests {
         input.player_x = 384;
         input.player_y = 62_080;
         input.player_z = 256;
+        let possession_holder = |hud: McCampaignDayHudSnapshotV2| {
+            [hud.left, hud.right]
+                .into_iter()
+                .find(|slot| slot.raw_spell_selector == 1)
+                .expect("Day HUD exposes the Possession holder")
+        };
         input.command = McCommandV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCommandV2>(),
@@ -23334,6 +23423,405 @@ mod tests {
             "the zero-cooldown public re-arm launches one new Possession flyer"
         );
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
+        let handle =
+            open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+        let isolated_handle =
+            open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+        let initial_hash = campaign_world_hash_public(handle);
+        assert_eq!(campaign_world_hash_public(isolated_handle), initial_hash);
+
+        let row11_position = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Invisible proof requires a Level 2 campaign session",
+                ));
+            };
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .copied()
+                .find(|feature| feature.index == 11)
+                .map(|feature| feature.world_position(0))
+                .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "missing authored row 11"))
+        })
+        .expect("read Level 2 row-11 objective position");
+
+        let input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: valid_command(),
+            player_slot: 0,
+            speed_index: 0,
+            player_x: row11_position.x,
+            player_y: row11_position.y,
+            player_z: 256,
+            ..McCampaignStepInputV2::default()
+        };
+        let baseline_sphere_ids = campaign_mana_spheres_public(handle, 0)
+            .into_iter()
+            .filter(|sphere| sphere.active != 0 && sphere.model == 39)
+            .map(|sphere| sphere.sphere_id)
+            .collect::<Vec<_>>();
+        let (_, group_events) = step_level2_campaign_public(handle, input);
+        assert!(group_events.iter().any(|event| {
+            event.kind == MC_CAMPAIGN_EVENT_AUTHORED_GROUP
+                && event.source_slot == 23
+                && event.flags != 0
+        }));
+        let group1_spheres = campaign_mana_spheres_public(handle, 0)
+            .into_iter()
+            .filter(|sphere| {
+                sphere.active != 0
+                    && sphere.model == 39
+                    && sphere.mana == 512
+                    && sphere.owner_entity_index == 0
+                    && !baseline_sphere_ids.contains(&sphere.sphere_id)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            group1_spheres.len() >= 6,
+            "ordinary row-11 production exposes six neutral group-1 model-39 spheres"
+        );
+        let group1_sphere_ids = group1_spheres
+            .iter()
+            .map(|sphere| sphere.sphere_id)
+            .collect::<BTreeSet<_>>();
+        let target = group1_spheres[0];
+
+        let Level2PublicPossessionClaimRoute {
+            mut input,
+            mut latest_snapshot,
+            player_entity_index,
+        } = drive_level2_public_group1_possession_claims(
+            handle,
+            input,
+            target.sphere_id,
+            &group1_sphere_ids,
+        );
+
+        // Build the ordinary Castle that owns the Invisible predicate's mana
+        // relation. The public route intentionally uses the same selected
+        // spell command as the managed bridge.
+        input.player_x = 384;
+        input.player_y = 62_080;
+        input.player_z = 256;
+        input.command = valid_command();
+        while latest_snapshot.revision < 27 {
+            let (snapshot, _) = step_level2_campaign_public(handle, input);
+            latest_snapshot = snapshot;
+        }
+        let recovered_hud =
+            campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
+        assert!(
+            recovered_hud.local_player_mana >= 1_000,
+            "ordinary idle turns recover enough Day mana for the Castle request"
+        );
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 0x40,
+            requested_spell: 2,
+            ..McCommandV2::default()
+        };
+        let (castle_armed_snapshot, castle_arm_events) = step_level2_campaign_public(handle, input);
+        assert!(
+            castle_arm_events
+                .iter()
+                .all(|event| !(event.kind == 8 && event.family == 38)),
+            "the public Castle request arms before its flyer source pass"
+        );
+        input.command = valid_command();
+        let (_, castle_flyer_events) = step_level2_campaign_public(handle, input);
+        assert!(
+            castle_flyer_events
+                .iter()
+                .any(|event| event.kind == 8 && event.family == 38),
+            "the armed public Castle route emits its family-38 flyer"
+        );
+        let (mut castle_snapshot, castle_root_events) = step_level2_campaign_public(handle, input);
+        assert!(
+            castle_root_events
+                .iter()
+                .any(|event| event.kind == 8 && event.family == 1),
+            "the ordinary Castle route allocates a root"
+        );
+        assert_eq!(castle_snapshot.generation, castle_armed_snapshot.generation);
+
+        // Objective stage two materialises the authored row-156 acquisition
+        // source. Its dynamic arena slot is intentionally read from the public
+        // pickup endpoint rather than treated as a stable test fixture.
+        let (objective_x, objective_y) = level2_objective_point(handle);
+        input.player_x = objective_x;
+        input.player_y = objective_y;
+        input.player_z = 256;
+        input.command = valid_command();
+        let _ = step_level2_campaign_public(handle, input);
+        let (pickup_snapshot, _) = step_level2_campaign_public(handle, input);
+        let invisible_source = campaign_spell_pickups_public(handle, pickup_snapshot.generation)
+            .into_iter()
+            .find(|source| source.authored_index == 156)
+            .expect("ordinary objective route materializes authored Invisible source 156");
+        assert_eq!(
+            (
+                invisible_source.family,
+                invisible_source.action,
+                invisible_source.active
+            ),
+            (11, 34, 1),
+            "the public pickup preserves family-11's authored acquisition action"
+        );
+        input.player_x = invisible_source.x;
+        input.player_y = invisible_source.y;
+        input.player_z = invisible_source.z;
+        let mut invisible_acquired = false;
+        for _ in 0..4 {
+            let (snapshot, events) = step_level2_campaign_public(handle, input);
+            castle_snapshot = snapshot;
+            invisible_acquired |= events.iter().any(|event| {
+                event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                    && event.family == 11
+                    && event.source_slot == invisible_source.source_entity_index
+                    && event.flags == 1
+            });
+            if invisible_acquired {
+                break;
+            }
+        }
+        assert!(
+            invisible_acquired,
+            "ordinary C-ABI flight at the public source position acquires Invisible"
+        );
+        let cold_invisible = campaign_invisible_state_public(handle, castle_snapshot.generation);
+        assert_eq!(
+            (
+                cold_invisible.active,
+                cold_invisible.tier,
+                cold_invisible.action,
+                cold_invisible.active_value,
+                cold_invisible.holder_entity_index,
+            ),
+            (1, 0, 33, 0, invisible_source.source_entity_index),
+            "authored acquisition creates only the cold tier-0 Invisible holder"
+        );
+
+        input.player_x = 384;
+        input.player_y = 62_080;
+        input.player_z = 256;
+        input.command = valid_command();
+        let mut first_defender_deposit = None;
+        for _ in 0..1_024 {
+            let (snapshot, _) = step_level2_campaign_public(handle, input);
+            castle_snapshot = snapshot;
+            let mut rows = [McCampaignEconomyEventV2::default(); 64];
+            let mut count = 0;
+            assert_eq!(
+                mc_native_campaign_economy_events(
+                    handle,
+                    rows.as_mut_ptr(),
+                    rows.len() as u32,
+                    struct_size::<McCampaignEconomyEventV2>(),
+                    &raw mut count,
+                ),
+                MC_STATUS_OK
+            );
+            for event in &rows[..count as usize] {
+                if event.code == MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED {
+                    first_defender_deposit = Some(event.value_0);
+                }
+            }
+            if first_defender_deposit.is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            first_defender_deposit,
+            Some(2_560),
+            "the single live Castle defender aggregates five ordinary 512-mana group-1 spheres before returning"
+        );
+        let retained_group1_spheres =
+            campaign_mana_spheres_public(handle, castle_snapshot.generation)
+                .into_iter()
+                .filter(|sphere| {
+                    sphere.active != 0
+                        && sphere.model == 39
+                        && sphere.owner_entity_index == player_entity_index
+                        && group1_sphere_ids.contains(&sphere.sphere_id)
+                })
+                .map(|sphere| sphere.sphere_id)
+                .collect::<BTreeSet<_>>();
+        assert_eq!(
+            retained_group1_spheres.len(),
+            1,
+            "the first 2560-mana Castle return leaves one claimed group-1 sphere live"
+        );
+        let mana_window_hud =
+            campaign_day_hud_public(handle, castle_snapshot.generation, castle_snapshot.revision);
+        assert!(
+            mana_window_hud.local_player_mana >= 2_000,
+            "the ordinary first Castle defender return satisfies Invisible's live mana gate"
+        );
+        assert!(
+            mana_window_hud.local_player_max_mana >= mana_window_hud.local_player_mana,
+            "the live HUD retains a coherent Rust-owned current/max mana relation"
+        );
+
+        // This is the positive proof: no activation helper is called. The
+        // existing public selected-spell command reaches sub_5F660, then the
+        // following ordinary source pass reaches the first sub_6B1C0 pulse.
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 0x40,
+            requested_spell: 11,
+            ..McCommandV2::default()
+        };
+        let (invisible_armed_snapshot, _) = step_level2_campaign_public(handle, input);
+        let invisible_armed =
+            campaign_invisible_state_public(handle, invisible_armed_snapshot.generation);
+        assert_eq!(
+            (
+                invisible_armed.active,
+                invisible_armed.tier,
+                invisible_armed.action,
+                invisible_armed.active_value,
+                invisible_armed.activation_value,
+                invisible_armed.mana_cost,
+                invisible_armed.mana_regen_requirement,
+                invisible_armed.parent_visibility_mode,
+            ),
+            (1, 0, 33, 181, 181, 2_000, 2_000, 0),
+            "selected spell 11 arms the existing tier-0 Invisible holder without a helper"
+        );
+        assert!(
+            invisible_armed.parent_mana >= invisible_armed.mana_cost,
+            "the request has the source-required current mana"
+        );
+
+        input.command = valid_command();
+        let (invisible_first_snapshot, _) = step_level2_campaign_public(handle, input);
+        let invisible_first =
+            campaign_invisible_state_public(handle, invisible_first_snapshot.generation);
+        assert_eq!(
+            invisible_first.active_value,
+            invisible_first.activation_value - 1,
+            "the following ordinary source pass executes the first Invisible pulse"
+        );
+        assert_eq!(invisible_first.parent_visibility_mode, 1);
+        assert_eq!(invisible_first.parent_mana_regen, -2_000);
+        assert_ne!(invisible_first.spell_status_flags & 0x20, 0);
+        assert_eq!(invisible_first.experience_awarded, 1);
+        let invisible_hud = campaign_day_hud_public(
+            handle,
+            invisible_first_snapshot.generation,
+            invisible_first_snapshot.revision,
+        );
+        let invisible_slot = [invisible_hud.left, invisible_hud.right]
+            .into_iter()
+            .find(|slot| {
+                slot.holder_entity_index == invisible_source.source_entity_index
+                    && slot.raw_spell_selector == 11
+            })
+            .expect("the Rust Day HUD presents the active Invisible holder");
+        assert_eq!(
+            (
+                invisible_slot.tier,
+                invisible_slot.action,
+                invisible_slot.active_value,
+                invisible_slot.activation_value,
+                invisible_slot.max_mana,
+                invisible_slot.mana_regen,
+            ),
+            (0, 33, 180, 181, 2_000, 2_000),
+            "the HUD projects the source-held Invisible state without C# gameplay authority"
+        );
+
+        // The source active-repeat branch must not refresh duration. It writes
+        // a one-tick terminal countdown; the following neutral source pass
+        // performs the normal visibility/status cleanup.
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 0x40,
+            requested_spell: 11,
+            ..McCommandV2::default()
+        };
+        let (repeat_snapshot, _) = step_level2_campaign_public(handle, input);
+        let repeated = campaign_invisible_state_public(handle, repeat_snapshot.generation);
+        assert_eq!(
+            repeated.active_value, 1,
+            "an active selected-spell repeat takes the source terminal path instead of refreshing"
+        );
+        assert_eq!(repeated.experience_awarded, 1);
+        input.command = valid_command();
+        let (expired_snapshot, _) = step_level2_campaign_public(handle, input);
+        let expired = campaign_invisible_state_public(handle, expired_snapshot.generation);
+        assert_eq!(expired.active_value, 0);
+        assert_eq!(expired.parent_visibility_mode, 0);
+        assert_eq!(expired.parent_status_flags & 0x20, 0);
+        assert_ne!(
+            expired.spell_status_flags & 0x20,
+            0,
+            "terminal cleanup preserves the source spell/owner status asymmetry"
+        );
+
+        let unchanged = expired;
+        let mut stale = expired;
+        assert_eq!(
+            mc_native_campaign_invisible_state(
+                handle,
+                expired_snapshot.generation + 1,
+                &raw mut stale,
+                struct_size::<McCampaignInvisibleSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(
+            stale, unchanged,
+            "stale generation fails closed without output mutation"
+        );
+        let mut rejected_input = input;
+        rejected_input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 0x40,
+            requested_spell: 29,
+            ..McCommandV2::default()
+        };
+        let mut rejected_snapshot = McCampaignStepSnapshotV2::default();
+        let mut rejected_events = [McCampaignEventV2::default(); 1];
+        let mut rejected_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const rejected_input,
+                &raw mut rejected_snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                rejected_events.as_mut_ptr(),
+                rejected_events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut rejected_count,
+            ),
+            MC_STATUS_BOUNDS,
+            "unknown requested spell fails closed at the public command boundary"
+        );
+        assert_eq!(campaign_world_hash_public(isolated_handle), initial_hash);
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        assert_eq!(campaign_world_hash_public(handle), initial_hash);
+        let reset_invisible = campaign_invisible_state_public(handle, 1);
+        assert_eq!(reset_invisible.active, 0);
+        assert_eq!(campaign_world_hash_public(isolated_handle), initial_hash);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_campaign_session_destroy(isolated_handle),
+            MC_STATUS_OK
+        );
     }
 
     #[test]

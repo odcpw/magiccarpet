@@ -1008,9 +1008,16 @@ namespace MagicCarpet.Native
                 short playerZ,
                 byte playerSlot = 0,
                 byte speedIndex = 0,
-                sbyte flags = 1)
+                sbyte flags = 1,
+                short requestedSpell = NativeSim.NoRequestedSpell,
+                sbyte roll = 0,
+                sbyte pitch = 0)
         {
-            var command = NativeSim.Command.Create(0, 0, flags);
+            var command = NativeSim.Command.Create(
+                roll,
+                pitch,
+                flags,
+                requestedSpell: requestedSpell);
             var input = NativeSim.CampaignStepInput.Create(
                 generation,
                 command,
