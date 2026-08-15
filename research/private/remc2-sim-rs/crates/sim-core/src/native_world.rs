@@ -3356,6 +3356,24 @@ impl RuntimeSnapshot {
         &self.bytes
     }
 
+    /// `sub_12330` advances only the high byte of the selected runtime
+    /// StageVar's word before applying its thinning rule. Keep the decoded
+    /// record and the lossless runtime byte carrier synchronized so reset and
+    /// campaign hashing observe the same construction cadence.
+    fn advance_level2_stage_variable_counter(&mut self, stage_var_index: u8) -> bool {
+        let Some(stage_var) = self.stage_variables.get_mut(usize::from(stage_var_index)) else {
+            return false;
+        };
+        let counter = (stage_var.word_2 >> 8) as u8;
+        stage_var.word_2 = (stage_var.word_2 & 0x00ff) | (u16::from(counter.wrapping_add(1)) << 8);
+        let offset = 392 + usize::from(stage_var_index) * 12 + 2;
+        let Some(bytes) = self.bytes.get_mut(offset..offset + 2) else {
+            return false;
+        };
+        bytes.copy_from_slice(&stage_var.word_2.to_le_bytes());
+        true
+    }
+
     fn set_level2_objective_stage_selector_for(
         &mut self,
         objective_index: usize,
@@ -4703,9 +4721,16 @@ pub struct Level2AuthoredBeeSource {
     pub vertical_step: i16,
     /// Descriptor row 73 `word_0x1A_26` used by the action-18 recoil latch.
     pub action_window: i16,
+    /// Source `StageVar1_0x48_72`, the one-based runtime StageVar index set
+    /// by `sub_12330` after a successful constructor allocation.
+    pub stage_var1: u8,
     /// Source `StageVar2_0x49_73`, used by scripted action 23's movement
-    /// callback. The reset constructor starts this at zero.
+    /// callback.
     pub stage_var2: u8,
+    /// Runtime kind-2 point copied from the selected StageVar. The authored
+    /// selector remains in `MissionContentSession`; this is the mutable event
+    /// callback's point carrier.
+    pub stage_target: Option<Position>,
     /// Most recent `PrepareEventSound_6E450` sound selected by the Bee helper.
     /// Zero means that this source has not emitted one yet.
     pub last_sound_id: u16,
@@ -4716,6 +4741,17 @@ pub struct Level2AuthoredBeeSource {
     pub phase: u8,
     pub drawing_enabled: bool,
     pub active: bool,
+}
+
+/// Validated constructor output from the typed authored-StageVar relation.
+/// This stays private to the Level 2 reset producer so the economy allocator
+/// cannot infer behavior from a reduced runtime row or bypass construction
+/// success when advancing the StageVar counter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Level2BeeStageRoute {
+    stage_var1: u8,
+    stage_var2: u8,
+    stage_target: Position,
 }
 
 fn level2_bee_source_tile(position: Position) -> (u8, u8) {
@@ -4851,6 +4887,50 @@ fn move_level2_bee_source(source: &mut Level2AuthoredBeeSource, terrain: &Sessio
     // the broader class-5 census projection and remains outside this typed
     // economy seam.
     source.life = -1;
+}
+
+fn select_level2_bee_class3_target(
+    source: &Level2AuthoredBeeSource,
+    candidates: &[(u16, Position, u32)],
+) -> Option<u16> {
+    let radius_squared = LEVEL2_BEE_AWARENESS_RADIUS * LEVEL2_BEE_AWARENESS_RADIUS;
+    let mut selected: Option<(u16, i64)> = None;
+    for &(target_index, target_position, control_flags) in candidates {
+        if control_flags & 0x20 != 0 {
+            continue;
+        }
+        let dx = i32::from(
+            target_position
+                .x
+                .wrapping_sub(source.position.x)
+                .cast_signed(),
+        );
+        let dy = i32::from(
+            target_position
+                .y
+                .wrapping_sub(source.position.y)
+                .cast_signed(),
+        );
+        let distance_squared = i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
+        if distance_squared > radius_squared {
+            continue;
+        }
+        let heading = heading_for_positions(source.position, target_position);
+        if i32::from(angle_distance(i32::from(source.yaw), heading))
+            >= LEVEL2_BEE_AWARENESS_HALF_ANGLE
+        {
+            continue;
+        }
+        // The source uses strict `<`, preserving the first linked-list row
+        // when two candidates are equally distant.
+        if selected
+            .map(|(_, best_distance)| distance_squared < best_distance)
+            .unwrap_or(true)
+        {
+            selected = Some((target_index, distance_squared));
+        }
+    }
+    selected.map(|(target_index, _)| target_index)
 }
 
 /// Authored class-11 model-0/model-1/model-12 switch producer materialized by
@@ -6869,10 +6949,11 @@ impl Level2EconomyState {
     /// `sub_4B590`.  The caller has already proved the authored kind/subtype
     /// and producer group; this method owns the real source arena slot, RNG,
     /// map link, and constructor defaults.
-    pub fn allocate_authored_bee(
+    fn allocate_authored_bee(
         &mut self,
         authored_index: u16,
         position: Position,
+        stage_route: Option<Level2BeeStageRoute>,
     ) -> Option<Level2AuthoredBeeSource> {
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
@@ -6902,6 +6983,15 @@ impl Level2EconomyState {
         let source_byte_39 = action_window
             - i16::from(source_byte_3e % u8::try_from(action_window).expect("positive window"))
             + 4;
+        let (action, stage_var1, stage_var2, stage_target) =
+            stage_route.map_or((17, 0, 0, None), |route| {
+                (
+                    8 * 2 + 7,
+                    route.stage_var1,
+                    route.stage_var2,
+                    Some(route.stage_target),
+                )
+            });
         let source = Level2AuthoredBeeSource {
             source_entity_index,
             entity_id: source_entity_index,
@@ -6909,7 +6999,7 @@ impl Level2EconomyState {
             authored_index,
             source_class: 5,
             model: 2,
-            action: 17,
+            action,
             minimum_speed: 64,
             maximum_speed: 30,
             actual_speed: 32,
@@ -6930,7 +7020,9 @@ impl Level2EconomyState {
             source_byte_39,
             vertical_step: -32,
             action_window,
-            stage_var2: 0,
+            stage_var1,
+            stage_var2,
+            stage_target,
             last_sound_id: 0,
             position,
             particle_index: 3,
@@ -7034,52 +7126,16 @@ impl Level2EconomyState {
             return None;
         }
 
-        let radius_squared = LEVEL2_BEE_AWARENESS_RADIUS * LEVEL2_BEE_AWARENESS_RADIUS;
-        let mut selected: Option<(u16, i64)> = None;
-        for &(target_index, target_position, control_flags) in candidates {
-            if control_flags & 0x20 != 0 {
-                continue;
-            }
-            let dx = i32::from(
-                target_position
-                    .x
-                    .wrapping_sub(source.position.x)
-                    .cast_signed(),
-            );
-            let dy = i32::from(
-                target_position
-                    .y
-                    .wrapping_sub(source.position.y)
-                    .cast_signed(),
-            );
-            let distance_squared = i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
-            if distance_squared > radius_squared {
-                continue;
-            }
-            let heading = heading_for_positions(source.position, target_position);
-            if i32::from(angle_distance(i32::from(source.yaw), heading))
-                >= LEVEL2_BEE_AWARENESS_HALF_ANGLE
-            {
-                continue;
-            }
-            // The source uses a strict `<` comparison, so retaining the
-            // first equal-distance candidate preserves linked-list order.
-            if selected
-                .map(|(_, best_distance)| distance_squared < best_distance)
-                .unwrap_or(true)
-            {
-                selected = Some((target_index, distance_squared));
-            }
-        }
+        let selected = select_level2_bee_class3_target(&source, candidates);
         // `sub_1BF90` writes word_0x96 only when a new class-3 target wins.
         // On a gated or empty scan the stale relation remains in the source
         // row; action 17 itself does not consume that relation as a target.
-        if let Some((target_index, _)) = selected {
+        if let Some(target_index) = selected {
             source.target_entity_index = Some(target_index);
         }
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_bees[source_index] = source;
-        selected.map(|(target_index, _)| target_index)
+        selected
     }
 
     /// Allocate one authored class-11 model-0/model-1/model-12 switch producer using
@@ -7868,7 +7924,7 @@ impl Level2EconomyState {
         source_slot: u16,
         target: Option<(Position, i16, bool)>,
     ) -> bool {
-        self.step_authored_bee_slot_with_target_and_peers(source_slot, target, &[])
+        self.step_authored_bee_slot_with_target_and_peers(source_slot, target, &[], &[])
     }
 
     fn step_authored_bee_slot_with_target_and_peers(
@@ -7876,6 +7932,7 @@ impl Level2EconomyState {
         source_slot: u16,
         target: Option<(Position, i16, bool)>,
         peers: &[(u16, Position)],
+        class3_candidates: &[(u16, Position, u32)],
     ) -> bool {
         let Some(source_index) = self
             .authored_bees
@@ -8029,20 +8086,100 @@ impl Level2EconomyState {
                 source.target_entity_index = None;
             }
             23 => {
-                // `sub_1F8A0` applies this exact two-draw scripted roll
-                // perturbation on the byte-3E cadence after its generic
-                // StageVar2 movement callback. The generic movement family
-                // remains outside this authored Bee seam; an invalid/zero
-                // selector must not consume RNG or change orientation.
-                // The fixed model-2 descriptor used by `sub_4B590` has no
-                // `byte_160_0x20_32 & 8` flag, so selector 10's
-                // `sub_1E040(a1, 16)` branch enters action 18 directly.
-                // `sub_1F8A0` then restores the action-18 latch after the
-                // generic callback, before applying its own selector 1..9
-                // roll perturbation (which selector 10 does not enter).
-                if source.stage_var2 == 10 {
+                // `sub_1F8A0 -> sub_1D5D0(16)` dispatches the bounded
+                // authored L2-06 selector-2 callback before its own roll
+                // tail. Other selectors remain deliberately fail-closed.
+                if source.stage_var2 == 2 {
+                    if let Some(stage_target) = source.stage_target {
+                        let outside_point_band = (i32::from(stage_target.x as i16)
+                            - i32::from(source.position.x as i16))
+                        .abs()
+                            > 3_072
+                            || (i32::from(stage_target.y as i16)
+                                - i32::from(source.position.y as i16))
+                            .abs()
+                                > 3_072;
+                        move_level2_bee_source(&mut source, &self.terrain);
+                        if source.life < 0 {
+                            // `sub_1DDA0`/`sub_1E1C0` hand a terminal
+                            // movement result back to action 20. The broader
+                            // damage/death tail remains owned elsewhere.
+                            source.action = 20;
+                        } else if outside_point_band {
+                            if source.source_byte_3e & 7 == 0 {
+                                if source.control_flags & LEVEL2_BEE_OBSTRUCTION_BIT == 0 {
+                                    source.roll = i16::try_from(heading_for_positions(
+                                        source.position,
+                                        stage_target,
+                                    ))
+                                    .expect("Bee StageVar heading fits i16");
+                                    if source.source_byte_3e & 0x3f == 0 {
+                                        let first = level2_next_rng16(source.entity_rng);
+                                        let second = level2_next_rng16(first);
+                                        let direction = 2 * (u32::from(first % 0x9d) / 79);
+                                        let delta = (i32::from((second & 0xff) as u8) + 85)
+                                            * (i32::try_from(direction)
+                                                .expect("Bee roll direction fits")
+                                                - 1);
+                                        source.roll =
+                                            ((i32::from(source.roll) + delta) as i16) & 0x07ff;
+                                        source.entity_rng = second;
+                                    }
+                                }
+                                let peer_bound = i32::from(source.pitch);
+                                if peer_bound > 0 {
+                                    for &(peer_id, peer_position) in peers {
+                                        if peer_id == source.entity_id {
+                                            continue;
+                                        }
+                                        let dx = (i32::from(source.position.x)
+                                            - i32::from(peer_position.x))
+                                        .abs();
+                                        let dy = (i32::from(source.position.y)
+                                            - i32::from(peer_position.y))
+                                        .abs();
+                                        if dx < peer_bound && dy < peer_bound {
+                                            source.roll = i16::try_from(heading_for_positions(
+                                                peer_position,
+                                                source.position,
+                                            ))
+                                            .expect("Bee peer heading fits i16");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if source.source_byte_3e & 0x0f == 0
+                            && source.control_flags & LEVEL2_BEE_OBSTRUCTION_BIT == 0
+                        {
+                            source.entity_rng = level2_next_rng16(source.entity_rng);
+                            source.roll = ((i32::from(source.roll)
+                                + i32::from(source.entity_rng % 0x71)
+                                + 142) as i16)
+                                & 0x07ff;
+                        }
+
+                        if source.action == 23
+                            && source.stage_var2 == 2
+                            && source.source_byte_39 != 0
+                            && source.action_window > 0
+                            && source.source_byte_3e
+                                % u8::try_from(source.action_window)
+                                    .expect("positive Bee action window")
+                                == 0
+                            && let Some(target_index) =
+                                select_level2_bee_class3_target(&source, class3_candidates)
+                        {
+                            source.target_entity_index = Some(target_index);
+                            source.stage_var2 = 10;
+                            // Model 2's descriptor lacks the bit-8 route, so
+                            // `sub_1E040(..., 16)` selects action 18.
+                            source.action = 18;
+                        }
+                    }
+                } else if source.stage_var2 == 10 {
+                    // Existing selector-10 preservation route.
                     source.action = 18;
-                    source.dword_0x10 = 1;
                 }
                 if source.source_byte_3e & 7 == 0 && (1..=9).contains(&source.stage_var2) {
                     source.entity_rng = level2_next_rng16(source.entity_rng);
@@ -8051,6 +8188,11 @@ impl Level2EconomyState {
                     let delta = i32::from(source.entity_rng % 0x55)
                         * (i32::try_from(direction).expect("Bee roll direction fits") - 1);
                     source.roll = ((i32::from(source.roll) + delta) as i16) & 0x07ff;
+                }
+                if source.action == 18 {
+                    // The source applies the action-18 latch after the
+                    // selector callback and action-23 roll tail.
+                    source.dword_0x10 = 1;
                 }
             }
             22 => {
@@ -11467,7 +11609,16 @@ impl Level2EconomyState {
             hasher.update(source.pitch.to_le_bytes());
             hasher.update(source.roll.to_le_bytes());
             hasher.update(source.source_byte_39.to_le_bytes());
-            hasher.update([source.stage_var2]);
+            hasher.update([source.stage_var1, source.stage_var2]);
+            match source.stage_target {
+                Some(target) => {
+                    hasher.update([1]);
+                    hasher.update(target.x.to_le_bytes());
+                    hasher.update(target.y.to_le_bytes());
+                    hasher.update(target.z.to_le_bytes());
+                }
+                None => hasher.update([0]),
+            }
             hasher.update(source.vertical_step.to_le_bytes());
             hasher.update(source.action_window.to_le_bytes());
             hasher.update(source.last_sound_id.to_le_bytes());
@@ -18441,6 +18592,64 @@ impl Level2ResetSession {
             .allocate_authored_model13(authored_index, position)
     }
 
+    fn level2_bee_stage_route(&self, feature: AuthoredFeature) -> Option<Level2BeeStageRoute> {
+        // The class/model constraint belongs to the `sub_4A310` producer.
+        // The typed StageVar matcher itself remains source-generic: it is a
+        // direct-or-subtype lookup, not a Bee-specific table.
+        if feature.kind != 5 || feature.subtype != 2 {
+            return None;
+        }
+        let stage_var = self.mission.level2_authored_stage_variable_for(feature)?;
+        if stage_var.kind != 2 || !stage_var.subtype_match() || stage_var.flags & 0x60 != 0 {
+            return None;
+        }
+        let runtime_stage_var = self
+            .runtime
+            .stage_variables
+            .get(usize::from(stage_var.index))?;
+        let (point_x, point_y) = stage_var.point();
+        let expected_relation = u32::from(point_x) | (u32::from(point_y) << 16);
+        if runtime_stage_var.kind != i8::try_from(stage_var.kind).expect("StageVar kind fits i8")
+            || runtime_stage_var.flags as u8 != stage_var.flags
+            || runtime_stage_var.word_2 & 0x00ff != u16::from(stage_var.stage)
+            || runtime_stage_var.relation != RuntimeRelation::AxisScalar(expected_relation)
+        {
+            return None;
+        }
+        Some(Level2BeeStageRoute {
+            stage_var1: stage_var.index,
+            stage_var2: stage_var.kind,
+            stage_target: Position {
+                x: point_x,
+                y: point_y,
+                z: 0,
+            },
+        })
+    }
+
+    fn allocate_level2_authored_bee_feature(
+        &mut self,
+        feature: AuthoredFeature,
+    ) -> Option<Level2AuthoredBeeSource> {
+        let stage_route = self.level2_bee_stage_route(feature);
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let source = self
+            .economy
+            .allocate_authored_bee(feature.index, position, stage_route)?;
+        if let Some(route) = stage_route {
+            // This was checked above against the same bounded runtime table.
+            // A failed increment would mean an internal carrier corruption,
+            // not an allocation miss (which must leave the counter untouched).
+            assert!(
+                self.runtime
+                    .advance_level2_stage_variable_counter(route.stage_var1),
+                "validated Bee StageVar must retain its runtime counter carrier"
+            );
+        }
+        Some(source)
+    }
+
     /// Materialize one authored Day Bee row through remc2's class-5/model-2
     /// constructor. Mission activation owns the producer/group predicate;
     /// this seam performs the source-arena allocation and exact defaults.
@@ -18459,9 +18668,7 @@ impl Level2ResetSession {
                     && feature.subtype == 2
                     && matches!(feature.activation_group, 4 | 17 | 21 | 29)
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-        self.economy.allocate_authored_bee(authored_index, position)
+        self.allocate_level2_authored_bee_feature(feature)
     }
 
     #[must_use]
@@ -19897,11 +20104,7 @@ impl Level2ResetSession {
                     .iter()
                     .copied()
                     .find(|feature| feature.index == authored_index)?;
-                let position = feature
-                    .world_position(session.terrain.ground_height(feature.world_position(0)));
-                let source = session
-                    .economy
-                    .allocate_authored_bee(authored_index, position)?;
+                let source = session.allocate_level2_authored_bee_feature(feature)?;
                 session.level2_bees_activated.insert(authored_index);
                 Some(source.source_entity_index)
             },
@@ -21451,10 +21654,16 @@ impl Level2ResetSession {
                 let Some(source_before) = source_before else {
                     return false;
                 };
+                let class3_candidates = if source_before.action == 17
+                    || (source_before.action == 23 && source_before.stage_var2 == 2)
+                {
+                    self.level2_bee_class3_targets()
+                } else {
+                    Vec::new()
+                };
                 let acquired_target = if source_before.action == 17 {
-                    let candidates = self.level2_bee_class3_targets();
                     self.economy
-                        .acquire_authored_bee_target(source_slot, &candidates)
+                        .acquire_authored_bee_target(source_slot, &class3_candidates)
                 } else {
                     None
                 };
@@ -21488,6 +21697,7 @@ impl Level2ResetSession {
                     source_slot,
                     target,
                     &peers,
+                    &class3_candidates,
                 );
                 if contact_candidate {
                     if let (Some((target_position, _, true)), Some(after)) = (
@@ -33147,6 +33357,339 @@ mod tests {
     }
 
     #[test]
+    fn level_two_group21_day_bees_inherit_l2_06_from_ordinary_production() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-21 Bee session");
+        let baseline_hash = session.campaign_state_hash();
+        assert_eq!(session.runtime().stage_variables[6].word_2, 0);
+        assert!(session.allocate_level2_authored_bee(228).is_none());
+
+        // Row 228 is the ordinary model-32 producer. Its real group-21
+        // callback constructs the three Day Bees; no test mutates their
+        // action or StageVar fields before this proof.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let group21 = [229_u16, 230, 231]
+            .into_iter()
+            .map(|authored_index| {
+                session
+                    .economy()
+                    .authored_bees()
+                    .iter()
+                    .copied()
+                    .find(|source| source.authored_index == authored_index)
+                    .expect("ordinary group-21 Day Bee")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            group21
+                .iter()
+                .map(|source| {
+                    (
+                        source.authored_index,
+                        source.action,
+                        source.stage_var1,
+                        source.stage_var2,
+                        source.stage_target,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    229,
+                    23,
+                    6,
+                    2,
+                    Some(Position {
+                        x: 0x6500,
+                        y: 0x1000,
+                        z: 0
+                    })
+                ),
+                (
+                    230,
+                    23,
+                    6,
+                    2,
+                    Some(Position {
+                        x: 0x6500,
+                        y: 0x1000,
+                        z: 0
+                    })
+                ),
+                (
+                    231,
+                    23,
+                    6,
+                    2,
+                    Some(Position {
+                        x: 0x6500,
+                        y: 0x1000,
+                        z: 0
+                    })
+                ),
+            ]
+        );
+        // The same ordinary reset pass also reaches group 4's three qualified
+        // Bees before group 21, so the source-owned L2-06 high-byte cadence
+        // has advanced once for each of the six successful constructors.
+        assert_eq!(session.runtime().stage_variables[6].word_2, 0x0600);
+        assert_eq!(
+            &session.runtime().bytes()[392 + 6 * 12 + 2..392 + 6 * 12 + 4],
+            &0x0600_u16.to_le_bytes()
+        );
+
+        session.reset();
+        assert_eq!(session.runtime().stage_variables[6].word_2, 0);
+        assert!(session.economy().authored_bees().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+
+        // An actual exhausted source arena cannot manufacture a Bee or spend
+        // the StageVar construction cadence.
+        session.economy_mut().free_slots.clear();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.economy().authored_bees().is_empty());
+        assert_eq!(session.runtime().stage_variables[6].word_2, 0);
+    }
+
+    #[test]
+    fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 selector-2 Bee session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.authored_index == 229)
+            .map(|source| source.source_entity_index)
+            .expect("ordinary group-21 row 229 Bee");
+        let stage_target = Position {
+            x: 0x6500,
+            y: 0x1000,
+            z: 0,
+        };
+        let configure = |session: &mut Level2ResetSession,
+                         position: Position,
+                         source_byte_3e: u8,
+                         source_byte_39: i16| {
+            let mut source = session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .copied()
+                .expect("live ordinary Bee");
+            assert_eq!(
+                (source.action, source.stage_var1, source.stage_var2),
+                (23, 6, 2)
+            );
+            source.position = position;
+            source.source_byte_3e = source_byte_3e;
+            source.source_byte_39 = source_byte_39;
+            source.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
+            assert!(session.economy_mut().replace_authored_bee_for_test(source));
+            source
+        };
+
+        // The signed, individual source casts make exactly +3072 inside the
+        // point band, where selector 2 takes `sub_1E1C0` and one RNG draw.
+        let inside = configure(
+            &mut session,
+            Position {
+                x: stage_target.x.wrapping_add(3_072),
+                ..stage_target
+            },
+            0,
+            0,
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after_inside = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("inside-band Bee");
+        let inside_helper_rng = level2_next_rng16(inside.entity_rng);
+        let inside_tail_first = level2_next_rng16(inside_helper_rng);
+        let inside_tail_second = level2_next_rng16(inside_tail_first);
+        let inside_tail_direction = 2 * (u32::from(inside_tail_first % 0x9d) / 79);
+        let expected_inside_roll = (i32::from(inside.roll)
+            + i32::from(inside_helper_rng % 0x71)
+            + 142
+            + i32::from(inside_tail_second % 0x55)
+                * (i32::try_from(inside_tail_direction).expect("Bee roll direction fits") - 1))
+            as i16
+            & 0x07ff;
+        assert_eq!(after_inside.action, 23);
+        assert_eq!(after_inside.stage_var2, 2);
+        assert_eq!(after_inside.entity_rng, inside_tail_second);
+        assert_eq!(after_inside.roll, expected_inside_roll);
+
+        // At +3073 the callback takes `sub_1DDA0`: it steers to the authored
+        // point and, at phase zero, consumes exactly its two source LCG draws.
+        let outside = configure(
+            &mut session,
+            Position {
+                x: stage_target.x.wrapping_add(3_073),
+                ..stage_target
+            },
+            0,
+            0,
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after_outside = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("outside-band Bee");
+        let first = level2_next_rng16(outside.entity_rng);
+        let second = level2_next_rng16(first);
+        let direction = 2 * (u32::from(first % 0x9d) / 79);
+        let helper_outside_roll = (i32::from(
+            i16::try_from(heading_for_positions(outside.position, stage_target))
+                .expect("Bee StageVar heading fits i16"),
+        ) + (i32::from((second & 0xff) as u8) + 85)
+            * (i32::try_from(direction).expect("Bee roll direction fits") - 1))
+            as i16
+            & 0x07ff;
+        let outside_tail_first = level2_next_rng16(second);
+        let outside_tail_second = level2_next_rng16(outside_tail_first);
+        let outside_tail_direction = 2 * (u32::from(outside_tail_first % 0x9d) / 79);
+        let expected_outside_roll = (i32::from(helper_outside_roll)
+            + i32::from(outside_tail_second % 0x55)
+                * (i32::try_from(outside_tail_direction).expect("Bee roll direction fits") - 1))
+            as i16
+            & 0x07ff;
+        assert_eq!(after_outside.action, 23);
+        assert_eq!(after_outside.stage_var2, 2);
+        assert_eq!(after_outside.entity_rng, outside_tail_second);
+        assert_eq!(after_outside.roll, expected_outside_roll);
+
+        // Use the real local class-3 entity as the only visible target. The
+        // first visit misses the 30-tick cadence, the second is hidden, and
+        // the third reaches the source selector-10/action-18 handoff.
+        let local_entity_index = session.state.entity_index;
+        let local_index = usize::from(local_entity_index);
+        for entity in &mut session.entities {
+            if entity.index != local_entity_index && entity.class == 3 {
+                entity.control_flags |= 0x20;
+            }
+        }
+        session.state.position = Position {
+            x: stage_target.x.wrapping_add(1_024),
+            ..stage_target
+        };
+        let local_target = session.state.position;
+        let off_cadence = configure(&mut session, stage_target, 1, 1);
+        let target_heading =
+            i16::try_from(heading_for_positions(off_cadence.position, local_target))
+                .expect("class-3 target heading fits");
+        {
+            let source = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|source| source.source_entity_index == source_slot)
+                .expect("ordinary Bee for cadence check");
+            source.yaw = target_heading;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after_off_cadence = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("off-cadence Bee");
+        assert_eq!(
+            (after_off_cadence.action, after_off_cadence.stage_var2),
+            (23, 2)
+        );
+        assert_eq!(after_off_cadence.target_entity_index, None);
+
+        session.entities[local_index].control_flags |= 0x20;
+        let hidden = configure(&mut session, stage_target, 0, 1);
+        {
+            let source = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|source| source.source_entity_index == source_slot)
+                .expect("ordinary Bee for hidden target");
+            source.yaw = i16::try_from(heading_for_positions(hidden.position, local_target))
+                .expect("hidden target heading fits");
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after_hidden = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("hidden-target Bee");
+        assert_eq!((after_hidden.action, after_hidden.stage_var2), (23, 2));
+        assert_eq!(after_hidden.target_entity_index, None);
+
+        session.entities[local_index].control_flags &= !0x20;
+        let visible = configure(&mut session, stage_target, 0, 1);
+        {
+            let source = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|source| source.source_entity_index == source_slot)
+                .expect("ordinary Bee for visible target");
+            source.yaw = i16::try_from(heading_for_positions(visible.position, local_target))
+                .expect("visible target heading fits");
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let handed_off = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("handed-off Bee");
+        assert_eq!(handed_off.action, 18);
+        assert_eq!(handed_off.stage_var2, 10);
+        assert_eq!(handed_off.target_entity_index, Some(local_entity_index));
+        assert_eq!(handed_off.dword_0x10, 1);
+        assert_eq!(handed_off.entity_rng, level2_next_rng16(visible.entity_rng));
+
+        // The existing action-18 path consumes target loss only after the
+        // selector-defined handoff; no action or StageVar was seeded above.
+        session.entities[local_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        {
+            let source = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|source| source.source_entity_index == source_slot)
+                .expect("action-18 Bee before target loss");
+            source.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let target_lost = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("target-lost Bee");
+        assert_eq!(target_lost.action, 17);
+        assert_eq!(target_lost.actual_speed, target_lost.minimum_speed);
+    }
+
+    #[test]
     fn level_two_bee_action17_moves_before_acquisition_rng() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -33164,6 +33707,7 @@ mod tests {
         };
         configured.yaw = 0;
         configured.roll = 0;
+        configured.action = 17;
         configured.source_byte_3e = 0;
         configured.source_byte_39 = 0;
         configured.control_flags = 8;
@@ -33236,6 +33780,7 @@ mod tests {
         };
         configured.yaw = 0;
         configured.roll = 0;
+        configured.action = 17;
         configured.source_byte_3e = 1;
         configured.source_byte_39 = 0;
         configured.control_flags = 8;
@@ -33447,7 +33992,7 @@ mod tests {
                 source.max_life,
                 source.life,
             ),
-            (5, 2, 17, 64, 30, 32, 3000, 3000)
+            (5, 2, 23, 64, 30, 32, 3000, 3000)
         );
         assert_eq!(
             (
@@ -33465,6 +34010,18 @@ mod tests {
         assert_eq!(source.pitch, source.roll);
         assert_eq!(source.yaw, source.roll);
         assert_eq!(source.mana, 1500);
+        assert_eq!(
+            (source.stage_var1, source.stage_var2, source.stage_target),
+            (
+                6,
+                2,
+                Some(Position {
+                    x: 0x6500,
+                    y: 0x1000,
+                    z: 0
+                })
+            )
+        );
         assert!((-1..=2046).contains(&source.roll));
         assert_eq!(
             source.dword_0x10,
@@ -33571,6 +34128,7 @@ mod tests {
                 .iter_mut()
                 .find(|bee| bee.source_entity_index == source.source_entity_index)
                 .expect("first Bee remains live");
+            bee.action = 17;
             bee.position.x = target.x;
             bee.position.y = target.y;
         }
@@ -33851,8 +34409,8 @@ mod tests {
             .expect("Level 2 scripted Bee session");
         let baseline_hash = session.campaign_state_hash();
 
-        // The real group-21 producer materializes the authored row 231. The
-        // following mutations select only its source action; dispatch still
+        // The real group-21 producer materializes action 23. The following
+        // mutations select only an invalid StageVar2 selector; dispatch still
         // enters through the live dynamic cursor.
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source_slot = session
@@ -33871,13 +34429,6 @@ mod tests {
                 .find(|bee| bee.source_entity_index == source_slot)
                 .copied()
                 .expect("live scripted Bee before invalid-selector step");
-            session
-                .economy_mut()
-                .authored_bees
-                .iter_mut()
-                .find(|bee| bee.source_entity_index == source_slot)
-                .expect("live scripted Bee source")
-                .action = 23;
             let bee = session
                 .economy_mut()
                 .authored_bees
@@ -33921,7 +34472,7 @@ mod tests {
         let baseline_hash = session.campaign_state_hash();
 
         // Materialize the authored row through the real group-21 producer,
-        // then select only its action/StageVar state. The next outer turn
+        // then select only its non-L2-06 StageVar state. The next outer turn
         // still dispatches the callback through the live source cursor.
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source_slot = session
@@ -33944,7 +34495,6 @@ mod tests {
             .iter_mut()
             .find(|bee| bee.source_entity_index == source_slot)
             .expect("live scripted Bee source");
-        bee.action = 23;
         bee.stage_var2 = 10;
 
         session.step_outer_turn(PlayerCommand::default(), 0);

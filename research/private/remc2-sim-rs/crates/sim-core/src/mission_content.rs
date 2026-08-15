@@ -79,6 +79,46 @@ pub const LEVEL2_WIZARD_MAP_SETTINGS_COUNT: usize = 8;
 pub const LEVEL2_WIZARD_MAP_SETTINGS_BYTES: usize = 110;
 pub const LEVEL2_WIZARD_MAP_SETTINGS_OFFSET: usize = 25_092;
 
+// `Type_MapData` stores seven 8-byte stage records between the eight
+// WizardMapSettings rows and its eleven authored StageVar rows.  These are
+// authored records, not the reduced runtime StageVars view: the authored
+// selector is necessary for `sub_12100`'s direct/subtype matching.
+const LEVEL2_AUTHORED_STAGE_VARIABLE_OFFSET: usize = 26_028;
+const LEVEL2_AUTHORED_STAGE_VARIABLE_COUNT: usize = 11;
+const LEVEL2_AUTHORED_STAGE_VARIABLE_BYTES: usize = 8;
+
+/// One decoded `terrain_2FECE.StageVars_0x3647A` entry retained exactly where
+/// remc2 needs it: before `InitStageVars_11EE0` reduces it into runtime state.
+///
+/// `selector` is an authored-feature index. For a subtype-match row, it names
+/// the exemplar whose subtype is compared by `sub_12100`; it is not itself a
+/// Bee-only or class-restricted relation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Level2AuthoredStageVariable {
+    pub index: u8,
+    pub raw_type: u8,
+    pub kind: u8,
+    pub flags: u8,
+    pub stage: u8,
+    pub selector: u16,
+    pub point_x: u8,
+    pub point_y: u8,
+}
+
+impl Level2AuthoredStageVariable {
+    const SUBTYPE_MATCH_FLAG: u8 = 1;
+
+    #[must_use]
+    pub const fn subtype_match(self) -> bool {
+        self.flags & Self::SUBTYPE_MATCH_FLAG != 0
+    }
+
+    #[must_use]
+    pub fn point(self) -> (u16, u16) {
+        (u16::from(self.point_x) << 8, u16::from(self.point_y) << 8)
+    }
+}
+
 /// Explicit authored/index/objective mappings selected by the validated level
 /// metadata.  These are intentionally data, rather than a trait hierarchy or
 /// a level-specific branch spread through the 45k-line mission kernel.
@@ -481,6 +521,7 @@ pub struct MissionContentTemplate {
     authored_features: Box<[AuthoredFeature]>,
     reset_source_slots: Box<[Level1ResetSourceSlot]>,
     wizard_map_settings: Box<[MissionWizardMapSettings]>,
+    level2_authored_stage_variables: Box<[Level2AuthoredStageVariable]>,
     level2_activation_plan: Option<Level2ActivationPlan>,
     initial_global_rng: u32,
 }
@@ -540,6 +581,12 @@ impl MissionContentTemplate {
         } else {
             Vec::new()
         };
+        let level2_authored_stage_variables = if profile.is_level2() {
+            parse_level2_authored_stage_variables(authored, &features)
+                .map_err(MissionContentError::Decode)?
+        } else {
+            Vec::new()
+        };
         let level2_activation_plan = if profile.is_level2() {
             Some(
                 checked_in_level2_activation_plan(&features)
@@ -553,6 +600,7 @@ impl MissionContentTemplate {
             authored_features: features.into_boxed_slice(),
             reset_source_slots: reset_source_slots.to_vec().into_boxed_slice(),
             wizard_map_settings: wizard_map_settings.into_boxed_slice(),
+            level2_authored_stage_variables: level2_authored_stage_variables.into_boxed_slice(),
             level2_activation_plan,
             initial_global_rng,
         })
@@ -576,6 +624,12 @@ impl MissionContentTemplate {
     #[must_use]
     pub fn wizard_map_settings(&self) -> &[MissionWizardMapSettings] {
         &self.wizard_map_settings
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn level2_authored_stage_variables(&self) -> &[Level2AuthoredStageVariable] {
+        &self.level2_authored_stage_variables
     }
 
     #[must_use]
@@ -624,6 +678,63 @@ fn parse_level2_wizard_map_settings(
     Ok(settings)
 }
 
+fn parse_level2_authored_stage_variables(
+    authored: &[u8],
+    features: &[AuthoredFeature],
+) -> Result<Vec<Level2AuthoredStageVariable>, String> {
+    let required = LEVEL2_AUTHORED_STAGE_VARIABLE_OFFSET
+        + LEVEL2_AUTHORED_STAGE_VARIABLE_COUNT * LEVEL2_AUTHORED_STAGE_VARIABLE_BYTES;
+    if authored.len() < required {
+        return Err(format!(
+            "authored level too short for Level 2 StageVars: {} < {required}",
+            authored.len()
+        ));
+    }
+
+    // `InitStageVars_11EE0` determines the last live entry from indices 1..10
+    // and ignores the row-zero sentinel. Preserve both that bound and the
+    // source order used by `sub_12100`'s two matching passes.
+    let record = |index: usize| {
+        let offset =
+            LEVEL2_AUTHORED_STAGE_VARIABLE_OFFSET + index * LEVEL2_AUTHORED_STAGE_VARIABLE_BYTES;
+        &authored[offset..offset + LEVEL2_AUTHORED_STAGE_VARIABLE_BYTES]
+    };
+    let count = (1..LEVEL2_AUTHORED_STAGE_VARIABLE_COUNT)
+        .rev()
+        .find(|&index| record(index)[0] & 0x0f != 0)
+        .unwrap_or(0);
+    let mut stage_variables = Vec::with_capacity(count);
+    for index in 1..=count {
+        let bytes = record(index);
+        let raw_type = bytes[0];
+        let kind = raw_type & 0x0f;
+        if kind == 0 {
+            continue;
+        }
+        let selector = u16::from_le_bytes([bytes[2], bytes[3]]);
+        if usize::from(selector) >= features.len() {
+            return Err(format!(
+                "Level 2 StageVar {index} selector {selector} is outside authored feature table"
+            ));
+        }
+        let flags = u8::from(raw_type & 0x80 != 0)
+            | (u8::from(raw_type & 0x40 != 0) << 1)
+            | if raw_type & 0x10 != 0 { 0x20 } else { 0 }
+            | if raw_type & 0x20 != 0 { 0x40 } else { 0 };
+        stage_variables.push(Level2AuthoredStageVariable {
+            index: u8::try_from(index).expect("bounded StageVar index fits u8"),
+            raw_type,
+            kind,
+            flags,
+            stage: bytes[1],
+            selector,
+            point_x: bytes[4],
+            point_y: bytes[6],
+        });
+    }
+    Ok(stage_variables)
+}
+
 /// The deterministic reset/session state for the generic seam.  Level 2
 /// source dispatch is intentionally not approximated here.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -633,6 +744,7 @@ pub struct MissionContentSession {
     baseline_slots: Box<[Level1ResetSourceSlot]>,
     source_slots: Box<[Level1ResetSourceSlot]>,
     wizard_map_settings: Box<[MissionWizardMapSettings]>,
+    level2_authored_stage_variables: Box<[Level2AuthoredStageVariable]>,
     level2_activation_plan: Option<Level2ActivationPlan>,
     initial_global_rng: u32,
     global_rng: u32,
@@ -692,6 +804,94 @@ mod tests {
         assert_ne!(session.state_hash(), baseline);
         session.reset();
         assert_eq!(session.state_hash(), baseline);
+    }
+
+    #[test]
+    fn level_two_authored_stagevar_l2_06_subtype_match_maps_all_day_bees() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let template = inspection
+            .mission_content_template()
+            .expect("Level 2 content template");
+        let l2_06 = template
+            .level2_authored_stage_variables()
+            .iter()
+            .copied()
+            .find(|stage_var| stage_var.index == 6)
+            .expect("authored L2-06 StageVar");
+        assert_eq!(
+            (
+                l2_06.raw_type,
+                l2_06.kind,
+                l2_06.flags,
+                l2_06.stage,
+                l2_06.selector,
+                l2_06.point(),
+            ),
+            (0x82, 2, 1, 0, 231, (0x6500, 0x1000))
+        );
+
+        let session = template.session();
+        let qualified_rows = [
+            210_u16, 211, 212, 229, 230, 231, 236, 237, 257, 307, 308, 312,
+        ];
+        for authored_index in qualified_rows {
+            let feature = session
+                .authored_features()
+                .iter()
+                .copied()
+                .find(|feature| feature.index == authored_index)
+                .expect("qualified Day-Bee authored row");
+            assert_eq!((feature.kind, feature.subtype), (5, 2));
+            assert_eq!(
+                session.level2_authored_stage_variable_for(feature),
+                Some(l2_06)
+            );
+        }
+
+        // Decode against the real owner package, then corrupt only the
+        // authored selector in memory: a missing selector must fail before
+        // any production session can infer a substitute mapping.
+        let mut malformed = std::fs::read(level_two_fixture_path().join("authored-level.bin"))
+            .expect("qualified Level 2 authored bytes");
+        let selector_offset =
+            LEVEL2_AUTHORED_STAGE_VARIABLE_OFFSET + 6 * LEVEL2_AUTHORED_STAGE_VARIABLE_BYTES + 2;
+        malformed[selector_offset..selector_offset + 2].copy_from_slice(&1_200_u16.to_le_bytes());
+        assert!(
+            MissionContentTemplate::decode(
+                MissionContentProfile::LEVEL2,
+                &malformed,
+                template.reset_source_slots(),
+                template.initial_global_rng(),
+            )
+            .is_err()
+        );
+
+        // Removing just L2-06 is a valid authored decode but removes the
+        // subtype-2 route; it never falls back to a friendly Bee default.
+        let mut missing = std::fs::read(level_two_fixture_path().join("authored-level.bin"))
+            .expect("qualified Level 2 authored bytes");
+        missing[LEVEL2_AUTHORED_STAGE_VARIABLE_OFFSET + 6 * LEVEL2_AUTHORED_STAGE_VARIABLE_BYTES] =
+            0;
+        let missing_session = MissionContentTemplate::decode(
+            MissionContentProfile::LEVEL2,
+            &missing,
+            template.reset_source_slots(),
+            template.initial_global_rng(),
+        )
+        .expect("missing L2-06 remains a structurally valid authored table")
+        .session();
+        let row_229 = missing_session
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| feature.index == 229)
+            .expect("row 229");
+        assert!(
+            missing_session
+                .level2_authored_stage_variable_for(row_229)
+                .is_none()
+        );
     }
 
     #[test]
@@ -773,6 +973,7 @@ impl MissionContentSession {
             baseline_slots: template.reset_source_slots.clone(),
             source_slots: template.reset_source_slots.clone(),
             wizard_map_settings: template.wizard_map_settings.clone(),
+            level2_authored_stage_variables: template.level2_authored_stage_variables.clone(),
             level2_activation_plan: template.level2_activation_plan.clone(),
             initial_global_rng: template.initial_global_rng,
             global_rng: template.initial_global_rng,
@@ -797,6 +998,32 @@ impl MissionContentSession {
     #[must_use]
     pub fn wizard_map_settings(&self) -> &[MissionWizardMapSettings] {
         &self.wizard_map_settings
+    }
+
+    /// Source-ordered `sub_12100` lookup: direct authored-row selectors have
+    /// precedence; only then may the first subtype-match StageVar select the
+    /// exemplar's subtype. The caller owns its class/model producer gate.
+    #[must_use]
+    pub(crate) fn level2_authored_stage_variable_for(
+        &self,
+        feature: AuthoredFeature,
+    ) -> Option<Level2AuthoredStageVariable> {
+        self.level2_authored_stage_variables
+            .iter()
+            .copied()
+            .find(|stage_var| !stage_var.subtype_match() && stage_var.selector == feature.index)
+            .or_else(|| {
+                self.level2_authored_stage_variables
+                    .iter()
+                    .copied()
+                    .find(|stage_var| {
+                        stage_var.subtype_match()
+                            && self
+                                .authored_features
+                                .get(usize::from(stage_var.selector))
+                                .is_some_and(|exemplar| exemplar.subtype == feature.subtype)
+                    })
+            })
     }
 
     #[must_use]
@@ -869,6 +1096,21 @@ impl MissionContentSession {
         }
         for settings in &self.wizard_map_settings {
             hasher.update(settings.record_bytes());
+        }
+        if !self.level2_authored_stage_variables.is_empty() {
+            hasher.update(b"level2-authored-stage-vars-v1");
+            for stage_var in &self.level2_authored_stage_variables {
+                hasher.update([
+                    stage_var.index,
+                    stage_var.raw_type,
+                    stage_var.kind,
+                    stage_var.flags,
+                    stage_var.stage,
+                    stage_var.point_x,
+                    stage_var.point_y,
+                ]);
+                hasher.update(stage_var.selector.to_le_bytes());
+            }
         }
         if let Some(plan) = &self.level2_activation_plan {
             hasher.update(b"level2-activation-plan-v1");
