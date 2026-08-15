@@ -55,6 +55,87 @@ LEVEL2_COLLISION_MASK_BANK_BYTES = 4638
 LEVEL2_COLLISION_MASK_BANK_SHA256 = (
     "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432"
 )
+LEVEL2_PLAYER_COMPONENT_VERSION = 3
+LEVEL2_PLAYER_RECORD_BYTES = 662
+TYPE_STR_164_AUXILIARY_BYTES = 89
+TYPE_STR_164_AUXILIARY_LAYOUT = {
+    "schema": "mc2-type-str-164-auxiliary/v1",
+    "record_offset": 573,
+    "record_bytes": TYPE_STR_164_AUXILIARY_BYTES,
+    "source_struct": "Type_str_164",
+    "source_struct_bytes": 1136,
+    "descriptor_bounds": {
+        "source_min_inclusive": 38,
+        "source_max_exclusive": 580,
+        "record_min_inclusive": 0,
+        "record_max_exclusive": TYPE_STR_164_AUXILIARY_BYTES,
+    },
+    "fields": [
+        {
+            "name": "word_0x26_38",
+            "source_offset": 38,
+            "record_offset": 0,
+            "count": 8,
+            "element_bytes": 2,
+            "bytes": 16,
+            "encoding": "i16_le",
+        },
+        {
+            "name": "byte_0x154_340",
+            "source_offset": 340,
+            "record_offset": 16,
+            "count": 1,
+            "element_bytes": 1,
+            "bytes": 1,
+            "encoding": "u8",
+        },
+        {
+            "name": "dword_0x16D_365",
+            "source_offset": 365,
+            "record_offset": 17,
+            "count": 1,
+            "element_bytes": 4,
+            "bytes": 4,
+            "encoding": "i32_le",
+        },
+        {
+            "name": "word_0x1A2_418",
+            "source_offset": 418,
+            "record_offset": 21,
+            "count": 1,
+            "element_bytes": 2,
+            "bytes": 2,
+            "encoding": "i16_le",
+        },
+        {
+            "name": "array_0x1FC_508",
+            "source_offset": 508,
+            "record_offset": 23,
+            "count": 32,
+            "element_bytes": 2,
+            "bytes": 64,
+            "encoding": "u16_le",
+        },
+        {
+            "name": "word_0x242_578",
+            "source_offset": 578,
+            "record_offset": 87,
+            "count": 1,
+            "element_bytes": 2,
+            "bytes": 2,
+            "encoding": "i16_le",
+        },
+    ],
+}
+LEVEL2_PLAYER_LAYOUT = {
+    "index_offset": 0,
+    "normalized_host_time_offset": 50,
+    "legacy_v1_bytes": 565,
+    "ambient_loop_5_distance_offset": 565,
+    "ambient_loop_31_distance_offset": 569,
+    "type_str_164_auxiliary": TYPE_STR_164_AUXILIARY_LAYOUT,
+    "record_bytes": LEVEL2_PLAYER_RECORD_BYTES,
+}
 V3_PACKAGE_SHA256 = "15f1ca196b1ebf227860f468e419732c1ba917d57de9097acc5e2f647bbfd835"
 V3_SOURCE_IDENTITY = {
     "upstream_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -135,6 +216,56 @@ def require(condition: bool, message: str) -> None:
     """Raise a useful first-mismatch diagnostic for profile checks."""
     if not condition:
         raise AssertionError(message)
+
+
+TYPE_STR_164_REFERENCE = {
+    "schema": "mc2-type-str-164-auxiliary/v1",
+    "source_struct": "Type_str_164",
+    "descriptor_table": "engine_support.cpp:665-707",
+    "initialization": {
+        "word_0x26_38": ["global_types.h:236", "engine_support_converts.cpp:59-61"],
+        "byte_0x154_340": ["EventsFunctions.cpp:5424-5425"],
+        "dword_0x16D_365": ["EventsFunctions.cpp:43760"],
+        "word_0x1A2_418": ["EventsFunctions.cpp:6811-6815"],
+        "array_0x1FC_508": ["EventsFunctions.cpp:43886-43897"],
+        "word_0x242_578": ["EventsFunctions.cpp:43811"],
+    },
+    "consumers": {
+        "word_0x26_38": ["engine_support.cpp:665-666"],
+        "byte_0x154_340": [
+            "EventsFunctions.cpp:55909-55910",
+            "EventsFunctions.cpp:56193-56194",
+        ],
+        "dword_0x16D_365": ["EventsFunctions.cpp:5436-5437"],
+        "word_0x1A2_418": [
+            "EventsFunctions.cpp:5358-5359",
+            "EventsFunctions.cpp:5956",
+            "EventsFunctions.cpp:6805-6818",
+        ],
+        "array_0x1FC_508": [
+            "EventsFunctions.cpp:5377-5392",
+            "EventsFunctions.cpp:5968",
+            "EventsFunctions.cpp:6201-6206",
+        ],
+        "word_0x242_578": [
+            "EventsFunctions.cpp:5379",
+            "EventsFunctions.cpp:6201-6206",
+            "EventsFunctions.cpp:6263-6266",
+        ],
+    },
+}
+
+
+def verify_type_str_164_carrier(manifest: dict) -> None:
+    layout = manifest["record_layouts"]["player"]
+    require(
+        layout == LEVEL2_PLAYER_LAYOUT,
+        "Level 2 player layout does not exactly describe the Type_str_164 carrier",
+    )
+    require(
+        manifest["reference"]["type_str_164_auxiliary"] == TYPE_STR_164_REFERENCE,
+        "Type_str_164 source initialization/consumer pin changed",
+    )
 
 
 STATE_HASH_ORDER = [
@@ -773,6 +904,7 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
 
 def verify_binary_structure(package: Path, manifest: dict) -> None:
     external_level = manifest["level"]["external"]
+    level_two_v4 = external_level == 2 and manifest["schema"] == SCHEMA_V4
     authored = (package / "authored-level.bin").read_bytes()
     assert len(authored) == 0x6604
     require(
@@ -818,13 +950,17 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
     players = verify_record_file(
         package / "players.bin",
         b"MCP1",
-        2 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4} else 1,
+        LEVEL2_PLAYER_COMPONENT_VERSION
+        if level_two_v4
+        else (2 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4} else 1),
         8,
         manifest["record_sizes"]["player"],
     )
     player_record_size = manifest["record_sizes"]["player"]
     expected_player_size = (
-        573 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4} else 565
+        LEVEL2_PLAYER_RECORD_BYTES
+        if level_two_v4
+        else (573 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4} else 565)
     )
     assert player_record_size == expected_player_size
     for index in range(8):
@@ -835,7 +971,18 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             u16(players, offset + 4) < manifest["counts"]["entity_slots"],
             f"player slot {index} entity relation is out of range",
         )
-    if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}:
+    if level_two_v4:
+        verify_type_str_164_carrier(manifest)
+        layout = manifest["record_layouts"]["player"]
+        auxiliary_offset = layout["type_str_164_auxiliary"]["record_offset"]
+        auxiliary_end = auxiliary_offset + TYPE_STR_164_AUXILIARY_BYTES
+        for index in range(8):
+            offset = 12 + index * player_record_size
+            require(
+                len(players[offset : offset + player_record_size]) >= auxiliary_end,
+                f"Level 2 player slot {index} Type_str_164 carrier is truncated",
+            )
+    elif manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}:
         layout = manifest["record_layouts"]["player"]
         assert layout == {
             "index_offset": 0,
@@ -996,6 +1143,9 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
         "secondary_cave",
         "entity_indices",
     ]
+    non_cave_map = manifest["level"]["map_type"]["name"] != "Cave"
+    historical_level_two_v3 = external_level == 2 and manifest["schema"] == SCHEMA_V3
+    normalize_inactive_plane = non_cave_map and not historical_level_two_v3
     for plane in planes:
         start = plane["offset"]
         end = start + plane["bytes"]
@@ -1029,21 +1179,50 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             if plane["name"] == "secondary_cave":
                 require(
                     plane["stock_regression_compared"] is False,
-                    "Level 2 secondary cave must not claim stock comparison",
+                    "secondary cave plane must not claim stock comparison",
                 )
-                require(
-                    plane["source_status"] == "live_plane",
-                    "Level 2 secondary cave source status differs",
-                )
-                require(
-                    plane["normalization"] == "preserved",
-                    "Level 2 secondary cave normalization differs",
-                )
+                if normalize_inactive_plane:
+                    require(
+                        plane["source_status"] == "inactive_uninitialized_host_state",
+                        "non-Cave secondary plane source status differs",
+                    )
+                    require(
+                        plane["normalization"] == "inactive_non_regression_compared_zeroed",
+                        "non-Cave secondary plane normalization differs",
+                    )
+                    require(
+                        exported_hash == hashlib.sha256(bytes(0x10000)).hexdigest(),
+                        "non-Cave secondary plane is not zero-normalized",
+                    )
+                    require(
+                        terrain[start:end] == bytes(0x10000),
+                        "non-Cave secondary plane is not zero-normalized",
+                    )
+                else:
+                    require(
+                        plane["source_status"] == "live_plane",
+                        "Cave or historical v3 secondary plane source status differs",
+                    )
+                    require(
+                        plane["normalization"] == "preserved",
+                        "Cave or historical v3 secondary plane normalization differs",
+                    )
             else:
                 require(
                     plane["stock_regression_compared"] is True,
                     f"Level 2 {plane['name']} must claim stock comparison",
                 )
+    if normalize_inactive_plane:
+        for name in ("terrain-pre-features.bin", "terrain-post-features.bin"):
+            feature_terrain = (package / name).read_bytes()
+            require(
+                len(feature_terrain) == 0x70000,
+                f"{name} terrain member has the wrong extent",
+            )
+            require(
+                feature_terrain[0x40000:0x50000] == bytes(0x10000),
+                "non-Cave secondary plane is not zero-normalized",
+            )
     require(
         manifest["reference"]["terrain_full_match"] is (
             False if external_level == 1 else None
@@ -1069,21 +1248,24 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             presentation["resolved_files"]["language"].endswith("/L1.TXT"),
             "Level 2 owner language asset is not English L1.TXT",
         )
+        expected_volatile = (
+            "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
+            if not normalize_inactive_plane
+            else "inactive non-Cave secondary terrain plane zeroed; player time_393 host-clock sample zeroed"
+        )
         require(
-            manifest["normalization"]["volatile_host_state"] == [
-                "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
-            ],
+            manifest["normalization"]["volatile_host_state"] == [expected_volatile],
             "Level 2 host-state normalization policy differs",
         )
         feature_generation = manifest["feature_generation_oracle"]
         require(
             feature_generation["pre_terrain"]["inactive_secondary_plane"]
-            == "preserved-live-plane",
+            == ("zero-normalized-non-cave" if normalize_inactive_plane else "preserved-live-plane"),
             "Level 2 pre-feature secondary terrain policy differs",
         )
         require(
             feature_generation["post_terrain"]["inactive_secondary_plane"]
-            == "preserved-live-plane",
+            == ("zero-normalized-non-cave" if normalize_inactive_plane else "preserved-live-plane"),
             "Level 2 post-feature secondary terrain policy differs",
         )
         require(u16(runtime, 16) == 0, "Level 2 runtime local player slot must be 0")

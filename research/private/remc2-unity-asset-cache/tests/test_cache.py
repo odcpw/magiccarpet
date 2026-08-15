@@ -1715,9 +1715,14 @@ class Level2DayMaterialTests(unittest.TestCase):
         self.assertEqual(tree_identity(self.first), tree_identity(self.second))
         manifest = cache.validate_day_material_cache(
             self.first,
-            "4b8c245c268d9644d5911285c4b4da5dacb78d02034fec7d2f05366a4cc48c6a",
-            "a4a7a3d4086c09404294fb90d53e7f34e05d58a406fb025e15f032cca18793f1",
+            cache.EXPECTED_LEVEL2_PACKAGE,
+            cache.EXPECTED_LEVEL2_CLOSURE,
         )
+        package = json.loads(
+            (cache.DEFAULT_LEVEL2_PACKAGE / "manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(package["schema"], "mc2-owner-level-export/v4")
+        self.assertEqual(package["package_sha256"], cache.EXPECTED_LEVEL2_PACKAGE)
         self.assertEqual(manifest["profile"]["external_level"], 2)
         self.assertEqual(manifest["profile"]["internal_level"], 1)
         self.assertEqual(manifest["profile"]["map_type"], {"id": 0, "name": "Day"})

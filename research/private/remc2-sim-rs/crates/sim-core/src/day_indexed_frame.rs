@@ -840,12 +840,12 @@ fn qualified_profile_json() -> Value {
     json!({
         "catalog_file_sha256": "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44",
         "catalog_sha256": "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e",
-        "closure_sha256": "a4a7a3d4086c09404294fb90d53e7f34e05d58a406fb025e15f032cca18793f1",
+        "closure_sha256": "66505e6c3691cce6c730682047c7d8634c682172daa017d4840d1a4a5be4661c",
         "external_level": MATERIAL_PACKAGE_LEVEL,
         "internal_level": MATERIAL_INTERNAL_LEVEL,
         "map_type": {"id": MATERIAL_MAP_TYPE_ID, "name": "Day"},
         "name": MATERIAL_PROFILE_NAME,
-        "package_sha256": "4b8c245c268d9644d5911285c4b4da5dacb78d02034fec7d2f05366a4cc48c6a",
+        "package_sha256": "1d73e81bc897933d62621b53a1c8c1cf890bd5dffe17f77de43f8d38f3854488",
         "selectors": {
             "block_bank": MATERIAL_BLOCK_BANK,
             "palette": MATERIAL_PALETTE,

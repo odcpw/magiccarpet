@@ -43,6 +43,10 @@ constexpr std::size_t kEntitySlots = 1000;
 constexpr std::size_t kAuthoredFeatures = 1200;
 constexpr std::size_t kAuthoredLevelBytes = 0x6604;
 constexpr std::size_t kTerrainBytes = 0x70000;
+constexpr std::size_t kLegacyPlayerRecordBytes = 573;
+constexpr std::size_t kTypeStr164AuxiliaryBytes = 89;
+constexpr std::size_t kLevel2PlayerRecordBytes =
+    kLegacyPlayerRecordBytes + kTypeStr164AuxiliaryBytes;
 constexpr std::size_t kFeatureStartBytes = 16;
 constexpr std::size_t kFeatureAllocatorHeaderBytes = 32;
 constexpr std::size_t kFeatureAllocatorRelationCount = 1000;
@@ -373,15 +377,12 @@ Bytes capture_terrain() {
     return result;
 }
 
-void normalize_level_one_inactive_terrain_plane(Bytes& terrain) {
+void normalize_non_cave_inactive_terrain_plane(Bytes& terrain) {
     if (terrain.data.size() != kTerrainBytes) {
         throw std::runtime_error("terrain normalization extent mismatch");
     }
     if (D41A0_0.terrain_2FECE.MapType == MapType_t::Cave) {
         throw std::runtime_error("inactive-plane normalization is forbidden for Cave maps");
-    }
-    if (D41A0_0.terrain_2FECE.MapType != MapType_t::Night) {
-        throw std::runtime_error("Level 1 live MapType is not Night (1)");
     }
     // remc2's stock regression comparison deliberately omits this cave-only
     // plane on non-Cave maps. It is uninitialized host state at both capture
@@ -949,7 +950,7 @@ void append_spell_dwords(Bytes& output, const type_32_1a& values) {
     for (std::int32_t value : values.SpellExperience) output.i32(value);
 }
 
-Bytes capture_players(std::uint16_t& record_size) {
+Bytes capture_players(bool include_type_str_164_auxiliary, std::uint16_t& record_size) {
     Bytes records;
     std::size_t first_size = 0;
     for (std::size_t index = 0; index < 8; ++index) {
@@ -1013,6 +1014,18 @@ Bytes capture_players(std::uint16_t& record_size) {
         // by source loops 5 and 31 and projected by the Rust FlightState.
         records.i32(state.dword_0x19A_410);
         records.i32(state.maxDistance_0x19E_414);
+        if (include_type_str_164_auxiliary) {
+            // This is a packed, pointer-free carrier for the exact Type_str_164
+            // fields consumed by the Nyphur/common-upkeep and terminal paths.
+            // Keep the source widths and order explicit; do not synthesize
+            // alignment, policy, or values absent from the live remc2 state.
+            for (std::int16_t value : state.word_0x26_38) records.i16(value);
+            records.u8(state.byte_0x154_340);
+            records.i32(state.dword_0x16D_365);
+            records.i16(state.word_0x1A2_418);
+            for (std::uint16_t value : state.array_0x1FC_508) records.u16(value);
+            records.i16(state.word_0x242_578);
+        }
         const std::size_t size = records.data.size() - before;
         if (index == 0) first_size = size;
         else if (size != first_size) throw std::runtime_error("player record size changed");
@@ -1020,7 +1033,7 @@ Bytes capture_players(std::uint16_t& record_size) {
     record_size = static_cast<std::uint16_t>(first_size);
     Bytes result;
     result.magic("MCP1");
-    result.u16(2);
+    result.u16(include_type_str_164_auxiliary ? 3 : 2);
     result.u16(record_size);
     result.u32(8);
     result.raw(records.data.data(), records.data.size());
@@ -1562,6 +1575,78 @@ struct StagingCleanup {
     }
 };
 
+json type_str_164_auxiliary_layout() {
+    return {
+        {"schema", "mc2-type-str-164-auxiliary/v1"},
+        {"record_offset", kLegacyPlayerRecordBytes},
+        {"record_bytes", kTypeStr164AuxiliaryBytes},
+        {"source_struct", "Type_str_164"},
+        {"source_struct_bytes", 1136},
+        {"descriptor_bounds", {
+            {"source_min_inclusive", 38},
+            {"source_max_exclusive", 580},
+            {"record_min_inclusive", 0},
+            {"record_max_exclusive", kTypeStr164AuxiliaryBytes}
+        }},
+        {"fields", json::array({
+            json{
+                {"name", "word_0x26_38"}, {"source_offset", 38},
+                {"record_offset", 0}, {"count", 8}, {"element_bytes", 2},
+                {"bytes", 16}, {"encoding", "i16_le"}
+            },
+            json{
+                {"name", "byte_0x154_340"}, {"source_offset", 340},
+                {"record_offset", 16}, {"count", 1}, {"element_bytes", 1},
+                {"bytes", 1}, {"encoding", "u8"}
+            },
+            json{
+                {"name", "dword_0x16D_365"}, {"source_offset", 365},
+                {"record_offset", 17}, {"count", 1}, {"element_bytes", 4},
+                {"bytes", 4}, {"encoding", "i32_le"}
+            },
+            json{
+                {"name", "word_0x1A2_418"}, {"source_offset", 418},
+                {"record_offset", 21}, {"count", 1}, {"element_bytes", 2},
+                {"bytes", 2}, {"encoding", "i16_le"}
+            },
+            json{
+                {"name", "array_0x1FC_508"}, {"source_offset", 508},
+                {"record_offset", 23}, {"count", 32}, {"element_bytes", 2},
+                {"bytes", 64}, {"encoding", "u16_le"}
+            },
+            json{
+                {"name", "word_0x242_578"}, {"source_offset", 578},
+                {"record_offset", 87}, {"count", 1}, {"element_bytes", 2},
+                {"bytes", 2}, {"encoding", "i16_le"}
+            }
+        })}
+    };
+}
+
+json type_str_164_auxiliary_reference() {
+    return {
+        {"schema", "mc2-type-str-164-auxiliary/v1"},
+        {"source_struct", "Type_str_164"},
+        {"descriptor_table", "engine_support.cpp:665-707"},
+        {"initialization", {
+            {"word_0x26_38", json::array({"global_types.h:236", "engine_support_converts.cpp:59-61"})},
+            {"byte_0x154_340", json::array({"EventsFunctions.cpp:5424-5425"})},
+            {"dword_0x16D_365", json::array({"EventsFunctions.cpp:43760"})},
+            {"word_0x1A2_418", json::array({"EventsFunctions.cpp:6811-6815"})},
+            {"array_0x1FC_508", json::array({"EventsFunctions.cpp:43886-43897"})},
+            {"word_0x242_578", json::array({"EventsFunctions.cpp:43811"})}
+        }},
+        {"consumers", {
+            {"word_0x26_38", json::array({"engine_support.cpp:665-666"})},
+            {"byte_0x154_340", json::array({"EventsFunctions.cpp:55909-55910", "EventsFunctions.cpp:56193-56194"})},
+            {"dword_0x16D_365", json::array({"EventsFunctions.cpp:5436-5437"})},
+            {"word_0x1A2_418", json::array({"EventsFunctions.cpp:5358-5359", "EventsFunctions.cpp:5956", "EventsFunctions.cpp:6805-6818"})},
+            {"array_0x1FC_508", json::array({"EventsFunctions.cpp:5377-5392", "EventsFunctions.cpp:5968", "EventsFunctions.cpp:6201-6206"})},
+            {"word_0x242_578", json::array({"EventsFunctions.cpp:5379", "EventsFunctions.cpp:6201-6206", "EventsFunctions.cpp:6263-6266"})}
+        }}
+    };
+}
+
 int run(const Arguments& arguments) {
     const bool level_one = arguments.level.external == 1;
     const fs::path owner_root = fs::canonical(arguments.owner_root);
@@ -1639,8 +1724,9 @@ int run(const Arguments& arguments) {
             std::to_string(arguments.level.external));
     }
 
+    const bool non_cave_map = D41A0_0.terrain_2FECE.MapType != MapType_t::Cave;
     Bytes terrain = capture_terrain();
-    if (level_one) normalize_level_one_inactive_terrain_plane(terrain);
+    if (non_cave_map) normalize_non_cave_inactive_terrain_plane(terrain);
     const std::string terrain_type_sha =
         sha256_range(terrain.data, 0x00000, 0x10000);
     const std::string terrain_height_sha =
@@ -1661,7 +1747,7 @@ int run(const Arguments& arguments) {
         throw std::runtime_error(
             "one or more stock-regression-compared terrain planes differ from the preserved frame-zero snapshot");
     }
-    if (level_one && terrain_secondary_sha != kNormalizedInactivePlaneSha256) {
+    if (non_cave_map && terrain_secondary_sha != kNormalizedInactivePlaneSha256) {
         throw std::runtime_error("inactive secondary terrain plane was not normalized");
     }
     std::uint32_t active_entities = 0;
@@ -1686,9 +1772,11 @@ int run(const Arguments& arguments) {
             "external Level 2 must start with local player 0 and exactly one AI opponent");
     }
     std::uint16_t player_record_size = 0;
-    Bytes players = capture_players(player_record_size);
-    if (player_record_size != 573) {
-        throw std::runtime_error("v2 player record is not 573 bytes");
+    Bytes players = capture_players(!level_one, player_record_size);
+    const auto expected_player_record_size =
+        level_one ? kLegacyPlayerRecordBytes : kLevel2PlayerRecordBytes;
+    if (player_record_size != expected_player_record_size) {
+        throw std::runtime_error("player record size does not match the selected profile");
     }
     const auto local_player_slot = static_cast<std::size_t>(D41A0_0.LevelIndex_0xc);
     const auto& local_state =
@@ -1739,7 +1827,7 @@ int run(const Arguments& arguments) {
         : std::vector<FeatureAllocatorTrace>{};
     GenerateLevelMap_43830(&authored);
     Bytes terrain_pre_features = capture_terrain();
-    if (level_one) normalize_level_one_inactive_terrain_plane(terrain_pre_features);
+    if (non_cave_map) normalize_non_cave_inactive_terrain_plane(terrain_pre_features);
     if (!std::all_of(
             terrain_pre_features.data.begin() + 0x50000,
             terrain_pre_features.data.end(),
@@ -1759,7 +1847,7 @@ int run(const Arguments& arguments) {
     sub_49270_generate_level_features(&authored);
     if (level_one) validate_feature_house_fixture(feature_expectation);
     Bytes terrain_post_features = capture_terrain();
-    if (level_one) normalize_level_one_inactive_terrain_plane(terrain_post_features);
+    if (non_cave_map) normalize_non_cave_inactive_terrain_plane(terrain_post_features);
     Bytes feature_end = capture_feature_boundary("MFE3");
     std::uint32_t feature_active_entities = 0;
     std::uint16_t feature_entity_record_size = 0;
@@ -1868,12 +1956,12 @@ int run(const Arguments& arguments) {
             {"pre_terrain", {
                 {"file", "terrain-pre-features.bin"},
                 {"bytes", kTerrainBytes},
-                {"inactive_secondary_plane", level_one ? "zero-normalized-non-cave" : "preserved-live-plane"}
+                {"inactive_secondary_plane", non_cave_map ? "zero-normalized-non-cave" : "preserved-live-plane"}
             }},
             {"post_terrain", {
                 {"file", "terrain-post-features.bin"},
                 {"bytes", kTerrainBytes},
-                {"inactive_secondary_plane", level_one ? "zero-normalized-non-cave" : "preserved-live-plane"}
+                {"inactive_secondary_plane", non_cave_map ? "zero-normalized-non-cave" : "preserved-live-plane"}
             }},
             {"post_entities", {
                 {"file", "entities-post-features.bin"},
@@ -1935,7 +2023,7 @@ int run(const Arguments& arguments) {
                 {"legacy_v1_bytes", 565},
                 {"ambient_loop_5_distance_offset", 565},
                 {"ambient_loop_31_distance_offset", 569},
-                {"record_bytes", 573}
+                {"record_bytes", player_record_size}
             }},
             {"runtime", runtime_layout},
             {"runtime_tagged_relations", {
@@ -1964,9 +2052,9 @@ int run(const Arguments& arguments) {
         {"normalization", {
             {"native_pointers", "stable tagged relations; live/authored pools are one-based and zero is null"},
             {"volatile_host_state", {
-                level_one
-                    ? "inactive non-Cave secondary terrain plane zeroed; player time_393 host-clock sample zeroed"
-                    : "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
+                    non_cave_map
+                        ? "inactive non-Cave secondary terrain plane zeroed; player time_393 host-clock sample zeroed"
+                        : "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
             }},
             {"integer_encoding", "explicit fixed-width little-endian semantic fields"}
         }},
@@ -2293,8 +2381,8 @@ int run(const Arguments& arguments) {
                 {
                     {"name", "secondary_cave"}, {"offset", 0x40000}, {"bytes", 0x10000},
                     {"stock_regression_compared", false},
-                    {"source_status", level_one ? "inactive_uninitialized_host_state" : "live_plane"},
-                    {"normalization", level_one ? "inactive_non_regression_compared_zeroed" : "preserved"},
+                    {"source_status", non_cave_map ? "inactive_uninitialized_host_state" : "live_plane"},
+                    {"normalization", non_cave_map ? "inactive_non_regression_compared_zeroed" : "preserved"},
                     {"exported_sha256", terrain_secondary_sha},
                     {"oracle_sha256", level_one ? json(kExpectedTerrainSecondarySha256) : json(nullptr)},
                     {"match", false}
@@ -2340,7 +2428,13 @@ int run(const Arguments& arguments) {
         {"files", file_manifest},
         {"package_sha256", package_hash.finish()}
     };
-    if (!level_one) manifest["collision_masks"] = collision_masks.metadata;
+    if (!level_one) {
+        manifest["record_layouts"]["player"]["type_str_164_auxiliary"] =
+            type_str_164_auxiliary_layout();
+        manifest["reference"]["type_str_164_auxiliary"] =
+            type_str_164_auxiliary_reference();
+        manifest["collision_masks"] = collision_masks.metadata;
+    }
     // The reset projection is a sealed Level 1 contract.  Do not copy its
     // Night-specific expected state into an open Level 2 package; Level 2 gets
     // its own reset seal only when that corpus is qualified.

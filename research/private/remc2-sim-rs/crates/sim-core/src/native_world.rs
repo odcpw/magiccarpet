@@ -207,8 +207,11 @@ const ENTITY_DRAW_DISABLED_BIT: u32 = 0x0000_0400;
 const PLAYER_COUNT: usize = 8;
 const PLAYER_COUNT_I16: i16 = 8;
 const PLAYER_COUNT_U32: u32 = 8;
-const PLAYER_RECORD_BYTES: usize = 573;
-const PLAYER_RECORD_BYTES_U16: u16 = 573;
+const PLAYER_LEGACY_RECORD_BYTES: usize = 573;
+const PLAYER_LEGACY_RECORD_BYTES_U16: u16 = 573;
+const TYPE_STR_164_AUXILIARY_BYTES: usize = 89;
+const PLAYER_LEVEL2_RECORD_BYTES: usize = PLAYER_LEGACY_RECORD_BYTES + TYPE_STR_164_AUXILIARY_BYTES;
+const PLAYER_LEVEL2_RECORD_BYTES_U16: u16 = 662;
 const AUTHORED_LEVEL_BYTES: usize = 0x6604;
 const TERRAIN_BYTES: usize = LEGACY_MAP_CELLS * 7;
 const RUNTIME_BYTES: usize = 2_754;
@@ -266,7 +269,7 @@ const FRAME_ASSET_COUNT: usize = 76;
 const LEVEL_ONE_CONTROL_MODE_SEAM_DEFAULT: u8 = 0;
 const LEVEL2_UPSTREAM_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 const LEVEL2_QUALIFIED_CLOSURE_SHA256: &str =
-    "a4a7a3d4086c09404294fb90d53e7f34e05d58a406fb025e15f032cca18793f1";
+    "66505e6c3691cce6c730682047c7d8634c682172daa017d4840d1a4a5be4661c";
 const LEVEL2_QUALIFIED_CATALOG_FILE_SHA256: &str =
     "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44";
 const LEVEL2_QUALIFIED_CATALOG_SHA256: &str =
@@ -356,7 +359,10 @@ const LEVEL2_DOLMEN_RECORD_SHA256: [&str; 3] = [
 const PACKAGE_MEMBERS: [(&str, usize); 6] = [
     ("authored-level.bin", AUTHORED_LEVEL_BYTES),
     ("entities.bin", 12 + ENTITY_COUNT * ENTITY_RECORD_BYTES),
-    ("players.bin", 12 + PLAYER_COUNT * PLAYER_RECORD_BYTES),
+    (
+        "players.bin",
+        12 + PLAYER_COUNT * PLAYER_LEGACY_RECORD_BYTES,
+    ),
     ("presentation.bin", 10_720),
     ("runtime.bin", RUNTIME_BYTES),
     ("terrain.bin", TERRAIN_BYTES),
@@ -373,7 +379,10 @@ const LEVEL2_PACKAGE_MEMBERS: [(&str, usize); 13] = [
     ("feature-construction-inputs.bin", 34_164),
     ("feature-end.bin", 16),
     ("feature-start.bin", 16),
-    ("players.bin", 12 + PLAYER_COUNT * PLAYER_RECORD_BYTES),
+    (
+        "players.bin",
+        12 + PLAYER_COUNT * PLAYER_LEGACY_RECORD_BYTES,
+    ),
     ("presentation.bin", 10_720),
     ("runtime.bin", RUNTIME_BYTES),
     ("terrain-post-features.bin", TERRAIN_BYTES),
@@ -393,7 +402,10 @@ const LEVEL2_V4_PACKAGE_MEMBERS: [(&str, usize); 14] = [
     ("feature-construction-inputs.bin", 34_164),
     ("feature-end.bin", 16),
     ("feature-start.bin", 16),
-    ("players.bin", 12 + PLAYER_COUNT * PLAYER_RECORD_BYTES),
+    (
+        "players.bin",
+        12 + PLAYER_COUNT * PLAYER_LEVEL2_RECORD_BYTES,
+    ),
     ("presentation.bin", 10_720),
     ("runtime.bin", RUNTIME_BYTES),
     ("terrain-post-features.bin", TERRAIN_BYTES),
@@ -1784,6 +1796,20 @@ pub enum EntitySpecialRelation {
     GlobalSpecialState,
 }
 
+/// The exact fixed-width Type_str_164 fields needed by the open Level 2
+/// Nyphur/common-upkeep and terminal seams.  This is a carrier only: policy
+/// remains source-backed work for a later slice, and no defaults are generated
+/// when the owner package omits these bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TypeStr164Auxiliary {
+    pub word_0x26_38: [i16; 8],
+    pub byte_0x154_340: u8,
+    pub dword_0x16D_365: i32,
+    pub word_0x1A2_418: i16,
+    pub array_0x1FC_508: [u16; 32],
+    pub word_0x242_578: i16,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlayerSnapshot {
     pub slot: u8,
@@ -1808,6 +1834,9 @@ pub struct PlayerSnapshot {
     /// distinct from the hand-side bytes at record 398..424.
     pub learned_spell_flags: [u8; PLAYER_SPELL_COUNT],
     pub family_selected_tiers: [i8; PLAYER_SPELL_COUNT],
+    /// Source-exact Level 2 Type_str_164 carrier. Level 1 deliberately has no
+    /// corresponding field because its sealed player record remains v2.
+    pub type_str_164_auxiliary: Option<TypeStr164Auxiliary>,
     record: Box<[u8]>,
 }
 
@@ -1815,6 +1844,16 @@ impl PlayerSnapshot {
     #[must_use]
     pub fn record_bytes(&self) -> &[u8] {
         &self.record
+    }
+
+    #[must_use]
+    fn legacy_record_bytes(&self) -> &[u8] {
+        &self.record[..PLAYER_LEGACY_RECORD_BYTES]
+    }
+
+    #[must_use]
+    pub const fn type_str_164_auxiliary(&self) -> Option<&TypeStr164Auxiliary> {
+        self.type_str_164_auxiliary.as_ref()
     }
 
     /// Source `playerColorIndex_0x38_56` from the linked player-state record.
@@ -3653,6 +3692,12 @@ impl NativeWorldInspection {
             .reset_state
             .ok_or_else(|| NativeWorldError::new("validated Level 2 package has no reset state"))?;
         let mission = self.mission_content_template()?.session();
+        let nyphur_dispatcher = Level2NyphurDispatcher::from_qualified_reset(
+            &self.players,
+            &self.entities,
+            &self.runtime,
+            &mission,
+        )?;
         let bad_stones = level2_bad_stones(&self.entities, &self.terrain_planes)?;
         let mut economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
             SessionTerrain::from_inspection(self),
@@ -3704,12 +3749,6 @@ impl NativeWorldInspection {
         let goats =
             GoatFamily::from_level_two_entities(&self.entities, GOAT_STAGE_POINT, goat_config)
                 .map_err(NativeWorldError::new)?;
-        let nyphur_dispatcher = Level2NyphurDispatcher::from_qualified_reset(
-            &self.players,
-            &self.entities,
-            &self.runtime,
-            &mission,
-        )?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
             self.package_sha256.clone(),
@@ -22394,7 +22433,7 @@ fn level2_nyphur_participant(
             != [
                 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
             ]
-        || sha256_hex(player.record_bytes()) != LEVEL2_NYPHUR_PLAYER_SHA256
+        || sha256_hex(player.legacy_record_bytes()) != LEVEL2_NYPHUR_PLAYER_SHA256
     {
         return Err(NativeWorldError::new(
             "Level 2 Nyphur player ownership/hand census row changed",
@@ -24820,6 +24859,7 @@ fn validate_level_two_profile(
     runtime: &RuntimeSnapshot,
     players: &[PlayerSnapshot],
     entities: &[EntitySnapshot],
+    schema: OwnerPackageSchema,
 ) -> Result<()> {
     if runtime.local_player_slot != 0 || runtime.player_count != 2 || runtime.maptype_music != 2 {
         return Err(NativeWorldError::new(
@@ -24930,11 +24970,20 @@ fn validate_level_two_profile(
         "volatile_host_state",
         "manifest.normalization",
     )?;
-    if volatile.as_slice()
-        != [json!(
+    let expected_volatile = match schema {
+        OwnerPackageSchema::V3 => {
             "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
-        )]
-    {
+        }
+        OwnerPackageSchema::V4 => {
+            "inactive non-Cave secondary terrain plane zeroed; player time_393 host-clock sample zeroed"
+        }
+        OwnerPackageSchema::V2 => {
+            return Err(NativeWorldError::new(
+                "Level 2 player profile requires schema v3 or v4",
+            ));
+        }
+    };
+    if volatile.as_slice() != [json!(expected_volatile)] {
         return Err(NativeWorldError::new(
             "Level 2 normalization volatile-host policy changed",
         ));
@@ -24996,10 +25045,141 @@ fn validate_level_two_provenance_members(members: &BTreeMap<String, Vec<u8>>) ->
     Ok(())
 }
 
-fn validate_manifest_layouts(manifest: &serde_json::Map<String, Value>) -> Result<()> {
+fn validate_v4_non_cave_terrain_normalization(
+    members: &BTreeMap<String, Vec<u8>>,
+    schema: OwnerPackageSchema,
+    map_type: MapType,
+) -> Result<()> {
+    if schema != OwnerPackageSchema::V4 || map_type == MapType::Cave {
+        return Ok(());
+    }
+    for name in [
+        "terrain.bin",
+        "terrain-pre-features.bin",
+        "terrain-post-features.bin",
+    ] {
+        let terrain = member(members, name)?;
+        if terrain.len() != TERRAIN_BYTES
+            || terrain[0x40000..0x50000].iter().any(|value| *value != 0)
+        {
+            return Err(NativeWorldError::new(format!(
+                "v4 non-Cave {name} secondary terrain plane is not zero-normalized"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_type_str_164_auxiliary_layout(
+    player_layout: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    let expected = json!({
+        "schema": "mc2-type-str-164-auxiliary/v1",
+        "record_offset": PLAYER_LEGACY_RECORD_BYTES,
+        "record_bytes": TYPE_STR_164_AUXILIARY_BYTES,
+        "source_struct": "Type_str_164",
+        "source_struct_bytes": 1136,
+        "descriptor_bounds": {
+            "source_min_inclusive": 38,
+            "source_max_exclusive": 580,
+            "record_min_inclusive": 0,
+            "record_max_exclusive": TYPE_STR_164_AUXILIARY_BYTES,
+        },
+        "fields": [
+            {
+                "name": "word_0x26_38",
+                "source_offset": 38,
+                "record_offset": 0,
+                "count": 8,
+                "element_bytes": 2,
+                "bytes": 16,
+                "encoding": "i16_le",
+            },
+            {
+                "name": "byte_0x154_340",
+                "source_offset": 340,
+                "record_offset": 16,
+                "count": 1,
+                "element_bytes": 1,
+                "bytes": 1,
+                "encoding": "u8",
+            },
+            {
+                "name": "dword_0x16D_365",
+                "source_offset": 365,
+                "record_offset": 17,
+                "count": 1,
+                "element_bytes": 4,
+                "bytes": 4,
+                "encoding": "i32_le",
+            },
+            {
+                "name": "word_0x1A2_418",
+                "source_offset": 418,
+                "record_offset": 21,
+                "count": 1,
+                "element_bytes": 2,
+                "bytes": 2,
+                "encoding": "i16_le",
+            },
+            {
+                "name": "array_0x1FC_508",
+                "source_offset": 508,
+                "record_offset": 23,
+                "count": 32,
+                "element_bytes": 2,
+                "bytes": 64,
+                "encoding": "u16_le",
+            },
+            {
+                "name": "word_0x242_578",
+                "source_offset": 578,
+                "record_offset": 87,
+                "count": 1,
+                "element_bytes": 2,
+                "bytes": 2,
+                "encoding": "i16_le",
+            },
+        ],
+    });
+    if require_value(
+        player_layout,
+        "type_str_164_auxiliary",
+        "record_layouts.player",
+    )? != &expected
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 player Type_str_164 descriptor layout is missing, duplicated, or out of bounds",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_manifest_layouts(
+    manifest: &serde_json::Map<String, Value>,
+    profile: OwnerPackageProfile,
+    schema: OwnerPackageSchema,
+) -> Result<()> {
     let sizes = require_object(manifest, "record_sizes", "manifest")?;
     require_exact_u64(sizes, "entity", ENTITY_RECORD_BYTES as u64, "record_sizes")?;
-    require_exact_u64(sizes, "player", PLAYER_RECORD_BYTES as u64, "record_sizes")?;
+    let (expected_player_bytes, has_type_str_164_auxiliary) = match (profile, schema) {
+        (OwnerPackageProfile::Level1, OwnerPackageSchema::V2)
+        | (OwnerPackageProfile::Level2, OwnerPackageSchema::V3) => {
+            (PLAYER_LEGACY_RECORD_BYTES, false)
+        }
+        (OwnerPackageProfile::Level2, OwnerPackageSchema::V4) => (PLAYER_LEVEL2_RECORD_BYTES, true),
+        _ => {
+            return Err(NativeWorldError::new(
+                "owner package profile/schema pair is not a supported player layout",
+            ));
+        }
+    };
+    require_exact_u64(
+        sizes,
+        "player",
+        expected_player_bytes as u64,
+        "record_sizes",
+    )?;
     let layouts = require_object(manifest, "record_layouts", "manifest")?;
     let entity = require_object(layouts, "entity", "record_layouts")?;
     for (name, expected) in [
@@ -25019,9 +25199,16 @@ fn validate_manifest_layouts(manifest: &serde_json::Map<String, Value>) -> Resul
         ("legacy_v1_bytes", 565),
         ("ambient_loop_5_distance_offset", 565),
         ("ambient_loop_31_distance_offset", 569),
-        ("record_bytes", 573),
+        ("record_bytes", expected_player_bytes),
     ] {
-        require_exact_u64(player, name, expected, "record_layouts.player")?;
+        require_exact_u64(player, name, expected as u64, "record_layouts.player")?;
+    }
+    if has_type_str_164_auxiliary {
+        validate_type_str_164_auxiliary_layout(player)?;
+    } else if player.contains_key("type_str_164_auxiliary") {
+        return Err(NativeWorldError::new(
+            "legacy player layout must not contain the Level 2 Type_str_164 carrier",
+        ));
     }
     let runtime = require_object(layouts, "runtime", "record_layouts")?;
     require_exact_u64(
@@ -25101,7 +25288,12 @@ fn parse_common_package(
     validate_profile(&metadata, profile)?;
     let counts = require_object(manifest, "counts", "manifest")?;
     validate_manifest_counts(counts, profile)?;
-    validate_manifest_layouts(manifest)?;
+    validate_manifest_layouts(manifest, profile, package.schema)?;
+    validate_v4_non_cave_terrain_normalization(
+        &package.members,
+        package.schema,
+        metadata.map_type,
+    )?;
 
     if authored.get(6).copied() != Some(metadata.map_type.id()) {
         return Err(NativeWorldError::new(
@@ -25126,14 +25318,18 @@ fn parse_common_package(
     )
     .map_err(NativeWorldError::new)?;
     let entities = parse_entities(member(&package.members, "entities.bin")?)?;
-    let players = parse_players(member(&package.members, "players.bin")?, profile)?;
+    let players = parse_players(
+        member(&package.members, "players.bin")?,
+        profile,
+        package.schema,
+    )?;
     let runtime = parse_runtime(member(&package.members, "runtime.bin")?)?;
     let presentation = parse_presentation(member(&package.members, "presentation.bin")?)?;
     if profile == OwnerPackageProfile::Level1 {
         validate_level_one_mission_stages(&runtime)?;
         validate_level_one_mission_presentation(&presentation)?;
     } else {
-        validate_level_two_profile(manifest, &runtime, &players, &entities)?;
+        validate_level_two_profile(manifest, &runtime, &players, &entities, package.schema)?;
     }
     validate_manifest_relations(counts, &entities, &players, &runtime, &presentation)?;
     let reset_state = match (profile, manifest.get("reset_projection")) {
@@ -25419,18 +25615,65 @@ fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
     Ok(entities)
 }
 
-fn parse_players(bytes: &[u8], profile: OwnerPackageProfile) -> Result<Vec<PlayerSnapshot>> {
+fn parse_type_str_164_auxiliary(record: &[u8]) -> Result<TypeStr164Auxiliary> {
+    let carrier = record
+        .get(PLAYER_LEGACY_RECORD_BYTES..PLAYER_LEVEL2_RECORD_BYTES)
+        .ok_or_else(|| NativeWorldError::new("Level 2 player Type_str_164 carrier is truncated"))?;
+    let mut word_0x26_38 = [0_i16; 8];
+    for (index, value) in word_0x26_38.iter_mut().enumerate() {
+        *value = read_i16(carrier, index * 2, "Type_str_164 word_0x26_38")?;
+    }
+    let mut array_0x1FC_508 = [0_u16; 32];
+    for (index, value) in array_0x1FC_508.iter_mut().enumerate() {
+        *value = read_u16(carrier, 23 + index * 2, "Type_str_164 array_0x1FC_508")?;
+    }
+    Ok(TypeStr164Auxiliary {
+        word_0x26_38,
+        byte_0x154_340: read_u8(carrier, 16, "Type_str_164 byte_0x154_340")?,
+        dword_0x16D_365: read_i32(carrier, 17, "Type_str_164 dword_0x16D_365")?,
+        word_0x1A2_418: read_i16(carrier, 21, "Type_str_164 word_0x1A2_418")?,
+        array_0x1FC_508,
+        word_0x242_578: read_i16(carrier, 87, "Type_str_164 word_0x242_578")?,
+    })
+}
+
+fn parse_players(
+    bytes: &[u8],
+    profile: OwnerPackageProfile,
+    schema: OwnerPackageSchema,
+) -> Result<Vec<PlayerSnapshot>> {
+    let (version, record_size, record_size_u16, has_type_str_164_auxiliary) =
+        match (profile, schema) {
+            (OwnerPackageProfile::Level1, OwnerPackageSchema::V2)
+            | (OwnerPackageProfile::Level2, OwnerPackageSchema::V3) => (
+                2,
+                PLAYER_LEGACY_RECORD_BYTES,
+                PLAYER_LEGACY_RECORD_BYTES_U16,
+                false,
+            ),
+            (OwnerPackageProfile::Level2, OwnerPackageSchema::V4) => (
+                3,
+                PLAYER_LEVEL2_RECORD_BYTES,
+                PLAYER_LEVEL2_RECORD_BYTES_U16,
+                true,
+            ),
+            _ => {
+                return Err(NativeWorldError::new(
+                    "owner package profile/schema pair is not a supported player layout",
+                ));
+            }
+        };
     validate_header(
         bytes,
         *b"MCP1",
-        2,
-        PLAYER_RECORD_BYTES_U16,
+        version,
+        record_size_u16,
         PLAYER_COUNT_U32,
         "players.bin",
     )?;
     let mut players = Vec::with_capacity(PLAYER_COUNT);
     for slot in 0..PLAYER_COUNT {
-        let record = record(bytes, 12, PLAYER_RECORD_BYTES, slot, "players.bin")?;
+        let record = record(bytes, 12, record_size, slot, "players.bin")?;
         if usize::from(read_u16(record, 0, "player index")?) != slot {
             return Err(NativeWorldError::new(format!(
                 "player slot/index mismatch at {slot}"
@@ -25489,6 +25732,9 @@ fn parse_players(bytes: &[u8], profile: OwnerPackageProfile) -> Result<Vec<Playe
         for (tier, value) in family_selected_tiers.iter_mut().zip(&record[528..554]) {
             *tier = value.cast_signed();
         }
+        let type_str_164_auxiliary = has_type_str_164_auxiliary
+            .then(|| parse_type_str_164_auxiliary(record))
+            .transpose()?;
         players.push(PlayerSnapshot {
             slot: u8::try_from(slot).expect("eight player slots"),
             is_ai: ai == 1,
@@ -25507,6 +25753,7 @@ fn parse_players(bytes: &[u8], profile: OwnerPackageProfile) -> Result<Vec<Playe
             spell_hand_eligibility,
             learned_spell_flags,
             family_selected_tiers,
+            type_str_164_auxiliary,
             record: record.to_vec().into_boxed_slice(),
         });
     }
@@ -25789,7 +26036,7 @@ fn parse_level_two_reset_state(
             "Level 2 reset requires local player slot 0, got {slot}"
         )));
     }
-    let player = record(players, 12, PLAYER_RECORD_BYTES, 0, "players.bin")?;
+    let player = record(players, 12, PLAYER_LEGACY_RECORD_BYTES, 0, "players.bin")?;
     let entity_index = read_u16(player, 4, "Level 2 local player entity relation")?;
     if entity_index != 111 {
         return Err(NativeWorldError::new(format!(
@@ -25888,7 +26135,7 @@ fn parse_reset_state(
     let player = record(
         players,
         12,
-        PLAYER_RECORD_BYTES,
+        PLAYER_LEGACY_RECORD_BYTES,
         usize::try_from(slot).expect("validated player slot"),
         "players.bin",
     )?;
@@ -28036,6 +28283,11 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/l2-debug3.fJ3PaM/level2")
     }
 
+    fn level_two_v3_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc2-l2-native2.Ibpz9b/out")
+    }
+
     fn level_two_v4_fixture_path() -> PathBuf {
         std::env::var_os("MC_LEVEL2_PACKAGE_V4")
             .map(PathBuf::from)
@@ -28099,9 +28351,18 @@ mod tests {
         let package = level_two_fixture_path();
         let inspection = NativeWorld::inspect_level2(&package).expect("qualified Level 2 package");
         assert_eq!(inspection.profile(), OwnerPackageProfile::Level2);
-        assert_eq!(inspection.schema(), OwnerPackageSchema::V3);
-        assert!(inspection.collision_mask_bank().is_none());
-        assert!(inspection.model45_occupancy(64, 0, 0).is_err());
+        assert_eq!(inspection.schema(), OwnerPackageSchema::V4);
+        assert_eq!(
+            inspection
+                .collision_mask_bank()
+                .map(|bank| bank.masks().len()),
+            Some(9)
+        );
+        assert!(
+            inspection
+                .model45_occupancy(64, 0, 0)
+                .expect("qualified v4 model-45 occupancy")
+        );
         assert_eq!(inspection.metadata().external_level, 2);
         assert_eq!(inspection.metadata().internal_level, 1);
         assert_eq!(inspection.metadata().map_type, MapType::Day);
@@ -28145,6 +28406,181 @@ mod tests {
         );
         assert_eq!(inspection.terrain_rng(), 9_858);
         assert!(inspection.mission_unimplemented().is_err());
+    }
+
+    #[test]
+    fn level_two_type_str_164_auxiliary_materializes_and_reset_replays() {
+        let inspection = NativeWorld::inspect_level2(&level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let player = &inspection.players()[0];
+        let auxiliary = player
+            .type_str_164_auxiliary()
+            .expect("Level 2 player carries the source Type_str_164 extension");
+        assert_eq!(auxiliary.byte_0x154_340, 1);
+        assert_eq!(auxiliary.dword_0x16D_365, 1_999);
+        assert_ne!(auxiliary.byte_0x154_340, 0);
+        assert_ne!(auxiliary.dword_0x16D_365, 0);
+        assert_eq!(player.record_bytes().len(), PLAYER_LEVEL2_RECORD_BYTES);
+        let mut encoded = Vec::with_capacity(TYPE_STR_164_AUXILIARY_BYTES);
+        for value in auxiliary.word_0x26_38 {
+            encoded.extend_from_slice(&value.to_le_bytes());
+        }
+        encoded.push(auxiliary.byte_0x154_340);
+        encoded.extend_from_slice(&auxiliary.dword_0x16D_365.to_le_bytes());
+        encoded.extend_from_slice(&auxiliary.word_0x1A2_418.to_le_bytes());
+        for value in auxiliary.array_0x1FC_508 {
+            encoded.extend_from_slice(&value.to_le_bytes());
+        }
+        encoded.extend_from_slice(&auxiliary.word_0x242_578.to_le_bytes());
+        assert_eq!(encoded.len(), TYPE_STR_164_AUXILIARY_BYTES);
+        assert_eq!(
+            &player.record_bytes()[PLAYER_LEGACY_RECORD_BYTES..],
+            encoded.as_slice()
+        );
+
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 session");
+        let baseline_hash = session.campaign_state_hash();
+        let baseline_record = session.shared_spells().players[0].record_bytes().to_vec();
+        let baseline_auxiliary = session.shared_spells().players[0]
+            .type_str_164_auxiliary()
+            .copied();
+        session.shared_spells_mut().players[0].record[PLAYER_LEGACY_RECORD_BYTES] ^= 1;
+        assert_ne!(session.campaign_state_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert_eq!(
+            session.shared_spells().players[0].record_bytes(),
+            baseline_record
+        );
+        assert_eq!(
+            session.shared_spells().players[0].type_str_164_auxiliary(),
+            baseline_auxiliary.as_ref()
+        );
+    }
+
+    #[test]
+    fn level_two_type_str_164_rejects_malformed_record_and_descriptor_inputs() {
+        let package = level_two_fixture_path();
+        let original = fs::read(package.join("players.bin")).unwrap();
+
+        let truncated = &original[..original.len() - 1];
+        assert!(
+            parse_players(
+                truncated,
+                OwnerPackageProfile::Level2,
+                OwnerPackageSchema::V4
+            )
+            .is_err()
+        );
+
+        let mut wrong_version = original.clone();
+        wrong_version[4..6].copy_from_slice(&2_u16.to_le_bytes());
+        assert!(
+            parse_players(
+                &wrong_version,
+                OwnerPackageProfile::Level2,
+                OwnerPackageSchema::V4
+            )
+            .is_err()
+        );
+
+        let mut wrong_record_size = original.clone();
+        wrong_record_size[6..8].copy_from_slice(&573_u16.to_le_bytes());
+        assert!(
+            parse_players(
+                &wrong_record_size,
+                OwnerPackageProfile::Level2,
+                OwnerPackageSchema::V4
+            )
+            .is_err()
+        );
+
+        let temp = TempLevel2V4Package::copy_from(&package);
+        let manifest_path = temp.package.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["record_layouts"]["player"]["type_str_164_auxiliary"]["record_bytes"] =
+            json!(TYPE_STR_164_AUXILIARY_BYTES - 1);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = NativeWorld::inspect_level2(&temp.package)
+            .expect_err("wrong Type_str_164 descriptor extent must fail closed");
+        assert!(error.to_string().contains("descriptor layout"));
+    }
+
+    #[test]
+    fn level_two_v4_rejects_non_cave_secondary_terrain_plane() {
+        let package = level_two_fixture_path();
+        let mut members = LEVEL2_V4_PACKAGE_MEMBERS
+            .iter()
+            .map(|(name, _)| ((*name).to_owned(), fs::read(package.join(name)).unwrap()))
+            .collect::<BTreeMap<_, _>>();
+        members.get_mut("terrain-pre-features.bin").unwrap()[0x40000] ^= 1;
+
+        let error = validate_v4_non_cave_terrain_normalization(
+            &members,
+            OwnerPackageSchema::V4,
+            MapType::Day,
+        )
+        .expect_err("v4 Day must reject a nonzero inactive secondary terrain plane");
+        assert!(
+            error
+                .to_string()
+                .contains("terrain-pre-features.bin secondary terrain plane")
+        );
+    }
+
+    #[test]
+    fn level_two_v3_package_remains_supported_without_type_str_or_collision_authority() {
+        let inspection = NativeWorld::inspect_level2(&level_two_v3_fixture_path())
+            .expect("historically supported Level 2 v3 package");
+        assert_eq!(inspection.schema(), OwnerPackageSchema::V3);
+        assert!(inspection.collision_mask_bank().is_none());
+        assert!(inspection.model45_occupancy(64, 0, 0).is_err());
+        assert_eq!(
+            inspection.players()[0].record_bytes().len(),
+            PLAYER_LEGACY_RECORD_BYTES
+        );
+        assert!(inspection.players()[0].type_str_164_auxiliary().is_none());
+        let error = inspection
+            .level2_reset_session()
+            .expect_err("missing Type_str_164 carrier must fail before session creation");
+        assert!(
+            error.to_string().contains("Type_str_164"),
+            "unexpected missing-carrier rejection: {error}"
+        );
+    }
+
+    #[test]
+    fn level_two_v5_and_wrong_profile_are_rejected_before_session_creation() {
+        let package = level_two_fixture_path();
+        for (field, value) in [
+            ("schema", json!("mc2-owner-level-export/v5")),
+            (
+                "level",
+                json!({"external": 1, "internal": 0, "map_type": {"id": 1, "name": "Night"}}),
+            ),
+        ] {
+            let temp = TempLevel2V4Package::copy_from(&package);
+            let manifest_path = temp.package.join("manifest.json");
+            let mut manifest: Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            manifest[field] = value;
+            fs::write(
+                &manifest_path,
+                serde_json::to_vec_pretty(&manifest).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                NativeWorld::inspect_level2(&temp.package).is_err(),
+                "{field} mutation must fail before session construction"
+            );
+        }
     }
 
     #[test]
@@ -28193,7 +28629,7 @@ mod tests {
 
     #[test]
     fn level_two_fresh_common_package_without_reset_is_explicitly_inspectable() {
-        let source = level_two_fixture_path();
+        let source = level_two_v3_fixture_path();
         let root = std::env::temp_dir().join(format!(
             "mc2-level2-fresh-{}-{}",
             std::process::id(),
@@ -46617,7 +47053,14 @@ mod tests {
 
         let mut players = fs::read(package.join("players.bin")).unwrap();
         players[4] ^= 0xff;
-        assert!(parse_players(&players, OwnerPackageProfile::Level1).is_err());
+        assert!(
+            parse_players(
+                &players,
+                OwnerPackageProfile::Level1,
+                OwnerPackageSchema::V2
+            )
+            .is_err()
+        );
 
         let mut entities = fs::read(package.join("entities.bin")).unwrap();
         let relation_offset = 12 + 152 * ENTITY_RECORD_BYTES + 164;
@@ -46626,7 +47069,14 @@ mod tests {
 
         let mut players = fs::read(package.join("players.bin")).unwrap();
         players[16..18].copy_from_slice(&1_000_u16.to_le_bytes());
-        assert!(parse_players(&players, OwnerPackageProfile::Level1).is_err());
+        assert!(
+            parse_players(
+                &players,
+                OwnerPackageProfile::Level1,
+                OwnerPackageSchema::V2
+            )
+            .is_err()
+        );
 
         let mut runtime = fs::read(package.join("runtime.bin")).unwrap();
         let stage_relation_offset = 192 + 6;

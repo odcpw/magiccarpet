@@ -24,8 +24,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verify_package import (
     LEVEL2_COLLISION_MASK_BANK_BYTES,
     LEVEL2_COLLISION_MASK_BANK_SHA256,
+    LEVEL2_PLAYER_COMPONENT_VERSION,
+    LEVEL2_PLAYER_RECORD_BYTES,
     SCHEMA_V3,
     SCHEMA_V4,
+    TYPE_STR_164_AUXILIARY_LAYOUT,
     verify,
 )
 
@@ -181,47 +184,86 @@ def _refresh_package_hash(candidate: Path) -> None:
     path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
-# The two preserved Level 2 captures predate the fresh exporter receipt.  The
-# comparator below intentionally excludes only state that is expected to vary
-# between capture environments: source/build identity, the aggregate package
-# hash, the host-clock/secondary-plane normalization note, and terrain-plane
-# hashes (the live secondary plane is preserved by policy).  Every other
-# manifest field and every non-terrain payload must agree.
-L2_CORPUS_MANIFEST_EXCLUSIONS = {
-    "source",
-    "package_sha256",
-    "reset_projection",
-    "normalization.volatile_host_state",
-    "reference.terrain_frame0_sha256",
-    "reference.terrain_sequence",
-    "reference.terrain_planes[*].exported_sha256",
-    "files.terrain*.bin.sha256",
-}
-
-
 def _stable_l2_manifest(manifest: dict) -> dict:
     stable = copy.deepcopy(manifest)
-    # GOLDEN-CHANGE authorized by Bead comment 350: v4 adds only the
-    # source-exact collision-mask carrier. Compare all pre-existing fields
-    # against the preserved v3 captures without accepting a changed payload.
+    # The v4 extension is explicit: only its schema, collision-mask member,
+    # Type_str_164 layout/reference, and the player extent are removed before
+    # comparing the stable v3 contract.  The historical v3 reset projection
+    # is also absent by the v4 Level 2 profile contract.
     stable["schema"] = SCHEMA_V3
     stable.pop("collision_masks", None)
-    stable.pop("source", None)
     stable.pop("package_sha256", None)
-    # Older exploratory captures copied the Level 1 reset seal. Fresh Level 2
-    # output deliberately omits it, so it is not a Level 2 comparison field.
     stable.pop("reset_projection", None)
-    stable.get("normalization", {}).pop("volatile_host_state", None)
+    stable["record_sizes"]["player"] = 573
+    stable["record_layouts"]["player"]["record_bytes"] = 573
+    stable["record_layouts"]["player"].pop("type_str_164_auxiliary", None)
     reference = stable.get("reference", {})
+    reference.pop("type_str_164_auxiliary", None)
     reference.pop("terrain_frame0_sha256", None)
-    reference.pop("terrain_sequence", None)
+    reference.get("terrain_sequence", {}).pop("sha256", None)
     for plane in reference.get("terrain_planes", []):
-        plane.pop("exported_sha256", None)
+        if plane["name"] == "secondary_cave":
+            plane.pop("exported_sha256", None)
+            plane.pop("source_status", None)
+            plane.pop("normalization", None)
+    stable.get("normalization", {}).pop("volatile_host_state", None)
+    feature_generation = stable.get("feature_generation_oracle", {})
+    feature_generation.get("pre_terrain", {}).pop("inactive_secondary_plane", None)
+    feature_generation.get("post_terrain", {}).pop("inactive_secondary_plane", None)
     for name, entry in stable.get("files", {}).items():
-        if name.startswith("terrain") and name.endswith(".bin"):
+        if name in {"terrain.bin", "terrain-pre-features.bin", "terrain-post-features.bin"}:
             entry.pop("sha256", None)
+    stable.get("files", {}).pop("players.bin", None)
     stable.get("files", {}).pop("collision-masks.bin", None)
+    source = stable.get("source", {})
+    source.pop("compiled_source_sha256", None)
+    source["compiled_files"] = [
+        entry
+        for entry in source.get("compiled_files", [])
+        if entry["path"] != "private-exporter/src/exporter_main.cpp"
+    ]
+    source["owner_files"] = [
+        entry
+        for entry in source.get("owner_files", [])
+        if entry["logical_path"]
+        not in {"CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"}
+    ]
     return stable
+
+
+def _assert_legacy_player_prefixes(fresh: Path, preserved: Path) -> None:
+    fresh_players = (fresh / "players.bin").read_bytes()
+    preserved_players = (preserved / "players.bin").read_bytes()
+    assert fresh_players[:4] == preserved_players[:4] == b"MCP1"
+    assert int.from_bytes(fresh_players[8:12], "little") == 8
+    assert int.from_bytes(preserved_players[8:12], "little") == 8
+    assert int.from_bytes(fresh_players[4:6], "little") == LEVEL2_PLAYER_COMPONENT_VERSION
+    assert int.from_bytes(fresh_players[6:8], "little") == LEVEL2_PLAYER_RECORD_BYTES
+    assert int.from_bytes(preserved_players[4:6], "little") == 2
+    assert int.from_bytes(preserved_players[6:8], "little") == 573
+    for index in range(8):
+        fresh_offset = 12 + index * LEVEL2_PLAYER_RECORD_BYTES
+        preserved_offset = 12 + index * 573
+        assert (
+            fresh_players[fresh_offset : fresh_offset + 573]
+            == preserved_players[preserved_offset : preserved_offset + 573]
+        ), f"Level 2 player {index} legacy prefix differs"
+
+
+def _assert_legacy_terrain_semantics(fresh: Path, preserved: Path) -> None:
+    for name in ("terrain.bin", "terrain-pre-features.bin", "terrain-post-features.bin"):
+        fresh_terrain = (fresh / name).read_bytes()
+        preserved_terrain = (preserved / name).read_bytes()
+        assert len(fresh_terrain) == len(preserved_terrain) == 0x70000
+        for start, end in ((0x00000, 0x10000), (0x10000, 0x20000),
+                           (0x20000, 0x30000), (0x30000, 0x40000),
+                           (0x50000, 0x70000)):
+            assert fresh_terrain[start:end] == preserved_terrain[start:end], (
+                f"{name} active terrain plane {start:#x}:{end:#x} differs"
+            )
+        assert fresh_terrain[0x40000:0x50000] == bytes(0x10000), (
+            f"{name} non-Cave inactive terrain plane is not zero-normalized"
+        )
 
 
 def _assert_l2_corpus_matches(fresh: Path, preserved: Path) -> None:
@@ -229,6 +271,19 @@ def _assert_l2_corpus_matches(fresh: Path, preserved: Path) -> None:
     preserved_manifest = json.loads(
         (preserved / "manifest.json").read_text(encoding="utf-8")
     )
+    assert preserved_manifest["schema"] == SCHEMA_V3
+    assert preserved_manifest["level"] == {
+        "external": 2,
+        "internal": 1,
+        "map_type": {"id": 0, "name": "Day"},
+    }
+    preserved_secondary = next(
+        plane
+        for plane in preserved_manifest["reference"]["terrain_planes"]
+        if plane["name"] == "secondary_cave"
+    )
+    assert preserved_secondary["source_status"] == "live_plane"
+    assert preserved_secondary["normalization"] == "preserved"
     if _stable_l2_manifest(fresh_manifest) != _stable_l2_manifest(preserved_manifest):
         raise AssertionError(f"Level 2 manifest differs from preserved corpus: {preserved}")
     fresh_files = set(fresh_manifest["files"]) - {"collision-masks.bin"}
@@ -238,7 +293,11 @@ def _assert_l2_corpus_matches(fresh: Path, preserved: Path) -> None:
             f"Level 2 member set differs from preserved corpus: {preserved}"
         )
     for name in sorted(fresh_files):
-        if name.startswith("terrain") and name.endswith(".bin"):
+        if name == "players.bin":
+            _assert_legacy_player_prefixes(fresh, preserved)
+            continue
+        if name in {"terrain.bin", "terrain-pre-features.bin", "terrain-post-features.bin"}:
+            _assert_legacy_terrain_semantics(fresh, preserved)
             continue
         if (fresh / name).read_bytes() != (preserved / name).read_bytes():
             raise AssertionError(
@@ -319,6 +378,15 @@ def test_deterministic_level_profiles() -> None:
         assert level_two_manifest["collision_masks"]["vga_resolution_selector"] == 1
         assert level_two_manifest["collision_masks"]["selectors"]
         assert "reset_projection" not in level_two_manifest
+        assert level_two_manifest["record_sizes"]["player"] == LEVEL2_PLAYER_RECORD_BYTES
+        assert (
+            level_two_manifest["record_layouts"]["player"]["type_str_164_auxiliary"]
+            == TYPE_STR_164_AUXILIARY_LAYOUT
+        )
+        players = (level_two_a / "players.bin").read_bytes()
+        assert int.from_bytes(players[4:6], "little") == LEVEL2_PLAYER_COMPONENT_VERSION
+        assert int.from_bytes(players[6:8], "little") == LEVEL2_PLAYER_RECORD_BYTES
+        assert len(players) == 12 + 8 * LEVEL2_PLAYER_RECORD_BYTES
 
         # Exercise the production verifier against both independent native
         # captures, then prove that profile relabelling and package-member
@@ -331,7 +399,16 @@ def test_deterministic_level_profiles() -> None:
         ):
             if not preserved.is_dir():
                 raise AssertionError(f"preserved Level 2 corpus is missing: {preserved}")
-            _assert_l2_corpus_matches(level_two_a, preserved)
+            preserved_manifest = json.loads((preserved / "manifest.json").read_text())
+            if preserved_manifest["schema"] == SCHEMA_V3:
+                _assert_l2_corpus_matches(level_two_a, preserved)
+            elif preserved_manifest["schema"] == SCHEMA_V4:
+                verify(preserved, enforce_reference_hashes=False)
+                assert _tree_bytes(level_two_a) == _tree_bytes(preserved)
+            else:
+                raise AssertionError(
+                    f"unsupported preserved Level 2 corpus schema: {preserved_manifest['schema']}"
+                )
         def relabel_profile(candidate: Path) -> None:
             _mutate_manifest(
                 candidate,

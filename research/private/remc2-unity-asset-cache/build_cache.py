@@ -106,8 +106,8 @@ DEFAULT_LEVEL2_AGGREGATE_OUTPUT = GENERATED / "level2-day-owner-cache"
 CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
 GENERATOR_VERSION = "1.15.0"
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
-EXPECTED_LEVEL2_PACKAGE = "4b8c245c268d9644d5911285c4b4da5dacb78d02034fec7d2f05366a4cc48c6a"
-EXPECTED_LEVEL2_CLOSURE = "a4a7a3d4086c09404294fb90d53e7f34e05d58a406fb025e15f032cca18793f1"
+EXPECTED_LEVEL2_PACKAGE = "1d73e81bc897933d62621b53a1c8c1cf890bd5dffe17f77de43f8d38f3854488"
+EXPECTED_LEVEL2_CLOSURE = "66505e6c3691cce6c730682047c7d8634c682172daa017d4840d1a4a5be4661c"
 EXPECTED_LEVEL2_CATALOG = "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e"
 EXPECTED_LEVEL2_CATALOG_FILE = "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44"
 PINNED_REMC2_SOURCE_SPANS = (
@@ -4562,7 +4562,10 @@ def _level2_profile(
     level = package.get("level", {})
     map_type = level.get("map_type", {})
     if (
-        package.get("schema") != "mc2-owner-level-export/v3"
+        package.get("schema") not in {
+            "mc2-owner-level-export/v3",
+            "mc2-owner-level-export/v4",
+        }
         or level.get("external") != 2
         or level.get("internal") != 1
         or map_type != {"id": 0, "name": "Day"}

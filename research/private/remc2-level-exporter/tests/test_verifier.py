@@ -11,7 +11,7 @@ import shutil
 import stat
 import tempfile
 
-from verify_package import SCHEMA_V2, SCHEMA_V3, verify
+from verify_package import SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, verify
 
 
 def expect_rejected(
@@ -123,7 +123,7 @@ def main() -> int:
 
     expect_rejected(package, corrupt_authoritative_terrain)
 
-    if schema == SCHEMA_V3:
+    if schema == SCHEMA_V3 and manifest["level"]["external"] == 1:
         def corrupt_pre_feature_terrain_with_valid_hashes(candidate: Path) -> None:
             path = candidate / "terrain-pre-features.bin"
             content = bytearray(path.read_bytes())
@@ -188,7 +188,52 @@ def main() -> int:
             ),
         )
 
-    if schema in {SCHEMA_V2, SCHEMA_V3}:
+    if schema == SCHEMA_V4 and manifest["level"]["external"] == 2:
+        def remove_type_str_164_carrier_descriptor(candidate: Path) -> None:
+            mutate_manifest(
+                candidate,
+                lambda value: value["record_layouts"]["player"].pop(
+                    "type_str_164_auxiliary"
+                ),
+            )
+
+        expect_rejected(package, remove_type_str_164_carrier_descriptor)
+
+        def duplicate_type_str_164_descriptor(candidate: Path) -> None:
+            def mutate(value: dict) -> None:
+                fields = value["record_layouts"]["player"]["type_str_164_auxiliary"][
+                    "fields"
+                ]
+                fields.append(dict(fields[0]))
+
+            mutate_manifest(candidate, mutate)
+
+        expect_rejected(package, duplicate_type_str_164_descriptor)
+
+        def move_type_str_164_descriptor_out_of_bounds(candidate: Path) -> None:
+            mutate_manifest(
+                candidate,
+                lambda value: value["record_layouts"]["player"][
+                    "type_str_164_auxiliary"
+                ]["fields"][0].update({"source_offset": 1135}),
+            )
+
+        expect_rejected(package, move_type_str_164_descriptor_out_of_bounds)
+
+        def use_legacy_player_component_version(candidate: Path) -> None:
+            mutate_u16(candidate, "players.bin", 4, 2)
+
+        expect_rejected(package, use_legacy_player_component_version)
+
+        def truncate_type_str_164_carrier(candidate: Path) -> None:
+            path = candidate / "players.bin"
+            path.write_bytes(path.read_bytes()[:-1])
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            refresh_file_identity(candidate, "players.bin")
+
+        expect_rejected(package, truncate_type_str_164_carrier)
+
+    if schema in {SCHEMA_V2, SCHEMA_V3} and manifest["level"]["external"] == 1:
         def corrupt_ambient_distance_with_valid_hashes(candidate: Path) -> None:
             path = candidate / "players.bin"
             content = bytearray(path.read_bytes())
@@ -291,6 +336,24 @@ def main() -> int:
                     "conformance_hash"
                 ].update({"hex": "0000000000000000"}),
             ),
+        )
+
+    if schema == SCHEMA_V4:
+        assert manifest["level"]["map_type"]["name"] == "Day"
+
+        def corrupt_inactive_secondary_plane_with_valid_hashes(candidate: Path) -> None:
+            path = candidate / "terrain-pre-features.bin"
+            content = bytearray(path.read_bytes())
+            content[0x40000] ^= 1
+            path.write_bytes(content)
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            refresh_file_identity(candidate, "terrain-pre-features.bin")
+
+        expect_rejected(
+            package,
+            corrupt_inactive_secondary_plane_with_valid_hashes,
+            semantic=True,
+            expected_error="non-Cave secondary plane is not zero-normalized",
         )
 
     expect_rejected(

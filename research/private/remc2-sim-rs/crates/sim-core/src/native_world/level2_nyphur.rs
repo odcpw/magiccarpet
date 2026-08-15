@@ -289,15 +289,22 @@ impl Level2NyphurCommonUpkeep {
         let entity = entities
             .get(usize::from(participant.entity_index))
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur AI entity is absent"))?;
-        let mut array_0x1fc = [0_u16; 32];
+        let auxiliary = player.type_str_164_auxiliary().ok_or_else(|| {
+            NativeWorldError::new("Level 2 Nyphur AI player Type_str_164 carrier is absent")
+        })?;
+        let mut array_0x1fc = auxiliary.array_0x1FC_508;
         let mut padding_0x23c = [0_u8; 6];
         for index in 0..8 {
-            // Model-1 reset writes the eight per-color source thresholds to
-            // the exact uint16 sentinel consumed by sub_12A70.
             let threshold = 4 * index + 4;
             if threshold < array_0x1fc.len() {
-                array_0x1fc[threshold] = 24_607;
+                // Model-1 reset writes the source sentinel only when the
+                // captured owner row has not already supplied that slot.
+                if array_0x1fc[threshold] == 0 {
+                    array_0x1fc[threshold] = 24_607;
+                }
             } else {
+                // The eighth logical threshold is array index 32, which is
+                // the first uint16 in the separate Watcom padding boundary.
                 padding_0x23c[..2].copy_from_slice(&24_607_u16.to_le_bytes());
             }
         }
@@ -343,16 +350,16 @@ impl Level2NyphurCommonUpkeep {
             contact_word_0x14a: 0,
             yaw_0x1e_30: 0,
             fov_0x22_34: 0,
-            word_0x1a2: 0,
+            word_0x1a2: auxiliary.word_0x1A2_418,
             word_0x1a4: 0,
-            byte_0x154: 0,
+            byte_0x154: auxiliary.byte_0x154_340,
             word_0x159: 100,
             life_regen: 0,
-            dword_0x16d: 2_000,
+            dword_0x16d: auxiliary.dword_0x16D_365,
             source_mailbox,
             array_0x1fc,
             padding_0x23c,
-            word_0x242: settings.aggression,
+            word_0x242: auxiliary.word_0x242_578,
             word_0x244: settings.perception,
             word_0x246: settings.reflexes,
             word_0x248: 0,
@@ -1942,6 +1949,14 @@ impl Level2NyphurDispatcher {
         runtime: &RuntimeSnapshot,
         mission: &MissionContentSession,
     ) -> Result<Self> {
+        let ai_player = players
+            .get(1)
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur AI player row 1 is absent"))?;
+        if ai_player.type_str_164_auxiliary().is_none() {
+            return Err(NativeWorldError::new(
+                "Level 2 Nyphur AI player Type_str_164 carrier is absent",
+            ));
+        }
         let baseline_entity = entities
             .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
@@ -4718,10 +4733,10 @@ mod tests {
         assert_eq!(baseline.castle_entity_index, 0);
         assert_eq!(baseline.phase, 113);
         assert_eq!(baseline.word_0x1a2, 0);
-        assert_eq!(baseline.byte_0x154, 0);
+        assert_eq!(baseline.byte_0x154, 1);
         assert_eq!(baseline.word_0x159, 100);
         assert_eq!(baseline.life_regen, 0);
-        assert_eq!(baseline.dword_0x16d, 2_000);
+        assert_eq!(baseline.dword_0x16d, 1_999);
         assert_eq!(baseline.move_speed, 0);
         assert_eq!(baseline.word_0x242, 243);
         assert_eq!(baseline.word_0x244, 90);
@@ -4752,6 +4767,11 @@ mod tests {
         assert_eq!(baseline.owner_control_mode, 1);
         assert_eq!((baseline.yaw_0x1e_30, baseline.fov_0x22_34), (0, 0));
         assert_eq!(baseline.move_speed_flag, 0);
+        let captured_array = session.shared_spells().players[1]
+            .type_str_164_auxiliary()
+            .expect("captured Type_str_164 array")
+            .array_0x1FC_508;
+        assert_eq!(baseline.array_0x1fc, captured_array);
         for index in 0..7 {
             assert_eq!(baseline.array_0x1fc[4 * index + 4], 24_607);
         }
@@ -4806,10 +4826,10 @@ mod tests {
         assert_eq!(stepped.source_list_model_zero, Some(111));
         assert_eq!(stepped.phase, 114);
         assert_eq!(stepped.word_0x1a2, 0);
-        assert_eq!(stepped.byte_0x154, 1);
+        assert_eq!(stepped.byte_0x154, 2);
         assert_eq!(stepped.word_0x159, 99);
         assert_eq!(stepped.life_regen, 6);
-        assert_eq!(stepped.dword_0x16d, 1_999);
+        assert_eq!(stepped.dword_0x16d, 1_998);
         assert_eq!(stepped.move_speed, 0);
         assert_eq!(stepped.word_0x242, 243);
         assert_eq!(stepped.word_0x244, 90);

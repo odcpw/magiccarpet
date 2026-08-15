@@ -435,6 +435,18 @@ class Level2ClosureContractTests(unittest.TestCase):
         self.assertFalse(self.document["qualification"]["zero_unresolved_frame_used_claimed"])
         self.assertTrue(frame["unresolved"])
 
+    def test_v4_player_carrier_schema_is_accepted_without_changing_day_selectors(self) -> None:
+        manifest = json.loads((LEVEL2_EXPORT / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schema"], "mc2-owner-level-export/v4")
+        selectors = closure._level2_expected_selectors(manifest)
+        self.assertEqual(selectors["map_type"], "Day")
+        self.assertEqual(selectors["vga_resolution_selector"], 1)
+        self.assertEqual(selectors["texture_size"], 32)
+        rejected = copy.deepcopy(manifest)
+        rejected["schema"] = "mc2-owner-level-export/v5"
+        with self.assertRaisesRegex(closure.ClosureError, "requires owner-level-export/v3 or v4"):
+            closure._level2_expected_selectors(rejected)
+
     def test_day_asset_ids_and_hashes_are_catalog_qualified(self) -> None:
         identity = self.document["source"]["owner_root_identity"]
         self.assertEqual(

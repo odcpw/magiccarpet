@@ -861,8 +861,11 @@ def _level2_common_paths() -> list[str]:
 
 def _level2_expected_selectors(manifest: dict[str, Any]) -> dict[str, Any]:
     """Validate and return the Day selector tuple from the export identity."""
-    if manifest.get("schema") != "mc2-owner-level-export/v3":
-        raise ClosureError("Level 2 closure requires owner-level-export/v3")
+    if manifest.get("schema") not in {
+        "mc2-owner-level-export/v3",
+        "mc2-owner-level-export/v4",
+    }:
+        raise ClosureError("Level 2 closure requires owner-level-export/v3 or v4")
     level = manifest.get("level", {})
     map_type = level.get("map_type", {})
     if (level.get("external"), level.get("internal"), map_type.get("id"), map_type.get("name")) != (
