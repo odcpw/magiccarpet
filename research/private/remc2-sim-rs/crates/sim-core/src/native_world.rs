@@ -28768,7 +28768,9 @@ mod tests {
         let terrain_hash = first.terrain_hash();
         let mission_hash = first.mission().state_hash();
         assert_eq!(state_hash, 0x57c3_7985_e90c_696c);
-        assert_eq!(terrain_hash, 0xe32f_0658_6f8f_2f8b);
+        // GOLDEN-CHANGE: v4 zero-normalizes the inactive non-Cave terrain
+        // plane instead of hashing uninitialized host memory.
+        assert_eq!(terrain_hash, 0x9d76_0dcf_39ba_f22a);
         for _ in 0..19 {
             first.step_outer_turn(PlayerCommand::default(), 0);
             second.step_outer_turn(PlayerCommand::default(), 0);
@@ -40359,8 +40361,9 @@ mod tests {
             .expect("qualified Level 2 package");
 
         // A production allocator with no admitted target must not invent a
-        // mailbox write or sound. The historical v3 fixture has no model-45
-        // authority, so its nearby model-45 row also fails closed.
+        // mailbox write or sound. The v4 package correctly supplies model-45
+        // authority, so make target absence explicit instead of relying on the
+        // historical v3 carrier omission.
         let mut no_collision = inspection
             .level2_reset_session()
             .expect("Level 2 model-76 no-collision session");
@@ -40370,6 +40373,9 @@ mod tests {
         no_collision
             .level2_model76_activated
             .extend([116_u16, 120, 124]);
+        for entity in &mut no_collision.entities {
+            entity.active = false;
+        }
         let no_collision_rng = no_collision
             .economy()
             .model76_children()
@@ -40379,11 +40385,17 @@ mod tests {
             .collect::<Vec<_>>();
         no_collision.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
-            !no_collision
-                .economy()
-                .events()
-                .iter()
-                .any(|event| matches!(event, Level2EconomyEvent::FireSphereCollisionSound { .. }))
+            !no_collision.economy().events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::FireSphereCollisionSound {
+                        source_entity_index,
+                        ..
+                    } if *source_entity_index == no_collision_root.source_entity_index
+                )
+            }),
+            "no-collision root emitted events: {:?}",
+            no_collision.economy().events()
         );
         assert_eq!(
             no_collision_rng,
@@ -40478,11 +40490,28 @@ mod tests {
                                 sound_id,
                             },
                         ..
-                    } => Some((*source_slot, *source_entity_index, *sound_id)),
+                    } if *source_slot == root.source_entity_index
+                        && *source_entity_index == root.source_entity_index =>
+                    {
+                        Some((*source_slot, *source_entity_index, *sound_id))
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(sounds.len(), hit_children);
+            // The local-player payload counts that one target's hits. Sound 3
+            // is broader: source sub_33C00 emits once for every column-zero
+            // child that hits any admitted target, including v4 model-45
+            // targets now backed by the qualified collision-mask carrier.
+            let sound_children = session
+                .economy()
+                .model76_children()
+                .iter()
+                .filter(|child| {
+                    child.parent_entity_index == root.source_entity_index && child.column_index == 0
+                })
+                .count();
+            assert_eq!(sounds.len(), sound_children);
+            assert!(sounds.len() >= hit_children);
             assert!(sounds.iter().all(|sound| {
                 *sound == (root.source_entity_index, root.source_entity_index, 3)
             }));
@@ -43472,12 +43501,20 @@ mod tests {
         }));
 
         session.step_outer_turn(PlayerCommand::default(), 0);
-        assert!(
-            !session
-                .dispatch_events()
-                .iter()
-                .any(|event| matches!(event, Level2DispatchEvent::Economy { .. }))
-        );
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    event:
+                        Level2EconomyEvent::ManaSphereCollected {
+                            sphere_id,
+                            carrier_id,
+                            ..
+                        },
+                    ..
+                } if *sphere_id == sphere_slot && *carrier_id == u32::from(carrier_slot)
+            )
+        }));
 
         session.reset();
         let replay_carrier_slot = session
@@ -45262,7 +45299,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let manifest_path = root.join("manifest.json");
         fs::copy(package.join("manifest.json"), &manifest_path).unwrap();
-        for (name, _) in LEVEL2_PACKAGE_MEMBERS {
+        for (name, _) in LEVEL2_V4_PACKAGE_MEMBERS {
             fs::copy(package.join(name), root.join(name)).unwrap();
         }
         let mut manifest: Value =
@@ -45271,7 +45308,7 @@ mod tests {
         manifest["level"]["internal"] = json!(0);
         manifest["level"]["map_type"] = json!({"id": 1, "name": "Night"});
         let mut identity = Vec::new();
-        for (name, expected_size) in LEVEL2_PACKAGE_MEMBERS {
+        for (name, expected_size) in LEVEL2_V4_PACKAGE_MEMBERS {
             let bytes = fs::read(root.join(name)).unwrap();
             assert_eq!(bytes.len(), expected_size);
             let hash = sha256_hex(&bytes);
