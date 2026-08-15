@@ -10,7 +10,7 @@ using UnityEngine.Rendering;
 
 namespace MagicCarpet.Native
 {
-    public sealed class MagicCarpetRuntime : MonoBehaviour
+    public sealed partial class MagicCarpetRuntime : MonoBehaviour
     {
         internal readonly struct SpellMenuCommand
         {
@@ -538,6 +538,12 @@ namespace MagicCarpet.Native
         private NativeSim.CampaignEvent[] level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
         private NativeSim.CampaignAuthoredGroupEvent[] level2AuthoredGroupEvents =
             Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
+        private Level2IndexedWorldPresenter level2IndexedWorldPresenter;
+        private Level2EntityPresenter level2EntityPresenter;
+        private Level2HudPresenter level2HudPresenter;
+        private Level2MinimapPresenter level2MinimapPresenter;
+        private Level2AudioPresenter level2AudioPresenter;
+        private readonly List<string> level2PresentationOrder = new();
         private ushort level2StepInputX;
         private ushort level2StepInputY;
         private short level2StepInputZ;
@@ -718,6 +724,21 @@ namespace MagicCarpet.Native
         private readonly List<Transform> terrainTiles = new();
         private readonly Queue<string> recentEventDiagnostics = new();
         private Camera flightCamera;
+
+        private Level2IndexedWorldPresenter Level2IndexedWorld =>
+            level2IndexedWorldPresenter ??= new Level2IndexedWorldPresenter(this);
+
+        private Level2EntityPresenter Level2Entities =>
+            level2EntityPresenter ??= new Level2EntityPresenter(this);
+
+        private Level2HudPresenter Level2Hud =>
+            level2HudPresenter ??= new Level2HudPresenter(this);
+
+        private Level2MinimapPresenter Level2Minimap =>
+            level2MinimapPresenter ??= new Level2MinimapPresenter(this);
+
+        private Level2AudioPresenter Level2Audio =>
+            level2AudioPresenter ??= new Level2AudioPresenter(this);
         private Camera carpetOverlayCamera;
         private Transform presentationRig;
         private Transform carpetVisual;
@@ -961,6 +982,22 @@ namespace MagicCarpet.Native
 
         internal NativeSim.CampaignAuthoredGroupEvent[] Level2ProductionAuthoredGroupEvents =>
             level2AuthoredGroupEvents;
+
+        internal string[] Level2ProductionPresentationOrder =>
+            level2PresentationOrder.ToArray();
+
+        internal void QualificationClearLevel2PresentationOrder()
+        {
+            level2PresentationOrder.Clear();
+        }
+
+        private void RecordLevel2Presentation(string endpoint)
+        {
+            if (level2Mode)
+            {
+                level2PresentationOrder.Add(endpoint);
+            }
+        }
 
         internal (ushort x, ushort y, short z) Level2ProductionLastStepInput =>
             (level2LastStepInputX, level2LastStepInputY, level2LastStepInputZ);
@@ -2169,23 +2206,7 @@ namespace MagicCarpet.Native
                 flags: 1);
             level2StepSnapshot = result.snapshot;
             level2StepEvents = result.events;
-            level2DayMusic = campaignSession.DayMusicState();
-            if (level2DayMusic.timerActive != 0)
-            {
-                level2DayMusicFadeAccumulator +=
-                    Time.fixedDeltaTime * level2DayMusic.timerHz;
-                var callbacks = Mathf.FloorToInt(level2DayMusicFadeAccumulator);
-                if (callbacks > 0)
-                {
-                    level2DayMusicFadeAccumulator -= callbacks;
-                    level2DayMusic = campaignSession.AdvanceDayMusic(
-                        checked((uint)callbacks));
-                }
-            }
-            else
-            {
-                level2DayMusicFadeAccumulator = 0f;
-            }
+            UpdateLevel2DayMusicPresentation();
             level2AuthoredGroupEvents = campaignSession.AuthoredGroupEvents();
             level2TerrainState = campaignSession.TerrainState();
             UpdateLevel2IndexedFrame(level2TerrainState.tick);
@@ -3970,152 +3991,6 @@ namespace MagicCarpet.Native
                 Require(renderer != null, $"terrain depth renderer {tile.name}");
                 renderer.sharedMaterial = terrainDepthOnlyMaterial;
             }
-        }
-
-        private void EnsureLevel2IndexedFramePresentation()
-        {
-            Require(
-                level2Mode && campaignSession != null,
-                "Level 2 indexed frame presentation has a campaign owner");
-            if (level2IndexedFrameRenderer != null)
-            {
-                return;
-            }
-
-            Require(
-                SystemInfo.SupportsTextureFormat(TextureFormat.R8),
-                "Level 2 indexed frame R8 texture support");
-            Require(
-                SystemInfo.SupportsTextureFormat(TextureFormat.RGB24),
-                "Level 2 indexed frame RGB8 palette texture support");
-            var shader = Resources.Load<Shader>("TerrainIndexedFrame");
-            Require(shader != null, "Level 2 indexed frame palette shader");
-
-            level2IndexedFrameObject = new GameObject(
-                "Level 2 Day Rust indexed frame presentation");
-            level2IndexedFrameObject.transform.SetParent(transform, false);
-            level2IndexedFrameObject.transform.localPosition = Vector3.zero;
-            level2IndexedFrameObject.transform.localScale =
-                new Vector3(3.2f, 2f, 1f);
-            var filter = level2IndexedFrameObject.AddComponent<MeshFilter>();
-            level2IndexedFrameMesh = CreateLevel2IndexedFrameQuad();
-            filter.sharedMesh = level2IndexedFrameMesh;
-            level2IndexedFrameRenderer =
-                level2IndexedFrameObject.AddComponent<MeshRenderer>();
-            level2IndexedFrameRenderer.shadowCastingMode =
-                UnityEngine.Rendering.ShadowCastingMode.Off;
-            level2IndexedFrameRenderer.receiveShadows = false;
-
-            level2IndexedFrameIndexTexture = new Texture2D(
-                NativeSim.DayIndexedFrameWidth,
-                NativeSim.DayIndexedFrameHeight,
-                TextureFormat.R8,
-                false,
-                true)
-            {
-                name = "Level 2 Day Rust indexed frame indices",
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp
-            };
-            level2IndexedFramePaletteTexture = new Texture2D(
-                256,
-                1,
-                TextureFormat.RGB24,
-                false,
-                false)
-            {
-                name = "Level 2 Day Rust indexed frame RGB8 palette",
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp
-            };
-            level2IndexedFrameMaterial = new Material(shader)
-            {
-                name = "Level 2 Day Rust indexed frame palette material"
-            };
-            level2IndexedFrameMaterial.SetTexture(
-                "_Indices", level2IndexedFrameIndexTexture);
-            level2IndexedFrameMaterial.SetTexture(
-                "_Coverage", Texture2D.whiteTexture);
-            level2IndexedFrameMaterial.SetTexture(
-                "_Palette", level2IndexedFramePaletteTexture);
-            level2IndexedFrameRenderer.sharedMaterial = level2IndexedFrameMaterial;
-            level2IndexedFrameRenderer.enabled = false;
-
-            level2IndexedFrameCamera = new GameObject(
-                    "Level 2 Day indexed frame presentation camera")
-                .AddComponent<Camera>();
-            level2IndexedFrameCamera.transform.SetParent(transform, false);
-            level2IndexedFrameCamera.transform.localPosition =
-                new Vector3(0f, 0f, -1f);
-            level2IndexedFrameCamera.transform.localRotation = Quaternion.identity;
-            level2IndexedFrameCamera.clearFlags = CameraClearFlags.SolidColor;
-            level2IndexedFrameCamera.backgroundColor = Color.black;
-            level2IndexedFrameCamera.orthographic = true;
-            level2IndexedFrameCamera.orthographicSize = 1f;
-            level2IndexedFrameCamera.aspect = 1.6f;
-            level2IndexedFrameCamera.nearClipPlane = 0.01f;
-            level2IndexedFrameCamera.farClipPlane = 10f;
-            level2IndexedFrameCamera.cullingMask =
-                1 << level2IndexedFrameObject.layer;
-            level2IndexedFrameCamera.depth = -100f;
-        }
-
-        private static Mesh CreateLevel2IndexedFrameQuad()
-        {
-            var mesh = new Mesh
-            {
-                name = "Level 2 Day Rust indexed frame quad"
-            };
-            mesh.vertices = new[]
-            {
-                new Vector3(-0.5f, -0.5f, 0f),
-                new Vector3(0.5f, -0.5f, 0f),
-                new Vector3(-0.5f, 0.5f, 0f),
-                new Vector3(0.5f, 0.5f, 0f)
-            };
-            // The native frame is top-to-bottom, while Unity samples raw
-            // texture row zero at v=0. Keep the native bytes intact and map
-            // the top vertices to v=0 so the source order is preserved.
-            mesh.uv = new[]
-            {
-                new Vector2(0f, 1f),
-                new Vector2(1f, 1f),
-                new Vector2(0f, 0f),
-                new Vector2(1f, 0f)
-            };
-            mesh.triangles = new[] { 0, 2, 1, 2, 3, 1 };
-            mesh.RecalculateBounds();
-            return mesh;
-        }
-
-        private void UpdateLevel2IndexedFrame(ulong expectedTick)
-        {
-            EnsureLevel2IndexedFramePresentation();
-            level2IndexedFrameRenderer.enabled = false;
-            level2IndexedFrameLive = false;
-            level2IndexedFrameInfo = default;
-
-            // The copy is generation/tick-bound in the native carrier. Do not
-            // touch either Unity texture until the complete copy succeeds;
-            // stale requests therefore cannot re-present prior bytes.
-            var info = campaignSession.CopyDayIndexedFrame(expectedTick);
-            var indices = campaignSession.DayIndexedFrameIndices;
-            var palette = campaignSession.DayIndexedFramePalette;
-            Require(
-                info.generation == campaignSession.Generation &&
-                info.tick == expectedTick &&
-                info.indexBytes == (uint)indices.Length &&
-                info.paletteBytes == (uint)palette.Length,
-                "Level 2 indexed frame generation/tick and byte binding");
-
-            level2IndexedFrameIndexTexture.LoadRawTextureData(indices);
-            level2IndexedFrameIndexTexture.Apply(false, false);
-            level2IndexedFramePaletteTexture.LoadRawTextureData(palette);
-            level2IndexedFramePaletteTexture.Apply(false, false);
-            level2IndexedFrameInfo = info;
-            level2IndexedFrameRenderer.enabled = true;
-            level2IndexedFrameLive = true;
-            level2IndexedFrameUploadCount++;
         }
 
         private void DisableTerrainMeshRenderers()
@@ -7343,67 +7218,6 @@ namespace MagicCarpet.Native
                 "complete Level 2 Day HUD materialization");
         }
 
-        private void DestroyLevel2IndexedFramePresentation()
-        {
-            if (level2IndexedFrameRenderer != null)
-            {
-                level2IndexedFrameRenderer.enabled = false;
-            }
-
-            if (level2IndexedFrameObject != null)
-            {
-                if (Application.isPlaying)
-                    Destroy(level2IndexedFrameObject);
-                else
-                    DestroyImmediate(level2IndexedFrameObject);
-            }
-            if (level2IndexedFrameCamera != null)
-            {
-                if (Application.isPlaying)
-                    Destroy(level2IndexedFrameCamera.gameObject);
-                else
-                    DestroyImmediate(level2IndexedFrameCamera.gameObject);
-            }
-            if (level2IndexedFrameMaterial != null)
-            {
-                if (Application.isPlaying)
-                    Destroy(level2IndexedFrameMaterial);
-                else
-                    DestroyImmediate(level2IndexedFrameMaterial);
-            }
-            if (level2IndexedFrameIndexTexture != null)
-            {
-                if (Application.isPlaying)
-                    Destroy(level2IndexedFrameIndexTexture);
-                else
-                    DestroyImmediate(level2IndexedFrameIndexTexture);
-            }
-            if (level2IndexedFramePaletteTexture != null)
-            {
-                if (Application.isPlaying)
-                    Destroy(level2IndexedFramePaletteTexture);
-                else
-                    DestroyImmediate(level2IndexedFramePaletteTexture);
-            }
-            if (level2IndexedFrameMesh != null)
-            {
-                if (Application.isPlaying)
-                    Destroy(level2IndexedFrameMesh);
-                else
-                    DestroyImmediate(level2IndexedFrameMesh);
-            }
-
-            level2IndexedFrameObject = null;
-            level2IndexedFrameCamera = null;
-            level2IndexedFrameMesh = null;
-            level2IndexedFrameRenderer = null;
-            level2IndexedFrameIndexTexture = null;
-            level2IndexedFramePaletteTexture = null;
-            level2IndexedFrameMaterial = null;
-            level2IndexedFrameInfo = default;
-            level2IndexedFrameLive = false;
-        }
-
         private void DestroyLevel2DayHudPresentation()
         {
             foreach (var texture in hudBitmapTextures.Values)
@@ -8297,6 +8111,24 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal bool QualificationRejectsStaleLevel2IndexedFrame()
+        {
+            Require(
+                level2Mode &&
+                level2StartupReady &&
+                campaignSession != null,
+                "Level 2 stale indexed-frame route requires a campaign session");
+            try
+            {
+                UpdateLevel2IndexedFrame(checked(level2TerrainState.tick + 1));
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                return !Level2ProductionIndexedFrameLive;
+            }
+        }
+
         internal void QualificationResetLevel2Production()
         {
             Require(
@@ -8311,8 +8143,7 @@ namespace MagicCarpet.Native
             level2AuthoredGroupEvents =
                 Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
             level2TerrainState = campaignSession.TerrainState();
-            level2DayMusic = campaignSession.DayMusicState();
-            level2DayMusicFadeAccumulator = 0f;
+            ResetLevel2DayMusicPresentation();
             SeedLevel2LocalPlayerPosition();
             level2LastStepInputX = 0;
             level2LastStepInputY = 0;
@@ -9054,102 +8885,6 @@ namespace MagicCarpet.Native
                         centerX + x * MapUnitySize,
                         0f,
                         centerY + y * MapUnitySize);
-                }
-            }
-        }
-
-        private void UpdateEntityPresentation()
-        {
-            var suppressionFlags = CurrentNativeFinalPresentationOwns()
-                ? terrainFrameInfo.flags
-                : 0u;
-            if (CurrentNativeFinalPresentationOwns())
-                managedEntitySubmissionCount++;
-            if (entityRegistry.Count == 0) return;
-            foreach (var marker in entityRegistry)
-            {
-                var entity = entities[marker.Index];
-                var goatOrdinal =
-                    goatOrdinalByEntity != null &&
-                    marker.Index < goatOrdinalByEntity.Length
-                        ? goatOrdinalByEntity[marker.Index]
-                        : -1;
-                var liveGoat = goatOrdinal >= 0;
-                var sourceX = entity.x;
-                var sourceY = entity.y;
-                var sourceZ = entity.z;
-                var sourceYaw = entity.yaw;
-                var animationFrame = marker.Group?.key.animation_frame ?? 0;
-                var active = entity.active != 0;
-                var drawingEnabled = true;
-                if (liveGoat)
-                {
-                    var goat = goats[goatOrdinal];
-                    Require(
-                        goat.entityIndex == marker.Index &&
-                        goat.authority == NativeSim.GoatLive,
-                        $"stable live Goat mapping {marker.Index}");
-                    sourceX = goat.x;
-                    sourceY = goat.y;
-                    sourceZ = goat.z;
-                    sourceYaw = goat.yaw;
-                    animationFrame = goat.animationFrame;
-                    active = goat.active != 0;
-                    drawingEnabled = (goat.controlFlags & 0x00000400) == 0;
-                }
-                var nearestX = unwrappedSourceX +
-                    ModularDelta(sourceX, presentationState.cameraX);
-                var nearestY = unwrappedSourceY +
-                    ModularDelta(sourceY, presentationState.cameraY);
-                marker.Node.position = SourceToUnity(nearestX, nearestY, sourceZ);
-                if (marker.Renderer != null)
-                {
-                    var retiredOrReplacedImportedActor =
-                        IsRetiredOrReplacedImportedActor(
-                            entity,
-                            marker.QualifiedFrozenActor);
-                    var nativeFrozenActor =
-                        !liveGoat &&
-                        marker.QualifiedFrozenActor;
-                    var distanceSquared = presentationRig == null
-                        ? float.PositiveInfinity
-                        : Vector3.SqrMagnitude(
-                            marker.Node.position - targetPosition);
-                    marker.Renderer.enabled =
-                        !retiredOrReplacedImportedActor &&
-                        active && drawingEnabled &&
-                        !(liveGoat &&
-                          (suppressionFlags &
-                           NativeSim.TerrainFrameGoatsComposited) != 0) &&
-                        !(nativeFrozenActor &&
-                          !ManagedFrozenActorVisible(
-                              1,
-                              marker.QualifiedFrozenActor,
-                              suppressionFlags)) &&
-                        ((debugEntities && !qualifiedMode) || distanceSquared >= 1f);
-                    if (marker.OwnerSprite && marker.Group != null &&
-                        marker.SpriteVisual != null)
-                    {
-                        if (retiredOrReplacedImportedActor) continue;
-                        Require(
-                            liveGoat
-                                ? entity.authority == NativeSim.GoatLive &&
-                                  marker.Group.group_id == "reset-050"
-                                : entity.authority == NativeSim.FrozenObserved ||
-                                  entity.authority == NativeSim.VillagerLive,
-                            $"owner sprite authority {marker.Index}");
-                        if (flightCamera != null)
-                        {
-                            marker.Node.rotation = flightCamera.transform.rotation;
-                            UpdateOwnerEntitySprite(
-                                marker.Index,
-                                sourceYaw,
-                                animationFrame,
-                                marker.Group,
-                                marker.SpriteVisual,
-                                marker.Renderer);
-                        }
-                    }
                 }
             }
         }
@@ -10481,46 +10216,6 @@ namespace MagicCarpet.Native
             }
         }
 
-        private void PresentLevel2DayHud(NativeSim.CampaignDayHudSnapshot hud)
-        {
-            Require(
-                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.minimapPanelSelector) &&
-                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.castlePanelSelector) &&
-                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.balloonPanelSelector) &&
-                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.playerPanelSelector) &&
-                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.playerIconSelector) &&
-                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(hud.lifeManaIconSelector),
-                "qualified Day HUD status roots");
-            ValidateLevel2DayHudPresenterSlot(hud.left, hud.localPlayerEntityIndex);
-            ValidateLevel2DayHudPresenterSlot(hud.right, hud.localPlayerEntityIndex);
-
-            level2PresentedDayHud = hud;
-            level2DayHudPresenterReady = false;
-            if (HasMaterializedLevel2DayHudRoots(hud))
-            {
-                ComputeLevel2DayHudTopBarLayout(hud);
-                level2DayHudPresenterReady = true;
-            }
-        }
-
-        private void ProjectLevel2Minimap(ulong expectedTick)
-        {
-            Require(
-                campaignSession != null && level2Mode,
-                "Level 2 minimap projection has a campaign owner");
-            var state = campaignSession.MinimapState(expectedTick);
-            var entities = campaignSession.MinimapEntities(expectedTick, state);
-            var marks = campaignSession.MinimapMarks(expectedTick, state);
-            Require(
-                state.generation == campaignSession.Generation &&
-                state.tick == expectedTick,
-                "Level 2 minimap generation/tick projection binding");
-            level2MinimapState = state;
-            level2MinimapEntities = entities;
-            level2MinimapMarks = marks;
-            level2MinimapProjectionReady = true;
-        }
-
         private int Level2DayHudRuntimeWidth(int selector)
         {
             Require(
@@ -11647,8 +11342,7 @@ namespace MagicCarpet.Native
                 campaignWorldInfo = campaignSession.WorldInfo();
                 SeedLevel2LocalPlayerPosition();
                 level2TerrainState = campaignSession.TerrainState();
-                level2DayMusic = campaignSession.DayMusicState();
-                level2DayMusicFadeAccumulator = 0f;
+                InitializeLevel2DayMusicPresentation();
                 Require(
                     campaignWorldInfo.abiVersion == NativeSim.AbiVersion &&
                     campaignWorldInfo.structSize == 64,
@@ -12084,6 +11778,14 @@ namespace MagicCarpet.Native
                 DestroyLevel2DayHudPresentation();
                 ownerAssetCache = null;
             }
+            level2MinimapPresenter?.Dispose();
+            level2AudioPresenter?.Dispose();
+            level2IndexedWorldPresenter = null;
+            level2EntityPresenter = null;
+            level2HudPresenter = null;
+            level2MinimapPresenter = null;
+            level2AudioPresenter = null;
+            level2PresentationOrder.Clear();
             campaignSession?.Dispose();
             campaignSession = null;
             level2StartupReady = false;

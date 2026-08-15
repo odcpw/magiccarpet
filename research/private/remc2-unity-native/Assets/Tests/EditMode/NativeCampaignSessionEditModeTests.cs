@@ -437,7 +437,12 @@ namespace MagicCarpet.Native.Tests
                     Level2Package,
                     Level2DayCache);
 
+                runtime.QualificationClearLevel2PresentationOrder();
                 runtime.QualificationDriveLevel2Frames(1);
+                Assert.That(
+                    runtime.Level2ProductionPresentationOrder,
+                    Is.EqualTo(new[] { "audio", "indexed-world", "hud", "minimap" }),
+                    "ordinary Level 2 fixed update preserves presenter order");
                 var first = runtime.Level2ProductionStepSnapshot;
                 var firstInput = runtime.Level2ProductionLastStepInput;
                 var firstAuthoredGroupEvents = runtime.Level2ProductionAuthoredGroupEvents;
@@ -486,6 +491,13 @@ namespace MagicCarpet.Native.Tests
                     runtime.Level2ProductionStepEvents.Any(eventRow =>
                         eventRow.kind == NativeSim.CampaignEventAuthoredGroup),
                     Is.False);
+
+                runtime.QualificationClearLevel2PresentationOrder();
+                runtime.QualificationDriveLevel2Frames(1);
+                Assert.That(
+                    runtime.Level2ProductionPresentationOrder,
+                    Is.EqualTo(new[] { "audio", "indexed-world", "hud", "minimap" }),
+                    "following Level 2 fixed update uses the same fixed order");
             }
             finally
             {
@@ -498,6 +510,35 @@ namespace MagicCarpet.Native.Tests
             }
 
             Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void Level2IndexedPresenterRejectsStaleAuthoritativeTick()
+        {
+            var root = new GameObject("Level 2 stale indexed presenter route");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
+
+                runtime.QualificationDriveLevel2Frames(1);
+                Assert.That(
+                    runtime.QualificationRejectsStaleLevel2IndexedFrame(),
+                    Is.True,
+                    "stale indexed-frame input fails closed before texture upload");
+                Assert.That(runtime.Level2ProductionIndexedFrameLive, Is.False);
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
         }
 
