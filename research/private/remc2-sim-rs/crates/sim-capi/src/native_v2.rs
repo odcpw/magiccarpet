@@ -15468,7 +15468,7 @@ fn load_optional_level2_day_music(
         &audio_root,
         "audio/descriptor.json",
         171_163,
-        "4563b9f0eb2e7e861d5d99ae08844ab9a5d60dd9e09cc1107522a090182f3bd5",
+        "6147506de0d33ede9106e0b3236580c1b408b3fe567a799c9f4aa3526c92c142",
     )?;
     let _ = read_qualified_cache_file(
         &audio_root,
@@ -22044,6 +22044,30 @@ mod tests {
             ),
             MC_STATUS_OK
         );
+        let allocated_economy_codes = [
+            MC_CAMPAIGN_ECONOMY_MANA_SPHERE_SPAWNED,
+            MC_CAMPAIGN_ECONOMY_MANA_SPHERE_CLAIMED,
+            MC_CAMPAIGN_ECONOMY_MANA_SPHERE_COLLECTED,
+            MC_CAMPAIGN_ECONOMY_MANA_SPHERES_MERGED,
+            MC_CAMPAIGN_ECONOMY_MANA_CARRIER_SPAWNED,
+            MC_CAMPAIGN_ECONOMY_MANA_CARRIER_ARRIVED,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_COLLECTED_SPHERE,
+            MC_CAMPAIGN_ECONOMY_DEATH_BURST_SPAWNED,
+            MC_CAMPAIGN_ECONOMY_DEATH_BURST_EXPIRED,
+            MC_CAMPAIGN_ECONOMY_CASTLE_BUILT,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DESTROYED,
+            MC_CAMPAIGN_ECONOMY_CASTLE_CONSTRUCTION_SOUND,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DESTRUCTION_SOUND,
+            MC_CAMPAIGN_ECONOMY_CASTLE_STAGE_DESTROYED,
+            MC_CAMPAIGN_ECONOMY_DAMAGE_APPLIED,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_CAVE_SOUND,
+            MC_CAMPAIGN_ECONOMY_FIRE_SPHERE_COLLISION_SOUND,
+            MC_CAMPAIGN_ECONOMY_AUTHORED_CLASS5_MODEL3_SOUND,
+        ];
+        assert!(!allocated_economy_codes.contains(&0));
+        assert!(!allocated_economy_codes.contains(&20));
+        assert!(!allocated_economy_codes.contains(&u8::MAX));
         for row in &economy_events[..economy_event_count as usize] {
             assert_eq!(row.abi_version, MC_NATIVE_ABI_VERSION);
             assert_eq!(row.generation, snapshot.generation);
@@ -22054,7 +22078,11 @@ mod tests {
             assert_eq!(generic.pass, row.pass);
             assert_eq!(generic.family, row.family);
             assert_eq!(generic.source_slot, row.source_slot);
-            assert!((1..=16).contains(&row.code));
+            assert!(
+                allocated_economy_codes.contains(&row.code),
+                "unexpected Level 2 economy event code {}",
+                row.code
+            );
         }
         let mut canonical_events = Sha256::new();
         canonical_events.update(sim_core::mission_content::REMC2_SPEC_COMMIT.as_bytes());

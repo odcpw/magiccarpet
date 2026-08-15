@@ -558,8 +558,18 @@ namespace MagicCarpet.Native.Tests
                 var initial = runtime.Level2ProductionDayHud;
                 Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
                 Assert.That(initial.nyphur.visibilityFlags, Is.EqualTo(2u));
-                AssertDayHudEmpty(initial.left);
-                AssertDayHudEmpty(initial.right);
+                AssertDayHudStartingSpell(
+                    initial.left,
+                    initial.localPlayerEntityIndex,
+                    0,
+                    115,
+                    5);
+                AssertDayHudStartingSpell(
+                    initial.right,
+                    initial.localPlayerEntityIndex,
+                    1,
+                    116,
+                    3);
                 Assert.That(
                     runtime.QualificationHasMaterializedLevel2DayHudSprite(1),
                     Is.True);
@@ -603,7 +613,12 @@ namespace MagicCarpet.Native.Tests
                 var acquiredNyphurVisibilityFlags = hud.nyphur.visibilityFlags;
                 Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
                 AssertDayHudFamily12(hud.left, hud.localPlayerEntityIndex);
-                AssertDayHudEmpty(hud.right);
+                AssertDayHudStartingSpell(
+                    hud.right,
+                    hud.localPlayerEntityIndex,
+                    1,
+                    116,
+                    3);
                 Assert.That(
                     runtime.QualificationHasMaterializedLevel2DayHudSprite(
                         hud.left.frameSelector),
@@ -693,11 +708,21 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(reset.generation, Is.EqualTo(1));
                 Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
                 Assert.That(reset.nyphur.visibilityFlags, Is.EqualTo(2u));
-                AssertDayHudEmpty(reset.left);
-                AssertDayHudEmpty(reset.right);
+                AssertDayHudStartingSpell(
+                    reset.left,
+                    reset.localPlayerEntityIndex,
+                    0,
+                    115,
+                    5);
+                AssertDayHudStartingSpell(
+                    reset.right,
+                    reset.localPlayerEntityIndex,
+                    1,
+                    116,
+                    3);
                 Assert.That(
                     runtime.QualificationSelectedLevel2DayHudRomanTierTexture(0),
-                    Is.Null);
+                    Does.Contain("Roman tier I"));
                 Assert.That(
                     runtime.Level2ProductionNextStepInput.x,
                     Is.EqualTo((ushort)384));
@@ -719,7 +744,12 @@ namespace MagicCarpet.Native.Tests
                     Is.EqualTo(acquiredNyphurVisibilityFlags));
                 Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
                 AssertDayHudFamily12(replay.left, replay.localPlayerEntityIndex);
-                AssertDayHudEmpty(replay.right);
+                AssertDayHudStartingSpell(
+                    replay.right,
+                    replay.localPlayerEntityIndex,
+                    1,
+                    116,
+                    3);
                 Assert.That(
                     (replay.left.holderEntityIndex,
                         replay.left.rawSpellSelector,
@@ -916,15 +946,30 @@ namespace MagicCarpet.Native.Tests
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
         }
 
-        private static void AssertDayHudEmpty(NativeSim.CampaignDayHudSpellSlot slot)
+        private static void AssertDayHudStartingSpell(
+            NativeSim.CampaignDayHudSpellSlot slot,
+            ushort localPlayerEntityIndex,
+            short rawSpellSelector,
+            ushort holderEntityIndex,
+            ushort activationValue)
         {
-            Assert.That(slot.rawSpellSelector, Is.LessThan(0));
-            Assert.That(slot.holderEntityIndex, Is.Zero);
-            Assert.That(slot.parentEntityIndex, Is.Zero);
-            Assert.That(slot.frameSelector, Is.Zero);
-            Assert.That(slot.iconSelector, Is.Zero);
+            Assert.That(slot.rawSpellSelector, Is.EqualTo(rawSpellSelector));
+            Assert.That(slot.holderEntityIndex, Is.EqualTo(holderEntityIndex));
+            Assert.That(slot.parentEntityIndex, Is.EqualTo(localPlayerEntityIndex));
+            Assert.That(slot.model, Is.EqualTo((byte)rawSpellSelector));
+            Assert.That(slot.tier, Is.Zero);
+            Assert.That(slot.action, Is.EqualTo((byte)(rawSpellSelector * 3)));
+            Assert.That(slot.actionMarker, Is.Zero);
+            Assert.That(slot.activeValue, Is.Zero);
+            Assert.That(slot.activationValue, Is.EqualTo(activationValue));
+            Assert.That(slot.controlFlags, Is.EqualTo(5u));
+            Assert.That(slot.maxMana, Is.EqualTo(100));
+            Assert.That(slot.manaRegen, Is.Zero);
+            Assert.That(slot.casterMana, Is.GreaterThan(0));
+            Assert.That(slot.frameSelector, Is.EqualTo(1));
+            Assert.That(slot.iconSelector, Is.EqualTo(123 + rawSpellSelector));
             Assert.That(slot.levelTextSelector, Is.Zero);
-            Assert.That(slot.drawAdmitted, Is.Zero);
+            Assert.That(slot.drawAdmitted, Is.EqualTo(1));
         }
 
         private static void AssertDayHudFamily12(

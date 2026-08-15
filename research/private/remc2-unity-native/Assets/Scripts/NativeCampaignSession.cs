@@ -15,7 +15,7 @@ namespace MagicCarpet.Native
     internal sealed class NativeCampaignSession : IDisposable
     {
         internal const string ExpectedLevel2ManifestSha256 =
-            "dcaa5103908ce2db22c71a4b55e2a1a1c9bc7a182b3fee8e3e81b9be40539cc3";
+            "666a6034c1148f56690bcf4c707441542d814b4a0faf1ebe9dcfd8bd8224f324";
         private static readonly IReadOnlyDictionary<string, string>
             ExpectedLevel2PackageFiles =
             new Dictionary<string, string>
@@ -35,17 +35,17 @@ namespace MagicCarpet.Native
                 ["feature-start.bin"] =
                     "363264d46bf0e2dc74e39ab75ab77b65216500472b2ae3912f4eb2b901bacee3",
                 ["players.bin"] =
-                    "845265777788b9191a038543b1ba408ed32e37133f9d110ca540cab8396982cb",
+                    "fb7709116b3e163f2f6d9e6a411a117925d69a351705fb7c7160666d8e1c1310",
                 ["presentation.bin"] =
                     "2944b802258550f24f0537accc4d5764d81dd28a080a935cc9c0f0d1fc1f67f2",
                 ["runtime.bin"] =
                     "6f1734d967a5e739d493faafdb41a822669966db46f9ffbb30cf1cc8bad30133",
                 ["terrain-post-features.bin"] =
-                    "451db813d79572b043638226101f2eeb313242216adda2740e4be644c070dedf",
+                    "c9e1b5dbaff7368d6de3e6d39f6bc9f5bc9ce43ba81e456850ec30832c8177f8",
                 ["terrain-pre-features.bin"] =
-                    "47c4818d811357642ae85b2d646463ad8834e259d3dffd608b1a2b84c95fc82b",
+                    "f41592426acdb0012d8f2543ce663453bf9a2ff68289475f8283aafff024b513",
                 ["terrain.bin"] =
-                    "69f21d0840e7f2945b0f0123a954641a1b34e3d5ad8d9bf8a56c25224f57a203",
+                    "94772b6401bb2aec8c7644123f4da676f9e97f61f5790a72b03aa36eec7d7447",
                 ["manifest.json"] = ExpectedLevel2ManifestSha256
             };
 
