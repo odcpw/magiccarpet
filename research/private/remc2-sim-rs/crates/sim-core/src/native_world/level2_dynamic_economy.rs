@@ -307,11 +307,12 @@ impl Level2EconomyState {
 
     /// Apply the generation-time `ApplyEvents_498A0` terminal branch to one
     /// typed Castle child. The source does not dispatch a model callback for
-    /// class-5/model-15 or class-10/model-41/42 rows: it sets the drawing
-    /// disable bit and immediately calls `sub_57F20`, which unlinks the map
-    /// row and returns the entity to the `NewEvent_4A050` free stack. The
-    /// class-10/model-79/action-0x56 row is a live `sub_3AF00` callback and
-    /// is deliberately excluded from this terminal shortcut.
+    /// class-5/model-15 or class-10/model-41/42/43/79 rows in the terminal
+    /// matrix: it sets the drawing disable bit, advances byte 0x3E for the
+    /// class-10 row, and immediately calls `sub_57F20`, which unlinks the map
+    /// row and returns the entity to the `NewEvent_4A050` free stack. A live
+    /// model-79/action-0x56 row is handled separately when it is dispatched
+    /// through its action table; this method represents the terminal matrix.
     pub fn applyevents_terminal_reclaim_castle_child(
         &mut self,
         source_slot: u16,
@@ -320,7 +321,7 @@ impl Level2EconomyState {
             child.active
                 && child.source_entity_index == source_slot
                 && ((child.source_class == 5 && child.model == 15)
-                    || (child.source_class == 10 && matches!(child.model, 41 | 42)))
+                    || (child.source_class == 10 && matches!(child.model, 41 | 42 | 43 | 79)))
         }) else {
             return None;
         };
@@ -355,9 +356,9 @@ impl Level2EconomyState {
         };
         let child = self.castle_children[child_index];
         if child.control_flags & ENTITY_DRAW_DISABLED_BIT != 0 {
-            // `DisableEntityDrawing04_57F10` does not reclaim this construction
-            // row.  Keep it in the typed arena so the next root tick consumes
-            // state 2 and releases the shared holder through the root seam.
+            // `DisableEntityDrawing04_57F10` leaves the row for the generic
+            // `UpdateEntities_57730` hidden-row prepass. That prepass runs
+            // before the next dispatch walk, independently of this root.
             return true;
         }
         if child.source_class == 10 && child.model == 79 && child.action == 0x56 {
@@ -367,17 +368,63 @@ impl Level2EconomyState {
             return self.step_castle_upgrade_product(child_index);
         }
         if child.source_class == 10 && child.model == 42 && child.action == 44 {
-            return self.step_castle_build_child(child_index);
+            let live = self.step_castle_build_child(child_index);
+            // `UpdateEntities_57730` performs the ordinary callback epilogue
+            // after 37BC0 returns, including the byte_0x3E_62 increment.
+            if let Some(child) = self.castle_children.get_mut(child_index) {
+                child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
+            }
+            return live;
         }
         if child.source_class == 10 && child.model == 41 && child.action == 43 {
             if level2_castle_model41_msprd_rect(child.cave_collision_cooldown).is_some() {
-                return self.step_castle_msprd_child(child_index);
+                let live = self.step_castle_msprd_child(child_index);
+                // MSPRD uses the same ordinary source callback epilogue as
+                // BUILD; hidden-row reclaim is a later source boundary and
+                // must not advance this byte a second time.
+                if let Some(child) = self.castle_children.get_mut(child_index) {
+                    child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
+                }
+                return live;
             }
             return true;
         }
         self.castle_children[child_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
         self.applyevents_terminal_reclaim_castle_child(source_slot)
             .is_some()
+    }
+
+    /// Reclaim every active hidden Castle row at the ordinary source boundary.
+    /// `UpdateEntities_57730` scans the whole entity arena before rebuilding
+    /// lists or dispatching a root, so this cannot depend on a live Castle
+    /// root, model, parent relation, or owner relation. Live BUILD/MSPRD,
+    /// controller, defender, and auxiliary callbacks have already performed
+    /// their same-pass epilogue; this sweep only performs the following-pass
+    /// `sub_57F20` unlink/free and must not advance byte 0x3E again.
+    pub(super) fn reclaim_hidden_castle_rows_at_source_boundary(&mut self) {
+        let hidden_slots: Vec<u16> = self
+            .castle_children
+            .iter()
+            .filter(|child| child.active && child.control_flags & ENTITY_DRAW_DISABLED_BIT != 0)
+            .map(|child| child.source_entity_index)
+            .collect();
+        let had_hidden_rows = !hidden_slots.is_empty();
+        for source_slot in hidden_slots {
+            let Some(child_index) = self
+                .castle_children
+                .iter()
+                .position(|child| child.active && child.source_entity_index == source_slot)
+            else {
+                continue;
+            };
+            let mut child = self.castle_children.remove(child_index);
+            child.active = false;
+            self.sync_castle_child_map(child);
+            self.release_slot(child.source_entity_index, Some(child.entity_rng));
+        }
+        if had_hidden_rows {
+            self.refresh_owner_mana_rows();
+        }
     }
 
     /// Bounded Level 2 slice of `sub_3AF00_castle_defend_event` for the live
@@ -973,6 +1020,13 @@ impl Level2EconomyState {
             return false;
         };
         let child_snapshot = self.castle_children[child_index];
+        if child_snapshot.control_flags & ENTITY_DRAW_DISABLED_BIT != 0 {
+            // `TransformEntityToManaSphere(false)` disables the holder in
+            // `sub_5FF50`; the source prologue reclaims it on the following
+            // pass. Keep the hidden row out of the live callback body until
+            // that boundary rather than moving or collecting it again.
+            return true;
+        }
         let mut predicted = child_snapshot.position;
         let mut yaw = child_snapshot.yaw as i16;
         let mut transfer_mana = None;
@@ -2490,9 +2544,10 @@ impl Level2EconomyState {
 
     /// Bounded projection of `sub_5FD00`: release only the mana that exceeds
     /// the owner's stage capacity (or all mana for a zero-stage Castle),
-    /// preserving source order and the exact final remainder. The source's
-    /// subsequent `sub_5FF50` controller walk is represented by the existing
-    /// ordered sphere/child vectors; no synthetic child is allocated here.
+    /// preserving source order and the source's per-iteration share update.
+    /// The source's subsequent `sub_5FF50` controller walk is represented by
+    /// the existing ordered sphere/child vectors; no synthetic child is
+    /// allocated here.
     fn release_castle_excess_mana(&mut self, castle_slot: u16) {
         let Some(castle) = self
             .castle
@@ -2525,10 +2580,11 @@ impl Level2EconomyState {
         if sphere_count == 0 {
             return;
         }
-        // The source recomputes the per-sphere share from the number of
-        // allocations that can actually be committed, then gives the final
-        // source-ordered sphere the exact remainder.
-        let each_mana = release / sphere_count;
+        // `sub_5FD00` starts with the quotient from the committed allocation
+        // count. It subtracts that share from its remaining local payload and
+        // only then lowers the share for a later iteration; it does not give
+        // the final sphere an exact-remainder top-up.
+        let mut share = release / sphere_count;
         let mut remaining = release;
         let mut source_rng = self
             .source_rng
@@ -2536,13 +2592,12 @@ impl Level2EconomyState {
             .copied()
             .unwrap_or_else(|| self.new_event_rng(castle_slot));
         let mut released: i32 = 0;
-        for sphere_index in 0..sphere_count {
+        for _ in 0..sphere_count {
             let Some(sphere_slot) = self.allocate_slot() else {
                 break;
             };
             let sphere_seed = self.new_event_rng(sphere_slot);
             let sphere_rng = level2_next_rng16(sphere_seed);
-            let speed_rng = level2_next_rng16(sphere_rng);
             source_rng = level2_next_rng16(source_rng);
             let radius =
                 i16::try_from(source_rng % 0x1400 + 3_840).expect("Castle sphere radius fits i16");
@@ -2553,17 +2608,16 @@ impl Level2EconomyState {
             let ground = self.terrain.ground_height(castle.position);
             let height_above_ground = i32::from(castle.position.z) - i32::from(ground);
             let vertical_velocity = level2_mana_sphere_vertical_velocity(height_above_ground);
-            let sphere_mana = if sphere_index + 1 == sphere_count {
-                remaining
-            } else {
-                each_mana
-            };
+            let sphere_mana = share;
             remaining = remaining.saturating_sub(sphere_mana);
             released = released.saturating_add(sphere_mana);
+            if remaining < share {
+                share = remaining;
+            }
             let sphere = ManaSphere {
                 id: u32::from(sphere_slot),
                 source_entity_index: sphere_slot,
-                entity_rng: speed_rng,
+                entity_rng: sphere_rng,
                 position: sphere_position,
                 velocity_x: 0,
                 velocity_y: 0,
@@ -2741,13 +2795,71 @@ impl Level2EconomyState {
         }
     }
 
+    /// Apply the `sub_5FF50` holder-side `TransformEntityToManaSphere(false)`
+    /// branch. The source advances the dying holder RNG once only when it has
+    /// mana, creates one ordinary death-transform sphere, and clears the raw
+    /// player relation only on that positive-mana path. A zero-mana holder
+    /// retains the raw relation while hidden, and leaves the disabled source
+    /// row for the next `UpdateEntities_57730` reclaim boundary.
+    fn retire_castle_defender_to_mana(&mut self, source_slot: u16) -> bool {
+        let Some(child) = self
+            .castle_children
+            .iter()
+            .find(|child| {
+                child.active
+                    && child.source_entity_index == source_slot
+                    && child.source_class == 3
+                    && child.model == 3
+                    && child.action == 9
+                    && child.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+            })
+            .copied()
+        else {
+            return false;
+        };
+        let source_rng_after_death = if child.mana > 0 {
+            level2_next_rng16(child.entity_rng)
+        } else {
+            child.entity_rng
+        };
+        if child.mana > 0 {
+            let _ = self.spawn_mana_spheres_from_death(
+                source_slot,
+                child.position,
+                child.yaw.cast_signed(),
+                source_rng_after_death,
+                child.mana,
+                child.player_entity_index,
+                false,
+            );
+        }
+        for sphere in &mut self.spheres {
+            if sphere.assigned_defender_slot == source_slot {
+                sphere.assigned_defender_slot = 0;
+            }
+        }
+        if let Some(installed) = self
+            .castle_children
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == source_slot)
+        {
+            installed.entity_rng = source_rng_after_death;
+            if child.mana > 0 {
+                installed.player_entity_index = 0;
+            }
+            installed.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        }
+        self.refresh_owner_mana_rows();
+        true
+    }
+
     /// Bounded `sub_5FF50` maintenance after a Castle stage transition.
     /// Existing model-3 action-9 holders are retained in source order, dead
-    /// or excess holders are returned to the free arena, and missing slots
-    /// are replaced until the `sub_60400` stage count is met. This keeps
-    /// allocator fallback deterministic without importing the full combat
-    /// targeting arbitration; model-15 auxiliary relation creation and fixed
-    /// tail bounds are represented below.
+    /// or excess holders are transformed and hidden for the following-pass
+    /// reclaim, and missing slots are replaced until the `sub_60400` stage
+    /// count is met. This keeps allocator fallback deterministic without
+    /// importing the full combat targeting arbitration; model-15 auxiliary
+    /// relation creation and fixed tail bounds are represented below.
     pub(super) fn maintain_castle_defenders(&mut self, castle_slot: u16) {
         let Some(snapshot) = self
             .castle
@@ -2765,15 +2877,30 @@ impl Level2EconomyState {
         let mut defenders = Vec::with_capacity(target);
         for index in 0..target {
             let related_slot = defender_slots[index];
-            let valid = related_slot != 0
-                && self.castle_children.iter().any(|child| {
-                    child.active
-                        && child.source_entity_index == related_slot
-                        && child.source_class == 3
-                        && child.model == 3
-                        && child.action == 9
-                });
-            if valid {
+            let related_child = (related_slot != 0)
+                .then(|| {
+                    self.castle_children
+                        .iter()
+                        .find(|child| {
+                            child.active
+                                && child.source_entity_index == related_slot
+                                && child.source_class == 3
+                                && child.model == 3
+                                && child.action == 9
+                                && child.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                        })
+                        .copied()
+                })
+                .flatten();
+            if let Some(child) = related_child {
+                if child.life < 0 {
+                    // `sub_5FF50` transforms a valid dead holder and clears
+                    // this relation, but does not allocate a replacement in
+                    // the same indexed visit.
+                    self.retire_castle_defender_to_mana(related_slot);
+                    defender_slots[index] = 0;
+                    continue;
+                }
                 defenders.push(related_slot);
                 continue;
             }
@@ -2820,27 +2947,26 @@ impl Level2EconomyState {
                 defender_slots[index] = 0;
             }
         }
-        // The source walks the unused array_0x3C entries and disables them;
-        // they are reclaimed by the generation-time ApplyEvents pass. A
-        // wrong relation is deliberately not freed here.
-        for related_slot in defender_slots.iter_mut().skip(target) {
-            let slot = *related_slot;
+        // The source walks the unused array_0x3C entries and transforms valid
+        // excess holders before clearing each relation. A wrong relation is
+        // deliberately not freed here.
+        for index in target..defender_slots.len() {
+            let slot = defender_slots[index];
             if slot == 0 {
                 continue;
             }
-            if let Some(child) = self.castle_children.iter_mut().find(|child| {
+            let valid = self.castle_children.iter().any(|child| {
                 child.active
                     && child.source_entity_index == slot
                     && child.source_class == 3
                     && child.model == 3
                     && child.action == 9
-            }) {
-                child.active = false;
-                let inactive = *child;
-                self.sync_castle_child_map(inactive);
-                self.release_slot(slot, Some(inactive.entity_rng));
+                    && child.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+            });
+            if valid {
+                self.retire_castle_defender_to_mana(slot);
             }
-            *related_slot = 0;
+            defender_slots[index] = 0;
         }
         if let Some(castle) = self
             .castle
@@ -2858,8 +2984,16 @@ impl Level2EconomyState {
         let mut defender_targets = snapshot.defender_target_spheres;
         let mut defender_total_mana = 0_i32;
         let mut defender_total_max_mana = 0_i32;
-        let defender_target_count = defenders.len().min(3);
-        for (index, &slot) in defenders.iter().take(defender_target_count).enumerate() {
+        // `sub_60400` supplies fixed v21 for this source visit. Do not
+        // compress the loop after a dead indexed holder is cleared: with
+        // v21=2, a live source slot 1 still tests byte_0x3E % 2 and uses
+        // source index 1 for the modulo-3 exclusion relations.
+        let defender_target_count = target.min(defender_slots.len());
+        for index in 0..defender_target_count {
+            let slot = defender_slots[index];
+            if slot == 0 {
+                continue;
+            }
             let Some(child) = self
                 .castle_children
                 .iter()
@@ -4873,7 +5007,9 @@ mod tests {
                 downgraded.mana_capacity,
                 downgraded.timer
             ),
-            (4, 0, 1, 10_000, 20_000, 8_500, 8_500, 5)
+            // `sub_5FD00` uses the floor share for each allocated sphere;
+            // its two-unit quotient remainder stays in the Castle payload.
+            (4, 0, 1, 10_000, 20_000, 8_502, 8_500, 5)
         );
         assert_eq!(
             (
@@ -6873,6 +7009,7 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("model-42 BUILD handler session");
+        let baseline_hash = session.economy().reset_hash();
         let castle_slot = session
             .economy_mut()
             .build_castle(Position::default(), 111)
@@ -6919,6 +7056,11 @@ mod tests {
         assert_eq!(initialized.source_word_2e, 0);
         assert_eq!(initialized.construction_target_height, 0);
         assert_eq!(initialized.source_dword_10, 18);
+        assert_eq!(
+            initialized.source_byte_3e,
+            (child_slot as u8).wrapping_add(1),
+            "BUILD callback epilogue advances byte_0x3E exactly once"
+        );
         assert_eq!(initialized.source_byte_3b, 1);
         assert_eq!(
             initialized.control_flags & LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT,
@@ -7005,12 +7147,222 @@ mod tests {
             .find(|child| child.source_entity_index == child_slot)
             .copied()
             .expect("hidden model-42 BUILD child remains allocated");
+        let hidden_generation = session.economy().slot_generation(child_slot);
         assert!(hidden_child.active);
         assert_ne!(hidden_child.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
         assert!(!session.economy().map_chains().is_linked(child_slot));
-        assert!(session.economy_mut().step_castle_action(castle_slot));
+
+        // `UpdateEntities_57730` owns this reclaim, not the Castle root. A
+        // destroyed root must not strand its already-hidden BUILD child;
+        // after the generic prepass the old identity is gone, and the lowest
+        // freed slot may be reused by the same ordinary turn.
+        let mut root_destroyed = session.clone();
+        let root_destroyed_generation = root_destroyed.economy().slot_generation(child_slot);
+        root_destroyed
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("root-gone Castle")
+            .active = false;
+        root_destroyed.select_level2_campaign_entry_stage();
+        root_destroyed.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            root_destroyed
+                .economy()
+                .castle_children()
+                .iter()
+                .all(|child| {
+                    !(child.active
+                        && child.source_entity_index == child_slot
+                        && child.source_class == hidden_child.source_class
+                        && child.model == hidden_child.model
+                        && child.action == hidden_child.action
+                        && child.id_entity_index == hidden_child.id_entity_index
+                        && child.owner_entity_index == hidden_child.owner_entity_index
+                        && child.parent_entity_index == hidden_child.parent_entity_index)
+                })
+        );
+        match root_destroyed
+            .economy()
+            .live_arena_cursor_rows()
+            .into_iter()
+            .find(|row| row.source_slot == child_slot)
+        {
+            None => {
+                assert!(!root_destroyed.economy().map_chains().is_linked(child_slot));
+                assert!(root_destroyed.economy().free_slots.contains(&child_slot));
+            }
+            Some(row) => {
+                assert_ne!(row.generation, root_destroyed_generation);
+                assert_eq!(row.kind, Level2DynamicArenaKind::AuthoredBee);
+                assert!(!root_destroyed.economy().free_slots.contains(&child_slot));
+                assert!(root_destroyed.economy().map_chains().is_linked(child_slot));
+            }
+        }
+
+        session.select_level2_campaign_entry_stage();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session.economy().castle_children().iter().all(|child| {
+                !(child.active
+                    && child.source_entity_index == child_slot
+                    && child.source_class == hidden_child.source_class
+                    && child.model == hidden_child.model
+                    && child.action == hidden_child.action
+                    && child.id_entity_index == hidden_child.id_entity_index
+                    && child.owner_entity_index == hidden_child.owner_entity_index
+                    && child.parent_entity_index == hidden_child.parent_entity_index)
+            }),
+            "following UpdateEntities prologue reclaims the old model-42 BUILD row"
+        );
+        let slot_owner = session
+            .economy()
+            .live_arena_cursor_rows()
+            .into_iter()
+            .find(|row| row.source_slot == child_slot);
+        match slot_owner {
+            None => {
+                assert!(!session.economy().map_chains().is_linked(child_slot));
+                assert!(session.economy().free_slots.contains(&child_slot));
+            }
+            Some(row) => {
+                // The source cursor may reuse the reclaimed lowest slot in
+                // the same ordinary turn. Keep this assertion at the cursor
+                // layer: the exact owner is the new source generation, not
+                // necessarily another Castle-child struct.
+                assert_ne!(row.generation, hidden_generation);
+                assert_eq!(row.kind, Level2DynamicArenaKind::AuthoredBee);
+                assert!(!session.economy().free_slots.contains(&child_slot));
+                assert!(session.economy().map_chains().is_linked(child_slot));
+            }
+        }
         let consumed = session.economy().castle().expect("consumed root");
         assert_eq!((consumed.action, consumed.build_state), (4, 0));
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_castle_outer_turn_sub5fd00_uses_source_share_and_one_draw_rng() {
+        let package = level_two_fixture_path();
+        let inspection = NativeWorld::inspect_level2(&package).expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 reset session");
+        let baseline_hash = session.economy().reset_hash();
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("sub_5FD00 Castle");
+        let global_before = session.economy().global_rng;
+        let source_rng_before = *session
+            .economy()
+            .source_rng
+            .get(&castle_slot)
+            .expect("Castle source RNG");
+        let before_spheres = session.economy().spheres().len();
+        {
+            let castle = session.economy_mut().castle.as_mut().expect("Castle");
+            castle.level = 1;
+            castle.phase = 0;
+            castle.mana = 7_500;
+            castle.mana_capacity = 1_000;
+        }
+
+        // The ordinary Castle root route releases 6,500 excess mana. Source
+        // sub_5FD00 uses six equal 1,083-unit shares and leaves the final two
+        // excess units on the Castle; it does not top up the final sphere to
+        // 1,085.
+        session.select_level2_campaign_entry_stage();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let new_spheres = &session.economy().spheres()[before_spheres..];
+        assert_eq!(new_spheres.len(), 6);
+        assert!(new_spheres.iter().all(|sphere| sphere.mana == 1_083));
+        assert_eq!(session.economy().castle().expect("Castle").mana, 1_002);
+        assert_eq!(
+            session
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Level2EconomyEvent::ManaSphereSpawned {
+                            source_entity_index,
+                            mana: 1_083,
+                            ..
+                        } if *source_entity_index == castle_slot
+                    )
+                })
+                .count(),
+            6
+        );
+
+        // NewEvent uses the post-pass global stream for every allocated slot;
+        // sub_5FD00 advances each new sphere RNG exactly once and advances the
+        // Castle RNG twice per sphere for radius then yaw.
+        let global_after = level2_next_rng32(global_before);
+        for sphere in new_spheres {
+            let seed = sphere.source_entity_index.wrapping_add(global_after as u16);
+            let one_draw = level2_next_rng16(seed);
+            let two_draws = level2_next_rng16(one_draw);
+            assert_eq!(sphere.entity_rng, one_draw);
+            assert_ne!(sphere.entity_rng, two_draws);
+        }
+        let mut expected_source_rng = source_rng_before;
+        for _ in 0..12 {
+            expected_source_rng = level2_next_rng16(expected_source_rng);
+        }
+        assert_eq!(
+            session.economy().source_rng.get(&castle_slot),
+            Some(&expected_source_rng)
+        );
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+
+        // Insufficient mana does not enter the overflow allocator even though
+        // the same qualified ordinary root route is visited.
+        let mut no_overflow = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 reset session");
+        let no_overflow_slot = no_overflow
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("no-overflow Castle");
+        let no_overflow_before = no_overflow.economy().spheres().len();
+        {
+            let castle = no_overflow
+                .economy_mut()
+                .castle
+                .as_mut()
+                .expect("no-overflow Castle");
+            castle.level = 1;
+            castle.phase = 0;
+            castle.mana = 1_000;
+            castle.mana_capacity = 1_000;
+        }
+        no_overflow.select_level2_campaign_entry_stage();
+        no_overflow.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            no_overflow.economy().spheres().len(),
+            no_overflow_before,
+            "sub_5FD00 does not allocate without excess mana"
+        );
+        assert_eq!(
+            no_overflow
+                .economy()
+                .castle()
+                .expect("no-overflow Castle")
+                .mana,
+            1_000
+        );
+        assert!(no_overflow.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Castle { source_slot, .. }
+                if *source_slot == no_overflow_slot
+        )));
     }
 
     #[test]
@@ -7296,6 +7648,11 @@ mod tests {
         assert_eq!(defense.source_word_2e, 0);
         assert_eq!(defense.source_dword_10, 10);
         assert_eq!(defense.construction_target_height, 20);
+        assert_eq!(
+            defense.source_byte_3e,
+            (defense_slot as u8).wrapping_add(1),
+            "MSPRD callback epilogue advances byte_0x3E exactly once"
+        );
         assert_eq!(session.economy().terrain.planes, before);
     }
 
@@ -7307,10 +7664,12 @@ mod tests {
             .level2_reset_session()
             .expect("ApplyEvents terminal-reclaim session");
         let baseline_hash = session.economy().reset_hash();
-        // Model 79/action 0x56 is a live sub_3AF00 callback, not an
-        // ApplyEvents terminal-reclaim row. Keep this fixture limited to the
-        // source rows that actually take the terminal shortcut.
-        let models = [15_u8, 41, 42];
+        // ApplyEvents terminally advances/reclaims class-10 models 43 and 79
+        // through the same final matrix as models 41/42. Model 79/action
+        // 0x56 is a live callback only when the action-table route dispatches
+        // that specific action; this direct matrix test uses the terminal
+        // action value and proves both source models are covered.
+        let models = [15_u8, 41, 42, 43, 79];
         let expected_count = models.len();
         let (slots, free_before) = {
             let economy = session.economy_mut();
@@ -8370,6 +8729,511 @@ mod tests {
                 .iter()
                 .any(|sphere| sphere.source_entity_index == sphere_slot)
         );
+    }
+
+    #[test]
+    fn level_two_castle_defender_cadence_keeps_fixed_source_v21_after_dead_slot() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("fixed-v21 defender cadence session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("fixed-v21 defender cadence Castle");
+        {
+            let castle = session.economy_mut().castle.as_mut().expect("Castle");
+            castle.level = 4; // sub_60400 returns fixed v21 = 2.
+            castle.phase = 0;
+            castle.mana = 0;
+            castle.mana_capacity = 78_600;
+        }
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let (dead_slot, live_slot) = {
+            let castle = session.economy().castle().expect("Castle");
+            (castle.defender_slots[0], castle.defender_slots[1])
+        };
+        assert_ne!(dead_slot, 0);
+        assert_ne!(live_slot, 0);
+        let sentinel_target = 0xdead;
+        {
+            let economy = session.economy_mut();
+            economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == dead_slot)
+                .expect("slot-0 defender")
+                .life = -1;
+            let live = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == live_slot)
+                .expect("slot-1 defender");
+            live.source_byte_3e = 1;
+            live.target_sphere_slot = sentinel_target;
+        }
+
+        // The dead source slot is cleared first, but v21 remains two. A
+        // compact defenders.len()==1 loop would turn byte_0x3E==1 into a
+        // modulo-one hit and overwrite the live slot's sentinel target.
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let live = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == live_slot)
+            .copied()
+            .expect("live slot-1 defender remains indexed");
+        assert_eq!(live.source_byte_3e, 1);
+        assert_eq!(live.target_sphere_slot, sentinel_target);
+        let castle = session.economy().castle().expect("Castle");
+        assert_eq!(castle.defender_slots, [0, live_slot, 0]);
+        assert_eq!(castle.defender_count, 1);
+    }
+
+    #[test]
+    fn level_two_castle_outer_turn_sub5ff50_transforms_dead_excess_and_reclaims_following_pass() {
+        let package = level_two_fixture_path();
+        let inspection = NativeWorld::inspect_level2(&package).expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 reset session");
+        let baseline_hash = session.economy().reset_hash();
+        let _castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("sub_5FF50 Castle");
+        {
+            let castle = session.economy_mut().castle.as_mut().expect("Castle");
+            castle.level = 1;
+            castle.phase = 0;
+            castle.mana = 0;
+            castle.mana_capacity = 5_000;
+        }
+        session.select_level2_campaign_entry_stage();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let defender_slot = session.economy().castle().expect("Castle").defender_slots[0];
+        assert_ne!(defender_slot, 0);
+        let dead_position = Position {
+            x: 4_096,
+            y: 0,
+            z: 0,
+        };
+        let dead_rng = {
+            let economy = session.economy_mut();
+            let defender = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("live Castle defender");
+            defender.life = -1;
+            defender.mana = 321;
+            defender.position = dead_position;
+            defender.target_sphere_slot = 0;
+            defender.entity_rng
+        };
+        session.economy_mut().castle.as_mut().expect("Castle").phase = 0;
+        let global_before_death = session.economy().global_rng;
+        let free_before_death = session.economy().free_slot_count();
+
+        // The root's ordinary action-4 callback reaches sub_5FF50. A valid
+        // dead holder becomes one normal TransformEntityToManaSphere(false)
+        // sphere, clears its raw relation, and remains hidden but allocated
+        // for the rest of this source pass.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let hidden = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .copied()
+            .expect("dead defender remains until following source boundary");
+        assert!(hidden.active);
+        assert_ne!(hidden.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!(hidden.player_entity_index, 0);
+        assert_eq!(hidden.entity_rng, level2_next_rng16(dead_rng));
+        assert!(!session.economy().free_slots.contains(&defender_slot));
+        assert!(session.economy().map_chains().is_linked(defender_slot));
+        assert_eq!(
+            session.economy().free_slot_count(),
+            free_before_death.saturating_sub(1),
+            "the transformed sphere consumes one slot while the hidden holder remains allocated"
+        );
+        assert_eq!(session.economy().source_owner(defender_slot), 0);
+        assert_eq!(
+            session.economy().castle().expect("Castle").defender_slots[0],
+            0
+        );
+        let transformed = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| {
+                sphere.active
+                    && sphere.source_entity_index != defender_slot
+                    && sphere.owner_entity_index == 111
+                    && sphere.mana == 321
+            })
+            .copied()
+            .expect("dead defender mana sphere");
+        let global_after_death = level2_next_rng32(global_before_death);
+        let sphere_seed = transformed
+            .source_entity_index
+            .wrapping_add(global_after_death as u16);
+        assert_eq!(
+            transformed.entity_rng,
+            level2_next_rng16(level2_next_rng16(sphere_seed)),
+            "TransformEntityToManaSphere keeps its death-path two-draw sphere RNG"
+        );
+        assert!(session.economy().events().iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index,
+                    mana: 321,
+                    ..
+                } if *source_entity_index == defender_slot
+            )
+        }));
+
+        // Force the next ordinary root visit to the stage-0 target so the
+        // following source-boundary reclaim is observed without immediately
+        // allocating a replacement holder into the just-freed slot.
+        session.economy_mut().castle.as_mut().expect("Castle").level = 0;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .all(|child| child.source_entity_index != defender_slot)
+        );
+        assert!(session.economy().free_slots.contains(&defender_slot));
+        assert!(!session.economy().map_chains().is_linked(defender_slot));
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+
+        // A zero-mana holder takes the same valid dead-holder branch, but the
+        // pinned TransformEntityToManaSphere(false) returns before its raw
+        // player relation write. The relation therefore remains nonzero for
+        // the hidden interval; exact typed/owner/id identity, rather than a
+        // cleared relation, drives the following source-boundary reclaim.
+        let mut zero_mana = inspection
+            .level2_reset_session()
+            .expect("qualified zero-mana Level 2 reset session");
+        let zero_castle_slot = zero_mana
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("zero-mana Castle");
+        {
+            let castle = zero_mana.economy_mut().castle.as_mut().expect("Castle");
+            castle.level = 1;
+            castle.phase = 0;
+            castle.mana = 0;
+            castle.mana_capacity = 5_000;
+        }
+        zero_mana.select_level2_campaign_entry_stage();
+        zero_mana.step_outer_turn(PlayerCommand::default(), 0);
+        let zero_slot = zero_mana
+            .economy()
+            .castle()
+            .expect("zero-mana Castle")
+            .defender_slots[0];
+        let (zero_rng, zero_player_relation, zero_free_slots, zero_event_count) = {
+            let economy = zero_mana.economy_mut();
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == zero_slot)
+                .expect("zero-mana defender");
+            child.life = -1;
+            child.mana = 0;
+            child.position = Position {
+                x: 4_096,
+                y: 0,
+                z: 0,
+            };
+            child.target_sphere_slot = 0;
+            (
+                child.entity_rng,
+                child.player_entity_index,
+                economy.free_slot_count(),
+                economy.events.len(),
+            )
+        };
+        assert_ne!(zero_player_relation, 0);
+        zero_mana
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("zero-mana Castle")
+            .phase = 0;
+        zero_mana.step_outer_turn(PlayerCommand::default(), 0);
+        let hidden_zero = zero_mana
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == zero_slot)
+            .copied()
+            .expect("zero-mana holder remains hidden until following source boundary");
+        assert!(hidden_zero.active);
+        assert_ne!(hidden_zero.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!(hidden_zero.player_entity_index, zero_player_relation);
+        assert_eq!(hidden_zero.entity_rng, zero_rng);
+        assert_eq!(zero_mana.economy().free_slot_count(), zero_free_slots);
+        assert!(zero_mana.economy().map_chains().is_linked(zero_slot));
+        assert_eq!(
+            zero_mana
+                .economy()
+                .castle()
+                .expect("zero-mana Castle")
+                .defender_slots[0],
+            0
+        );
+        assert!(
+            zero_mana.economy().events()[zero_event_count..]
+                .iter()
+                .all(|event| {
+                    !matches!(
+                        event,
+                        Level2EconomyEvent::ManaSphereSpawned {
+                            source_entity_index,
+                            ..
+                        } if *source_entity_index == zero_slot
+                    )
+                })
+        );
+
+        zero_mana
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("zero-mana Castle")
+            .level = 0;
+        zero_mana.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            zero_mana
+                .economy()
+                .castle_children()
+                .iter()
+                .all(|child| child.source_entity_index != zero_slot)
+        );
+        assert!(zero_mana.economy().free_slots.contains(&zero_slot));
+        assert!(!zero_mana.economy().map_chains().is_linked(zero_slot));
+        assert!(zero_mana.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Castle { source_slot, .. }
+                if *source_slot == zero_castle_slot
+        )));
+
+        // The unused relation tail takes the same valid-holder transform
+        // branch. Build two source defenders through the ordinary root route,
+        // then lower the stage so the second relation becomes excess.
+        let mut excess = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 reset session");
+        let excess_castle_slot = excess
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("excess-holder Castle");
+        {
+            let castle = excess.economy_mut().castle.as_mut().expect("Castle");
+            castle.level = 4;
+            castle.phase = 0;
+        }
+        excess.select_level2_campaign_entry_stage();
+        excess.step_outer_turn(PlayerCommand::default(), 0);
+        let (primary_excess_slot, excess_slot) = {
+            let castle = excess.economy().castle().expect("excess-holder Castle");
+            (castle.defender_slots[0], castle.defender_slots[1])
+        };
+        assert_ne!(primary_excess_slot, 0);
+        assert_ne!(excess_slot, 0);
+        {
+            let economy = excess.economy_mut();
+            let castle = economy.castle.as_mut().expect("excess-holder Castle");
+            castle.level = 1;
+            castle.phase = 0;
+            let holder = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == excess_slot)
+                .expect("valid excess holder");
+            holder.mana = 222;
+            holder.position = Position {
+                x: 4_096,
+                y: 0,
+                z: 0,
+            };
+            holder.target_sphere_slot = 0;
+        }
+        excess.step_outer_turn(PlayerCommand::default(), 0);
+        let hidden_excess = excess
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == excess_slot)
+            .copied()
+            .expect("excess holder remains until following source boundary");
+        assert!(hidden_excess.active);
+        assert_ne!(hidden_excess.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!(hidden_excess.player_entity_index, 0);
+        assert!(excess.economy().map_chains().is_linked(excess_slot));
+        assert_eq!(
+            excess
+                .economy()
+                .castle()
+                .expect("excess-holder Castle")
+                .defender_slots,
+            [primary_excess_slot, 0, 0]
+        );
+        assert!(excess.economy().events().iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index,
+                    mana: 222,
+                    ..
+                } if *source_entity_index == excess_slot
+            )
+        }));
+        excess
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("excess-holder Castle")
+            .level = 0;
+        excess.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            excess
+                .economy()
+                .castle_children()
+                .iter()
+                .all(|child| child.source_entity_index != excess_slot)
+        );
+        assert!(excess.economy().free_slots.contains(&excess_slot));
+        assert!(excess.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Castle { source_slot, .. }
+                if *source_slot == excess_castle_slot
+        )));
+
+        // A wrong relation must not release a live non-defender row. The
+        // relation slot is authoritative for selection, but the class/model/
+        // action predicate is authoritative for the Transform branch.
+        let mut wrong = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 reset session");
+        let wrong_castle_slot = wrong
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("wrong-relation Castle");
+        wrong
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("wrong-relation Castle")
+            .level = 1;
+        wrong
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("wrong-relation Castle")
+            .phase = 0;
+        wrong.select_level2_campaign_entry_stage();
+        wrong.step_outer_turn(PlayerCommand::default(), 0);
+        let wrong_slot = wrong
+            .economy()
+            .castle()
+            .expect("wrong-relation Castle")
+            .defender_slots[0];
+        {
+            let economy = wrong.economy_mut();
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == wrong_slot)
+                .expect("wrong-relation holder");
+            child.source_class = 10;
+            child.model = 42;
+            child.action = 44;
+            economy
+                .castle
+                .as_mut()
+                .expect("wrong-relation Castle")
+                .phase = 0;
+        }
+        wrong.step_outer_turn(PlayerCommand::default(), 0);
+        let wrong_child = wrong
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == wrong_slot)
+            .copied()
+            .expect("wrongly related live row is preserved");
+        assert!(wrong_child.active);
+        assert_eq!(
+            (
+                wrong_child.source_class,
+                wrong_child.model,
+                wrong_child.action
+            ),
+            (10, 42, 44)
+        );
+        assert_ne!(
+            wrong
+                .economy()
+                .castle()
+                .expect("wrong-relation Castle")
+                .defender_slots[0],
+            wrong_slot
+        );
+        assert!(!wrong.economy().events().iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index,
+                    ..
+                } if *source_entity_index == wrong_slot
+            )
+        }));
+
+        // A stale slot is cleared/replaced without dereferencing or freeing
+        // an unrelated live row.
+        wrong
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("stale-relation Castle")
+            .defender_slots[0] = 0xdead;
+        wrong
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("stale-relation Castle")
+            .phase = 0;
+        wrong.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !wrong
+                .economy()
+                .castle_children()
+                .iter()
+                .any(|child| child.source_entity_index == 0xdead)
+        );
+        assert!(
+            wrong
+                .economy()
+                .castle_children()
+                .iter()
+                .any(|child| child.source_entity_index == wrong_slot && child.active)
+        );
+        assert!(wrong.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Castle { source_slot, .. }
+                if *source_slot == wrong_castle_slot
+        )));
     }
 
     #[test]

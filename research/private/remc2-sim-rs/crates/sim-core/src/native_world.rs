@@ -20237,6 +20237,11 @@ impl Level2ResetSession {
         self.shared_spells.pickup_events.clear();
         let goat_players = self.level2_goat_player_targets();
         self.economy.advance_global_rng();
+        // `UpdateEntities_57730` scans every hidden active entity and calls
+        // `sub_57F20` before rebuilding lists or dispatching any root. Keep
+        // this generic prepass independent of Castle root/model/parent state
+        // so a destroyed root cannot strand a hidden typed child.
+        self.economy.reclaim_hidden_castle_rows_at_source_boundary();
         // Pinned `UpdateEntities_57730` invokes `sub_60F00` once at the
         // owning-pass boundary (EventsFunctions.cpp:40115), before any
         // callback can spawn a fresh model-39 sphere or carrier. Rebuild the
@@ -47687,6 +47692,21 @@ mod tests {
             Some(4),
             "the early recast leaves the model-42 construction child active"
         );
+        let construction_slot = occupied
+            .economy()
+            .castle()
+            .expect("Castle root with construction slot")
+            .construction_slot;
+        let construction_child_before_turn = occupied
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| {
+                child.active && child.source_entity_index == construction_slot && child.model == 42
+            })
+            .copied()
+            .expect("model-42 construction child before source reclaim");
+        let construction_generation = occupied.economy().slot_generation(construction_slot);
         let mut construction_finished = false;
         for _ in 0..64 {
             occupied.step_outer_turn(PlayerCommand::default(), 0);
@@ -47708,25 +47728,81 @@ mod tests {
             .castle()
             .expect("completed callback root");
         assert_eq!((completed_root.action, completed_root.build_state), (4, 0));
-        let construction_child = occupied
+        let completed_child = occupied
             .economy()
             .castle_children()
             .iter()
-            .find(|child| child.source_entity_index == completed_root.construction_slot)
+            .find(|child| {
+                child.active
+                    && child.source_entity_index == construction_slot
+                    && child.source_class == construction_child_before_turn.source_class
+                    && child.model == construction_child_before_turn.model
+                    && child.action == construction_child_before_turn.action
+                    && child.id_entity_index == construction_child_before_turn.id_entity_index
+                    && child.owner_entity_index == construction_child_before_turn.owner_entity_index
+                    && child.parent_entity_index
+                        == construction_child_before_turn.parent_entity_index
+            })
             .copied()
-            .expect("model-42 construction child remains allocated");
-        assert!(construction_child.active);
-        assert_ne!(
-            construction_child.control_flags & ENTITY_DRAW_DISABLED_BIT,
-            0
+            .expect("completed BUILD row remains through its hiding pass");
+        assert_eq!(
+            occupied.economy().slot_generation(construction_slot),
+            construction_generation,
+            "the callback's same-pass hide keeps the old source generation"
         );
+        assert_ne!(completed_child.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert!(!occupied.economy().map_chains().is_linked(construction_slot));
+
+        // The generic UpdateEntities prepass ran at the start of the
+        // completion turn. Reclaim therefore occurs on this additional
+        // ordinary pass, independent of the Castle root handler.
+        let mut following = occupied.clone();
+        following.step_outer_turn(PlayerCommand::default(), 0);
+        let old_identity_still_live = following.economy().castle_children().iter().any(|child| {
+            child.active
+                && child.source_entity_index == construction_slot
+                && child.source_class == construction_child_before_turn.source_class
+                && child.model == construction_child_before_turn.model
+                && child.action == construction_child_before_turn.action
+                && child.id_entity_index == construction_child_before_turn.id_entity_index
+                && child.owner_entity_index == construction_child_before_turn.owner_entity_index
+                && child.parent_entity_index == construction_child_before_turn.parent_entity_index
+        });
         assert!(
-            !occupied
-                .economy()
-                .map_chains()
-                .is_linked(construction_child.source_entity_index)
+            !old_identity_still_live
+                || following.economy().slot_generation(construction_slot)
+                    != construction_generation,
+            "following UpdateEntities prologue must remove the old model-42 generation"
         );
-        assert_eq!(construction_child.source_dword_10, 0);
+        let slot_owner = following
+            .economy()
+            .live_arena_cursor_rows()
+            .into_iter()
+            .find(|row| row.source_slot == construction_slot);
+        match slot_owner {
+            None => {
+                assert!(
+                    !following
+                        .economy()
+                        .map_chains()
+                        .is_linked(construction_slot)
+                );
+                assert!(following.economy().free_slots.contains(&construction_slot));
+            }
+            Some(row) => {
+                // The source cursor may reuse the reclaimed lowest slot in
+                // the following ordinary turn; require a new owner generation.
+                assert_ne!(row.generation, construction_generation);
+                assert_eq!(row.kind, Level2DynamicArenaKind::AuthoredBee);
+                assert!(!following.economy().free_slots.contains(&construction_slot));
+                assert!(
+                    following
+                        .economy()
+                        .map_chains()
+                        .is_linked(construction_slot)
+                );
+            }
+        }
         assert_eq!(
             occupied
                 .shared_spells()
