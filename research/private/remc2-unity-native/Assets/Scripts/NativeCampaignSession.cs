@@ -15,13 +15,15 @@ namespace MagicCarpet.Native
     internal sealed class NativeCampaignSession : IDisposable
     {
         internal const string ExpectedLevel2ManifestSha256 =
-            "666a6034c1148f56690bcf4c707441542d814b4a0faf1ebe9dcfd8bd8224f324";
+            "9ae0691e109e5c5fbcd6447b111cc8232377b86c336d1eeca90696f45aab8954";
         private static readonly IReadOnlyDictionary<string, string>
             ExpectedLevel2PackageFiles =
             new Dictionary<string, string>
             {
                 ["authored-level.bin"] =
                     "9041c66e605d573ec9aa2cbe9d8d8daabd8db3602fcfce4898f64e21fc37405e",
+                ["collision-masks.bin"] =
+                    "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432",
                 ["entities-post-features.bin"] =
                     "9c6acead68279d3737046e9dcfd035d261c92886eb4e80961ed70e2119a84a23",
                 ["entities.bin"] =
@@ -35,7 +37,7 @@ namespace MagicCarpet.Native
                 ["feature-start.bin"] =
                     "363264d46bf0e2dc74e39ab75ab77b65216500472b2ae3912f4eb2b901bacee3",
                 ["players.bin"] =
-                    "fb7709116b3e163f2f6d9e6a411a117925d69a351705fb7c7160666d8e1c1310",
+                    "f8a13183f5792ea143e9b6bf32e69ede726520e118a12c1699d159f266006395",
                 ["presentation.bin"] =
                     "2944b802258550f24f0537accc4d5764d81dd28a080a935cc9c0f0d1fc1f67f2",
                 ["runtime.bin"] =

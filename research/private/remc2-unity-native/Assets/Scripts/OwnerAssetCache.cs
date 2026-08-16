@@ -45,9 +45,15 @@ namespace MagicCarpet.Native
         private const string PinnedRemc2Commit =
             "6806c7204d17220ecc0430759f784aea8ee2ddb2";
         private const string Level2PackageHash =
-            "1d73e81bc897933d62621b53a1c8c1cf890bd5dffe17f77de43f8d38f3854488";
+            "dc8f973ee9a2f53863a2e2e3743b6fa4b9ef947d3ce0b27b79d3ba86de318b80";
         private const string Level2ClosureHash =
-            "66505e6c3691cce6c730682047c7d8634c682172daa017d4840d1a4a5be4661c";
+            "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc";
+        private const string Level2OwnerManifestSchema =
+            "mc2-owner-level-export/v5";
+        private const string Level2PlayersComponentMagic = "MCP1";
+        private const int Level2PlayersComponentVersion = 4;
+        private const int Level2PlayersComponentRecordBytes = 663;
+        private const int Level2PlayersComponentCount = 8;
         private const string Level2CatalogHash =
             "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e";
         private const string Level2CatalogFileHash =
@@ -290,7 +296,24 @@ namespace MagicCarpet.Native
             public string closure_sha256;
             public string catalog_sha256;
             public string catalog_file_sha256;
+            public Level2OwnerPackage owner_package;
             public string spec_commit;
+        }
+
+        [Serializable]
+        internal sealed class Level2OwnerPackage
+        {
+            public string manifest_schema;
+            public Level2PlayersComponent players_component;
+        }
+
+        [Serializable]
+        internal sealed class Level2PlayersComponent
+        {
+            public string magic;
+            public int version;
+            public int record_bytes;
+            public int count;
         }
 
         [Serializable]
@@ -322,6 +345,11 @@ namespace MagicCarpet.Native
             public string level_asset_closure_sha256;
             public string owner_catalog_sha256;
             public string owner_catalog_file_sha256;
+            public string owner_manifest_schema;
+            public string players_component_magic;
+            public int players_component_version;
+            public int players_component_record_bytes;
+            public int players_component_count;
             public string remc2_commit;
             public string audio_denominator_sha256;
         }
@@ -862,6 +890,17 @@ namespace MagicCarpet.Native
                 profile.closure_sha256 == Level2ClosureHash &&
                 profile.catalog_sha256 == Level2CatalogHash &&
                 profile.catalog_file_sha256 == Level2CatalogFileHash &&
+                profile.owner_package != null &&
+                profile.owner_package.manifest_schema == Level2OwnerManifestSchema &&
+                profile.owner_package.players_component != null &&
+                profile.owner_package.players_component.magic ==
+                    Level2PlayersComponentMagic &&
+                profile.owner_package.players_component.version ==
+                    Level2PlayersComponentVersion &&
+                profile.owner_package.players_component.record_bytes ==
+                    Level2PlayersComponentRecordBytes &&
+                profile.owner_package.players_component.count ==
+                    Level2PlayersComponentCount &&
                 profile.spec_commit == PinnedRemc2Commit &&
                 profile.selectors != null &&
                 profile.selectors.vga_resolution_selector == 1 &&
@@ -888,6 +927,11 @@ namespace MagicCarpet.Native
                 bindings.level_export_package_sha256 == Level2PackageHash &&
                 bindings.owner_catalog_file_sha256 == Level2CatalogFileHash &&
                 bindings.owner_catalog_sha256 == Level2CatalogHash &&
+                bindings.owner_manifest_schema == Level2OwnerManifestSchema &&
+                bindings.players_component_magic == Level2PlayersComponentMagic &&
+                bindings.players_component_version == Level2PlayersComponentVersion &&
+                bindings.players_component_record_bytes == Level2PlayersComponentRecordBytes &&
+                bindings.players_component_count == Level2PlayersComponentCount &&
                 bindings.remc2_commit == PinnedRemc2Commit &&
                 (!audio || bindings.audio_denominator_sha256 == Level2AudioDenominatorHash),
                 description);

@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Linq;
 using NUnit.Framework;
@@ -389,6 +390,37 @@ namespace MagicCarpet.Native.Tests
             for (var index = 0; index < observed.Length; index++)
             {
                 Assert.That(observed[index], Is.EqualTo(expected[index]));
+            }
+        }
+
+        [Test]
+        public void Level2CampaignPackageRejectsMissingCollisionMasksBeforeNativeOpen()
+        {
+            var temporaryPackage = Path.Combine(
+                Path.GetTempPath(),
+                $"magiccarpet-level2-package-{Guid.NewGuid():N}");
+            try
+            {
+                Directory.CreateDirectory(temporaryPackage);
+                foreach (var source in Directory.GetFiles(Level2Package))
+                {
+                    File.Copy(
+                        source,
+                        Path.Combine(temporaryPackage, Path.GetFileName(source)));
+                }
+                File.Delete(Path.Combine(temporaryPackage, "collision-masks.bin"));
+
+                var error = Assert.Throws<InvalidDataException>(
+                    () => NativeCampaignSession.OpenLevel2(temporaryPackage));
+                StringAssert.Contains("collision-masks.bin", error.Message);
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+            }
+            finally
+            {
+                if (Directory.Exists(temporaryPackage))
+                {
+                    Directory.Delete(temporaryPackage, true);
+                }
             }
         }
 
