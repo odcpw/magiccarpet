@@ -48742,7 +48742,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let manifest_path = root.join("manifest.json");
         fs::copy(package.join("manifest.json"), &manifest_path).unwrap();
-        for (name, _) in LEVEL2_V4_PACKAGE_MEMBERS {
+        for (name, _) in LEVEL2_V5_PACKAGE_MEMBERS {
             fs::copy(package.join(name), root.join(name)).unwrap();
         }
         let mut manifest: Value =
@@ -48751,7 +48751,7 @@ mod tests {
         manifest["level"]["internal"] = json!(0);
         manifest["level"]["map_type"] = json!({"id": 1, "name": "Night"});
         let mut identity = Vec::new();
-        for (name, expected_size) in LEVEL2_V4_PACKAGE_MEMBERS {
+        for (name, expected_size) in LEVEL2_V5_PACKAGE_MEMBERS {
             let bytes = fs::read(root.join(name)).unwrap();
             assert_eq!(bytes.len(), expected_size);
             let hash = sha256_hex(&bytes);
