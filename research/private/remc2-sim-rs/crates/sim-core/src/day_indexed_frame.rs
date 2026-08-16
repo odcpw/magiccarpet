@@ -40,6 +40,11 @@ const MATERIAL_WEB_BANK: &str = "MWEBD0-0";
 const MATERIAL_BLOCK_BANK: &str = "BL32N0-0";
 const MATERIAL_PALETTE: &str = "PALD-0";
 const MATERIAL_SKY_BANK: &str = "SKYD0-0";
+const LEVEL2_OWNER_MANIFEST_SCHEMA_V5: &str = "mc2-owner-level-export/v5";
+const LEVEL2_OWNER_PLAYERS_COMPONENT_MAGIC: &str = "MCP1";
+const LEVEL2_OWNER_PLAYERS_COMPONENT_VERSION: u64 = 4;
+const LEVEL2_OWNER_PLAYERS_COMPONENT_RECORD_BYTES: u64 = 663;
+const LEVEL2_OWNER_PLAYERS_COMPONENT_COUNT: u64 = 8;
 
 const PALETTE_RGB8_PATH: &str = "palette/pald.rgb8";
 const TABLESD_PATH: &str = "palette/tablesd.u8";
@@ -176,7 +181,9 @@ impl DayIndexedFrameAssets {
             .get("profile")
             .ok_or_else(|| DayIndexedFrameError::new("material manifest profile is missing"))?;
         let expected_profile = qualified_profile_json();
-        if profile_value != &expected_profile {
+        let historical_v4_profile = historical_v4_profile_json();
+        let qualified_v5 = profile_value == &expected_profile;
+        if !qualified_v5 && profile_value != &historical_v4_profile {
             return Err(DayIndexedFrameError::new(
                 "Level 2 Day material profile identity mismatch",
             ));
@@ -204,6 +211,26 @@ impl DayIndexedFrameAssets {
                 return Err(DayIndexedFrameError::new(format!(
                     "Level 2 Day material binding {name} does not match the qualified profile"
                 )));
+            }
+        }
+        if qualified_v5 {
+            validate_v5_owner_identity(profile_object, bindings)?;
+        } else {
+            // v4 remains a decode-only historical inspection artifact. A
+            // hybrid artifact must not gain qualified status through an
+            // incomplete owner-identity projection.
+            for name in [
+                "owner_manifest_schema",
+                "players_component_magic",
+                "players_component_version",
+                "players_component_record_bytes",
+                "players_component_count",
+            ] {
+                if bindings.contains_key(name) {
+                    return Err(DayIndexedFrameError::new(format!(
+                        "historical v4 material bindings must not contain {name}"
+                    )));
+                }
             }
         }
 
@@ -283,7 +310,7 @@ impl DayIndexedFrameAssets {
             &outputs,
             MATERIAL_DESCRIPTOR_PATH,
             "canonical_json_day_material_descriptor",
-            64_695,
+            if qualified_v5 { 64_911 } else { 64_695 },
             &[
                 "owner_data:DATA/PALD-0.DAT",
                 "owner_data:DATA/TABLESD.DAT",
@@ -840,6 +867,41 @@ fn qualified_profile_json() -> Value {
     json!({
         "catalog_file_sha256": "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44",
         "catalog_sha256": "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e",
+        "closure_sha256": "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc",
+        "external_level": MATERIAL_PACKAGE_LEVEL,
+        "internal_level": MATERIAL_INTERNAL_LEVEL,
+        "map_type": {"id": MATERIAL_MAP_TYPE_ID, "name": "Day"},
+        "name": MATERIAL_PROFILE_NAME,
+        "owner_package": {
+            "manifest_schema": LEVEL2_OWNER_MANIFEST_SCHEMA_V5,
+            "players_component": {
+                "magic": LEVEL2_OWNER_PLAYERS_COMPONENT_MAGIC,
+                "version": LEVEL2_OWNER_PLAYERS_COMPONENT_VERSION,
+                "record_bytes": LEVEL2_OWNER_PLAYERS_COMPONENT_RECORD_BYTES,
+                "count": LEVEL2_OWNER_PLAYERS_COMPONENT_COUNT,
+            },
+        },
+        "package_sha256": "dc8f973ee9a2f53863a2e2e3743b6fa4b9ef947d3ce0b27b79d3ba86de318b80",
+        "selectors": {
+            "block_bank": MATERIAL_BLOCK_BANK,
+            "palette": MATERIAL_PALETTE,
+            "sky_bank": MATERIAL_SKY_BANK,
+            "sprite_bank": MATERIAL_SPRITE_BANK,
+            "terrain_bank": MATERIAL_TERRAIN_BANK,
+            "terrain_graphics_flag_2": false,
+            "terrain_graphics_flags": MATERIAL_TERRAIN_GRAPHICS_FLAGS,
+            "texture_size": MATERIAL_TEXTURE_SIZE,
+            "vga_resolution_selector": MATERIAL_VGA_RESOLUTION_SELECTOR,
+            "web_bank": MATERIAL_WEB_BANK,
+        },
+        "spec_commit": REMC2_SPEC_COMMIT,
+    })
+}
+
+fn historical_v4_profile_json() -> Value {
+    json!({
+        "catalog_file_sha256": "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44",
+        "catalog_sha256": "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e",
         "closure_sha256": "66505e6c3691cce6c730682047c7d8634c682172daa017d4840d1a4a5be4661c",
         "external_level": MATERIAL_PACKAGE_LEVEL,
         "internal_level": MATERIAL_INTERNAL_LEVEL,
@@ -860,6 +922,70 @@ fn qualified_profile_json() -> Value {
         },
         "spec_commit": REMC2_SPEC_COMMIT,
     })
+}
+
+fn validate_v5_owner_identity(
+    profile: &serde_json::Map<String, Value>,
+    bindings: &serde_json::Map<String, Value>,
+) -> Result<(), DayIndexedFrameError> {
+    let owner_package = object_field(profile, "owner_package", "material profile")?;
+    if string_field(owner_package, "manifest_schema", "material owner package")?
+        != LEVEL2_OWNER_MANIFEST_SCHEMA_V5
+    {
+        return Err(DayIndexedFrameError::new(
+            "Level 2 Day material owner package schema mismatch",
+        ));
+    }
+    let players_component =
+        object_field(owner_package, "players_component", "material owner package")?;
+    if string_field(
+        players_component,
+        "magic",
+        "material owner players component",
+    )? != LEVEL2_OWNER_PLAYERS_COMPONENT_MAGIC
+    {
+        return Err(DayIndexedFrameError::new(
+            "Level 2 Day material owner players magic mismatch",
+        ));
+    }
+    for (name, expected) in [
+        ("version", LEVEL2_OWNER_PLAYERS_COMPONENT_VERSION),
+        ("record_bytes", LEVEL2_OWNER_PLAYERS_COMPONENT_RECORD_BYTES),
+        ("count", LEVEL2_OWNER_PLAYERS_COMPONENT_COUNT),
+    ] {
+        require_u64(
+            players_component,
+            name,
+            expected,
+            "material owner players component",
+        )?;
+    }
+    if string_field(bindings, "owner_manifest_schema", "material bindings")?
+        != LEVEL2_OWNER_MANIFEST_SCHEMA_V5
+        || string_field(bindings, "players_component_magic", "material bindings")?
+            != LEVEL2_OWNER_PLAYERS_COMPONENT_MAGIC
+    {
+        return Err(DayIndexedFrameError::new(
+            "Level 2 Day material owner bindings schema mismatch",
+        ));
+    }
+    for (name, expected) in [
+        (
+            "players_component_version",
+            LEVEL2_OWNER_PLAYERS_COMPONENT_VERSION,
+        ),
+        (
+            "players_component_record_bytes",
+            LEVEL2_OWNER_PLAYERS_COMPONENT_RECORD_BYTES,
+        ),
+        (
+            "players_component_count",
+            LEVEL2_OWNER_PLAYERS_COMPONENT_COUNT,
+        ),
+    ] {
+        require_u64(bindings, name, expected, "material bindings")?;
+    }
+    Ok(())
 }
 
 fn object<'a>(
@@ -956,11 +1082,24 @@ mod tests {
     }
 
     fn qualified_package() -> PathBuf {
-        generated_path("l2-debug3.fJ3PaM/level2")
+        std::env::var_os("MC_LEVEL2_PACKAGE_V5")
+            .map_or_else(|| generated_path("l2-debug3.fJ3PaM/level2"), PathBuf::from)
     }
 
     fn qualified_cache() -> PathBuf {
-        generated_path("level2-day-material-cache")
+        std::env::var_os("MC_LEVEL2_MATERIAL_CACHE_V5").map_or_else(
+            || generated_path("level2-day-material-cache"),
+            PathBuf::from,
+        )
+    }
+
+    fn historical_v4_cache() -> PathBuf {
+        let migrated = generated_path("level2-day-material-cache-v4");
+        if migrated.exists() {
+            migrated
+        } else {
+            generated_path("level2-day-material-cache")
+        }
     }
 
     fn copy_tree(source: &Path, destination: &Path) {
@@ -1059,6 +1198,17 @@ mod tests {
     }
 
     #[test]
+    fn level_two_v4_material_cache_remains_inspectable() {
+        let assets = DayIndexedFrameAssets::load(historical_v4_cache())
+            .expect("historical v4 material cache remains parseable for inspection");
+        assert_eq!(assets.profile(), DayIndexedProfile::qualified());
+        assert_eq!(
+            assets.package_sha256(),
+            "1d73e81bc897933d62621b53a1c8c1cf890bd5dffe17f77de43f8d38f3854488"
+        );
+    }
+
+    #[test]
     fn level_two_day_indexed_frame_rejects_unknown_profile_asset_stale_generation_and_reset() {
         let package = qualified_package();
         let inspection = NativeWorld::inspect_level2(&package).expect("qualified Level 2 package");
@@ -1078,6 +1228,23 @@ mod tests {
         let error = DayIndexedFrameAssets::load(&tampered_cache.0)
             .expect_err("unknown profile must fail closed");
         assert!(error.to_string().contains("profile identity mismatch"));
+
+        let owner_tampered_cache = temporary_cache();
+        let manifest_path = owner_tampered_cache.0.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(
+            &fs::read(&manifest_path).expect("read owner-identity temporary manifest"),
+        )
+        .expect("parse owner-identity temporary manifest");
+        manifest["bindings"]["players_component_version"] = json!(3);
+        refresh_manifest_claim(&mut manifest);
+        fs::write(
+            &manifest_path,
+            canonical_json(&manifest).expect("encode owner-identity temporary manifest"),
+        )
+        .expect("write owner-identity temporary manifest");
+        let error = DayIndexedFrameAssets::load(&owner_tampered_cache.0)
+            .expect_err("v5 material cache with v3 players binding must fail closed");
+        assert!(error.to_string().contains("players_component_version"));
 
         let output_tampered_cache = temporary_cache();
         let sky_path = output_tampered_cache.0.join(SKY_PATH);

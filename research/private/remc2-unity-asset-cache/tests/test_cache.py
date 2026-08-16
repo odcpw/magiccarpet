@@ -15,6 +15,19 @@ cache = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cache)
 
 
+LEVEL2_V4_PACKAGE = cache.GENERATED / "l2-debug3.fJ3PaM-v4/level2"
+LEVEL2_V4_CLOSURE = cache.GENERATED / "level2-asset-closure-v4.json"
+LEVEL2_V4_MATERIAL = cache.GENERATED / "level2-day-material-cache-v4"
+LEVEL2_V4_GAMEPLAY = cache.GENERATED / "level2-day-gameplay-cache-v4"
+LEVEL2_V4_AGGREGATE = cache.GENERATED / "level2-day-owner-cache-v4"
+LEVEL2_V4_PACKAGE_SHA256 = (
+    "1d73e81bc897933d62621b53a1c8c1cf890bd5dffe17f77de43f8d38f3854488"
+)
+LEVEL2_V4_CLOSURE_SHA256 = (
+    "66505e6c3691cce6c730682047c7d8634c682172daa017d4840d1a4a5be4661c"
+)
+
+
 def tree_identity(root: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
@@ -1721,8 +1734,11 @@ class Level2DayMaterialTests(unittest.TestCase):
         package = json.loads(
             (cache.DEFAULT_LEVEL2_PACKAGE / "manifest.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(package["schema"], "mc2-owner-level-export/v4")
+        self.assertEqual(package["schema"], "mc2-owner-level-export/v5")
         self.assertEqual(package["package_sha256"], cache.EXPECTED_LEVEL2_PACKAGE)
+        self.assertEqual(
+            manifest["profile"]["owner_package"], cache.LEVEL2_OWNER_PACKAGE_IDENTITY
+        )
         self.assertEqual(manifest["profile"]["external_level"], 2)
         self.assertEqual(manifest["profile"]["internal_level"], 1)
         self.assertEqual(manifest["profile"]["map_type"], {"id": 0, "name": "Day"})
@@ -1743,6 +1759,22 @@ class Level2DayMaterialTests(unittest.TestCase):
         manifest["outputs"][0]["sha256"] = "0" * 64
         path.write_bytes(cache.canonical_json(manifest))
         with self.assertRaisesRegex(cache.CacheError, "metadata hash mismatch"):
+            cache.validate_day_material_cache(self.first)
+        path.write_bytes(original)
+
+    def test_owner_component_identity_tamper_is_rejected(self) -> None:
+        path = self.first / "manifest.json"
+        original = path.read_bytes()
+        manifest = json.loads(original)
+        manifest["profile"]["owner_package"]["players_component"]["version"] = 3
+        manifest["bindings"]["players_component_version"] = 3
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_payload_sha256", None)
+        manifest["manifest_payload_sha256"] = cache.sha256_bytes(
+            cache.canonical_json(unsigned)
+        )
+        path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "owner package identity mismatch"):
             cache.validate_day_material_cache(self.first)
         path.write_bytes(original)
 
@@ -1803,6 +1835,68 @@ class Level2DayMaterialTests(unittest.TestCase):
             cache.validate_day_material_cache(self.first)
         path.unlink()
         path.write_bytes(original)
+
+
+class Level2HistoricalV4InspectionTests(unittest.TestCase):
+    """Retained v4 artifacts remain inspectable but cannot re-enter production."""
+
+    def test_v4_cache_and_package_are_inspectable_only(self) -> None:
+        package = json.loads((LEVEL2_V4_PACKAGE / "manifest.json").read_text())
+        closure = json.loads(LEVEL2_V4_CLOSURE.read_text())
+        self.assertEqual(package["schema"], "mc2-owner-level-export/v4")
+        self.assertNotIn("owner_package", closure["profile"])
+        self.assertEqual(
+            cache.validate_day_material_cache(
+                LEVEL2_V4_MATERIAL,
+                LEVEL2_V4_PACKAGE_SHA256,
+                LEVEL2_V4_CLOSURE_SHA256,
+                expected_owner_identity=None,
+            )["profile"]["package_sha256"],
+            LEVEL2_V4_PACKAGE_SHA256,
+        )
+        self.assertEqual(
+            cache.validate_day_gameplay_cache(
+                LEVEL2_V4_GAMEPLAY,
+                LEVEL2_V4_PACKAGE_SHA256,
+                LEVEL2_V4_CLOSURE_SHA256,
+                expected_owner_identity=None,
+            )["profile"]["closure_sha256"],
+            LEVEL2_V4_CLOSURE_SHA256,
+        )
+        self.assertEqual(
+            cache.validate_day_aggregate_cache(
+                LEVEL2_V4_AGGREGATE,
+                LEVEL2_V4_PACKAGE_SHA256,
+                LEVEL2_V4_CLOSURE_SHA256,
+                expected_owner_identity=None,
+                package_dir=LEVEL2_V4_PACKAGE,
+                closure_path=LEVEL2_V4_CLOSURE,
+                catalog_path=cache.DEFAULT_CATALOG,
+            )["profile"]["package_sha256"],
+            LEVEL2_V4_PACKAGE_SHA256,
+        )
+        # The retained closure deliberately preserves its historical lowercase
+        # map tuple, so the production resolver rejects it at its profile gate
+        # before it would inspect the v5-only owner-component descriptor.
+        with self.assertRaisesRegex(
+            cache.CacheError, "requires external=2/internal=1/Day"
+        ):
+            cache._level2_profile(
+                LEVEL2_V4_PACKAGE,
+                LEVEL2_V4_CLOSURE,
+                cache.DEFAULT_CATALOG,
+            )
+        # The aggregate source ledger derives from the retained package and
+        # closure, without admitting v4 through the qualified v5 resolver.
+        allowed = cache._level2_aggregate_allowed_source_ids(
+            LEVEL2_V4_PACKAGE,
+            LEVEL2_V4_CLOSURE,
+            cache.DEFAULT_CATALOG,
+            expected_package=LEVEL2_V4_PACKAGE_SHA256,
+            expected_closure=LEVEL2_V4_CLOSURE_SHA256,
+            expected_owner_identity=None,
+        )
+        self.assertIn("owner_data:DATA/PALD-0.DAT", allowed)
 
 
 class Level2DayGameplayTests(unittest.TestCase):

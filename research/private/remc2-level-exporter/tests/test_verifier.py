@@ -11,7 +11,15 @@ import shutil
 import stat
 import tempfile
 
-from verify_package import SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, verify
+from verify_package import (
+    LEVEL2_PLAYER_RECORD_BYTES,
+    LEVEL2_V4_PLAYER_RECORD_BYTES,
+    SCHEMA_V2,
+    SCHEMA_V3,
+    SCHEMA_V4,
+    SCHEMA_V5,
+    verify,
+)
 
 
 def expect_rejected(
@@ -90,6 +98,25 @@ def main() -> int:
 
     manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
     schema = manifest["schema"]
+
+    if schema == SCHEMA_V5 and manifest["level"]["external"] == 2:
+        players = (package / "players.bin").read_bytes()
+        expected_banishment_states = [1, 1, 0, 0, 0, 0, 0, 0]
+        assert [
+            players[12 + slot * LEVEL2_PLAYER_RECORD_BYTES + 662]
+            for slot in range(8)
+        ] == expected_banishment_states
+        assert [
+            int.from_bytes(
+                players[
+                    12 + slot * LEVEL2_PLAYER_RECORD_BYTES + 6 :
+                    12 + slot * LEVEL2_PLAYER_RECORD_BYTES + 8
+                ],
+                "little",
+                signed=True,
+            )
+            for slot in range(8)
+        ] == [31] * 8
 
     def corrupt_schema(candidate: Path) -> None:
         """Change the actual schema revision, so v1/v2 are not a no-op test."""
@@ -220,10 +247,40 @@ def main() -> int:
 
         expect_rejected(package, move_type_str_164_descriptor_out_of_bounds)
 
+        def tamper_type_str_164_source_reference(candidate: Path) -> None:
+            mutate_manifest(
+                candidate,
+                lambda value: value["reference"]["type_str_164_auxiliary"].update(
+                    {"consumer": "EventsFunctions.cpp:0"}
+                ),
+            )
+
+        expect_rejected(package, tamper_type_str_164_source_reference)
+
         def use_legacy_player_component_version(candidate: Path) -> None:
             mutate_u16(candidate, "players.bin", 4, 2)
 
         expect_rejected(package, use_legacy_player_component_version)
+
+        def use_v4_663_player_component(candidate: Path) -> None:
+            path = candidate / "players.bin"
+            content = path.read_bytes()
+            count = int.from_bytes(content[8:12], "little")
+            upgraded = bytearray(b"MCP1")
+            upgraded.extend((4).to_bytes(2, "little"))
+            upgraded.extend(LEVEL2_PLAYER_RECORD_BYTES.to_bytes(2, "little"))
+            upgraded.extend(count.to_bytes(4, "little"))
+            for slot in range(count):
+                offset = 12 + slot * LEVEL2_V4_PLAYER_RECORD_BYTES
+                upgraded.extend(content[offset : offset + LEVEL2_V4_PLAYER_RECORD_BYTES])
+                upgraded.append(0)
+            path.write_bytes(upgraded)
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            refresh_file_identity(candidate, "players.bin")
+
+        # A v4 manifest cannot be upgraded merely by appending a byte and
+        # relabelling MCP1: the v5 manifest/layout route is required too.
+        expect_rejected(package, use_v4_663_player_component)
 
         def truncate_type_str_164_carrier(candidate: Path) -> None:
             path = candidate / "players.bin"
@@ -232,6 +289,44 @@ def main() -> int:
             refresh_file_identity(candidate, "players.bin")
 
         expect_rejected(package, truncate_type_str_164_carrier)
+
+    if schema == SCHEMA_V5 and manifest["level"]["external"] == 2:
+        def remove_banishment_state_descriptor(candidate: Path) -> None:
+            mutate_manifest(
+                candidate,
+                lambda value: value["record_layouts"]["player"].pop(
+                    "banishment_state_0x006"
+                ),
+            )
+
+        expect_rejected(package, remove_banishment_state_descriptor)
+
+        def remove_banishment_state_reference(candidate: Path) -> None:
+            mutate_manifest(
+                candidate,
+                lambda value: value["reference"].pop("banishment_state_0x006"),
+            )
+
+        expect_rejected(package, remove_banishment_state_reference)
+
+        def use_v3_662_player_component(candidate: Path) -> None:
+            path = candidate / "players.bin"
+            content = path.read_bytes()
+            count = int.from_bytes(content[8:12], "little")
+            downgraded = bytearray(b"MCP1")
+            downgraded.extend((3).to_bytes(2, "little"))
+            downgraded.extend(LEVEL2_V4_PLAYER_RECORD_BYTES.to_bytes(2, "little"))
+            downgraded.extend(count.to_bytes(4, "little"))
+            for slot in range(count):
+                offset = 12 + slot * LEVEL2_PLAYER_RECORD_BYTES
+                downgraded.extend(content[offset : offset + LEVEL2_V4_PLAYER_RECORD_BYTES])
+            path.write_bytes(downgraded)
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            refresh_file_identity(candidate, "players.bin")
+
+        # Refresh the member and aggregate identities first: this proves the
+        # v5/component-v3+662 pair itself is rejected rather than a stale hash.
+        expect_rejected(package, use_v3_662_player_component)
 
     if schema in {SCHEMA_V2, SCHEMA_V3} and manifest["level"]["external"] == 1:
         def corrupt_ambient_distance_with_valid_hashes(candidate: Path) -> None:
@@ -338,7 +433,7 @@ def main() -> int:
             ),
         )
 
-    if schema == SCHEMA_V4:
+    if schema in {SCHEMA_V4, SCHEMA_V5}:
         assert manifest["level"]["map_type"]["name"] == "Day"
 
         def corrupt_inactive_secondary_plane_with_valid_hashes(candidate: Path) -> None:

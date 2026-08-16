@@ -45,8 +45,9 @@ constexpr std::size_t kAuthoredLevelBytes = 0x6604;
 constexpr std::size_t kTerrainBytes = 0x70000;
 constexpr std::size_t kLegacyPlayerRecordBytes = 573;
 constexpr std::size_t kTypeStr164AuxiliaryBytes = 89;
+constexpr std::size_t kLevel2BanishmentStateBytes = 1;
 constexpr std::size_t kLevel2PlayerRecordBytes =
-    kLegacyPlayerRecordBytes + kTypeStr164AuxiliaryBytes;
+    kLegacyPlayerRecordBytes + kTypeStr164AuxiliaryBytes + kLevel2BanishmentStateBytes;
 constexpr std::size_t kFeatureStartBytes = 16;
 constexpr std::size_t kFeatureAllocatorHeaderBytes = 32;
 constexpr std::size_t kFeatureAllocatorRelationCount = 1000;
@@ -950,7 +951,7 @@ void append_spell_dwords(Bytes& output, const type_32_1a& values) {
     for (std::int32_t value : values.SpellExperience) output.i32(value);
 }
 
-Bytes capture_players(bool include_type_str_164_auxiliary, std::uint16_t& record_size) {
+Bytes capture_players(bool include_level_two_carriers, std::uint16_t& record_size) {
     Bytes records;
     std::size_t first_size = 0;
     for (std::size_t index = 0; index < 8; ++index) {
@@ -1014,7 +1015,7 @@ Bytes capture_players(bool include_type_str_164_auxiliary, std::uint16_t& record
         // by source loops 5 and 31 and projected by the Rust FlightState.
         records.i32(state.dword_0x19A_410);
         records.i32(state.maxDistance_0x19E_414);
-        if (include_type_str_164_auxiliary) {
+        if (include_level_two_carriers) {
             // This is a packed, pointer-free carrier for the exact Type_str_164
             // fields consumed by the Nyphur/common-upkeep and terminal paths.
             // Keep the source widths and order explicit; do not synthesize
@@ -1025,6 +1026,11 @@ Bytes capture_players(bool include_type_str_164_auxiliary, std::uint16_t& record
             records.i16(state.word_0x1A2_418);
             for (std::uint16_t value : state.array_0x1FC_508) records.u16(value);
             records.i16(state.word_0x242_578);
+
+            // This is not part of the compact player-state prefix: retain the
+            // exact source byte separately so type-3 objectives cannot alias
+            // ActPlayerIndex at compact record bytes 6..8.
+            records.u8(player.byte_0x006_2BE4_11236);
         }
         const std::size_t size = records.data.size() - before;
         if (index == 0) first_size = size;
@@ -1033,7 +1039,7 @@ Bytes capture_players(bool include_type_str_164_auxiliary, std::uint16_t& record
     record_size = static_cast<std::uint16_t>(first_size);
     Bytes result;
     result.magic("MCP1");
-    result.u16(include_type_str_164_auxiliary ? 3 : 2);
+    result.u16(include_level_two_carriers ? 4 : 2);
     result.u16(record_size);
     result.u32(8);
     result.raw(records.data.data(), records.data.size());
@@ -1647,6 +1653,31 @@ json type_str_164_auxiliary_reference() {
     };
 }
 
+json banishment_state_layout() {
+    return {
+        {"schema", "mc2-player-banishment-state/v1"},
+        {"record_offset", kLegacyPlayerRecordBytes + kTypeStr164AuxiliaryBytes},
+        {"record_bytes", kLevel2BanishmentStateBytes},
+        {"source_struct", "type_str_0x2BDE"},
+        {"source_struct_bytes", 2124},
+        {"source_offset", 6},
+        {"source_field", "byte_0x006_2BE4_11236"},
+        {"encoding", "u8"}
+    };
+}
+
+json banishment_state_reference() {
+    return {
+        {"schema", "mc2-player-banishment-state/v1"},
+        {"source_struct", "type_str_0x2BDE"},
+        {"source_field", "byte_0x006_2BE4_11236"},
+        {"source_offset", 6},
+        {"descriptor_table", "engine_support.cpp:601-613"},
+        {"serialization", "engine_support_converts.cpp:239-249"},
+        {"consumer", "EventsFunctions.cpp:40781-40785"}
+    };
+}
+
 int run(const Arguments& arguments) {
     const bool level_one = arguments.level.external == 1;
     const fs::path owner_root = fs::canonical(arguments.owner_root);
@@ -1913,7 +1944,7 @@ int run(const Arguments& arguments) {
         x_WORD_180660_VGA_type_resolution == 1 ? medium_web_bank_name : high_web_bank_name;
 
     json manifest = {
-        {"schema", level_one ? "mc2-owner-level-export/v3" : "mc2-owner-level-export/v4"},
+        {"schema", level_one ? "mc2-owner-level-export/v3" : "mc2-owner-level-export/v5"},
         {"byte_order", "little-endian"},
         {"level", {
             {"external", arguments.level.external},
@@ -2433,6 +2464,10 @@ int run(const Arguments& arguments) {
             type_str_164_auxiliary_layout();
         manifest["reference"]["type_str_164_auxiliary"] =
             type_str_164_auxiliary_reference();
+        manifest["record_layouts"]["player"]["banishment_state_0x006"] =
+            banishment_state_layout();
+        manifest["reference"]["banishment_state_0x006"] =
+            banishment_state_reference();
         manifest["collision_masks"] = collision_masks.metadata;
     }
     // The reset projection is a sealed Level 1 contract.  Do not copy its

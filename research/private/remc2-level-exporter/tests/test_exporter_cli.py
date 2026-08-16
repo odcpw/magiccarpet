@@ -22,12 +22,16 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verify_package import (
+    BANISHMENT_STATE_LAYOUT,
     LEVEL2_COLLISION_MASK_BANK_BYTES,
     LEVEL2_COLLISION_MASK_BANK_SHA256,
     LEVEL2_PLAYER_COMPONENT_VERSION,
     LEVEL2_PLAYER_RECORD_BYTES,
+    LEVEL2_V4_PLAYER_COMPONENT_VERSION,
+    LEVEL2_V4_PLAYER_RECORD_BYTES,
     SCHEMA_V3,
     SCHEMA_V4,
+    SCHEMA_V5,
     TYPE_STR_164_AUXILIARY_LAYOUT,
     verify,
 )
@@ -186,10 +190,9 @@ def _refresh_package_hash(candidate: Path) -> None:
 
 def _stable_l2_manifest(manifest: dict) -> dict:
     stable = copy.deepcopy(manifest)
-    # The v4 extension is explicit: only its schema, collision-mask member,
-    # Type_str_164 layout/reference, and the player extent are removed before
-    # comparing the stable v3 contract.  The historical v3 reset projection
-    # is also absent by the v4 Level 2 profile contract.
+    # The v4/v5 extensions are explicit: only their schema, collision-mask
+    # member, Type_str_164/banishment layouts and references, and player
+    # extents are removed before comparing the stable v3 contract.
     stable["schema"] = SCHEMA_V3
     stable.pop("collision_masks", None)
     stable.pop("package_sha256", None)
@@ -197,8 +200,10 @@ def _stable_l2_manifest(manifest: dict) -> dict:
     stable["record_sizes"]["player"] = 573
     stable["record_layouts"]["player"]["record_bytes"] = 573
     stable["record_layouts"]["player"].pop("type_str_164_auxiliary", None)
+    stable["record_layouts"]["player"].pop("banishment_state_0x006", None)
     reference = stable.get("reference", {})
     reference.pop("type_str_164_auxiliary", None)
+    reference.pop("banishment_state_0x006", None)
     reference.pop("terrain_frame0_sha256", None)
     reference.get("terrain_sequence", {}).pop("sha256", None)
     for plane in reference.get("terrain_planes", []):
@@ -248,6 +253,59 @@ def _assert_legacy_player_prefixes(fresh: Path, preserved: Path) -> None:
             fresh_players[fresh_offset : fresh_offset + 573]
             == preserved_players[preserved_offset : preserved_offset + 573]
         ), f"Level 2 player {index} legacy prefix differs"
+
+
+def _assert_l2_v5_player_extension(fresh: Path, preserved_v4: Path) -> None:
+    fresh_players = (fresh / "players.bin").read_bytes()
+    v4_players = (preserved_v4 / "players.bin").read_bytes()
+    assert fresh_players[:4] == v4_players[:4] == b"MCP1"
+    assert int.from_bytes(fresh_players[4:6], "little") == LEVEL2_PLAYER_COMPONENT_VERSION
+    assert int.from_bytes(fresh_players[6:8], "little") == LEVEL2_PLAYER_RECORD_BYTES
+    assert int.from_bytes(v4_players[4:6], "little") == LEVEL2_V4_PLAYER_COMPONENT_VERSION
+    assert int.from_bytes(v4_players[6:8], "little") == LEVEL2_V4_PLAYER_RECORD_BYTES
+    assert int.from_bytes(fresh_players[8:12], "little") == int.from_bytes(v4_players[8:12], "little") == 8
+    assert [
+        fresh_players[12 + index * LEVEL2_PLAYER_RECORD_BYTES + 662]
+        for index in range(8)
+    ] == [1, 1, 0, 0, 0, 0, 0, 0]
+    assert [
+        int.from_bytes(
+            fresh_players[
+                12 + index * LEVEL2_PLAYER_RECORD_BYTES + 6 :
+                12 + index * LEVEL2_PLAYER_RECORD_BYTES + 8
+            ],
+            "little",
+            signed=True,
+        )
+        for index in range(8)
+    ] == [31] * 8
+    for index in range(8):
+        fresh_offset = 12 + index * LEVEL2_PLAYER_RECORD_BYTES
+        v4_offset = 12 + index * LEVEL2_V4_PLAYER_RECORD_BYTES
+        assert (
+            fresh_players[fresh_offset : fresh_offset + LEVEL2_V4_PLAYER_RECORD_BYTES]
+            == v4_players[v4_offset : v4_offset + LEVEL2_V4_PLAYER_RECORD_BYTES]
+        ), f"Level 2 player {index} changed before appended banishment byte"
+        assert len(fresh_players[fresh_offset : fresh_offset + LEVEL2_PLAYER_RECORD_BYTES]) == 663
+
+
+def _assert_l2_v5_upgrade(fresh: Path, preserved_v4: Path) -> None:
+    fresh_manifest = json.loads((fresh / "manifest.json").read_text(encoding="utf-8"))
+    v4_manifest = json.loads((preserved_v4 / "manifest.json").read_text(encoding="utf-8"))
+    assert fresh_manifest["schema"] == SCHEMA_V5
+    assert v4_manifest["schema"] == SCHEMA_V4
+    assert fresh_manifest["record_layouts"]["player"]["type_str_164_auxiliary"] == TYPE_STR_164_AUXILIARY_LAYOUT
+    assert fresh_manifest["record_layouts"]["player"]["banishment_state_0x006"] == BANISHMENT_STATE_LAYOUT
+    assert fresh_manifest["record_layouts"]["player"]["banishment_state_0x006"]["record_offset"] == 662
+    assert fresh_manifest["record_layouts"]["player"]["banishment_state_0x006"]["record_bytes"] == 1
+    assert set(fresh_manifest["files"]) == set(v4_manifest["files"])
+    for name in sorted(fresh_manifest["files"]):
+        if name == "players.bin":
+            continue
+        assert (fresh / name).read_bytes() == (preserved_v4 / name).read_bytes(), (
+            f"Level 2 v5 migration changed unrelated member {name}"
+        )
+    _assert_l2_v5_player_extension(fresh, preserved_v4)
 
 
 def _assert_legacy_terrain_semantics(fresh: Path, preserved: Path) -> None:
@@ -370,7 +428,7 @@ def test_deterministic_level_profiles() -> None:
             "internal": 1,
             "map_type": {"id": 0, "name": "Day"},
         }
-        assert level_two_manifest["schema"] == SCHEMA_V4
+        assert level_two_manifest["schema"] == SCHEMA_V5
         collision_member = level_two_manifest["files"]["collision-masks.bin"]
         assert collision_member["bytes"] == LEVEL2_COLLISION_MASK_BANK_BYTES
         assert collision_member["sha256"] == LEVEL2_COLLISION_MASK_BANK_SHA256
@@ -382,6 +440,10 @@ def test_deterministic_level_profiles() -> None:
         assert (
             level_two_manifest["record_layouts"]["player"]["type_str_164_auxiliary"]
             == TYPE_STR_164_AUXILIARY_LAYOUT
+        )
+        assert (
+            level_two_manifest["record_layouts"]["player"]["banishment_state_0x006"]
+            == BANISHMENT_STATE_LAYOUT
         )
         players = (level_two_a / "players.bin").read_bytes()
         assert int.from_bytes(players[4:6], "little") == LEVEL2_PLAYER_COMPONENT_VERSION
@@ -395,6 +457,7 @@ def test_deterministic_level_profiles() -> None:
         verify(level_two_b, enforce_reference_hashes=False)
         for preserved in (
             generated_root / "l2-debug3.fJ3PaM/level2",
+            generated_root / "l2-debug3.fJ3PaM-v4/level2",
             generated_root / "mc2-l2-native2.Ibpz9b/out",
         ):
             if not preserved.is_dir():
@@ -403,6 +466,9 @@ def test_deterministic_level_profiles() -> None:
             if preserved_manifest["schema"] == SCHEMA_V3:
                 _assert_l2_corpus_matches(level_two_a, preserved)
             elif preserved_manifest["schema"] == SCHEMA_V4:
+                verify(preserved, enforce_reference_hashes=False)
+                _assert_l2_v5_upgrade(level_two_a, preserved)
+            elif preserved_manifest["schema"] == SCHEMA_V5:
                 verify(preserved, enforce_reference_hashes=False)
                 assert _tree_bytes(level_two_a) == _tree_bytes(preserved)
             else:

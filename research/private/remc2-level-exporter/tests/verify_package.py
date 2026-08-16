@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict verifier for private mc2-owner-level-export/v1 through v4 packages."""
+"""Strict verifier for private mc2-owner-level-export/v1 through v5 packages."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ SCHEMA_V1 = "mc2-owner-level-export/v1"
 SCHEMA_V2 = "mc2-owner-level-export/v2"
 SCHEMA_V3 = "mc2-owner-level-export/v3"
 SCHEMA_V4 = "mc2-owner-level-export/v4"
-SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}
+SCHEMA_V5 = "mc2-owner-level-export/v5"
+SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5}
 STATE_SEQUENCE = (
     "remc2-regression-test/memimages/regressions/level1/"
     "sequence-002285FF-00356038.bin"
@@ -49,14 +50,17 @@ V3_FILES = V2_FILES | {
     "terrain-pre-features.bin",
 }
 V4_FILES = V3_FILES | {"collision-masks.bin"}
+V5_FILES = V4_FILES
 MSPRD0_0_TAB_SHA256 = "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"
 MSPRD0_0_DAT_SHA256 = "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"
 LEVEL2_COLLISION_MASK_BANK_BYTES = 4638
 LEVEL2_COLLISION_MASK_BANK_SHA256 = (
     "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432"
 )
-LEVEL2_PLAYER_COMPONENT_VERSION = 3
-LEVEL2_PLAYER_RECORD_BYTES = 662
+LEVEL2_V4_PLAYER_COMPONENT_VERSION = 3
+LEVEL2_V4_PLAYER_RECORD_BYTES = 662
+LEVEL2_PLAYER_COMPONENT_VERSION = 4
+LEVEL2_PLAYER_RECORD_BYTES = 663
 TYPE_STR_164_AUXILIARY_BYTES = 89
 TYPE_STR_164_AUXILIARY_LAYOUT = {
     "schema": "mc2-type-str-164-auxiliary/v1",
@@ -127,13 +131,29 @@ TYPE_STR_164_AUXILIARY_LAYOUT = {
         },
     ],
 }
-LEVEL2_PLAYER_LAYOUT = {
+LEVEL2_V4_PLAYER_LAYOUT = {
     "index_offset": 0,
     "normalized_host_time_offset": 50,
     "legacy_v1_bytes": 565,
     "ambient_loop_5_distance_offset": 565,
     "ambient_loop_31_distance_offset": 569,
     "type_str_164_auxiliary": TYPE_STR_164_AUXILIARY_LAYOUT,
+    "record_bytes": LEVEL2_V4_PLAYER_RECORD_BYTES,
+}
+BANISHMENT_STATE_BYTES = 1
+BANISHMENT_STATE_LAYOUT = {
+    "schema": "mc2-player-banishment-state/v1",
+    "record_offset": 662,
+    "record_bytes": BANISHMENT_STATE_BYTES,
+    "source_struct": "type_str_0x2BDE",
+    "source_struct_bytes": 2124,
+    "source_offset": 6,
+    "source_field": "byte_0x006_2BE4_11236",
+    "encoding": "u8",
+}
+LEVEL2_PLAYER_LAYOUT = {
+    **LEVEL2_V4_PLAYER_LAYOUT,
+    "banishment_state_0x006": BANISHMENT_STATE_LAYOUT,
     "record_bytes": LEVEL2_PLAYER_RECORD_BYTES,
 }
 V3_PACKAGE_SHA256 = "15f1ca196b1ebf227860f468e419732c1ba917d57de9097acc5e2f647bbfd835"
@@ -255,16 +275,38 @@ TYPE_STR_164_REFERENCE = {
     },
 }
 
+BANISHMENT_STATE_REFERENCE = {
+    "schema": "mc2-player-banishment-state/v1",
+    "source_struct": "type_str_0x2BDE",
+    "source_field": "byte_0x006_2BE4_11236",
+    "source_offset": 6,
+    "descriptor_table": "engine_support.cpp:601-613",
+    "serialization": "engine_support_converts.cpp:239-249",
+    "consumer": "EventsFunctions.cpp:40781-40785",
+}
 
-def verify_type_str_164_carrier(manifest: dict) -> None:
+
+def verify_type_str_164_carrier(manifest: dict, expected_layout: dict) -> None:
     layout = manifest["record_layouts"]["player"]
     require(
-        layout == LEVEL2_PLAYER_LAYOUT,
+        layout == expected_layout,
         "Level 2 player layout does not exactly describe the Type_str_164 carrier",
     )
     require(
         manifest["reference"]["type_str_164_auxiliary"] == TYPE_STR_164_REFERENCE,
         "Type_str_164 source initialization/consumer pin changed",
+    )
+
+
+def verify_banishment_state_carrier(manifest: dict) -> None:
+    layout = manifest["record_layouts"]["player"]
+    require(
+        layout["banishment_state_0x006"] == BANISHMENT_STATE_LAYOUT,
+        "Level 2 player banishment-state descriptor changed",
+    )
+    require(
+        manifest["reference"]["banishment_state_0x006"] == BANISHMENT_STATE_REFERENCE,
+        "Level 2 banishment-state source pin changed",
     )
 
 
@@ -905,6 +947,7 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
 def verify_binary_structure(package: Path, manifest: dict) -> None:
     external_level = manifest["level"]["external"]
     level_two_v4 = external_level == 2 and manifest["schema"] == SCHEMA_V4
+    level_two_v5 = external_level == 2 and manifest["schema"] == SCHEMA_V5
     authored = (package / "authored-level.bin").read_bytes()
     assert len(authored) == 0x6604
     require(
@@ -950,17 +993,25 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
     players = verify_record_file(
         package / "players.bin",
         b"MCP1",
-        LEVEL2_PLAYER_COMPONENT_VERSION
-        if level_two_v4
-        else (2 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4} else 1),
+        (
+            LEVEL2_PLAYER_COMPONENT_VERSION
+            if level_two_v5
+            else LEVEL2_V4_PLAYER_COMPONENT_VERSION
+        )
+        if level_two_v4 or level_two_v5
+        else (2 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5} else 1),
         8,
         manifest["record_sizes"]["player"],
     )
     player_record_size = manifest["record_sizes"]["player"]
     expected_player_size = (
         LEVEL2_PLAYER_RECORD_BYTES
-        if level_two_v4
-        else (573 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4} else 565)
+        if level_two_v5
+        else (
+            LEVEL2_V4_PLAYER_RECORD_BYTES
+            if level_two_v4
+            else (573 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5} else 565)
+        )
     )
     assert player_record_size == expected_player_size
     for index in range(8):
@@ -971,18 +1022,49 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             u16(players, offset + 4) < manifest["counts"]["entity_slots"],
             f"player slot {index} entity relation is out of range",
         )
-    if level_two_v4:
-        verify_type_str_164_carrier(manifest)
+    if level_two_v5:
+        verify_type_str_164_carrier(manifest, LEVEL2_PLAYER_LAYOUT)
+        verify_banishment_state_carrier(manifest)
         layout = manifest["record_layouts"]["player"]
         auxiliary_offset = layout["type_str_164_auxiliary"]["record_offset"]
         auxiliary_end = auxiliary_offset + TYPE_STR_164_AUXILIARY_BYTES
+        banishment_offset = layout["banishment_state_0x006"]["record_offset"]
+        require(
+            [
+                players[12 + index * player_record_size + banishment_offset]
+                for index in range(8)
+            ]
+            == [1, 1, 0, 0, 0, 0, 0, 0],
+            "Level 2 v5 banishment-state values differ from the qualified source capture",
+        )
+        require(
+            [
+                struct.unpack_from("<h", players, 12 + index * player_record_size + 6)[0]
+                for index in range(8)
+            ]
+            == [31] * 8,
+            "Level 2 v5 compact ActPlayerIndex values differ from the qualified source capture",
+        )
         for index in range(8):
             offset = 12 + index * player_record_size
             require(
                 len(players[offset : offset + player_record_size]) >= auxiliary_end,
                 f"Level 2 player slot {index} Type_str_164 carrier is truncated",
             )
-    elif manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}:
+            require(
+                len(players[offset : offset + player_record_size])
+                >= banishment_offset + BANISHMENT_STATE_BYTES,
+                f"Level 2 player slot {index} banishment-state carrier is truncated",
+            )
+    elif level_two_v4:
+        verify_type_str_164_carrier(manifest, LEVEL2_V4_PLAYER_LAYOUT)
+        layout = manifest["record_layouts"]["player"]
+        require(
+            "banishment_state_0x006" not in layout
+            and "banishment_state_0x006" not in manifest["reference"],
+            "Level 2 v4 inspection layout must not contain the v5 banishment-state carrier",
+        )
+    elif manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5}:
         layout = manifest["record_layouts"]["player"]
         assert layout == {
             "index_offset": 0,
@@ -1295,7 +1377,10 @@ def verify(
     if level["external"] == 1:
         assert level["internal"] == 0
         assert level["map_type"] == {"id": 1, "name": "Night"}
-        require(manifest["schema"] != SCHEMA_V4, "v4 collision-mask schema is Level 2-only")
+        require(
+            manifest["schema"] not in {SCHEMA_V4, SCHEMA_V5},
+            "v4/v5 collision-mask schemas are Level 2-only",
+        )
     else:
         require(level == {
             "external": LEVEL2_PROFILE["external"],
@@ -1314,7 +1399,9 @@ def verify(
         f"active entity count differs for external level {level['external']}",
     )
     assert manifest["dimensions"]["terrain"] == [256, 256]
-    if manifest["schema"] == SCHEMA_V4:
+    if manifest["schema"] == SCHEMA_V5:
+        required_files = V5_FILES
+    elif manifest["schema"] == SCHEMA_V4:
         required_files = V4_FILES
     elif manifest["schema"] == SCHEMA_V3:
         required_files = V3_FILES
@@ -1342,9 +1429,12 @@ def verify(
             assert manifest["source"]["upstream_commit"] == (
                 "6806c7204d17220ecc0430759f784aea8ee2ddb2"
             )
-    if manifest["schema"] == SCHEMA_V4:
-        require(level["external"] == 2, "v4 collision-mask schema requires Level 2")
-        require("reset_projection" not in manifest, "Level 2 v4 must not carry reset projection")
+    if manifest["schema"] in {SCHEMA_V4, SCHEMA_V5}:
+        require(level["external"] == 2, "v4/v5 collision-mask schemas require Level 2")
+        require(
+            "reset_projection" not in manifest,
+            "Level 2 v4/v5 packages must not carry reset projection",
+        )
     modified_hashes = {
         entry["path"]: entry["sha256"] for entry in manifest["source"]["modified_files"]
     }
@@ -1369,7 +1459,7 @@ def verify(
         assert identity == sorted(identity)
         aggregate = hashlib.sha256("".join(identity).encode()).hexdigest()
         assert aggregate == manifest["source"]["compiled_source_sha256"]
-        if level["external"] == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}:
+        if level["external"] == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5}:
             verify_ambient_sequence(upstream_root, manifest)
 
     identity_rows = []
@@ -1398,7 +1488,7 @@ def verify(
     assert (package / "authored-level.bin").stat().st_size == 0x6604
     if manifest["schema"] == SCHEMA_V3 and level["external"] == 1:
         verify_feature_generation_input(package, manifest)
-    if manifest["schema"] == SCHEMA_V4:
+    if manifest["schema"] in {SCHEMA_V4, SCHEMA_V5}:
         verify_collision_masks(package, manifest)
     verify_binary_structure(package, manifest)
 

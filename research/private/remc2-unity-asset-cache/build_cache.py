@@ -106,10 +106,19 @@ DEFAULT_LEVEL2_AGGREGATE_OUTPUT = GENERATED / "level2-day-owner-cache"
 CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
 GENERATOR_VERSION = "1.15.0"
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
-EXPECTED_LEVEL2_PACKAGE = "1d73e81bc897933d62621b53a1c8c1cf890bd5dffe17f77de43f8d38f3854488"
-EXPECTED_LEVEL2_CLOSURE = "66505e6c3691cce6c730682047c7d8634c682172daa017d4840d1a4a5be4661c"
+EXPECTED_LEVEL2_PACKAGE = "dc8f973ee9a2f53863a2e2e3743b6fa4b9ef947d3ce0b27b79d3ba86de318b80"
+EXPECTED_LEVEL2_CLOSURE = "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc"
 EXPECTED_LEVEL2_CATALOG = "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e"
 EXPECTED_LEVEL2_CATALOG_FILE = "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44"
+LEVEL2_OWNER_PACKAGE_IDENTITY = {
+    "manifest_schema": "mc2-owner-level-export/v5",
+    "players_component": {
+        "magic": "MCP1",
+        "version": 4,
+        "record_bytes": 663,
+        "count": 8,
+    },
+}
 PINNED_REMC2_SOURCE_SPANS = (
     (
         "remc2/engine/GameRenderOriginal.cpp",
@@ -4542,6 +4551,51 @@ def _level2_catalog_identity(catalog_path: Path) -> tuple[dict[str, Any], str]:
     return catalog, sha256_file(catalog_path)
 
 
+def _level2_owner_identity_bindings(profile: dict[str, Any]) -> dict[str, Any]:
+    """Project a typed owner component identity into a cache binding map."""
+    owner_identity = profile.get("owner_package")
+    if not isinstance(owner_identity, dict):
+        raise CacheError("Level 2 owner package identity is missing")
+    component = owner_identity.get("players_component")
+    if not isinstance(component, dict):
+        raise CacheError("Level 2 player component identity is missing")
+    return {
+        "owner_manifest_schema": owner_identity.get("manifest_schema"),
+        "players_component_magic": component.get("magic"),
+        "players_component_version": component.get("version"),
+        "players_component_record_bytes": component.get("record_bytes"),
+        "players_component_count": component.get("count"),
+    }
+
+
+def _validate_level2_owner_identity(
+    profile: dict[str, Any],
+    bindings: dict[str, Any],
+    expected_owner_identity: dict[str, Any] | None,
+) -> None:
+    """Keep current v5 production and explicit historic inspection separate."""
+    identity_binding_keys = {
+        "owner_manifest_schema",
+        "players_component_magic",
+        "players_component_version",
+        "players_component_record_bytes",
+        "players_component_count",
+    }
+    if expected_owner_identity is None:
+        if profile.get("owner_package") is not None or any(
+            key in bindings for key in identity_binding_keys
+        ):
+            raise CacheError("historical Level 2 cache carries an unexpected owner component identity")
+        return
+    if profile.get("owner_package") != expected_owner_identity:
+        raise CacheError("Level 2 owner package identity mismatch")
+    expected_bindings = _level2_owner_identity_bindings(
+        {"owner_package": expected_owner_identity}
+    )
+    if any(bindings.get(key) != value for key, value in expected_bindings.items()):
+        raise CacheError("Level 2 owner component binding mismatch")
+
+
 def _level2_profile(
     package_dir: Path, closure_path: Path, catalog_path: Path
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -4562,10 +4616,7 @@ def _level2_profile(
     level = package.get("level", {})
     map_type = level.get("map_type", {})
     if (
-        package.get("schema") not in {
-            "mc2-owner-level-export/v3",
-            "mc2-owner-level-export/v4",
-        }
+        package.get("schema") != LEVEL2_OWNER_PACKAGE_IDENTITY["manifest_schema"]
         or level.get("external") != 2
         or level.get("internal") != 1
         or map_type != {"id": 0, "name": "Day"}
@@ -4573,6 +4624,20 @@ def _level2_profile(
         raise CacheError("Level 2 material profile requires external=2/internal=1/Day")
     if package.get("source", {}).get("upstream_commit") != PINNED_REMC2_COMMIT:
         raise CacheError("Level 2 package remc2 specification pin mismatch")
+    players_path = package_dir / "players.bin"
+    players = players_path.read_bytes()
+    if len(players) < 12:
+        raise CacheError("Level 2 players.bin header is truncated")
+    magic, version, record_bytes, count = struct.unpack_from("<4sHHI", players)
+    expected_component = LEVEL2_OWNER_PACKAGE_IDENTITY["players_component"]
+    if (
+        magic != expected_component["magic"].encode("ascii")
+        or version != expected_component["version"]
+        or record_bytes != expected_component["record_bytes"]
+        or count != expected_component["count"]
+        or len(players) != 12 + count * record_bytes
+    ):
+        raise CacheError("Level 2 material profile requires players component v4/663")
     selectors = package.get("presentation_dependencies")
     expected = {
         "map_type": "Day",
@@ -4626,6 +4691,7 @@ def _level2_profile(
         or closure_profile.get("internal_level") != 1
         or closure_profile.get("map_type") != {"id": 0, "name": "day"}
         or closure_profile.get("spec_commit") != PINNED_REMC2_COMMIT
+        or closure_profile.get("owner_package") != LEVEL2_OWNER_PACKAGE_IDENTITY
     ):
         raise CacheError("Level 2 closure profile selector tuple changed")
     package_hash = package.get("package_sha256")
@@ -4633,6 +4699,12 @@ def _level2_profile(
         raise CacheError("wrong qualified Level 2 package hash")
     if closure.get("source", {}).get("level_export", {}).get("package_sha256") != package_hash:
         raise CacheError("Level 2 closure is bound to a different package")
+    closure_owner_identity = closure.get("source", {}).get("level_export", {})
+    if {
+        "manifest_schema": closure_owner_identity.get("manifest_schema"),
+        "players_component": closure_owner_identity.get("players_component"),
+    } != LEVEL2_OWNER_PACKAGE_IDENTITY:
+        raise CacheError("Level 2 closure owner component identity mismatch")
     catalog, catalog_file_sha256 = _level2_catalog_identity(catalog_path)
     closure_catalog = closure.get("source", {}).get("owner_catalog", {})
     if (
@@ -4673,6 +4745,7 @@ def _level2_profile(
         "catalog_sha256": catalog.get("catalog_sha256"),
         "catalog_file_sha256": catalog_file_sha256,
         "spec_commit": PINNED_REMC2_COMMIT,
+        "owner_package": LEVEL2_OWNER_PACKAGE_IDENTITY,
     }
     return profile, package, closure, {**files, **entries}
 
@@ -5338,6 +5411,7 @@ def build_day_gameplay_cache(
                 "owner_catalog_sha256": profile["catalog_sha256"],
                 "owner_catalog_file_sha256": profile["catalog_file_sha256"],
                 "remc2_commit": PINNED_REMC2_COMMIT,
+                **_level2_owner_identity_bindings(profile),
             },
             "outputs": outputs,
             "cache_content_sha256": _level2_cache_identity(outputs),
@@ -5567,6 +5641,8 @@ def validate_day_gameplay_cache(
     cache_dir: Path,
     expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
     expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
+    *,
+    expected_owner_identity: dict[str, Any] | None = LEVEL2_OWNER_PACKAGE_IDENTITY,
 ) -> dict[str, Any]:
     """Validate the profile, content identity, and descriptor of the L2 slice."""
     cache_dir = cache_dir.expanduser().resolve()
@@ -5589,6 +5665,9 @@ def validate_day_gameplay_cache(
     if expected_closure is not None and profile.get("closure_sha256") != expected_closure:
         raise CacheError("Level 2 gameplay closure binding mismatch")
     bindings = manifest.get("bindings", {})
+    if not isinstance(bindings, dict):
+        raise CacheError("Level 2 gameplay manifest bindings are invalid")
+    _validate_level2_owner_identity(profile, bindings, expected_owner_identity)
     if (
         bindings.get("level_export_package_sha256") != profile.get("package_sha256")
         or bindings.get("level_asset_closure_sha256") != profile.get("closure_sha256")
@@ -5906,6 +5985,7 @@ def build_day_audio_cache(
                 "owner_catalog_file_sha256": profile["catalog_file_sha256"],
                 "remc2_commit": PINNED_REMC2_COMMIT,
                 "audio_denominator_sha256": sha256_file(LEVEL2_AUDIO_DENOMINATOR),
+                **_level2_owner_identity_bindings(profile),
             },
             "outputs": outputs,
             "cache_content_sha256": _level2_cache_identity(outputs),
@@ -5926,6 +6006,8 @@ def validate_day_audio_cache(
     cache_dir: Path,
     expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
     expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
+    *,
+    expected_owner_identity: dict[str, Any] | None = LEVEL2_OWNER_PACKAGE_IDENTITY,
 ) -> dict[str, Any]:
     cache_dir = cache_dir.expanduser().resolve()
     manifest_path = cache_dir / "manifest.json"
@@ -5946,6 +6028,9 @@ def validate_day_audio_cache(
     if profile.get("closure_sha256") != expected_closure:
         raise CacheError("Level 2 audio closure binding mismatch")
     bindings = manifest.get("bindings", {})
+    if not isinstance(bindings, dict):
+        raise CacheError("Level 2 audio manifest bindings are invalid")
+    _validate_level2_owner_identity(profile, bindings, expected_owner_identity)
     if (
         bindings.get("level_export_package_sha256") != profile.get("package_sha256")
         or bindings.get("level_asset_closure_sha256") != profile.get("closure_sha256")
@@ -6068,11 +6153,134 @@ def _level2_aggregate_components() -> tuple[tuple[str, str, Any], ...]:
     )
 
 
-def _level2_aggregate_allowed_source_ids() -> set[str]:
-    """Return the sealed owner-data IDs reachable by the Level 2 closure."""
-    _profile, _package, closure, catalog_rows = _level2_profile(
-        DEFAULT_LEVEL2_PACKAGE, DEFAULT_LEVEL2_CLOSURE, DEFAULT_CATALOG
+def _level2_historical_v4_aggregate_closure(
+    package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    expected_package: str | None,
+    expected_closure: str | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve only the retained v4 closure ledger for aggregate inspection.
+
+    This deliberately does not call ``_level2_profile``: that production
+    resolver admits only v5/component-v4 packages because it may feed a new
+    qualified cache.  Historical aggregate validation needs the same
+    closure-to-package-to-catalog evidence, but must remain decode-only.
+    """
+    if not isinstance(expected_package, str) or not isinstance(expected_closure, str):
+        raise CacheError("historical Level 2 inspection requires explicit package and closure identities")
+    package_dir = package_dir.expanduser().resolve()
+    closure_path = closure_path.expanduser().resolve()
+    catalog_path = catalog_path.expanduser().resolve()
+    package = load_json(package_dir / "manifest.json")
+    try:
+        load_proven_export_verifier()(package_dir, package)
+    except Exception as error:
+        # The helper is loaded dynamically and owns its own ClosureError type.
+        raise CacheError(f"historical Level 2 package identity verification failed: {error}") from error
+    level = package.get("level", {})
+    if (
+        package.get("schema") != "mc2-owner-level-export/v4"
+        or level.get("external") != 2
+        or level.get("internal") != 1
+        or level.get("map_type") != {"id": 0, "name": "Day"}
+        or package.get("source", {}).get("upstream_commit") != PINNED_REMC2_COMMIT
+        or package.get("record_sizes", {}).get("player") != 662
+        or package.get("package_sha256") != expected_package
+    ):
+        raise CacheError("historical Level 2 aggregate inspection requires owner-level-export/v4")
+    players = (package_dir / "players.bin").read_bytes()
+    if len(players) < 12:
+        raise CacheError("historical Level 2 players.bin header is truncated")
+    magic, version, record_bytes, count = struct.unpack_from("<4sHHI", players)
+    if (
+        magic != b"MCP1"
+        or version != 3
+        or record_bytes != 662
+        or count != 8
+        or len(players) != 12 + count * record_bytes
+    ):
+        raise CacheError("historical Level 2 inspection requires players component v3/662")
+
+    closure = load_json(closure_path)
+    closure_claim = closure.get("closure_sha256")
+    closure_payload = dict(closure)
+    closure_payload.pop("closure_sha256", None)
+    closure_actual = sha256_bytes(
+        json.dumps(closure_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
     )
+    if closure_claim != closure_actual or closure_claim != expected_closure:
+        raise CacheError("historical Level 2 closure identity mismatch")
+    expected_profile = {
+        "name": "level2-day",
+        "external_level": 2,
+        "internal_level": 1,
+        "map_type": {"id": 0, "name": "day"},
+        "spec_commit": PINNED_REMC2_COMMIT,
+        "identity_status": "qualified",
+    }
+    if (
+        closure.get("schema") != "mc2-level-asset-closure/v2"
+        or closure.get("scope") != "PRIVATE_TRACK_P_OWNER_DATA"
+        or closure.get("profile") != expected_profile
+    ):
+        raise CacheError("historical Level 2 closure profile selector tuple changed")
+    level_export = closure.get("source", {}).get("level_export", {})
+    source_files = level_export.get("files") if isinstance(level_export, dict) else None
+    if (
+        not isinstance(source_files, dict)
+        or level_export.get("package_sha256") != expected_package
+        or "manifest_schema" in level_export
+        or "players_component" in level_export
+        or set(source_files) != {"manifest.json", "presentation.bin", "entities.bin", "runtime.bin"}
+    ):
+        raise CacheError("historical Level 2 closure export binding changed")
+    for name, source_file in source_files.items():
+        path = package_dir / name
+        if (
+            not isinstance(source_file, dict)
+            or source_file.get("sha256") != sha256_file(path)
+            or source_file.get("size") != path.stat().st_size
+        ):
+            raise CacheError(f"historical Level 2 closure source member mismatch: {name}")
+    catalog, catalog_file_sha256 = _level2_catalog_identity(catalog_path)
+    closure_catalog = closure.get("source", {}).get("owner_catalog", {})
+    if (
+        catalog.get("catalog_sha256") != EXPECTED_LEVEL2_CATALOG
+        or catalog_file_sha256 != EXPECTED_LEVEL2_CATALOG_FILE
+        or closure_catalog.get("catalog_sha256") != catalog.get("catalog_sha256")
+        or closure_catalog.get("file_sha256") != catalog_file_sha256
+    ):
+        raise CacheError("historical Level 2 catalogue does not match closure binding")
+    files = {row.get("path"): row for row in catalog.get("files", [])}
+    entries = {row.get("asset_id"): row for row in catalog.get("entries", [])}
+    return closure, {**files, **entries}
+
+
+def _level2_aggregate_allowed_source_ids(
+    package_dir: Path = DEFAULT_LEVEL2_PACKAGE,
+    closure_path: Path = DEFAULT_LEVEL2_CLOSURE,
+    catalog_path: Path = DEFAULT_CATALOG,
+    *,
+    expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
+    expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
+    expected_owner_identity: dict[str, Any] | None = LEVEL2_OWNER_PACKAGE_IDENTITY,
+) -> set[str]:
+    """Return the sealed owner-data IDs for production or retained inspection."""
+    if expected_owner_identity is None:
+        closure, catalog_rows = _level2_historical_v4_aggregate_closure(
+            package_dir,
+            closure_path,
+            catalog_path,
+            expected_package,
+            expected_closure,
+        )
+    else:
+        _profile, _package, closure, catalog_rows = _level2_profile(
+            package_dir, closure_path, catalog_path
+        )
     scene, dynamic = _level2_closure_asset_rows(closure, catalog_rows)
     allowed = {
         row["asset_id"]
@@ -6201,6 +6409,7 @@ def build_day_aggregate_cache(
                 "owner_catalog_sha256": profile["catalog_sha256"],
                 "owner_catalog_file_sha256": profile["catalog_file_sha256"],
                 "remc2_commit": PINNED_REMC2_COMMIT,
+                **_level2_owner_identity_bindings(profile),
             },
             "components": components,
             "outputs": outputs,
@@ -6209,7 +6418,12 @@ def build_day_aggregate_cache(
         manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
         (stage / "manifest.json").write_bytes(canonical_json(manifest))
         validate_day_aggregate_cache(
-            stage, profile["package_sha256"], profile["closure_sha256"]
+            stage,
+            profile["package_sha256"],
+            profile["closure_sha256"],
+            package_dir=package_dir,
+            closure_path=closure_path,
+            catalog_path=catalog_path,
         )
         fsync_tree(stage)
         commit_stage(output, stage)
@@ -6224,6 +6438,11 @@ def validate_day_aggregate_cache(
     cache_dir: Path,
     expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
     expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
+    *,
+    expected_owner_identity: dict[str, Any] | None = LEVEL2_OWNER_PACKAGE_IDENTITY,
+    package_dir: Path = DEFAULT_LEVEL2_PACKAGE,
+    closure_path: Path = DEFAULT_LEVEL2_CLOSURE,
+    catalog_path: Path = DEFAULT_CATALOG,
 ) -> dict[str, Any]:
     """Validate the sealed, namespaced Level 2 Day owner-cache composition."""
     cache_dir = cache_dir.expanduser().resolve()
@@ -6261,17 +6480,31 @@ def validate_day_aggregate_cache(
         "catalog_file_sha256": EXPECTED_LEVEL2_CATALOG_FILE,
         "spec_commit": PINNED_REMC2_COMMIT,
     }
+    if expected_owner_identity is not None:
+        expected_profile["owner_package"] = expected_owner_identity
     if manifest.get("profile") != expected_profile:
         raise CacheError("Level 2 aggregate profile identity mismatch")
     bindings = manifest.get("bindings", {})
-    if bindings != {
+    expected_bindings = {
         "level_export_package_sha256": expected_package,
         "level_asset_closure_sha256": expected_closure,
         "owner_catalog_sha256": EXPECTED_LEVEL2_CATALOG,
         "owner_catalog_file_sha256": EXPECTED_LEVEL2_CATALOG_FILE,
         "remc2_commit": PINNED_REMC2_COMMIT,
-    }:
+    }
+    if expected_owner_identity is not None:
+        expected_bindings.update(
+            _level2_owner_identity_bindings(
+                {"owner_package": expected_owner_identity}
+            )
+        )
+    if bindings != expected_bindings:
         raise CacheError("Level 2 aggregate binding identity mismatch")
+    if not isinstance(bindings, dict):
+        raise CacheError("Level 2 aggregate bindings are invalid")
+    _validate_level2_owner_identity(
+        manifest["profile"], bindings, expected_owner_identity
+    )
     components = manifest.get("components")
     expected_components = {name for name, _schema, _validator in _level2_aggregate_components()}
     if not isinstance(components, dict) or set(components) != expected_components:
@@ -6297,7 +6530,14 @@ def validate_day_aggregate_cache(
     if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
         raise CacheError("Level 2 aggregate cache content identity mismatch")
     output_by_path = {row["path"]: row for row in outputs}
-    allowed_source_ids = _level2_aggregate_allowed_source_ids()
+    allowed_source_ids = _level2_aggregate_allowed_source_ids(
+        package_dir,
+        closure_path,
+        catalog_path,
+        expected_package=expected_package,
+        expected_closure=expected_closure,
+        expected_owner_identity=expected_owner_identity,
+    )
     expected_output_paths: set[str] = set()
     for name, schema, validator in _level2_aggregate_components():
         metadata = components.get(name)
@@ -6310,7 +6550,12 @@ def validate_day_aggregate_cache(
             raise CacheError(f"Level 2 aggregate {name} component binding changed")
         child_root = cache_dir / "components" / name
         child_manifest_path = child_root / "manifest.json"
-        child = validator(child_root, expected_package, expected_closure)
+        child = validator(
+            child_root,
+            expected_package,
+            expected_closure,
+            expected_owner_identity=expected_owner_identity,
+        )
         if child.get("profile") != manifest.get("profile"):
             raise CacheError(f"Level 2 aggregate {name} profile binding mismatch")
         child_bindings = child.get("bindings", {})
@@ -6389,6 +6634,8 @@ def validate_day_material_cache(
     cache_dir: Path,
     expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
     expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
+    *,
+    expected_owner_identity: dict[str, Any] | None = LEVEL2_OWNER_PACKAGE_IDENTITY,
 ) -> dict[str, Any]:
     """Validate a profile-bound Level 2 base-material cache and its tree."""
     cache_dir = cache_dir.expanduser().resolve()
@@ -6423,6 +6670,9 @@ def validate_day_material_cache(
     }:
         raise CacheError("Level 2 material profile selector identity mismatch")
     bindings = manifest.get("bindings", {})
+    if not isinstance(bindings, dict):
+        raise CacheError("Level 2 material bindings are invalid")
+    _validate_level2_owner_identity(profile, bindings, expected_owner_identity)
     if (
         bindings.get("level_export_package_sha256") != profile.get("package_sha256")
         or bindings.get("level_asset_closure_sha256") != profile.get("closure_sha256")
@@ -6669,7 +6919,7 @@ def build_day_material_cache(
         }
         descriptor_bytes = canonical_json(descriptor)
         write_output(stage, outputs, "materials/descriptor.json", descriptor_bytes, kind="canonical_json_day_material_descriptor", source_asset_ids=["owner_data:DATA/PALD-0.DAT", "owner_data:DATA/TABLESD.DAT", "owner_data:DATA/CLRD-0.DAT", "owner_data:DATA/BL32N0-0.DAT", "owner_data:DATA/SKYD0-0.DAT"])
-        manifest = {"schema": LEVEL2_MATERIAL_SCHEMA, "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION}, "profile": profile, "bindings": {"level_export_package_sha256": package_hash, "level_asset_closure_sha256": closure_hash, "owner_catalog_sha256": profile["catalog_sha256"], "owner_catalog_file_sha256": profile["catalog_file_sha256"], "remc2_commit": PINNED_REMC2_COMMIT}, "outputs": outputs, "cache_content_sha256": _level2_cache_identity(outputs)}
+        manifest = {"schema": LEVEL2_MATERIAL_SCHEMA, "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION}, "profile": profile, "bindings": {"level_export_package_sha256": package_hash, "level_asset_closure_sha256": closure_hash, "owner_catalog_sha256": profile["catalog_sha256"], "owner_catalog_file_sha256": profile["catalog_file_sha256"], "remc2_commit": PINNED_REMC2_COMMIT, **_level2_owner_identity_bindings(profile)}, "outputs": outputs, "cache_content_sha256": _level2_cache_identity(outputs)}
         manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
         (stage / "manifest.json").write_bytes(canonical_json(manifest))
         validate_day_material_cache(stage, package_hash, closure_hash)

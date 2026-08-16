@@ -864,8 +864,9 @@ def _level2_expected_selectors(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest.get("schema") not in {
         "mc2-owner-level-export/v3",
         "mc2-owner-level-export/v4",
+        "mc2-owner-level-export/v5",
     }:
-        raise ClosureError("Level 2 closure requires owner-level-export/v3 or v4")
+        raise ClosureError("Level 2 closure requires owner-level-export/v3, v4, or v5")
     level = manifest.get("level", {})
     map_type = level.get("map_type", {})
     if (level.get("external"), level.get("internal"), map_type.get("id"), map_type.get("name")) != (
@@ -915,6 +916,42 @@ def _level2_expected_selectors(manifest: dict[str, Any]) -> dict[str, Any]:
     return selectors
 
 
+def _level2_production_owner_identity(
+    export_dir: Path, manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the v5 owner identity accepted by a new qualified Day closure.
+
+    Historic v3/v4 packages remain inspectable through their retained
+    artifacts, but generating a new qualified Day closure from either would
+    launder a carrierless package into the production route.
+    """
+    expected_schema = "mc2-owner-level-export/v5"
+    if manifest.get("schema") != expected_schema:
+        raise ClosureError("qualified Level 2 closure requires owner-level-export/v5")
+    players = (export_dir / "players.bin").read_bytes()
+    if len(players) < 12:
+        raise ClosureError("qualified Level 2 players.bin header is truncated")
+    magic, version, record_bytes, count = struct.unpack_from("<4sHHI", players)
+    expected_component = {
+        "magic": "MCP1",
+        "version": 4,
+        "record_bytes": 663,
+        "count": 8,
+    }
+    if (
+        magic != b"MCP1"
+        or version != expected_component["version"]
+        or record_bytes != expected_component["record_bytes"]
+        or count != expected_component["count"]
+        or len(players) != 12 + count * record_bytes
+    ):
+        raise ClosureError("qualified Level 2 players.bin must be component v4/663")
+    return {
+        "manifest_schema": expected_schema,
+        "players_component": expected_component,
+    }
+
+
 def build_level2_closure(
     export_dir: Path, catalog_path: Path, owner_root: Path
 ) -> dict[str, Any]:
@@ -929,6 +966,7 @@ def build_level2_closure(
     catalog_data = read_json(catalog_path)
     selectors = _level2_expected_selectors(export_manifest)
     verify_export_identity(export_dir, export_manifest)
+    owner_identity = _level2_production_owner_identity(export_dir, export_manifest)
     if catalog_data.get("schema_version") is None:
         raise ClosureError("owner catalog has no schema_version")
     catalog = Catalog(catalog_data)
@@ -1112,12 +1150,14 @@ def build_level2_closure(
             "internal_level": 1,
             "map_type": {"id": 0, "name": "day"},
             "spec_commit": export_manifest["source"]["upstream_commit"],
+            "owner_package": owner_identity,
             "identity_status": "qualified",
         },
         "source": {
             "level_export": {
                 "path": str(export_dir),
                 "package_sha256": export_manifest["package_sha256"],
+                **owner_identity,
                 "files": source_files,
             },
             "owner_catalog": {

@@ -127,6 +127,7 @@ use crate::mission_content::checked_in_level2_activation_plan;
 const MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v2";
 const LEVEL2_MANIFEST_SCHEMA_V3: &str = "mc2-owner-level-export/v3";
 const LEVEL2_MANIFEST_SCHEMA_V4: &str = "mc2-owner-level-export/v4";
+const LEVEL2_MANIFEST_SCHEMA_V5: &str = "mc2-owner-level-export/v5";
 const CLOSURE_SCHEMA: &str = "mc2-level-asset-closure/v2";
 const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
 const LEVEL2_GAMEPLAY_CACHE_SCHEMA: &str = "mc2-level2-day-gameplay-cache/v1";
@@ -218,8 +219,18 @@ const PLAYER_COUNT_U32: u32 = 8;
 const PLAYER_LEGACY_RECORD_BYTES: usize = 573;
 const PLAYER_LEGACY_RECORD_BYTES_U16: u16 = 573;
 const TYPE_STR_164_AUXILIARY_BYTES: usize = 89;
-const PLAYER_LEVEL2_RECORD_BYTES: usize = PLAYER_LEGACY_RECORD_BYTES + TYPE_STR_164_AUXILIARY_BYTES;
-const PLAYER_LEVEL2_RECORD_BYTES_U16: u16 = 662;
+/// Version-3 Level 2 records end after the Type_str_164 auxiliary carrier.
+/// They remain decode-only inspection input; qualified sessions require v5.
+const PLAYER_LEVEL2_V4_RECORD_BYTES: usize =
+    PLAYER_LEGACY_RECORD_BYTES + TYPE_STR_164_AUXILIARY_BYTES;
+const PLAYER_LEVEL2_V4_RECORD_BYTES_U16: u16 = 662;
+/// `type_str_0x2BDE.byte_0x006_2BE4_11236`, appended after the existing
+/// Type_str_164 carrier rather than repurposing compact ActPlayerIndex bytes.
+const PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET: usize = PLAYER_LEVEL2_V4_RECORD_BYTES;
+const PLAYER_LEVEL2_BANISHMENT_STATE_BYTES: usize = 1;
+const PLAYER_LEVEL2_RECORD_BYTES: usize =
+    PLAYER_LEVEL2_V4_RECORD_BYTES + PLAYER_LEVEL2_BANISHMENT_STATE_BYTES;
+const PLAYER_LEVEL2_RECORD_BYTES_U16: u16 = 663;
 const AUTHORED_LEVEL_BYTES: usize = 0x6604;
 const TERRAIN_BYTES: usize = LEGACY_MAP_CELLS * 7;
 const RUNTIME_BYTES: usize = 2_754;
@@ -277,7 +288,12 @@ const FRAME_ASSET_COUNT: usize = 76;
 const LEVEL_ONE_CONTROL_MODE_SEAM_DEFAULT: u8 = 0;
 const LEVEL2_UPSTREAM_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 const LEVEL2_QUALIFIED_CLOSURE_SHA256: &str =
-    "66505e6c3691cce6c730682047c7d8634c682172daa017d4840d1a4a5be4661c";
+    "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc";
+const LEVEL2_QUALIFIED_OWNER_MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v5";
+const LEVEL2_QUALIFIED_PLAYERS_COMPONENT_MAGIC: &str = "MCP1";
+const LEVEL2_QUALIFIED_PLAYERS_COMPONENT_VERSION: u64 = 4;
+const LEVEL2_QUALIFIED_PLAYERS_COMPONENT_RECORD_BYTES: u64 = 663;
+const LEVEL2_QUALIFIED_PLAYERS_COMPONENT_COUNT: u64 = 8;
 const LEVEL2_QUALIFIED_CATALOG_FILE_SHA256: &str =
     "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44";
 const LEVEL2_QUALIFIED_CATALOG_SHA256: &str =
@@ -412,6 +428,31 @@ const LEVEL2_V4_PACKAGE_MEMBERS: [(&str, usize); 14] = [
     ("feature-start.bin", 16),
     (
         "players.bin",
+        12 + PLAYER_COUNT * PLAYER_LEVEL2_V4_RECORD_BYTES,
+    ),
+    ("presentation.bin", 10_720),
+    ("runtime.bin", RUNTIME_BYTES),
+    ("terrain-post-features.bin", TERRAIN_BYTES),
+    ("terrain-pre-features.bin", TERRAIN_BYTES),
+    ("terrain.bin", TERRAIN_BYTES),
+];
+
+/// The qualified v5 owner package differs from v4 only in the explicitly
+/// versioned one-byte Type_str_0x2BDE carrier appended to each player row.
+const LEVEL2_V5_PACKAGE_MEMBERS: [(&str, usize); 14] = [
+    ("authored-level.bin", AUTHORED_LEVEL_BYTES),
+    ("collision-masks.bin", LEVEL2_COLLISION_MASK_BANK_BYTES),
+    (
+        "entities-post-features.bin",
+        12 + ENTITY_COUNT * ENTITY_RECORD_BYTES,
+    ),
+    ("entities.bin", 12 + ENTITY_COUNT * ENTITY_RECORD_BYTES),
+    ("feature-allocator.bin", 4_032),
+    ("feature-construction-inputs.bin", 34_164),
+    ("feature-end.bin", 16),
+    ("feature-start.bin", 16),
+    (
+        "players.bin",
         12 + PLAYER_COUNT * PLAYER_LEVEL2_RECORD_BYTES,
     ),
     ("presentation.bin", 10_720),
@@ -455,6 +496,7 @@ pub enum OwnerPackageSchema {
     V2,
     V3,
     V4,
+    V5,
 }
 
 /// Resolve the single Level 1 presentation-cache root used by Rust fixtures.
@@ -1976,6 +2018,13 @@ pub struct PlayerSnapshot {
     /// Source-exact Level 2 Type_str_164 carrier. Level 1 deliberately has no
     /// corresponding field because its sealed player record remains v2.
     pub type_str_164_auxiliary: Option<TypeStr164Auxiliary>,
+    /// Source `array_0x2BDE[playerColorIndex].byte_0x006_2BE4_11236`.
+    ///
+    /// This mutable Level 2 carrier is intentionally separate from the
+    /// compact ActPlayerIndex record at bytes 6..8.  Objective kind 3 reads
+    /// this authoritative value; v3/v4 inspection rows retain `None` and
+    /// cannot construct a qualified mutable Level 2 session.
+    pub banishment_state_0x006: Option<u8>,
     record: Box<[u8]>,
 }
 
@@ -2004,11 +2053,11 @@ impl PlayerSnapshot {
     }
 
     /// Source `array_0x2BDE[color].byte_0x006`, consumed by objective kind 3
-    /// (the banished-player predicate). This is distinct from the linked
-    /// entity's life/drawing state and remains lossless in `players.bin`.
+    /// (the banished-player predicate). This is distinct from both the linked
+    /// entity's life/drawing state and ActPlayerIndex record[6..8].
     #[must_use]
-    fn objective_player_state(&self) -> u8 {
-        self.record[6]
+    fn objective_player_state(&self) -> Option<u8> {
+        self.banishment_state_0x006
     }
 
     /// Source `roll_0x155_341`, exported at the compact player-state offset
@@ -3784,7 +3833,7 @@ impl NativeWorldInspection {
     /// Query remc2 model-45 occupancy through the validated Level 2 carrier.
     pub fn model45_occupancy(&self, selector: u16, x: i32, y: i32) -> Result<bool> {
         let bank = self.collision_mask_bank().ok_or_else(|| {
-            NativeWorldError::new("Level 2 collision occupancy requires a qualified v4 package")
+            NativeWorldError::new("Level 2 collision occupancy requires a qualified v5 package")
         })?;
         bank.model45_occupancy(selector, x, y)
             .map_err(|error: CollisionMaskLookupError| {
@@ -3843,6 +3892,26 @@ impl NativeWorldInspection {
         if self.profile != OwnerPackageProfile::Level2 {
             return Err(NativeWorldError::new(
                 "Level 2 reset session requested for a non-Level 2 package",
+            ));
+        }
+        // Inspection deliberately accepts historical v3/v4 package rows, but
+        // they have no source-backed type-3 banishment carrier.  Reject before
+        // constructing any mutable mission/session state rather than creating
+        // a `None` session that merely suppresses objective completion.
+        let stage_count = usize::from(self.runtime.stage_index).min(self.runtime.stages.len());
+        if self
+            .runtime
+            .stages
+            .iter()
+            .take(stage_count)
+            .any(|stage| stage.kind == 3)
+            && self
+                .players
+                .iter()
+                .any(|player| player.banishment_state_0x006.is_none())
+        {
+            return Err(NativeWorldError::new(
+                "Level 2 type-3 objective requires a source banishment-state carrier before session creation",
             ));
         }
         let state = self
@@ -19005,15 +19074,17 @@ impl Level2ResetSession {
                 let achieved = match stage.kind {
                     3 => {
                         // The source type-3 predicate is independent of
-                        // ObjectiveText and reads the bound player's byte 6,
-                        // not the linked entity life/drawing fields.
+                        // ObjectiveText and reads the bound player's
+                        // Type_str_0x2BDE byte, not the compact
+                        // ActPlayerIndex bytes or linked entity life/drawing
+                        // fields.
                         if stage.flags & 1 == 0 {
                             false
                         } else if let RuntimeRelation::LiveEntity(target_index) = stage.relation {
                             self.players
                                 .iter()
                                 .find(|player| player.entity_index == target_index)
-                                .is_some_and(|player| player.objective_player_state() == 0)
+                                .is_some_and(|player| player.objective_player_state() == Some(0))
                         } else {
                             false
                         }
@@ -23656,6 +23727,21 @@ impl Level2ResetSession {
         for player in &self.players {
             hasher.update(player.record_bytes());
         }
+        // The byte at offset 662 is decoded into an authoritative mutable
+        // carrier rather than read back from ActPlayerIndex's compact record.
+        // Hash its presence as well as its value so an inspection-only v4 row
+        // cannot collide with a qualified v5 session and ordinary mutations
+        // are reset/replay-visible.
+        hasher.update(b"level2-player-banishment-state-v1");
+        for player in &self.players {
+            hasher.update([
+                player.slot,
+                u8::from(player.banishment_state_0x006.is_some()),
+            ]);
+            if let Some(value) = player.banishment_state_0x006 {
+                hasher.update([value]);
+            }
+        }
         let digest = hasher.finalize();
         u64::from_le_bytes(
             digest[..8]
@@ -26581,12 +26667,12 @@ fn validate_level_two_profile(
         OwnerPackageSchema::V3 => {
             "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
         }
-        OwnerPackageSchema::V4 => {
+        OwnerPackageSchema::V4 | OwnerPackageSchema::V5 => {
             "inactive non-Cave secondary terrain plane zeroed; player time_393 host-clock sample zeroed"
         }
         OwnerPackageSchema::V2 => {
             return Err(NativeWorldError::new(
-                "Level 2 player profile requires schema v3 or v4",
+                "Level 2 player profile requires schema v3, v4, or v5",
             ));
         }
     };
@@ -26657,7 +26743,9 @@ fn validate_v4_non_cave_terrain_normalization(
     schema: OwnerPackageSchema,
     map_type: MapType,
 ) -> Result<()> {
-    if schema != OwnerPackageSchema::V4 || map_type == MapType::Cave {
+    if !matches!(schema, OwnerPackageSchema::V4 | OwnerPackageSchema::V5)
+        || map_type == MapType::Cave
+    {
         return Ok(());
     }
     for name in [
@@ -26670,7 +26758,7 @@ fn validate_v4_non_cave_terrain_normalization(
             || terrain[0x40000..0x50000].iter().any(|value| *value != 0)
         {
             return Err(NativeWorldError::new(format!(
-                "v4 non-Cave {name} secondary terrain plane is not zero-normalized"
+                "v4/v5 non-Cave {name} secondary terrain plane is not zero-normalized"
             )));
         }
     }
@@ -26762,6 +26850,49 @@ fn validate_type_str_164_auxiliary_layout(
     Ok(())
 }
 
+fn validate_banishment_state_layout(
+    player_layout: &serde_json::Map<String, Value>,
+    reference: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    let expected_layout = json!({
+        "schema": "mc2-player-banishment-state/v1",
+        "record_offset": PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET,
+        "record_bytes": PLAYER_LEVEL2_BANISHMENT_STATE_BYTES,
+        "source_struct": "type_str_0x2BDE",
+        "source_struct_bytes": 2124,
+        "source_offset": 6,
+        "source_field": "byte_0x006_2BE4_11236",
+        "encoding": "u8",
+    });
+    if require_value(
+        player_layout,
+        "banishment_state_0x006",
+        "record_layouts.player",
+    )? != &expected_layout
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 player banishment-state descriptor layout is missing or changed",
+        ));
+    }
+    let expected_reference = json!({
+        "schema": "mc2-player-banishment-state/v1",
+        "source_struct": "type_str_0x2BDE",
+        "source_field": "byte_0x006_2BE4_11236",
+        "source_offset": 6,
+        "descriptor_table": "engine_support.cpp:601-613",
+        "serialization": "engine_support_converts.cpp:239-249",
+        "consumer": "EventsFunctions.cpp:40781-40785",
+    });
+    if require_value(reference, "banishment_state_0x006", "manifest.reference")?
+        != &expected_reference
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 player banishment-state source reference is missing or changed",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_manifest_layouts(
     manifest: &serde_json::Map<String, Value>,
     profile: OwnerPackageProfile,
@@ -26769,18 +26900,24 @@ fn validate_manifest_layouts(
 ) -> Result<()> {
     let sizes = require_object(manifest, "record_sizes", "manifest")?;
     require_exact_u64(sizes, "entity", ENTITY_RECORD_BYTES as u64, "record_sizes")?;
-    let (expected_player_bytes, has_type_str_164_auxiliary) = match (profile, schema) {
-        (OwnerPackageProfile::Level1, OwnerPackageSchema::V2)
-        | (OwnerPackageProfile::Level2, OwnerPackageSchema::V3) => {
-            (PLAYER_LEGACY_RECORD_BYTES, false)
-        }
-        (OwnerPackageProfile::Level2, OwnerPackageSchema::V4) => (PLAYER_LEVEL2_RECORD_BYTES, true),
-        _ => {
-            return Err(NativeWorldError::new(
-                "owner package profile/schema pair is not a supported player layout",
-            ));
-        }
-    };
+    let (expected_player_bytes, has_type_str_164_auxiliary, has_banishment_state) =
+        match (profile, schema) {
+            (OwnerPackageProfile::Level1, OwnerPackageSchema::V2)
+            | (OwnerPackageProfile::Level2, OwnerPackageSchema::V3) => {
+                (PLAYER_LEGACY_RECORD_BYTES, false, false)
+            }
+            (OwnerPackageProfile::Level2, OwnerPackageSchema::V4) => {
+                (PLAYER_LEVEL2_V4_RECORD_BYTES, true, false)
+            }
+            (OwnerPackageProfile::Level2, OwnerPackageSchema::V5) => {
+                (PLAYER_LEVEL2_RECORD_BYTES, true, true)
+            }
+            _ => {
+                return Err(NativeWorldError::new(
+                    "owner package profile/schema pair is not a supported player layout",
+                ));
+            }
+        };
     require_exact_u64(
         sizes,
         "player",
@@ -26810,11 +26947,21 @@ fn validate_manifest_layouts(
     ] {
         require_exact_u64(player, name, expected as u64, "record_layouts.player")?;
     }
+    let reference = require_object(manifest, "reference", "manifest")?;
     if has_type_str_164_auxiliary {
         validate_type_str_164_auxiliary_layout(player)?;
     } else if player.contains_key("type_str_164_auxiliary") {
         return Err(NativeWorldError::new(
             "legacy player layout must not contain the Level 2 Type_str_164 carrier",
+        ));
+    }
+    if has_banishment_state {
+        validate_banishment_state_layout(player, reference)?;
+    } else if player.contains_key("banishment_state_0x006")
+        || reference.contains_key("banishment_state_0x006")
+    {
+        return Err(NativeWorldError::new(
+            "pre-v5 player layout must not contain the Level 2 banishment-state carrier",
         ));
     }
     let runtime = require_object(layouts, "runtime", "record_layouts")?;
@@ -26860,11 +27007,11 @@ fn parse_common_package(
         OwnerPackageProfile::Level2
             if !matches!(
                 schema,
-                LEVEL2_MANIFEST_SCHEMA_V3 | LEVEL2_MANIFEST_SCHEMA_V4
+                LEVEL2_MANIFEST_SCHEMA_V3 | LEVEL2_MANIFEST_SCHEMA_V4 | LEVEL2_MANIFEST_SCHEMA_V5
             ) =>
         {
             return Err(NativeWorldError::new(format!(
-                "manifest schema must be {LEVEL2_MANIFEST_SCHEMA_V3} or {LEVEL2_MANIFEST_SCHEMA_V4} for {profile:?}"
+                "manifest schema must be {LEVEL2_MANIFEST_SCHEMA_V3}, {LEVEL2_MANIFEST_SCHEMA_V4}, or {LEVEL2_MANIFEST_SCHEMA_V5} for {profile:?}"
             )));
         }
         _ => {}
@@ -26878,7 +27025,7 @@ fn parse_common_package(
     let package = validate_package(package_dir, manifest)?;
     let authored = member(&package.members, "authored-level.bin")?.to_vec();
     let collision_masks = match (profile, package.schema) {
-        (OwnerPackageProfile::Level2, OwnerPackageSchema::V4) => Some(
+        (OwnerPackageProfile::Level2, OwnerPackageSchema::V4 | OwnerPackageSchema::V5) => Some(
             CollisionMaskBank::parse_source_exact(member(&package.members, "collision-masks.bin")?)
                 .map_err(|error| {
                     NativeWorldError::new(format!(
@@ -27008,6 +27155,7 @@ fn validate_package(
         MANIFEST_SCHEMA => OwnerPackageSchema::V2,
         LEVEL2_MANIFEST_SCHEMA_V3 => OwnerPackageSchema::V3,
         LEVEL2_MANIFEST_SCHEMA_V4 => OwnerPackageSchema::V4,
+        LEVEL2_MANIFEST_SCHEMA_V5 => OwnerPackageSchema::V5,
         other => {
             return Err(NativeWorldError::new(format!(
                 "unsupported owner package schema {other}"
@@ -27019,6 +27167,7 @@ fn validate_package(
         OwnerPackageSchema::V2 => &PACKAGE_MEMBERS,
         OwnerPackageSchema::V3 => &LEVEL2_PACKAGE_MEMBERS,
         OwnerPackageSchema::V4 => &LEVEL2_V4_PACKAGE_MEMBERS,
+        OwnerPackageSchema::V5 => &LEVEL2_V5_PACKAGE_MEMBERS,
     };
     let mut allowed_paths = expected_members
         .iter()
@@ -27224,7 +27373,7 @@ fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
 
 fn parse_type_str_164_auxiliary(record: &[u8]) -> Result<TypeStr164Auxiliary> {
     let carrier = record
-        .get(PLAYER_LEGACY_RECORD_BYTES..PLAYER_LEVEL2_RECORD_BYTES)
+        .get(PLAYER_LEGACY_RECORD_BYTES..PLAYER_LEVEL2_V4_RECORD_BYTES)
         .ok_or_else(|| NativeWorldError::new("Level 2 player Type_str_164 carrier is truncated"))?;
     let mut word_0x26_38 = [0_i16; 8];
     for (index, value) in word_0x26_38.iter_mut().enumerate() {
@@ -27249,7 +27398,7 @@ fn parse_players(
     profile: OwnerPackageProfile,
     schema: OwnerPackageSchema,
 ) -> Result<Vec<PlayerSnapshot>> {
-    let (version, record_size, record_size_u16, has_type_str_164_auxiliary) =
+    let (version, record_size, record_size_u16, has_type_str_164_auxiliary, has_banishment_state) =
         match (profile, schema) {
             (OwnerPackageProfile::Level1, OwnerPackageSchema::V2)
             | (OwnerPackageProfile::Level2, OwnerPackageSchema::V3) => (
@@ -27257,11 +27406,20 @@ fn parse_players(
                 PLAYER_LEGACY_RECORD_BYTES,
                 PLAYER_LEGACY_RECORD_BYTES_U16,
                 false,
+                false,
             ),
             (OwnerPackageProfile::Level2, OwnerPackageSchema::V4) => (
                 3,
+                PLAYER_LEVEL2_V4_RECORD_BYTES,
+                PLAYER_LEVEL2_V4_RECORD_BYTES_U16,
+                true,
+                false,
+            ),
+            (OwnerPackageProfile::Level2, OwnerPackageSchema::V5) => (
+                4,
                 PLAYER_LEVEL2_RECORD_BYTES,
                 PLAYER_LEVEL2_RECORD_BYTES_U16,
+                true,
                 true,
             ),
             _ => {
@@ -27370,6 +27528,15 @@ fn parse_players(
         let type_str_164_auxiliary = has_type_str_164_auxiliary
             .then(|| parse_type_str_164_auxiliary(record))
             .transpose()?;
+        let banishment_state_0x006 = has_banishment_state
+            .then(|| {
+                read_u8(
+                    record,
+                    PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET,
+                    "Level 2 banishment state",
+                )
+            })
+            .transpose()?;
         players.push(PlayerSnapshot {
             slot: u8::try_from(slot).expect("eight player slots"),
             is_ai: ai == 1,
@@ -27393,6 +27560,7 @@ fn parse_players(
             runtime_spell_experience,
             spell_unlocked_levels,
             type_str_164_auxiliary,
+            banishment_state_0x006,
             record: record.to_vec().into_boxed_slice(),
         });
     }
@@ -28518,6 +28686,85 @@ impl QualifiedOwnerCacheReader {
 /// Level 2 gameplay component.  The C API resolves an aggregate owner cache
 /// to this component before calling the core, so this reader never interprets
 /// an aggregate manifest.
+fn validate_level2_v5_owner_cache_identity(
+    profile: &serde_json::Map<String, Value>,
+    bindings: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    let owner_package = require_object(profile, "owner_package", "Level 2 gameplay cache profile")?;
+    if require_string(
+        owner_package,
+        "manifest_schema",
+        "Level 2 gameplay owner package",
+    )? != LEVEL2_QUALIFIED_OWNER_MANIFEST_SCHEMA
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 gameplay cache owner package schema mismatch",
+        ));
+    }
+    let players_component = require_object(
+        owner_package,
+        "players_component",
+        "Level 2 gameplay owner package",
+    )?;
+    if require_string(
+        players_component,
+        "magic",
+        "Level 2 gameplay owner players component",
+    )? != LEVEL2_QUALIFIED_PLAYERS_COMPONENT_MAGIC
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 gameplay cache owner players magic mismatch",
+        ));
+    }
+    for (name, expected) in [
+        ("version", LEVEL2_QUALIFIED_PLAYERS_COMPONENT_VERSION),
+        (
+            "record_bytes",
+            LEVEL2_QUALIFIED_PLAYERS_COMPONENT_RECORD_BYTES,
+        ),
+        ("count", LEVEL2_QUALIFIED_PLAYERS_COMPONENT_COUNT),
+    ] {
+        require_exact_u64(
+            players_component,
+            name,
+            expected,
+            "Level 2 gameplay owner players component",
+        )?;
+    }
+    if require_string(
+        bindings,
+        "owner_manifest_schema",
+        "Level 2 gameplay cache bindings",
+    )? != LEVEL2_QUALIFIED_OWNER_MANIFEST_SCHEMA
+        || require_string(
+            bindings,
+            "players_component_magic",
+            "Level 2 gameplay cache bindings",
+        )? != LEVEL2_QUALIFIED_PLAYERS_COMPONENT_MAGIC
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 gameplay cache owner binding schema mismatch",
+        ));
+    }
+    for (name, expected) in [
+        (
+            "players_component_version",
+            LEVEL2_QUALIFIED_PLAYERS_COMPONENT_VERSION,
+        ),
+        (
+            "players_component_record_bytes",
+            LEVEL2_QUALIFIED_PLAYERS_COMPONENT_RECORD_BYTES,
+        ),
+        (
+            "players_component_count",
+            LEVEL2_QUALIFIED_PLAYERS_COMPONENT_COUNT,
+        ),
+    ] {
+        require_exact_u64(bindings, name, expected, "Level 2 gameplay cache bindings")?;
+    }
+    Ok(())
+}
+
 fn load_level2_castle_stage_footprints(
     root: &Path,
     package_sha256: &str,
@@ -28639,6 +28886,7 @@ fn load_level2_castle_stage_footprints(
             "Level 2 gameplay cache map profile mismatch",
         ));
     }
+    validate_level2_v5_owner_cache_identity(profile, bindings)?;
 
     let mut outputs = BTreeMap::<String, (String, u64)>::new();
     let mut content_identity = String::new();
@@ -29919,7 +30167,13 @@ mod tests {
     }
 
     pub(super) fn level_two_fixture_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/l2-debug3.fJ3PaM/level2")
+        std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/l2-debug3.fJ3PaM/level2")
+            },
+            PathBuf::from,
+        )
     }
 
     fn level_two_v3_fixture_path() -> PathBuf {
@@ -29928,9 +30182,32 @@ mod tests {
     }
 
     fn level_two_v4_fixture_path() -> PathBuf {
-        std::env::var_os("MC_LEVEL2_PACKAGE_V4")
-            .map(PathBuf::from)
-            .expect("MC_LEVEL2_PACKAGE_V4 must point to a real v4 Level 2 export")
+        std::env::var_os("MC_LEVEL2_PACKAGE_V4").map_or_else(
+            || {
+                let generated =
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+                let migrated = generated.join("l2-debug3.fJ3PaM-v4/level2");
+                // During the recoverable artifact migration the current v4
+                // package remains the real inspection fixture until it is
+                // moved to the explicit historical path.
+                if migrated.exists() {
+                    migrated
+                } else {
+                    generated.join("l2-debug3.fJ3PaM/level2")
+                }
+            },
+            PathBuf::from,
+        )
+    }
+
+    fn level_two_gameplay_cache_path() -> PathBuf {
+        std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/level2-day-owner-cache/components/gameplay")
+            },
+            PathBuf::from,
+        )
     }
 
     fn refresh_level_two_v4_package_hash(manifest: &mut Value, package: &Path) {
@@ -29990,7 +30267,7 @@ mod tests {
         let package = level_two_fixture_path();
         let inspection = NativeWorld::inspect_level2(&package).expect("qualified Level 2 package");
         assert_eq!(inspection.profile(), OwnerPackageProfile::Level2);
-        assert_eq!(inspection.schema(), OwnerPackageSchema::V4);
+        assert_eq!(inspection.schema(), OwnerPackageSchema::V5);
         assert_eq!(
             inspection
                 .collision_mask_bank()
@@ -30000,7 +30277,7 @@ mod tests {
         assert!(
             inspection
                 .model45_occupancy(64, 0, 0)
-                .expect("qualified v4 model-45 occupancy")
+                .expect("qualified v5 model-45 occupancy")
         );
         assert_eq!(inspection.metadata().external_level, 2);
         assert_eq!(inspection.metadata().internal_level, 1);
@@ -30060,6 +30337,24 @@ mod tests {
         assert_ne!(auxiliary.byte_0x154_340, 0);
         assert_ne!(auxiliary.dword_0x16D_365, 0);
         assert_eq!(player.record_bytes().len(), PLAYER_LEVEL2_RECORD_BYTES);
+        assert_eq!(player.banishment_state_0x006, Some(1));
+        assert_eq!(
+            inspection
+                .players()
+                .iter()
+                .map(|row| row.record_bytes()[PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET])
+                .collect::<Vec<_>>(),
+            vec![1, 1, 0, 0, 0, 0, 0, 0]
+        );
+        for row in inspection.players() {
+            assert_eq!(row.active_player_index, 31, "player slot {}", row.slot);
+            assert_eq!(
+                &row.record_bytes()[6..8],
+                &31_i16.to_le_bytes(),
+                "player slot {} compact ActPlayerIndex bytes",
+                row.slot
+            );
+        }
         let mut encoded = Vec::with_capacity(TYPE_STR_164_AUXILIARY_BYTES);
         for value in auxiliary.word_0x26_38 {
             encoded.extend_from_slice(&value.to_le_bytes());
@@ -30073,8 +30368,12 @@ mod tests {
         encoded.extend_from_slice(&auxiliary.word_0x242_578.to_le_bytes());
         assert_eq!(encoded.len(), TYPE_STR_164_AUXILIARY_BYTES);
         assert_eq!(
-            &player.record_bytes()[PLAYER_LEGACY_RECORD_BYTES..],
+            &player.record_bytes()[PLAYER_LEGACY_RECORD_BYTES..PLAYER_LEVEL2_V4_RECORD_BYTES],
             encoded.as_slice()
+        );
+        assert_eq!(
+            player.record_bytes()[PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET],
+            player.banishment_state_0x006.expect("v5 state carrier")
         );
 
         let mut session = inspection
@@ -30085,6 +30384,7 @@ mod tests {
         let baseline_auxiliary = session.shared_spells().players[0]
             .type_str_164_auxiliary()
             .copied();
+        let baseline_banishment_state = session.players[0].banishment_state_0x006;
         session.shared_spells_mut().players[0].record[PLAYER_LEGACY_RECORD_BYTES] ^= 1;
         assert_ne!(session.campaign_state_hash(), baseline_hash);
         session.reset();
@@ -30096,6 +30396,14 @@ mod tests {
         assert_eq!(
             session.shared_spells().players[0].type_str_164_auxiliary(),
             baseline_auxiliary.as_ref()
+        );
+        session.players[0].banishment_state_0x006 = Some(0);
+        assert_ne!(session.campaign_state_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert_eq!(
+            session.players[0].banishment_state_0x006,
+            baseline_banishment_state
         );
     }
 
@@ -30109,7 +30417,7 @@ mod tests {
             parse_players(
                 truncated,
                 OwnerPackageProfile::Level2,
-                OwnerPackageSchema::V4
+                OwnerPackageSchema::V5
             )
             .is_err()
         );
@@ -30120,7 +30428,7 @@ mod tests {
             parse_players(
                 &wrong_version,
                 OwnerPackageProfile::Level2,
-                OwnerPackageSchema::V4
+                OwnerPackageSchema::V5
             )
             .is_err()
         );
@@ -30131,7 +30439,7 @@ mod tests {
             parse_players(
                 &wrong_record_size,
                 OwnerPackageProfile::Level2,
-                OwnerPackageSchema::V4
+                OwnerPackageSchema::V5
             )
             .is_err()
         );
@@ -30186,45 +30494,132 @@ mod tests {
             PLAYER_LEGACY_RECORD_BYTES
         );
         assert!(inspection.players()[0].type_str_164_auxiliary().is_none());
+        assert!(inspection.players()[0].banishment_state_0x006.is_none());
         let error = inspection
             .level2_reset_session()
-            .expect_err("missing Type_str_164 carrier must fail before session creation");
+            .expect_err("missing banishment carrier must fail before session creation");
         assert!(
-            error.to_string().contains("Type_str_164"),
+            error.to_string().contains("banishment-state"),
             "unexpected missing-carrier rejection: {error}"
         );
     }
 
     #[test]
-    fn level_two_v5_and_wrong_profile_are_rejected_before_session_creation() {
+    fn level_two_v5_rejects_pre_v5_player_component_and_wrong_profile() {
         let package = level_two_fixture_path();
-        for (field, value) in [
-            ("schema", json!("mc2-owner-level-export/v5")),
-            (
-                "level",
-                json!({"external": 1, "internal": 0, "map_type": {"id": 1, "name": "Night"}}),
-            ),
-        ] {
-            let temp = TempLevel2V4Package::copy_from(&package);
-            let manifest_path = temp.package.join("manifest.json");
-            let mut manifest: Value =
-                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-            manifest[field] = value;
-            fs::write(
-                &manifest_path,
-                serde_json::to_vec_pretty(&manifest).unwrap(),
-            )
-            .unwrap();
-            assert!(
-                NativeWorld::inspect_level2(&temp.package).is_err(),
-                "{field} mutation must fail before session construction"
-            );
+        let temp = TempLevel2V4Package::copy_from(&package);
+        let players_path = temp.package.join("players.bin");
+        let players = fs::read(&players_path).unwrap();
+        let mut v3_players = Vec::with_capacity(12 + PLAYER_COUNT * PLAYER_LEVEL2_V4_RECORD_BYTES);
+        v3_players.extend_from_slice(b"MCP1");
+        v3_players.extend_from_slice(&3_u16.to_le_bytes());
+        v3_players.extend_from_slice(&PLAYER_LEVEL2_V4_RECORD_BYTES_U16.to_le_bytes());
+        v3_players.extend_from_slice(&PLAYER_COUNT_U32.to_le_bytes());
+        for slot in 0..PLAYER_COUNT {
+            let begin = 12 + slot * PLAYER_LEVEL2_RECORD_BYTES;
+            v3_players.extend_from_slice(&players[begin..begin + PLAYER_LEVEL2_V4_RECORD_BYTES]);
         }
+        fs::write(&players_path, v3_players).unwrap();
+        let manifest_path = temp.package.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["files"]["players.bin"]["bytes"] =
+            json!(12 + PLAYER_COUNT * PLAYER_LEVEL2_V4_RECORD_BYTES);
+        manifest["files"]["players.bin"]["sha256"] =
+            json!(sha256_hex(&fs::read(&players_path).unwrap()));
+        // The v5 package identity is refreshed, so rejection reaches the
+        // versioned member-layout gate rather than a stale file hash.
+        let mut identity = Vec::new();
+        for (name, _) in LEVEL2_V5_PACKAGE_MEMBERS {
+            let bytes = fs::read(temp.package.join(name)).unwrap();
+            identity.extend_from_slice(name.as_bytes());
+            identity.push(0);
+            identity.extend_from_slice(sha256_hex(&bytes).as_bytes());
+            identity.push(0);
+            identity.extend_from_slice(bytes.len().to_string().as_bytes());
+            identity.push(b'\n');
+        }
+        manifest["package_sha256"] = json!(sha256_hex(&identity));
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            NativeWorld::inspect_level2(&temp.package).is_err(),
+            "v5 manifest plus v3/662 player component must fail before session construction"
+        );
+
+        let temp = TempLevel2V4Package::copy_from(&package);
+        let manifest_path = temp.package.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["level"] =
+            json!({"external": 1, "internal": 0, "map_type": {"id": 1, "name": "Night"}});
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            NativeWorld::inspect_level2(&temp.package).is_err(),
+            "wrong Level 2 metadata must fail before session construction"
+        );
+
+        let temp = TempLevel2V4Package::copy_from(&package);
+        let manifest_path = temp.package.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["schema"] = json!(LEVEL2_MANIFEST_SCHEMA_V4);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            NativeWorld::inspect_level2(&temp.package).is_err(),
+            "v4 manifest plus v4/663 player component must fail before session construction"
+        );
     }
 
     #[test]
-    #[ignore = "requires an explicit qualified real Level 2 v4 owner export"]
-    fn level_two_v4_package_open_retains_source_exact_bank_and_model45_occupancy() {
+    fn level_two_v5_gameplay_cache_binds_owner_component_identity() {
+        let package = level_two_fixture_path();
+        let cache = level_two_gameplay_cache_path();
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &cache)
+            .expect("qualified v5 gameplay cache");
+        assert!(inspection.level2_castle_stage_footprints.contains_key(&1));
+
+        let root = std::env::temp_dir().join(format!(
+            "mc2-level2-v5-gameplay-identity-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create v5 gameplay identity fixture");
+        let manifest_path = root.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(cache.join("manifest.json")).unwrap()).unwrap();
+        manifest["bindings"]["players_component_version"] = json!(3);
+        let mut unsigned = manifest.clone();
+        unsigned
+            .as_object_mut()
+            .expect("gameplay manifest object")
+            .remove("manifest_payload_sha256");
+        let canonical = serde_json::to_string_pretty(&unsigned).unwrap() + "\n";
+        manifest["manifest_payload_sha256"] = json!(sha256_hex(canonical.as_bytes()));
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = NativeWorld::inspect_level2_with_owner_cache(&package, &root)
+            .expect_err("v5 gameplay cache with v3 player binding must fail closed");
+        assert!(error.to_string().contains("players_component_version"));
+        fs::remove_dir_all(root).expect("remove v5 gameplay identity fixture");
+    }
+
+    #[test]
+    fn level_two_v4_package_remains_inspectable_but_cannot_construct_session() {
         let inspection = NativeWorld::inspect_level2(level_two_v4_fixture_path())
             .expect("qualified v4 Level 2 package");
         assert_eq!(inspection.schema(), OwnerPackageSchema::V4);
@@ -30238,23 +30633,16 @@ mod tests {
                 .expect("model-45 selector 64 pixel is in bounds")
         );
 
-        let session = inspection
+        let error = inspection
             .level2_reset_session()
-            .expect("v4 package constructs the authoritative Level 2 session");
+            .expect_err("v4 inspection must not construct a partial type-3 session");
         assert!(
-            session
-                .collision_mask_bank()
-                .is_some_and(|bank| bank.masks().len() == 9)
-        );
-        assert!(
-            session
-                .model45_occupancy(64, 0, 0)
-                .expect("authoritative session exposes model-45 occupancy")
+            error.to_string().contains("banishment-state"),
+            "v4 rejection must identify the missing authoritative carrier: {error}"
         );
     }
 
     #[test]
-    #[ignore = "requires an explicit qualified real Level 2 v4 owner export"]
     fn level_two_v4_package_open_rejects_selector64_after_all_manifest_hashes_refresh() {
         let temp = TempLevel2V4Package::copy_from(&level_two_v4_fixture_path());
         tamper_level_two_v4_selector_64_and_refresh_manifest(&temp.package);
@@ -32706,7 +33094,7 @@ mod tests {
             .iter()
             .find(|player| player.entity_index == target_index)
             .expect("type-3 objective target player row");
-        assert_ne!(target_player.objective_player_state(), 0);
+        assert_ne!(target_player.objective_player_state(), Some(0));
 
         // Stage 0 is already complete, but ObjectiveText remains 0. The
         // source type-3 predicate has no text-selector gate, so this active
@@ -32721,15 +33109,26 @@ mod tests {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert_eq!(session.runtime().objectives[0].stage_selectors[1], 1);
 
-        // The source writes byte 6 when the player is banished. Mutating that
-        // exact projected state advances the stage and selects the next row
-        // through the same production objective pass.
+        // The compact ActPlayerIndex raw byte range is not the type-3
+        // carrier. A mutation there must leave the source predicate false.
         session
             .players
             .iter_mut()
             .find(|player| player.entity_index == target_index)
             .expect("type-3 objective target player row")
             .record[6] = 0;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[1], 1);
+
+        // The exported Type_str_0x2BDE carrier is authoritative. The source
+        // banishment transition writes zero there, then this ordinary
+        // objective pass advances and selects the next row.
+        session
+            .players
+            .iter_mut()
+            .find(|player| player.entity_index == target_index)
+            .expect("type-3 objective target player row")
+            .banishment_state_0x006 = Some(0);
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert_eq!(session.runtime().objectives[0].stage_selectors[1], 2);
         assert_eq!(session.runtime().objectives[0].text_selector, 2);

@@ -27,6 +27,7 @@ OWNER = ROOT / "research/private/remc2-native-runtime/CD_Files"
 TRACE_A = ROOT / "research/private/generated/level1-frame-trace-final-v2-a"
 TRACE_B = ROOT / "research/private/generated/level1-frame-trace-final-v2-b"
 LEVEL2_EXPORT = ROOT / "research/private/generated/l2-debug3.fJ3PaM/level2"
+LEVEL2_V4_EXPORT = ROOT / "research/private/generated/l2-debug3.fJ3PaM-v4/level2"
 
 
 class RealmMatrixTests(unittest.TestCase):
@@ -420,6 +421,15 @@ class Level2ClosureContractTests(unittest.TestCase):
                 "internal_level": 1,
                 "map_type": {"id": 0, "name": "day"},
                 "spec_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+                "owner_package": {
+                    "manifest_schema": "mc2-owner-level-export/v5",
+                    "players_component": {
+                        "magic": "MCP1",
+                        "version": 4,
+                        "record_bytes": 663,
+                        "count": 8,
+                    },
+                },
                 "identity_status": "qualified",
             },
         )
@@ -435,17 +445,44 @@ class Level2ClosureContractTests(unittest.TestCase):
         self.assertFalse(self.document["qualification"]["zero_unresolved_frame_used_claimed"])
         self.assertTrue(frame["unresolved"])
 
-    def test_v4_player_carrier_schema_is_accepted_without_changing_day_selectors(self) -> None:
-        manifest = json.loads((LEVEL2_EXPORT / "manifest.json").read_text(encoding="utf-8"))
+    def test_v4_inspection_is_separate_from_v5_closure_production(self) -> None:
+        manifest = json.loads((LEVEL2_V4_EXPORT / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["schema"], "mc2-owner-level-export/v4")
         selectors = closure._level2_expected_selectors(manifest)
         self.assertEqual(selectors["map_type"], "Day")
         self.assertEqual(selectors["vga_resolution_selector"], 1)
         self.assertEqual(selectors["texture_size"], 32)
-        rejected = copy.deepcopy(manifest)
-        rejected["schema"] = "mc2-owner-level-export/v5"
-        with self.assertRaisesRegex(closure.ClosureError, "requires owner-level-export/v3 or v4"):
-            closure._level2_expected_selectors(rejected)
+        with self.assertRaisesRegex(closure.ClosureError, "requires owner-level-export/v5"):
+            closure._level2_production_owner_identity(LEVEL2_V4_EXPORT, manifest)
+
+        v5_manifest = json.loads((LEVEL2_EXPORT / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            closure._level2_production_owner_identity(LEVEL2_EXPORT, v5_manifest),
+            self.document["profile"]["owner_package"],
+        )
+
+    def test_v5_component_version_pair_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            export = Path(tmp) / "level2"
+            shutil.copytree(LEVEL2_EXPORT, export)
+            players = bytearray((export / "players.bin").read_bytes())
+            players[4:6] = (3).to_bytes(2, "little")
+            players[6:8] = (662).to_bytes(2, "little")
+            (export / "players.bin").write_bytes(players)
+            manifest = json.loads((export / "manifest.json").read_text(encoding="utf-8"))
+            with self.assertRaisesRegex(closure.ClosureError, "component v4/663"):
+                closure._level2_production_owner_identity(export, manifest)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            export = Path(tmp) / "level2"
+            shutil.copytree(LEVEL2_V4_EXPORT, export)
+            players = bytearray((export / "players.bin").read_bytes())
+            players[4:6] = (4).to_bytes(2, "little")
+            players[6:8] = (663).to_bytes(2, "little")
+            (export / "players.bin").write_bytes(players)
+            manifest = json.loads((export / "manifest.json").read_text(encoding="utf-8"))
+            with self.assertRaisesRegex(closure.ClosureError, "requires owner-level-export/v5"):
+                closure._level2_production_owner_identity(export, manifest)
 
     def test_day_asset_ids_and_hashes_are_catalog_qualified(self) -> None:
         identity = self.document["source"]["owner_root_identity"]
