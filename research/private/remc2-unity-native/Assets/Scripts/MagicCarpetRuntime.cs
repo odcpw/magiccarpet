@@ -551,6 +551,7 @@ namespace MagicCarpet.Native
         private Level2IndexedWorldPresenter level2IndexedWorldPresenter;
         private Level2EntityPresenter level2EntityPresenter;
         private Level2HudPresenter level2HudPresenter;
+        private Level2SpellPresenter level2SpellPresenter;
         private Level2MinimapPresenter level2MinimapPresenter;
         private Level2AudioPresenter level2AudioPresenter;
         private readonly List<string> level2PresentationOrder = new();
@@ -743,6 +744,9 @@ namespace MagicCarpet.Native
 
         private Level2HudPresenter Level2Hud =>
             level2HudPresenter ??= new Level2HudPresenter(this);
+
+        private Level2SpellPresenter Level2Spells =>
+            level2SpellPresenter ??= new Level2SpellPresenter();
 
         private Level2MinimapPresenter Level2Minimap =>
             level2MinimapPresenter ??= new Level2MinimapPresenter(this);
@@ -975,6 +979,14 @@ namespace MagicCarpet.Native
 
         internal NativeSim.CampaignBeyondSightSnapshot Level2ProductionBeyondSight =>
             campaignSession?.BeyondSightState() ?? default;
+
+        internal Level2SpellPresentation[] Level2ProductionSpellEffects =>
+            level2SpellPresenter?.ActiveEffects ??
+            System.Array.Empty<Level2SpellPresentation>();
+
+        internal Level2SpellPresentationReceipt[] Level2ProductionSpellReceipts =>
+            level2SpellPresenter?.Receipts ??
+            System.Array.Empty<Level2SpellPresentationReceipt>();
 
         internal NativeSim.CampaignDayMusicSnapshot Level2ProductionDayMusic =>
             level2DayMusic;
@@ -2416,10 +2428,42 @@ namespace MagicCarpet.Native
             UpdateLevel2IndexedFrame(level2TerrainState.tick);
             level2DayHud = campaignSession.DayHudState(level2TerrainState.tick);
             PresentLevel2DayHud(level2DayHud);
+            PresentLevel2SpellEffects(result.snapshot, result.events, level2DayHud);
             ProjectLevel2Minimap(level2TerrainState.tick);
             level2StepInputX = result.snapshot.x;
             level2StepInputY = result.snapshot.y;
             level2StepInputZ = result.snapshot.z;
+        }
+
+        private void PresentLevel2SpellEffects(
+            NativeSim.CampaignStepSnapshot step,
+            NativeSim.CampaignEvent[] events,
+            NativeSim.CampaignDayHudSnapshot hud)
+        {
+            RecordLevel2Presentation("spells");
+            Require(
+                campaignSession != null && level2Mode,
+                "Level 2 spell presentation has a campaign owner");
+            Level2Spells.Present(
+                step,
+                events,
+                hud,
+                campaignSession.ShieldState(),
+                campaignSession.InvisibleState(),
+                campaignSession.BeyondSightState());
+        }
+
+        private void InitializeLevel2SpellPresentation()
+        {
+            Require(
+                campaignSession != null && level2Mode,
+                "Level 2 spell presentation initializes with a campaign owner");
+            Level2Spells.Reset(campaignSession.Generation);
+        }
+
+        private void ResetLevel2SpellPresentation(ulong generation)
+        {
+            Level2Spells.Reset(generation);
         }
 
         private void FixedUpdateCore(bool updatePresentation)
@@ -8346,6 +8390,7 @@ namespace MagicCarpet.Native
                 "Level 2 reset route requires a validated campaign session");
             DestroyLevel2IndexedFramePresentation();
             campaignSession.Reset();
+            ResetLevel2SpellPresentation(campaignSession.Generation);
             spellMenuCommands.Clear();
             selectedSpellRequested = false;
             level2SpellMenuCursor = -1;
@@ -10659,12 +10704,44 @@ namespace MagicCarpet.Native
                     manaWidth,
                     10,
                     hud.manaPaletteIndex);
+                DrawLevel2SpellEffects();
             }
             finally
             {
                 GUI.matrix = priorMatrix;
                 GUI.color = priorColour;
             }
+        }
+
+        private void DrawLevel2SpellEffects()
+        {
+            var effects = Level2ProductionSpellEffects;
+            for (var index = 0; index < effects.Length; index++)
+            {
+                var effect = effects[index];
+                var name = effect.Family switch
+                {
+                    6 => "SHIELD",
+                    11 => "INVISIBLE",
+                    12 => "BEYOND SIGHT",
+                    _ => null
+                };
+                if (name == null)
+                {
+                    continue;
+                }
+                GUI.color = effect.Family switch
+                {
+                    6 => new Color(0.66f, 0.84f, 1f),
+                    11 => new Color(0.78f, 0.68f, 1f),
+                    _ => new Color(1f, 0.9f, 0.55f)
+                };
+                GUI.Label(
+                    new Rect(6, 432 - index * 16, 260, 16),
+                    name + " ACTIVE",
+                    hudStyle);
+            }
+            GUI.color = Color.white;
         }
 
         private void DrawLevel2DayHudSpellSlot(
@@ -11552,6 +11629,7 @@ namespace MagicCarpet.Native
             try
             {
                 campaignWorldInfo = campaignSession.WorldInfo();
+                InitializeLevel2SpellPresentation();
                 SeedLevel2LocalPlayerPosition();
                 level2SpellMenuCursor = -1;
                 spellMenuCommands.Clear();
@@ -11996,9 +12074,11 @@ namespace MagicCarpet.Native
             }
             level2MinimapPresenter?.Dispose();
             level2AudioPresenter?.Dispose();
+            level2SpellPresenter?.Dispose();
             level2IndexedWorldPresenter = null;
             level2EntityPresenter = null;
             level2HudPresenter = null;
+            level2SpellPresenter = null;
             level2MinimapPresenter = null;
             level2AudioPresenter = null;
             level2PresentationOrder.Clear();

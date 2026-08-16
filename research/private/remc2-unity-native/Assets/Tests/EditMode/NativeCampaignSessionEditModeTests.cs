@@ -441,7 +441,7 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveLevel2Frames(1);
                 Assert.That(
                     runtime.Level2ProductionPresentationOrder,
-                    Is.EqualTo(new[] { "audio", "indexed-world", "hud", "minimap" }),
+                    Is.EqualTo(new[] { "audio", "indexed-world", "hud", "spells", "minimap" }),
                     "ordinary Level 2 fixed update preserves presenter order");
                 var first = runtime.Level2ProductionStepSnapshot;
                 var firstInput = runtime.Level2ProductionLastStepInput;
@@ -496,7 +496,7 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveLevel2Frames(1);
                 Assert.That(
                     runtime.Level2ProductionPresentationOrder,
-                    Is.EqualTo(new[] { "audio", "indexed-world", "hud", "minimap" }),
+                    Is.EqualTo(new[] { "audio", "indexed-world", "hud", "spells", "minimap" }),
                     "following Level 2 fixed update uses the same fixed order");
             }
             finally
@@ -1158,6 +1158,563 @@ namespace MagicCarpet.Native.Tests
             Assert.Fail(
                 $"Rust-owned family-12 HUD holder did not appear within {sourcePassBound} ordinary passes");
             return hud;
+        }
+
+        private static (NativeSim.CampaignStepSnapshot snapshot,
+            NativeSim.CampaignEvent[] events) StepLevel2SpellPresentation(
+            NativeCampaignSession session,
+            Level2SpellPresenter presenter,
+            ushort playerX,
+            ushort playerY,
+            short playerZ,
+            sbyte flags = 1,
+            short requestedSpell = NativeSim.NoRequestedSpell,
+            sbyte roll = 0,
+            sbyte pitch = 0)
+        {
+            var stepped = session.Step(
+                playerX,
+                playerY,
+                playerZ,
+                flags: flags,
+                requestedSpell: requestedSpell,
+                roll: roll,
+                pitch: pitch);
+            presenter.Present(
+                stepped.snapshot,
+                stepped.events,
+                session.DayHudState(stepped.snapshot.revision),
+                session.ShieldState(),
+                session.InvisibleState(),
+                session.BeyondSightState());
+            return stepped;
+        }
+
+        private static NativeSim.CampaignSpellPickupSnapshot
+            MaterializeLevel2SpellSource(
+                NativeCampaignSession session,
+                Level2SpellPresenter presenter,
+                byte family,
+                ushort authoredIndex,
+                ushort objectiveX,
+                ushort objectiveY,
+                int sourcePassBound,
+                sbyte neutralFlags = 1)
+        {
+            for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
+            {
+                var source = session.SpellPickups().SingleOrDefault(candidate =>
+                    candidate.active == 1 &&
+                    candidate.family == family &&
+                    candidate.authoredIndex == authoredIndex);
+                if (source.active == 1)
+                {
+                    return source;
+                }
+
+                StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    objectiveX,
+                    objectiveY,
+                    256,
+                    flags: neutralFlags);
+            }
+
+            Assert.Fail(
+                $"ordinary Level 2 source family {family} / authored row {authoredIndex} " +
+                $"did not materialize within {sourcePassBound} source passes");
+            return default;
+        }
+
+        private static (NativeSim.CampaignStepSnapshot snapshot,
+            NativeSim.CampaignEvent[] events,
+            NativeSim.CampaignEvent acquisition) AcquireLevel2SpellSource(
+                NativeCampaignSession session,
+                Level2SpellPresenter presenter,
+                NativeSim.CampaignSpellPickupSnapshot source,
+                int sourcePassBound,
+                sbyte neutralFlags = 1)
+        {
+            for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
+            {
+                var stepped = StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    source.x,
+                    source.y,
+                    source.z,
+                    flags: neutralFlags);
+                var acquisition = stepped.events.SingleOrDefault(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventSpellAcquisition &&
+                    eventRow.family == source.family &&
+                    eventRow.sourceSlot == source.sourceEntityIndex &&
+                    eventRow.flags == 1);
+                if (acquisition.kind == NativeSim.CampaignEventSpellAcquisition)
+                {
+                    return (stepped.snapshot, stepped.events, acquisition);
+                }
+            }
+
+            Assert.Fail(
+                $"ordinary Level 2 source slot {source.sourceEntityIndex} " +
+                $"did not acquire family {source.family} within {sourcePassBound} source passes");
+            return default;
+        }
+
+        private static void AssertPresentedLevel2Spell(
+            Level2SpellPresenter presenter,
+            byte family,
+            NativeSim.CampaignStepSnapshot snapshot,
+            NativeSim.CampaignEvent acquisition,
+            ushort holderEntityIndex,
+            ushort parentEntityIndex)
+        {
+            var effect = presenter.ActiveEffects.Single(candidate => candidate.Family == family);
+            Assert.That(effect.Generation, Is.EqualTo(snapshot.generation));
+            Assert.That(effect.Tick, Is.EqualTo(snapshot.revision));
+            Assert.That(effect.SourceSlot, Is.EqualTo(acquisition.sourceSlot));
+            Assert.That(effect.EventOrdinal, Is.EqualTo(acquisition.ordinal));
+            Assert.That(effect.HolderEntityIndex, Is.EqualTo(holderEntityIndex));
+            Assert.That(effect.ParentEntityIndex, Is.EqualTo(parentEntityIndex));
+        }
+
+        private static void AssertNoPresentedLevel2Spell(
+            Level2SpellPresenter presenter,
+            byte family)
+        {
+            Assert.That(
+                presenter.ActiveEffects.Any(candidate => candidate.Family == family),
+                Is.False);
+        }
+
+        private static NativeSim.CampaignDayHudSnapshot WithLevel2SpellHudSlot(
+            NativeSim.CampaignDayHudSnapshot hud,
+            ushort holderEntityIndex,
+            short rawSpellSelector,
+            byte? model = null,
+            sbyte? tier = null,
+            short? activeValue = null,
+            ushort? activationValue = null,
+            byte? drawAdmitted = null,
+            short? replacementSelector = null)
+        {
+            var isLeft = hud.left.holderEntityIndex == holderEntityIndex &&
+                         hud.left.rawSpellSelector == rawSpellSelector;
+            var isRight = hud.right.holderEntityIndex == holderEntityIndex &&
+                          hud.right.rawSpellSelector == rawSpellSelector;
+            Assert.That(isLeft || isRight, Is.True);
+            var slot = isLeft ? hud.left : hud.right;
+            if (model.HasValue)
+            {
+                slot.model = model.Value;
+            }
+            if (tier.HasValue)
+            {
+                slot.tier = tier.Value;
+            }
+            if (activeValue.HasValue)
+            {
+                slot.activeValue = activeValue.Value;
+            }
+            if (activationValue.HasValue)
+            {
+                slot.activationValue = activationValue.Value;
+            }
+            if (drawAdmitted.HasValue)
+            {
+                slot.drawAdmitted = drawAdmitted.Value;
+            }
+            if (replacementSelector.HasValue)
+            {
+                slot.rawSpellSelector = replacementSelector.Value;
+            }
+            if (isLeft)
+            {
+                hud.left = slot;
+            }
+            else
+            {
+                hud.right = slot;
+            }
+            return hud;
+        }
+
+        private static (ushort x, ushort y, short z) Level2LocalPlayerPosition(
+            NativeCampaignSession session)
+        {
+            var player = session.Players().Single(candidate =>
+                candidate.active == 1 && candidate.slot == 0);
+            var entity = session.Entities().Single(candidate =>
+                candidate.active == 1 && candidate.entityIndex == player.entityIndex);
+            return (entity.x, entity.y, entity.z);
+        }
+
+        private static (ushort x, ushort y, short z, ulong rootTick) DriveLevel2OrdinaryManaWindow(
+            NativeCampaignSession session,
+            Level2SpellPresenter presenter,
+            int requiredMana,
+            int sourcePassBound)
+        {
+            // Pinned by the existing strict C-ABI Possession predecessor:
+            // 384 child speed + observed 16 player speed, across two source
+            // callbacks. CampaignEntitySnapshot deliberately omits the
+            // transient FlightState speed, so this is a test input fixture,
+            // not managed movement/physics authority.
+            const ushort StrictPossessionLaunchYOffset = 800;
+            const byte ManaSphereClaimedEconomyCode = 2;
+
+            // The established public Castle predecessor starts from the
+            // initial player carrier at its ordinary flight height. Bind all
+            // three values from the live C-ABI projection before invoking the
+            // selected Castle command; Unity does not synthesize movement or
+            // gameplay geometry.
+            var initialPosition = Level2LocalPlayerPosition(session);
+            Assert.That(initialPosition.x, Is.EqualTo((ushort)384));
+            Assert.That(initialPosition.y, Is.EqualTo((ushort)62_080));
+            Assert.That(initialPosition.z, Is.EqualTo((short)256));
+            (ushort x, ushort y, short z) castleInputPosition = (
+                initialPosition.x,
+                initialPosition.y,
+                initialPosition.z);
+
+            // Authored row 11's public switch carrier is entity slot 23;
+            // ObjectiveStageState and entity slot 11 are different records.
+            // Use that live C-ABI entity projection rather than inventing a
+            // managed coordinate or routing this production trigger through
+            // a qualification helper.
+            var groupOneSwitch = session.Entities().Single(candidate =>
+                candidate.active == 1 && candidate.entityIndex == 23);
+            var initialSphereIds = session.ManaSpheres()
+                .Where(candidate => candidate.active == 1 && candidate.model == 39)
+                .Select(candidate => candidate.sphereId)
+                .ToArray();
+            // The ordinary Day route supplies the regular flight height, then
+            // observes the same-pass authored-group event and resulting
+            // Rust-owned sphere rows. It has no frame/revision wait.
+            var groupOneStep = StepLevel2SpellPresentation(
+                session,
+                presenter,
+                groupOneSwitch.x,
+                groupOneSwitch.y,
+                256,
+                flags: 0);
+            Assert.That(
+                groupOneStep.events.Any(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventAuthoredGroup &&
+                    eventRow.sourceSlot == groupOneSwitch.entityIndex &&
+                    eventRow.flags != 0),
+                Is.True,
+                "ordinary authored row-11 switch must publish group-1 activation");
+            var groupOne = session.ManaSpheres()
+                .Where(candidate =>
+                    candidate.active == 1 &&
+                    candidate.model == 39 &&
+                    candidate.mana == 512 &&
+                    candidate.ownerEntityIndex == 0 &&
+                    !initialSphereIds.Contains(candidate.sphereId))
+                .OrderBy(candidate => candidate.sphereId)
+                .ToArray();
+            Assert.That(groupOne, Has.Length.GreaterThanOrEqualTo(6));
+
+            // The target row is selected from the authoritative public sphere
+            // projection. The actual player/holder geometry is then supplied
+            // back through ordinary C-ABI Step inputs; no C# world mutation
+            // or spell activation helper participates.
+            var target = groupOne.Single(candidate => candidate.sphereId == 141);
+            var approach = StepLevel2SpellPresentation(
+                session,
+                presenter,
+                target.x,
+                target.y,
+                target.z,
+                pitch: 127);
+            var player = session.Entities().Single(candidate =>
+                candidate.active == 1 && candidate.entityIndex == approach.snapshot.playerEntityIndex);
+            Assert.That(player.fov, Is.EqualTo(0));
+            var launchX = unchecked((ushort)(target.x + 256));
+            var launchY = unchecked((ushort)(target.y + StrictPossessionLaunchYOffset));
+            var launchZ = unchecked((short)(target.z - player.fov));
+            var stepped = StepLevel2SpellPresentation(
+                session,
+                presenter,
+                launchX,
+                launchY,
+                launchZ,
+                flags: 0x41,
+                requestedSpell: 1,
+                pitch: 127);
+            var localPlayer = stepped.snapshot.playerEntityIndex;
+            Assert.That(
+                stepped.events.Any(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventDynamicArena &&
+                    (eventRow.family == 39 || eventRow.family == 40)),
+                Is.True,
+                "strict public Possession launch must publish its Rust dynamic source/effect");
+            var groupOneIds = groupOne
+                .Select(candidate => candidate.sphereId)
+                .ToHashSet();
+            var observedClaimIds = new System.Collections.Generic.HashSet<uint>();
+            var claimedEnough = false;
+            for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
+            {
+                foreach (var receipt in session.EconomyEvents().Where(receipt =>
+                    receipt.code == ManaSphereClaimedEconomyCode &&
+                    receipt.entity0 == localPlayer &&
+                    groupOneIds.Contains(receipt.primaryId)))
+                {
+                    observedClaimIds.Add(receipt.primaryId);
+                }
+                var claimedMana = session.ManaSpheres()
+                    .Where(candidate =>
+                        candidate.active == 1 &&
+                        candidate.model == 39 &&
+                        candidate.ownerEntityIndex == localPlayer &&
+                        groupOne.Any(grouped => grouped.sphereId == candidate.sphereId))
+                    .Sum(candidate => candidate.mana);
+                if (claimedMana >= 5 * target.mana)
+                {
+                    claimedEnough = true;
+                    break;
+                }
+                stepped = StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    launchX,
+                    launchY,
+                    launchZ,
+                    flags: 0);
+            }
+            Assert.That(
+                observedClaimIds, Has.Count.EqualTo(6),
+                "the strict public Possession route must retain all six group-1 claim receipts");
+            Assert.That(
+                claimedEnough,
+                Is.True,
+                "ordinary Possession flight did not retain enough Rust-owned mana for Castle return");
+
+            var possessionCooled = false;
+            var sawCastleGateClosed = false;
+            var sawPossessionEffect = stepped.events.Any(eventRow =>
+                eventRow.kind == NativeSim.CampaignEventDynamicArena && eventRow.family == 40);
+            for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
+            {
+                var hud = session.DayHudState(stepped.snapshot.revision);
+                sawCastleGateClosed |= hud.localPlayerMana < 1_000;
+                sawPossessionEffect |= stepped.events.Any(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventDynamicArena && eventRow.family == 40);
+                var possession = new[] { hud.left, hud.right }.Single(slot =>
+                    slot.rawSpellSelector == 1 && slot.holderEntityIndex != 0);
+                if (possession.activeValue == 0)
+                {
+                    possessionCooled = true;
+                    break;
+                }
+                stepped = StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    launchX,
+                    launchY,
+                    launchZ,
+                    flags: 0);
+            }
+            Assert.That(possessionCooled, Is.True);
+
+            var castleManaReady = false;
+            var visitedCastleInputPosition = false;
+            for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
+            {
+                var hud = session.DayHudState(stepped.snapshot.revision);
+                sawCastleGateClosed |= hud.localPlayerMana < 1_000;
+                var possessionEffectLive = stepped.events.Any(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventDynamicArena && eventRow.family == 40);
+                sawPossessionEffect |= possessionEffectLive;
+                if (visitedCastleInputPosition &&
+                    sawCastleGateClosed &&
+                    hud.localPlayerMana >= 1_000 &&
+                    !possessionEffectLive)
+                {
+                    castleManaReady = true;
+                    break;
+                }
+                stepped = StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    castleInputPosition.x,
+                    castleInputPosition.y,
+                    castleInputPosition.z,
+                    flags: 0);
+                visitedCastleInputPosition = true;
+            }
+            Assert.That(
+                sawCastleGateClosed,
+                Is.True,
+                "ordinary Possession upkeep must expose Castle's below-1000 mana gate");
+            Assert.That(
+                sawPossessionEffect,
+                Is.True,
+                "strict Possession route must expose its typed family-40 effect before Castle recovery");
+            Assert.That(visitedCastleInputPosition, Is.True);
+            Assert.That(
+                castleManaReady,
+                Is.True,
+                "ordinary neutral C-ABI controls must retire the family-40 Possession effect before Castle");
+
+            var castlePrecastHud = session.DayHudState(stepped.snapshot.revision);
+            var castlePrecastPlayer = session.Entities().Single(candidate =>
+                candidate.active == 1 && candidate.entityIndex == stepped.snapshot.playerEntityIndex);
+            var castlePrecastPlayerState = session.Players().Single(candidate =>
+                candidate.active == 1 && candidate.slot == stepped.snapshot.playerSlot);
+            // The public entity projection does not promise a particular
+            // class/model row for the currently selected Castle holder.
+            // Preserve the observed rows as failure diagnostics instead of
+            // making a test-only inference about a private holder layout.
+            var castleCarrierRows = session.Entities()
+                .Where(candidate => candidate.classId == 15 || candidate.entityIndex == 117)
+                .OrderBy(candidate => candidate.entityIndex)
+                .Select(candidate =>
+                    $"slot={candidate.entityIndex}/src={candidate.sourceId}/active={candidate.active}/" +
+                    $"class={candidate.classId}/model={candidate.model}/action={candidate.action}/phase={candidate.phase}")
+                .ToArray();
+            var castlePrecastDiagnostic =
+                "Level 2 Castle pre-cast: " +
+                $"input=({castleInputPosition.x},{castleInputPosition.y},{castleInputPosition.z}) " +
+                $"inspection=({castlePrecastPlayer.x},{castlePrecastPlayer.y},{castlePrecastPlayer.z}) " +
+                $"inspectionFlight=(yaw={castlePrecastPlayer.yaw},pitch={castlePrecastPlayer.pitch},fov={castlePrecastPlayer.fov},actualSpeed={castlePrecastPlayer.actualSpeed}) " +
+                $"mana={castlePrecastHud.localPlayerMana}/{castlePrecastHud.localPlayerMaxMana} " +
+                $"selectors=(ui={castlePrecastPlayerState.selectedSpellUiIndex},sub={castlePrecastPlayerState.selectedSubspellIndex},leftSlot={castlePrecastPlayerState.leftSpellSlotRaw},rightSlot={castlePrecastPlayerState.rightSpellSlotRaw}) " +
+                $"spellRows=[{string.Join(";", castleCarrierRows)}] " +
+                $"left=(raw={castlePrecastHud.left.rawSpellSelector},holder={castlePrecastHud.left.holderEntityIndex},action={castlePrecastHud.left.action},active={castlePrecastHud.left.activeValue},activation={castlePrecastHud.left.activationValue}) " +
+                $"right=(raw={castlePrecastHud.right.rawSpellSelector},holder={castlePrecastHud.right.holderEntityIndex},action={castlePrecastHud.right.action},active={castlePrecastHud.right.activeValue},activation={castlePrecastHud.right.activationValue})";
+            stepped = StepLevel2SpellPresentation(
+                session,
+                presenter,
+                castleInputPosition.x,
+                castleInputPosition.y,
+                castleInputPosition.z,
+                flags: 0x40,
+                requestedSpell: 2);
+            var requestDynamicEvents = stepped.events
+                .Where(eventRow => eventRow.kind == NativeSim.CampaignEventDynamicArena)
+                .Select(eventRow => $"{eventRow.family}@{eventRow.sourceSlot}")
+                .ToArray();
+            var requestFlyers = stepped.events
+                .Where(eventRow =>
+                    eventRow.pass == 0 &&
+                    eventRow.kind == NativeSim.CampaignEventDynamicArena &&
+                    eventRow.family == 38)
+                .ToArray();
+            var following = StepLevel2SpellPresentation(
+                session,
+                presenter,
+                castleInputPosition.x,
+                castleInputPosition.y,
+                castleInputPosition.z,
+                flags: 0);
+            var followingDynamicEvents = following.events
+                .Where(eventRow => eventRow.kind == NativeSim.CampaignEventDynamicArena)
+                .Select(eventRow => $"{eventRow.family}@{eventRow.sourceSlot}")
+                .ToArray();
+            var followingRoots = following.events
+                .Where(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventDynamicArena && eventRow.family == 1)
+                .ToArray();
+            var castleRouteDiagnostic =
+                $"request kind8=[{string.Join(",", requestDynamicEvents)}] " +
+                $"following kind8=[{string.Join(",", followingDynamicEvents)}] " +
+                $"flyers=[{string.Join(",", requestFlyers.Select(eventRow => eventRow.sourceSlot))}] " +
+                $"roots=[{string.Join(",", followingRoots.Select(eventRow => eventRow.sourceSlot))}]";
+            Assert.That(
+                requestFlyers,
+                Has.Length.EqualTo(1),
+                "ordinary selected Castle command must publish its one gate-only Rust flyer in the request source pass; " +
+                castlePrecastDiagnostic + "; " + castleRouteDiagnostic);
+            Assert.That(
+                followingRoots,
+                Is.Not.Empty,
+                "the neutral following source pass must land the ordered Rust Castle root after its flyer; " +
+                castlePrecastDiagnostic + "; " + castleRouteDiagnostic);
+            var castleRootTick = following.snapshot.revision;
+            stepped = following;
+
+            var manaWindowReady = false;
+            for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
+            {
+                var hud = session.DayHudState(stepped.snapshot.revision);
+                if (hud.localPlayerMaxMana >= requiredMana &&
+                    hud.localPlayerMana >= requiredMana)
+                {
+                    manaWindowReady = true;
+                    break;
+                }
+                stepped = StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    castleInputPosition.x,
+                    castleInputPosition.y,
+                    castleInputPosition.z,
+                    flags: 0);
+            }
+            Assert.That(
+                manaWindowReady,
+                Is.True,
+                $"ordinary Castle route did not recover {requiredMana} Rust-owned mana");
+            return (
+                castleInputPosition.x,
+                castleInputPosition.y,
+                castleInputPosition.z,
+                castleRootTick);
+        }
+
+        private static void DriveLevel2FirstCastleDefenderReturn(
+            NativeCampaignSession session,
+            Level2SpellPresenter presenter,
+            (ushort x, ushort y, short z) position,
+            int requiredMana,
+            int sourcePassBound,
+            ulong rootTick)
+        {
+            // Pin the existing C-ABI Invisible predecessor's first ordinary
+            // Castle defender return. This is a public Rust economy receipt,
+            // not an entity inspection or managed mana mutation.
+            const byte CastleDefenderArrivedEconomyCode = 7;
+            const int FirstDefenderMana = 2_560;
+            NativeSim.CampaignEconomyEvent firstDefender = default;
+            ulong defenderTick = 0;
+            for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
+            {
+                var stepped = StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    position.x,
+                    position.y,
+                    position.z,
+                    flags: 0);
+                // Poll directly after every ordinary neutral source turn so
+                // a return cannot be mistaken for a cached/revision wait.
+                var defenderReturns = session.EconomyEvents()
+                    .Where(receipt => receipt.code == CastleDefenderArrivedEconomyCode)
+                    .ToArray();
+                if (defenderReturns.Length != 0)
+                {
+                    firstDefender = defenderReturns.Single();
+                    defenderTick = stepped.snapshot.revision;
+                }
+                var hud = session.DayHudState(stepped.snapshot.revision);
+                if (defenderTick > rootTick &&
+                    hud.localPlayerMaxMana >= requiredMana &&
+                    hud.localPlayerMana >= requiredMana)
+                {
+                    Assert.That(firstDefender.value0, Is.EqualTo(FirstDefenderMana));
+                    Assert.That(firstDefender.primaryId, Is.Not.Zero);
+                    Assert.That(firstDefender.entity0, Is.Not.Zero);
+                    return;
+                }
+            }
+            Assert.Fail(
+                $"ordinary f38-to-f1 Castle route did not publish its first {FirstDefenderMana}-mana " +
+                $"defender return and recover {requiredMana} Rust-owned HUD mana within " +
+                $"{sourcePassBound} source passes");
         }
 
         [Test]
@@ -1970,6 +2527,640 @@ namespace MagicCarpet.Native.Tests
             session.Reset();
             Assert.That(session.SpellPickups(), Is.Empty);
             Assert.That(session.ShieldState().active, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void Level2SpellPresenterPresentsRustOwnedShieldAndFailsClosed()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+            var presenter = new Level2SpellPresenter();
+            presenter.Reset(session.Generation);
+            var sourcePassBound = checked((int)session.WorldInfo().entityCount);
+            Assert.That(sourcePassBound, Is.GreaterThan(0));
+
+            var objective = session.ObjectiveStageState();
+            // The source stage axes are signed ABI fields interpreted as
+            // wrapped world coordinates at the input boundary.
+            var objectiveX = unchecked((ushort)objective.axisX);
+            var objectiveY = unchecked((ushort)objective.axisY);
+            // These are ordinary C-ABI turns at the authored objective point;
+            // no fixture or managed acquisition setter supplies the holder.
+            StepLevel2SpellPresentation(
+                session,
+                presenter,
+                objectiveX,
+                objectiveY,
+                256);
+            StepLevel2SpellPresentation(
+                session,
+                presenter,
+                objectiveX,
+                objectiveY,
+                256);
+
+            var source = MaterializeLevel2SpellSource(
+                session,
+                presenter,
+                family: 6,
+                authoredIndex: 155,
+                objectiveX: objectiveX,
+                objectiveY: objectiveY,
+                sourcePassBound: sourcePassBound);
+            var acquired = AcquireLevel2SpellSource(
+                session,
+                presenter,
+                source,
+                sourcePassBound);
+            var acquiredHud = session.DayHudState(acquired.snapshot.revision);
+            var acquiredShield = session.ShieldState();
+            var acquiredInvisible = session.InvisibleState();
+            var acquiredBeyondSight = session.BeyondSightState();
+            var receipt = presenter.Receipts.Single(candidate => candidate.Family == 6);
+            Assert.That(receipt.Generation, Is.EqualTo(acquired.snapshot.generation));
+            Assert.That(receipt.Tick, Is.EqualTo(acquired.snapshot.revision));
+            Assert.That(receipt.SourceSlot, Is.EqualTo(source.sourceEntityIndex));
+            Assert.That(receipt.EventOrdinal, Is.EqualTo(acquired.acquisition.ordinal));
+            Assert.That(acquiredShield.active, Is.EqualTo(1));
+            Assert.That(acquiredShield.activeValue, Is.EqualTo(0));
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            // These altered rows are rejection-only probes. The positive
+            // receipt above is the unmodified ordered stream returned by Rust.
+            var acquisitionIndex = System.Array.FindIndex(
+                acquired.events,
+                candidate => candidate.ordinal == acquired.acquisition.ordinal);
+            Assert.That(acquisitionIndex, Is.GreaterThanOrEqualTo(0));
+            var sourceLessEvents = (NativeSim.CampaignEvent[])acquired.events.Clone();
+            sourceLessEvents[acquisitionIndex].sourceSlot = 0;
+            var sourceLess = new Level2SpellPresenter();
+            sourceLess.Present(
+                acquired.snapshot,
+                sourceLessEvents,
+                acquiredHud,
+                acquiredShield,
+                acquiredInvisible,
+                acquiredBeyondSight);
+            Assert.That(sourceLess.Receipts, Is.Empty);
+
+            var unknownFamilyEvents = (NativeSim.CampaignEvent[])acquired.events.Clone();
+            unknownFamilyEvents[acquisitionIndex].family = 99;
+            var unknownFamily = new Level2SpellPresenter();
+            unknownFamily.Present(
+                acquired.snapshot,
+                unknownFamilyEvents,
+                acquiredHud,
+                acquiredShield,
+                acquiredInvisible,
+                acquiredBeyondSight);
+            Assert.That(unknownFamily.Receipts, Is.Empty);
+
+            var duplicateOrdinalEvents = new NativeSim.CampaignEvent[acquired.events.Length + 1];
+            System.Array.Copy(acquired.events, duplicateOrdinalEvents, acquired.events.Length);
+            duplicateOrdinalEvents[duplicateOrdinalEvents.Length - 1] = acquired.acquisition;
+            var duplicateOrdinalStep = acquired.snapshot;
+            duplicateOrdinalStep.eventCount = (uint)duplicateOrdinalEvents.Length;
+            var duplicateOrdinal = new Level2SpellPresenter();
+            duplicateOrdinal.Present(
+                duplicateOrdinalStep,
+                duplicateOrdinalEvents,
+                acquiredHud,
+                acquiredShield,
+                acquiredInvisible,
+                acquiredBeyondSight);
+            Assert.That(duplicateOrdinal.Receipts, Is.Empty);
+            Assert.That(duplicateOrdinal.ActiveEffects, Is.Empty);
+
+            var armed = StepLevel2SpellPresentation(
+                session,
+                presenter,
+                source.x,
+                source.y,
+                source.z,
+                flags: 0x41,
+                requestedSpell: 6,
+                roll: 17,
+                pitch: -13);
+            var shield = session.ShieldState();
+            Assert.That(shield.active, Is.EqualTo(1));
+            Assert.That(shield.activeValue, Is.GreaterThan(0));
+            AssertPresentedLevel2Spell(
+                presenter,
+                6,
+                armed.snapshot,
+                acquired.acquisition,
+                shield.holderEntityIndex,
+                shield.parentEntityIndex);
+
+            var armedHud = session.DayHudState(armed.snapshot.revision);
+            var invisible = session.InvisibleState();
+            var beyondSight = session.BeyondSightState();
+            var wrongHolder = shield;
+            wrongHolder.holderEntityIndex = unchecked((ushort)(wrongHolder.holderEntityIndex + 1));
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                wrongHolder,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var wrongParent = shield;
+            wrongParent.parentEntityIndex = unchecked((ushort)(wrongParent.parentEntityIndex + 1));
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                shield,
+                invisible,
+                beyondSight);
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                wrongParent,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var wrongAction = shield;
+            wrongAction.action = unchecked((byte)(wrongAction.action + 1));
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                wrongAction,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var wrongTier = shield;
+            wrongTier.tier = unchecked((byte)(wrongTier.tier + 1));
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                wrongTier,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var wrongStepPlayer = armed.snapshot;
+            wrongStepPlayer.playerEntityIndex = unchecked((ushort)(
+                wrongStepPlayer.playerEntityIndex + 1));
+            presenter.Present(
+                wrongStepPlayer,
+                armed.events,
+                armedHud,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var wrongStepSlot = armed.snapshot;
+            wrongStepSlot.playerSlot = unchecked((byte)(wrongStepSlot.playerSlot + 1));
+            presenter.Present(
+                wrongStepSlot,
+                armed.events,
+                armedHud,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var missingDrawAdmission = WithLevel2SpellHudSlot(
+                armedHud,
+                shield.holderEntityIndex,
+                6,
+                drawAdmitted: 0);
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                missingDrawAdmission,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var mismatchedModel = WithLevel2SpellHudSlot(
+                armedHud,
+                shield.holderEntityIndex,
+                6,
+                model: 99);
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                mismatchedModel,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var mismatchedHudTier = WithLevel2SpellHudSlot(
+                armedHud,
+                shield.holderEntityIndex,
+                6,
+                tier: unchecked((sbyte)(shield.tier + 1)));
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                mismatchedHudTier,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var mismatchedActiveValue = WithLevel2SpellHudSlot(
+                armedHud,
+                shield.holderEntityIndex,
+                6,
+                activeValue: unchecked((short)(shield.activeValue + 1)));
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                mismatchedActiveValue,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var mismatchedActivationValue = WithLevel2SpellHudSlot(
+                armedHud,
+                shield.holderEntityIndex,
+                6,
+                activationValue: unchecked((ushort)(shield.activationValue + 1)));
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                mismatchedActivationValue,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var unknownSelector = WithLevel2SpellHudSlot(
+                armedHud,
+                shield.holderEntityIndex,
+                6,
+                replacementSelector: 99);
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                unknownSelector,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            var staleTick = armed.snapshot;
+            staleTick.revision--;
+            var staleHud = armedHud;
+            staleHud.tick--;
+            presenter.Present(
+                staleTick,
+                armed.events,
+                staleHud,
+                shield,
+                invisible,
+                beyondSight);
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            // Restore only from the unmodified current Rust frame before
+            // observing normal source expiration.
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                shield,
+                invisible,
+                beyondSight);
+            AssertPresentedLevel2Spell(
+                presenter,
+                6,
+                armed.snapshot,
+                acquired.acquisition,
+                shield.holderEntityIndex,
+                shield.parentEntityIndex);
+
+            var expired = shield;
+            for (var sourcePass = 0;
+                 sourcePass < sourcePassBound && expired.activeValue > 0;
+                 sourcePass++)
+            {
+                StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    source.x,
+                    source.y,
+                    source.z);
+                expired = session.ShieldState();
+            }
+            Assert.That(expired.activeValue, Is.EqualTo(0));
+            AssertNoPresentedLevel2Spell(presenter, 6);
+
+            session.Reset();
+            presenter.Reset(session.Generation);
+            Assert.That(session.ShieldState().active, Is.EqualTo(0));
+            Assert.That(presenter.Receipts, Is.Empty);
+            Assert.That(presenter.ActiveEffects, Is.Empty);
+
+            // The last pre-reset Rust frame is stale for the reset presenter;
+            // it cannot revive a cleared managed label.
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                shield,
+                invisible,
+                beyondSight);
+            Assert.That(presenter.ActiveEffects, Is.Empty);
+        }
+
+        [Test]
+        public void Level2SpellPresenterPresentsOrdinaryInvisibleLifecycle()
+        {
+            // Match the production runtime and the Rust predecessor's owner
+            // cache-backed Level 2 route. This is runtime input, not a test
+            // fixture: the ordinary Castle/economy chain depends on it.
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package, Level2DayCache);
+            var presenter = new Level2SpellPresenter();
+            presenter.Reset(session.Generation);
+            var sourcePassBound = checked((int)session.WorldInfo().entityCount * 8);
+            var castlePosition = DriveLevel2OrdinaryManaWindow(
+                session,
+                presenter,
+                requiredMana: 1_000,
+                sourcePassBound: sourcePassBound);
+
+            var objective = session.ObjectiveStageState();
+            var source = MaterializeLevel2SpellSource(
+                session,
+                presenter,
+                family: 11,
+                authoredIndex: 156,
+                objectiveX: unchecked((ushort)objective.axisX),
+                objectiveY: unchecked((ushort)objective.axisY),
+                sourcePassBound: sourcePassBound,
+                neutralFlags: 0);
+            var acquired = AcquireLevel2SpellSource(
+                session,
+                presenter,
+                source,
+                sourcePassBound,
+                neutralFlags: 0);
+            var cold = session.InvisibleState();
+            Assert.That(cold.active, Is.EqualTo(1));
+            Assert.That(cold.action, Is.EqualTo(33));
+            Assert.That(cold.activeValue, Is.EqualTo(0));
+            AssertNoPresentedLevel2Spell(presenter, 11);
+
+            // The newly acquired higher-slot holder is created after the
+            // player callback that acquired it. One or more ordinary neutral
+            // Castle turns refresh that source-owned command mirror; the
+            // public code-7 receipt proves its first defender return before
+            // the selected family-11 command is eligible to pulse.
+            DriveLevel2FirstCastleDefenderReturn(
+                session,
+                presenter,
+                (castlePosition.x, castlePosition.y, castlePosition.z),
+                cold.manaCost,
+                sourcePassBound,
+                castlePosition.rootTick);
+            var armed = StepLevel2SpellPresentation(
+                session,
+                presenter,
+                castlePosition.x,
+                castlePosition.y,
+                castlePosition.z,
+                flags: 0x40,
+                requestedSpell: 11);
+            var invisible = session.InvisibleState();
+            Assert.That(invisible.active, Is.EqualTo(1));
+            Assert.That(invisible.activeValue, Is.GreaterThan(0));
+            Assert.That(invisible.cleanupRequested, Is.EqualTo(0));
+            AssertPresentedLevel2Spell(
+                presenter,
+                11,
+                armed.snapshot,
+                acquired.acquisition,
+                invisible.holderEntityIndex,
+                invisible.parentEntityIndex);
+
+            var cleanupRequested = invisible;
+            cleanupRequested.cleanupRequested = 1;
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                session.DayHudState(armed.snapshot.revision),
+                session.ShieldState(),
+                cleanupRequested,
+                session.BeyondSightState());
+            AssertNoPresentedLevel2Spell(presenter, 11);
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                session.DayHudState(armed.snapshot.revision),
+                session.ShieldState(),
+                invisible,
+                session.BeyondSightState());
+            AssertPresentedLevel2Spell(
+                presenter,
+                11,
+                armed.snapshot,
+                acquired.acquisition,
+                invisible.holderEntityIndex,
+                invisible.parentEntityIndex);
+
+            var expired = invisible;
+            for (var sourcePass = 0;
+                 sourcePass < sourcePassBound && expired.activeValue > 0;
+                 sourcePass++)
+            {
+                StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    castlePosition.x,
+                    castlePosition.y,
+                    castlePosition.z,
+                    flags: 0);
+                expired = session.InvisibleState();
+            }
+            Assert.That(expired.activeValue, Is.EqualTo(0));
+            AssertNoPresentedLevel2Spell(presenter, 11);
+
+            session.Reset();
+            presenter.Reset(session.Generation);
+            Assert.That(session.InvisibleState().active, Is.EqualTo(0));
+            Assert.That(presenter.Receipts, Is.Empty);
+            Assert.That(presenter.ActiveEffects, Is.Empty);
+        }
+
+        [Test]
+        public void Level2SpellPresenterPresentsOrdinaryBeyondSightLifecycle()
+        {
+            // The cache-backed session is the production Level 2 route used
+            // by the existing public Castle/economy predecessor.
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package, Level2DayCache);
+            var presenter = new Level2SpellPresenter();
+            presenter.Reset(session.Generation);
+            var sourcePassBound = checked((int)session.WorldInfo().entityCount * 8);
+            var castlePosition = DriveLevel2OrdinaryManaWindow(
+                session,
+                presenter,
+                requiredMana: 1_000,
+                sourcePassBound: sourcePassBound);
+
+            // Entities() is the immutable owner-package inspection surface.
+            // Use it solely for the static family-12 source identity and
+            // source-authored overlap coordinate; no dynamic state is read
+            // from this projection.
+            var source = session.Entities().Single(candidate => candidate.entityIndex == 38);
+            Assert.That(
+                (source.active, source.classId, source.model, source.action, source.phase),
+                Is.EqualTo(((byte)1, (byte)15, (byte)12, (byte)37, (byte)39)));
+
+            // The static model-12 source has no timeout, but the ordinary
+            // Castle path above has already advanced its runtime cadence.
+            // Follow the existing strict C-ABI predecessor: stay on the
+            // source-authored overlap coordinate for at most four ordinary
+            // speed-0 turns and require its one Rust acquisition receipt.
+            // This keeps the first two genuine overlap turns while avoiding
+            // a false claim that every prior public route reaches the source
+            // on a fixed second callback.
+            const int BeyondSightOverlapPassBound = 4;
+            var acquired = false;
+            NativeSim.CampaignEvent acquisition = default;
+            for (var overlapPass = 0;
+                 overlapPass < BeyondSightOverlapPassBound;
+                 overlapPass++)
+            {
+                var overlap = StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    source.x,
+                    source.y,
+                    source.z);
+                var acquisitions = overlap.events.Where(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventSpellAcquisition &&
+                    eventRow.family == 12 &&
+                    eventRow.sourceSlot == source.entityIndex &&
+                    eventRow.flags == 1).ToArray();
+                Assert.That(
+                    acquisitions,
+                    Has.Length.LessThanOrEqualTo(1),
+                    "one ordinary source pass must not publish duplicate family-12 pickups");
+                if (acquisitions.Length == 1)
+                {
+                    acquisition = acquisitions[0];
+                    acquired = true;
+                    break;
+                }
+            }
+            Assert.That(
+                acquired,
+                Is.True,
+                "bounded ordinary source overlap must acquire static family-12 row 38");
+            var cold = session.BeyondSightState();
+            Assert.That(
+                (cold.active, cold.tier, cold.action, cold.activeValue, cold.holderEntityIndex),
+                Is.EqualTo(((byte)1, (byte)0, (byte)36, (short)0, source.entityIndex)));
+            AssertNoPresentedLevel2Spell(presenter, 12);
+
+            // The f38-to-f1 Castle route is already established above. Poll
+            // its public code-7 defender receipt after this late holder has
+            // been acquired, then issue the ordinary selected spell command.
+            DriveLevel2FirstCastleDefenderReturn(
+                session,
+                presenter,
+                (castlePosition.x, castlePosition.y, castlePosition.z),
+                cold.manaCost,
+                sourcePassBound,
+                castlePosition.rootTick);
+            var armed = StepLevel2SpellPresentation(
+                session,
+                presenter,
+                castlePosition.x,
+                castlePosition.y,
+                castlePosition.z,
+                flags: 0x40,
+                requestedSpell: 12);
+            var beyondSight = session.BeyondSightState();
+            Assert.That(beyondSight.active, Is.EqualTo(1));
+            Assert.That(beyondSight.tier, Is.EqualTo(0));
+            Assert.That(beyondSight.action, Is.EqualTo(36));
+            Assert.That(beyondSight.activeValue, Is.GreaterThan(0));
+            Assert.That(beyondSight.cleanupRequested, Is.EqualTo(0));
+            var armedHud = session.DayHudState(armed.snapshot.revision);
+            var armedShield = session.ShieldState();
+            var armedInvisible = session.InvisibleState();
+            AssertPresentedLevel2Spell(
+                presenter,
+                12,
+                armed.snapshot,
+                acquisition,
+                beyondSight.holderEntityIndex,
+                beyondSight.parentEntityIndex);
+
+            // A cleanup-marked typed snapshot must fail dark even when every
+            // other source-owned field still matches the current HUD frame.
+            var cleanupRequested = beyondSight;
+            cleanupRequested.cleanupRequested = 1;
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                armedShield,
+                armedInvisible,
+                cleanupRequested);
+            AssertNoPresentedLevel2Spell(presenter, 12);
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                armedShield,
+                armedInvisible,
+                beyondSight);
+            AssertPresentedLevel2Spell(
+                presenter,
+                12,
+                armed.snapshot,
+                acquisition,
+                beyondSight.holderEntityIndex,
+                beyondSight.parentEntityIndex);
+
+            var expired = beyondSight;
+            for (var sourcePass = 0;
+                 sourcePass < sourcePassBound && expired.activeValue > 0;
+                 sourcePass++)
+            {
+                StepLevel2SpellPresentation(
+                    session,
+                    presenter,
+                    castlePosition.x,
+                    castlePosition.y,
+                    castlePosition.z,
+                    flags: 0);
+                expired = session.BeyondSightState();
+            }
+            Assert.That(expired.activeValue, Is.EqualTo(0));
+            AssertNoPresentedLevel2Spell(presenter, 12);
+
+            session.Reset();
+            presenter.Reset(session.Generation);
+            Assert.That(session.BeyondSightState().active, Is.EqualTo(0));
+            Assert.That(presenter.Receipts, Is.Empty);
+            Assert.That(presenter.ActiveEffects, Is.Empty);
+
+            // A frame retained from the prior generation cannot revive the
+            // reset presentation surface.
+            presenter.Present(
+                armed.snapshot,
+                armed.events,
+                armedHud,
+                armedShield,
+                armedInvisible,
+                beyondSight);
+            Assert.That(presenter.ActiveEffects, Is.Empty);
         }
 
         [Test]
