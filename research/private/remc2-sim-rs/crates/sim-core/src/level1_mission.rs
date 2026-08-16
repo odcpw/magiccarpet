@@ -22943,7 +22943,7 @@ fn collision_target_top(position: Position, vertical_offset: i16) -> Position {
     }
 }
 
-fn projectile_guidance_angles(from: Position, target_top: Position) -> (i16, i16) {
+pub(crate) fn projectile_guidance_angles(from: Position, target_top: Position) -> (i16, i16) {
     let yaw =
         i16::try_from(heading_for_positions(from, target_top)).expect("projectile yaw is 11-bit");
     let horizontal = wrapping_xy_distance(from, target_top);
@@ -22959,7 +22959,7 @@ fn projectile_guidance_angles(from: Position, target_top: Position) -> (i16, i16
 /// The score deliberately uses unsigned yaw/pitch separations rather than
 /// signed steering deltas. Candidates outside the 0x71×0x71 cone or 5,120
 /// source-unit radius are rejected before the weighted squared score.
-fn projectile_target_score(
+pub(crate) fn projectile_target_score(
     from: Position,
     yaw: i16,
     pitch: i16,

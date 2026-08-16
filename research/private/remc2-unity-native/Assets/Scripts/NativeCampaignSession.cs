@@ -1011,12 +1011,18 @@ namespace MagicCarpet.Native
                 sbyte flags = 1,
                 short requestedSpell = NativeSim.NoRequestedSpell,
                 sbyte roll = 0,
-                sbyte pitch = 0)
+                sbyte pitch = 0,
+                sbyte opcode = 0,
+                sbyte argument1 = 0,
+                sbyte argument2 = 0)
         {
             var command = NativeSim.Command.Create(
                 roll,
                 pitch,
                 flags,
+                opcode: opcode,
+                argument1: argument1,
+                argument2: argument2,
                 requestedSpell: requestedSpell);
             var input = NativeSim.CampaignStepInput.Create(
                 generation,

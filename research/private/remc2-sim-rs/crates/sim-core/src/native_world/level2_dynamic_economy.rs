@@ -131,6 +131,23 @@ fn level2_entity_nearby_projectile(entity: &EntitySnapshot, position: Position) 
     dx <= i32::from(entity.array_pitch()) + 2_560 && dy <= i32::from(entity.array_roll()) + 2_560
 }
 
+/// The source-shaped payload handed to `sub_69AB0`'s post-allocation
+/// `sub_68E50(parent, flyer, holder)` carrier. The parent/player route
+/// computes the hand displacement, terrain rollback, FOV Z offset, and
+/// wrapping pitch before calling the economy allocator; keeping those values
+/// together prevents the allocator from silently falling back to the raw
+/// player position and zero pitch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2CastleProjectileLaunchPayload {
+    pub position: Position,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub source_id_entity_index: u16,
+    pub source_subspell_index: u16,
+    pub source_mana: i32,
+    pub source_a4_byte_154: u8,
+}
+
 impl Level2EconomyState {
     #[must_use]
     pub fn source_owner(&self, source_entity_index: u16) -> u16 {
@@ -146,17 +163,16 @@ impl Level2EconomyState {
     /// allocation cannot obtain an arena row.
     pub fn spawn_possession_projectile(
         &mut self,
-        player_position: Position,
+        launch_position: Position,
         source_id_entity_index: u16,
         holder_entity_index: u16,
         yaw: i16,
         pitch: i16,
         player_speed: i16,
+        axis_position: Position,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
-        let mut position = player_position;
-        position.z = position.z.wrapping_add(100);
         let projectile = Level2PossessionProjectile {
             source_entity_index,
             entity_rng,
@@ -167,9 +183,14 @@ impl Level2EconomyState {
             action: POSSESSION_PROJECTILE_ACTION,
             output_class: POSSESSION_IMPACT_CLASS,
             output_model: POSSESSION_IMPACT_MODEL,
-            position,
+            target_source_entity_index: 0,
+            acquisition_attempted: false,
+            position: launch_position,
+            axis_position,
             yaw: yaw & 0x07ff,
             pitch: pitch & 0x07ff,
+            roll: 0,
+            fov: 0,
             actual_speed: POSSESSION_PROJECTILE_SPEED.wrapping_add(player_speed),
             minimum_speed: POSSESSION_PROJECTILE_SPEED,
             life: POSSESSION_PROJECTILE_LIFETIME_TICKS,
@@ -182,8 +203,8 @@ impl Level2EconomyState {
             .sync_entity(RenderableMapSeed {
                 entity_index: source_entity_index,
                 active: true,
-                x: position.x,
-                y: position.y,
+                x: launch_position.x,
+                y: launch_position.y,
             })
             .is_err()
         {
@@ -238,12 +259,13 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
-    /// Source `CastPosses_65F60`: move first, strictly clamp the flyer before
-    /// its source-ordered map scan, and retire only after model-12 allocation
-    /// succeeds. A target contact shifts to that target's temporary +28 source
-    /// Z before allocation; allocation failure preserves that shifted flyer and
-    /// its unchanged life for the next callback. On a miss, only a boundary
-    /// still violated after the scan or signed lifetime expiry attempts model 12.
+    /// Source `CastPosses_65F60`: acquire/refresh model-1 guidance before the
+    /// first move, strictly clamp the flyer before its source-ordered map scan,
+    /// and retire only after model-12 allocation succeeds. A target contact
+    /// shifts to that target's temporary source-top Z before allocation;
+    /// allocation failure preserves that shifted flyer and its unchanged life
+    /// for the next callback. On a miss, only a boundary still violated after
+    /// the scan or signed lifetime expiry attempts model 12.
     pub fn step_possession_projectile_slot(&mut self, source_slot: u16) -> bool {
         let Some(projectile_index) = self.possession_projectiles.iter().position(|projectile| {
             projectile.active && projectile.source_entity_index == source_slot
@@ -251,6 +273,47 @@ impl Level2EconomyState {
             return false;
         };
         let mut moved = self.possession_projectiles[projectile_index];
+
+        // `CastPosses_65F60` resolves word_0x96 on entry. A sentinel target
+        // permits exactly one `sub_67CB0` attempt; success copies roll/fov
+        // directly into yaw/pitch before movement. A pre-existing relation
+        // instead runs `sub_65610`, refreshing desired angles and capping both
+        // turns by descriptor-2's 0x71 source limit.
+        if moved.target_source_entity_index == 0 {
+            if !moved.acquisition_attempted {
+                moved.acquisition_attempted = true;
+                if let Some((target_source_entity_index, target_top)) =
+                    level2_possession_guidance_target(
+                        &self.spheres,
+                        &self.possession_guidance_source_slots,
+                        moved,
+                    )
+                {
+                    moved.target_source_entity_index = target_source_entity_index;
+                    (moved.roll, moved.fov) =
+                        projectile_guidance_angles(moved.position, target_top);
+                    moved.yaw = moved.roll;
+                    moved.pitch = moved.fov;
+                }
+            }
+        } else if let Some(target_top) = level2_possession_guidance_relation(
+            &self.spheres,
+            &self.possession_projectiles,
+            &self.possession_guidance_stale_records,
+            moved.target_source_entity_index,
+        ) {
+            (moved.roll, moved.fov) = projectile_guidance_angles(moved.position, target_top);
+            moved.yaw = moved.yaw.wrapping_add(turn_toward(
+                moved.yaw,
+                moved.roll,
+                PROJECTILE_ACQUISITION_ANGLE,
+            )) & 0x07ff;
+            moved.pitch = moved.pitch.wrapping_add(turn_toward(
+                moved.pitch,
+                moved.fov,
+                PROJECTILE_ACQUISITION_ANGLE,
+            )) & 0x07ff;
+        }
         crate::move_entity(
             &mut moved.position,
             moved.yaw,
@@ -398,11 +461,19 @@ impl Level2EconomyState {
             .possession_projectiles
             .iter()
             .filter(|projectile| !projectile.active)
-            .map(|projectile| (projectile.source_entity_index, projectile.entity_rng))
+            .map(|projectile| {
+                (
+                    projectile.source_entity_index,
+                    projectile.entity_rng,
+                    projectile.position,
+                )
+            })
             .collect::<Vec<_>>();
         self.possession_projectiles
             .retain(|projectile| projectile.active);
-        for (slot, entity_rng) in reclaimed_projectiles {
+        for (slot, entity_rng, position) in reclaimed_projectiles {
+            self.possession_guidance_stale_records
+                .insert(slot, position);
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
                 active: false,
@@ -717,13 +788,15 @@ impl Level2EconomyState {
             .is_some()
     }
 
-    /// Reclaim every active hidden Castle row at the ordinary source boundary.
+    /// Reclaim every hidden Castle row at the ordinary source boundary.
     /// `UpdateEntities_57730` scans the whole entity arena before rebuilding
     /// lists or dispatching a root, so this cannot depend on a live Castle
     /// root, model, parent relation, or owner relation. Live BUILD/MSPRD,
-    /// controller, defender, and auxiliary callbacks have already performed
-    /// their same-pass epilogue; this sweep only performs the following-pass
-    /// `sub_57F20` unlink/free and must not advance byte 0x3E again.
+    /// controller, defender, auxiliary, and projectile callbacks have already
+    /// performed their same-pass epilogue; this sweep only performs the
+    /// following-pass `sub_57F20` unlink/free and must not advance byte 0x3E
+    /// again. A disabled Castle flyer remains an arena/map-tracked row until
+    /// this boundary, just like a hidden Castle child.
     pub(super) fn reclaim_hidden_castle_rows_at_source_boundary(&mut self) {
         let hidden_slots: Vec<u16> = self
             .castle_children
@@ -745,7 +818,27 @@ impl Level2EconomyState {
             self.sync_castle_child_map(child);
             self.release_slot(child.source_entity_index, Some(child.entity_rng));
         }
-        if had_hidden_rows {
+
+        let hidden_projectile_slots: Vec<(u16, u16)> = self
+            .castle_projectiles
+            .iter()
+            .filter(|projectile| !projectile.active && projectile.drawing_disabled)
+            .map(|projectile| (projectile.source_entity_index, projectile.entity_rng))
+            .collect();
+        let had_hidden_projectiles = !hidden_projectile_slots.is_empty();
+        self.castle_projectiles
+            .retain(|projectile| projectile.active || !projectile.drawing_disabled);
+        for (source_slot, entity_rng) in hidden_projectile_slots {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.source_owner.remove(&source_slot);
+            self.release_slot(source_slot, Some(entity_rng));
+        }
+        if had_hidden_rows || had_hidden_projectiles {
             self.refresh_owner_mana_rows();
         }
     }
@@ -2009,21 +2102,20 @@ impl Level2EconomyState {
         castle_slot
     }
 
-    /// Start the ordinary human `sub_69AB0` Castle projectile path. The
-    /// class-9/model-10 flyer is a distinct source row; collision allocates
-    /// the later class-3/model-2 Castle seed and leaves the player relation
-    /// untouched until that seed's construction child succeeds.
-    pub fn spawn_castle_projectile(
+    /// Start the ordinary human `sub_69AB0` Castle projectile path with the
+    /// source-derived launch payload. The class-9/model-10 flyer is a
+    /// distinct source row; collision allocates the later class-3/model-2
+    /// Castle seed and leaves the player relation untouched until that
+    /// seed's construction child succeeds.
+    pub fn spawn_castle_projectile_with_payload(
         &mut self,
-        projectile_position: Position,
-        owner_entity_index: u16,
+        payload: Level2CastleProjectileLaunchPayload,
         holder_entity_index: u16,
-        player_yaw: i16,
-        player_next_entity: i16,
+        player_actual_speed: i16,
     ) -> Option<u16> {
         let footprint = self.castle_stage_footprints.get(&1)?.clone();
         let (target_position, target_anchor) =
-            level2_castle_root_positions(&self.terrain, &footprint, projectile_position);
+            level2_castle_root_positions(&self.terrain, &footprint, payload.position);
         let target_castle_slot = self
             .castle
             .filter(|castle| {
@@ -2031,13 +2123,13 @@ impl Level2EconomyState {
             })
             .map_or(0, |castle| castle.source_entity_index);
         let mut axis_position = if target_castle_slot == 0 {
-            projectile_position
+            payload.position
         } else {
             self.castle
                 .filter(|castle| castle.source_entity_index == target_castle_slot)
-                .map_or(projectile_position, |castle| castle.position)
+                .map_or(payload.position, |castle| castle.position)
         };
-        let initial_yaw = player_next_entity.wrapping_add(player_yaw);
+        let initial_yaw = payload.yaw;
         if target_castle_slot == 0 {
             crate::move_entity(&mut axis_position, initial_yaw, 0, 4_096);
             axis_position.z = self.terrain.ground_height(axis_position);
@@ -2047,9 +2139,14 @@ impl Level2EconomyState {
         let projectile = Level2CastleProjectile {
             source_entity_index,
             entity_rng,
-            owner_entity_index,
+            // `owner_entity_index` is the existing hashed carrier slot for
+            // the source `id_0x1A` relation. The dedicated subspell/mana/A4
+            // fields are carried by the payload so the owning world module
+            // can add their lossless carrier projection without a parallel
+            // side table.
+            owner_entity_index: payload.source_id_entity_index,
             holder_entity_index,
-            position: projectile_position,
+            position: payload.position,
             axis_position,
             target_position,
             target_anchor,
@@ -2058,10 +2155,13 @@ impl Level2EconomyState {
             source_byte_43: if target_castle_slot == 0 { 3 } else { 10 },
             source_byte_44: if target_castle_slot == 0 { 2 } else { 43 },
             source_word_96: target_castle_slot,
+            source_subspell_index: payload.source_subspell_index,
+            source_mana: payload.source_mana,
+            source_a4_byte_154: payload.source_a4_byte_154,
             target_castle_slot,
             yaw: initial_yaw,
-            pitch: 0,
-            actual_speed: 384,
+            pitch: payload.pitch,
+            actual_speed: 384_i16.wrapping_add(player_actual_speed),
             minimum_speed: 384,
             life: 0x2_000 / 384,
             max_life: 0x2_000 / 384,
@@ -2075,8 +2175,8 @@ impl Level2EconomyState {
             .sync_entity(RenderableMapSeed {
                 entity_index: source_entity_index,
                 active: true,
-                x: projectile_position.x,
-                y: projectile_position.y,
+                x: payload.position.x,
+                y: payload.position.y,
             })
             .is_err()
         {
@@ -2084,7 +2184,37 @@ impl Level2EconomyState {
             return None;
         }
         self.castle_projectiles.push(projectile);
+        self.source_owner
+            .insert(source_entity_index, payload.source_id_entity_index);
         Some(source_entity_index)
+    }
+
+    /// Compatibility wrapper for direct economy tests and the pre-payload
+    /// caller. Production code should pass the source-shaped payload above;
+    /// this wrapper deliberately supplies only the old raw-position/zero-
+    /// pitch defaults.
+    pub fn spawn_castle_projectile(
+        &mut self,
+        projectile_position: Position,
+        owner_entity_index: u16,
+        holder_entity_index: u16,
+        player_yaw: i16,
+        player_next_entity: i16,
+        player_actual_speed: i16,
+    ) -> Option<u16> {
+        self.spawn_castle_projectile_with_payload(
+            Level2CastleProjectileLaunchPayload {
+                position: projectile_position,
+                yaw: player_next_entity.wrapping_add(player_yaw),
+                pitch: 0,
+                source_id_entity_index: owner_entity_index,
+                source_subspell_index: 0,
+                source_mana: 0,
+                source_a4_byte_154: 0,
+            },
+            holder_entity_index,
+            player_actual_speed,
+        )
     }
 
     /// Advance one class-9/model-10 Castle flyer. A new-Castle flyer starts
@@ -2352,25 +2482,19 @@ impl Level2EconomyState {
     }
 
     fn disable_castle_projectile(&mut self, source_slot: u16, site_rejected: bool) {
-        let Some(position) = self
+        let Some(projectile) = self
             .castle_projectiles
             .iter_mut()
             .find(|projectile| projectile.active && projectile.source_entity_index == source_slot)
-            .map(|projectile| {
-                projectile.active = false;
-                projectile.drawing_disabled = true;
-                projectile.site_rejected = site_rejected;
-                projectile.position
-            })
         else {
             return;
         };
-        let _ = self.map_chains.sync_entity(RenderableMapSeed {
-            entity_index: source_slot,
-            active: false,
-            x: position.x,
-            y: position.y,
-        });
+        // DisableEntityDrawing hides the source row but does not call
+        // SetMapEntity. The row remains map/arena-reserved until the next
+        // UpdateEntities hidden-row prepass reclaims it.
+        projectile.active = false;
+        projectile.drawing_disabled = true;
+        projectile.site_rejected = site_rejected;
     }
 
     #[must_use]
@@ -3361,10 +3485,10 @@ impl Level2EconomyState {
             // Source leaves word96 untouched when cadence/action/mana gates
             // fail; begin with the relation already installed on the child.
             let mut target_slot = child.target_sphere_slot;
-            // `sub_5FF50` gates on the owner's aggregate *current* defender
-            // mana (`dword_0x13C_316`), not the aggregate max-mana display
-            // counter (`dword_0x12A_298`). The source tests that value before
-            // adding this holder's payload to the rebuilt totals below.
+            // `sub_5FF50` gates on the owner's class-10/model-45 aggregate
+            // (`dword_0x13C_316`), not the defender total rebuilt below in
+            // `dword_0x12E_302`. A full defender still falls through to the
+            // Castle relation before the sphere selector is skipped.
             if self
                 .owner_mana_aggregate(snapshot.source_id_entity_index)
                 .saturating_add(snapshot.mana)
@@ -3374,21 +3498,23 @@ impl Level2EconomyState {
             } else if child.source_byte_3e % u8::try_from(defender_target_count.max(1)).unwrap_or(1)
                 == 0
                 && child.action == 9
-                && child.mana < child.max_mana
             {
                 // Source installs the Castle relation before calling
-                // `sub_5F810`; a missing candidate therefore leaves this
-                // holder pointed at the Castle, not at a stale prior row.
+                // `sub_5F810` or testing a full holder. A missing candidate
+                // or a holder at max mana therefore remains pointed at the
+                // Castle, not at a stale prior row.
                 target_slot = castle_slot;
-                let exclude_one = defender_targets[(index + 1) % 3];
-                let exclude_two = defender_targets[(index + 2) % 3];
-                if let Some(sphere_slot) = self.select_castle_defender_sphere(
-                    child.position,
-                    child.id_entity_index,
-                    exclude_one,
-                    exclude_two,
-                ) {
-                    target_slot = sphere_slot;
+                if child.mana < child.max_mana {
+                    let exclude_one = defender_targets[(index + 1) % 3];
+                    let exclude_two = defender_targets[(index + 2) % 3];
+                    if let Some(sphere_slot) = self.select_castle_defender_sphere(
+                        child.position,
+                        child.id_entity_index,
+                        exclude_one,
+                        exclude_two,
+                    ) {
+                        target_slot = sphere_slot;
+                    }
                 }
             }
             if let Some(installed) = self
@@ -4386,6 +4512,7 @@ mod tests {
                 0,
                 0,
                 -POSSESSION_PROJECTILE_SPEED,
+                projectile_position,
             )
             .expect("source arena admits possession flyer");
         {
@@ -4590,6 +4717,7 @@ mod tests {
                 0,
                 0,
                 -POSSESSION_PROJECTILE_SPEED,
+                no_target_position,
             )
             .expect("source arena admits possession flyer");
         {
@@ -4678,6 +4806,7 @@ mod tests {
                     0,
                     0,
                     -POSSESSION_PROJECTILE_SPEED,
+                    position,
                 )
                 .expect("source arena admits possession flyer");
             {
@@ -4816,6 +4945,7 @@ mod tests {
                 0,
                 0,
                 -POSSESSION_PROJECTILE_SPEED,
+                projectile_position,
             )
             .expect("source arena admits possession flyer");
         {
@@ -4930,6 +5060,263 @@ mod tests {
             Some(class0_first.source_entity_index),
             "the first eligible class-0 model-39 is the sole target candidate"
         );
+    }
+
+    #[test]
+    fn level_two_possession_guidance_acquires_once_turns_then_keeps_stale_slot() {
+        let mut session = level_two_possession_lifecycle_session();
+        let baseline_hash = session.economy().reset_hash();
+        let source_id_entity_index = session.state.entity_index;
+        let projectile_position = Position {
+            x: 32_000,
+            y: 32_000,
+            z: 24_000,
+        };
+        let first_position = Position {
+            x: projectile_position.x.wrapping_sub(128),
+            y: projectile_position.y.wrapping_sub(2_000),
+            z: projectile_position.z,
+        };
+        let second_position = Position {
+            x: projectile_position.x.wrapping_add(128),
+            ..first_position
+        };
+        let first = session
+            .economy_mut()
+            .allocate_authored_model39(0, 65, first_position)
+            .expect("first equal-score model-39 guidance target");
+        let second = session
+            .economy_mut()
+            .allocate_authored_model39(0, 65, second_position)
+            .expect("second equal-score model-39 guidance target");
+        assert!(first.source_entity_index < second.source_entity_index);
+        for slot in [first.source_entity_index, second.source_entity_index] {
+            let sphere = session
+                .economy_mut()
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == slot)
+                .expect("guidance candidate remains represented");
+            sphere.player_entity_index = source_id_entity_index.wrapping_add(1);
+            sphere.velocity_x = 0;
+            sphere.velocity_y = 0;
+            sphere.vertical_velocity = 0;
+        }
+        session
+            .economy_mut()
+            .rebuild_possession_guidance_source_slots();
+        let projectile_slot = session
+            .economy_mut()
+            .spawn_possession_projectile(
+                projectile_position,
+                source_id_entity_index,
+                116,
+                0,
+                0,
+                0,
+                projectile_position,
+            )
+            .expect("guided Possession flyer allocation");
+        {
+            let projectile = session
+                .economy_mut()
+                .possession_projectiles
+                .iter_mut()
+                .find(|projectile| projectile.source_entity_index == projectile_slot)
+                .expect("guided flyer remains represented");
+            assert_eq!(projectile.position, projectile_position);
+        }
+        let before_first = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("guided flyer before first callback");
+        let first_target_top = level2_possession_guidance_target_top(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == first.source_entity_index)
+                .expect("lower-slot guidance target"),
+        );
+        let expected_first_angles =
+            projectile_guidance_angles(before_first.position, first_target_top);
+        let mut expected_first_position = before_first.position;
+        crate::move_entity(
+            &mut expected_first_position,
+            expected_first_angles.0,
+            expected_first_angles.1,
+            before_first.actual_speed,
+        );
+
+        assert!(
+            session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "the first guided callback remains in flight"
+        );
+        let after_first = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("guided flyer after first callback");
+        assert!(after_first.acquisition_attempted);
+        assert_eq!(
+            after_first.target_source_entity_index, first.source_entity_index,
+            "strict-lower equal-score selection retains the lower source slot"
+        );
+        assert_eq!((after_first.roll, after_first.fov), expected_first_angles);
+        assert_eq!((after_first.yaw, after_first.pitch), expected_first_angles);
+        assert_eq!(
+            after_first.position, expected_first_position,
+            "first acquisition copies desired angles before the first move"
+        );
+
+        let moved_target_position = Position {
+            x: after_first.position.x.wrapping_add(2_000),
+            y: after_first.position.y.wrapping_sub(400),
+            z: after_first.position.z,
+        };
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == first.source_entity_index)
+            .expect("selected guidance target before second callback")
+            .position = moved_target_position;
+        let moved_target_top = level2_possession_guidance_target_top(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == first.source_entity_index)
+                .expect("moved guidance target"),
+        );
+        let expected_second_angles =
+            projectile_guidance_angles(after_first.position, moved_target_top);
+        let expected_second_yaw = after_first.yaw.wrapping_add(turn_toward(
+            after_first.yaw,
+            expected_second_angles.0,
+            PROJECTILE_ACQUISITION_ANGLE,
+        )) & 0x07ff;
+        let expected_second_pitch = after_first.pitch.wrapping_add(turn_toward(
+            after_first.pitch,
+            expected_second_angles.1,
+            PROJECTILE_ACQUISITION_ANGLE,
+        )) & 0x07ff;
+        assert_ne!(
+            expected_second_yaw, expected_second_angles.0,
+            "the moved target requires a capped rather than snapping yaw turn"
+        );
+        assert!(
+            session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "the second guided callback remains in flight"
+        );
+        let after_second = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("guided flyer after second callback");
+        assert_eq!(
+            (after_second.roll, after_second.fov),
+            expected_second_angles
+        );
+        assert_eq!(after_second.yaw, expected_second_yaw);
+        assert_eq!(after_second.pitch, expected_second_pitch);
+
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == first.source_entity_index)
+            .expect("selected target before reclaim")
+            .active = false;
+        session.economy_mut().reclaim_inactive_slots();
+        let stale_target_top = session
+            .economy()
+            .possession_guidance_stale_records
+            .get(&first.source_entity_index)
+            .copied()
+            .expect("source fixed-slot record survives model-39 reclamation");
+        let expected_stale_angles =
+            projectile_guidance_angles(after_second.position, stale_target_top);
+        let _ = session
+            .economy_mut()
+            .step_possession_projectile_slot(projectile_slot);
+        let after_reclaim = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("guided flyer remains represented after target reclaim");
+        assert!(after_reclaim.acquisition_attempted);
+        assert_eq!(
+            after_reclaim.target_source_entity_index, first.source_entity_index,
+            "a stale source relation never reacquires the remaining candidate"
+        );
+        assert_ne!(
+            after_reclaim.target_source_entity_index, second.source_entity_index,
+            "candidate B cannot replace the one-shot source relation"
+        );
+        assert_eq!(
+            (after_reclaim.roll, after_reclaim.fov),
+            expected_stale_angles,
+            "a reclaimed source slot continues steering through its stale fixed record"
+        );
+
+        let replacement_position = Position {
+            x: after_reclaim.position.x.wrapping_add(600),
+            y: after_reclaim.position.y.wrapping_sub(1_500),
+            z: after_reclaim.position.z.wrapping_add(37),
+        };
+        let replacement_slot = session
+            .economy_mut()
+            .spawn_possession_projectile(
+                replacement_position,
+                source_id_entity_index,
+                116,
+                0,
+                0,
+                0,
+                Position {
+                    z: replacement_position.z.wrapping_add(999),
+                    ..replacement_position
+                },
+            )
+            .expect("released guidance slot can be overwritten by an ordinary model-1 NewEvent");
+        assert_eq!(replacement_slot, first.source_entity_index);
+        let replacement_top = replacement_position;
+        let expected_replacement_angles =
+            projectile_guidance_angles(after_reclaim.position, replacement_top);
+        let _ = session
+            .economy_mut()
+            .step_possession_projectile_slot(projectile_slot);
+        let after_reuse = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("guided flyer follows the reused source record");
+        assert_eq!(
+            (after_reuse.roll, after_reuse.fov),
+            expected_replacement_angles,
+            "slot reuse changes the existing relation's desired angles without reacquisition"
+        );
+        assert!(after_reuse.acquisition_attempted);
+        assert_eq!(after_reuse.target_source_entity_index, replacement_slot);
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
     }
 
     #[test]
@@ -5063,6 +5450,7 @@ mod tests {
                 0,
                 0,
                 -POSSESSION_PROJECTILE_SPEED,
+                collision_position,
             )
             .expect("source arena admits possession flyer");
         {
@@ -5245,9 +5633,14 @@ mod tests {
                         action: POSSESSION_PROJECTILE_ACTION,
                         output_class: POSSESSION_IMPACT_CLASS,
                         output_model: POSSESSION_IMPACT_MODEL,
+                        target_source_entity_index: 0,
+                        acquisition_attempted: false,
                         position,
+                        axis_position: position,
                         yaw: 0,
                         pitch: 0,
+                        roll: 0,
+                        fov: 0,
                         actual_speed: 0,
                         minimum_speed: POSSESSION_PROJECTILE_SPEED,
                         life: POSSESSION_PROJECTILE_LIFETIME_TICKS,
@@ -10086,14 +10479,18 @@ mod tests {
         let sphere_slot = u16::try_from(sphere_id).unwrap();
         {
             let economy = session.economy_mut();
-            let castle = economy
+            economy
                 .castle
                 .as_mut()
-                .expect("defender arbitration Castle");
-            // The source checks aggregate current defender mana *before*
-            // adding this holder, so a one-holder fixture reaches the Castle
-            // branch at the zero-capacity boundary.
-            castle.mana_capacity = 0;
+                .expect("defender arbitration Castle")
+                .mana_capacity = 10_000;
+            let defender = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("model-3 defender");
+            defender.mana = defender.max_mana;
+            defender.target_sphere_slot = 0;
             economy.maintain_castle_defenders(castle_slot);
         }
         assert_eq!(
@@ -10103,6 +10500,14 @@ mod tests {
                 .expect("defender arbitration Castle")
                 .defender_target_spheres[0],
             castle_slot
+        );
+        assert_eq!(
+            session
+                .economy()
+                .castle()
+                .expect("defender arbitration Castle")
+                .defender_total_mana,
+            100
         );
         assert!(
             session
@@ -12060,6 +12465,66 @@ mod tests {
     }
 
     #[test]
+    fn level_two_castle_spawn_carrier_accepts_source_launch_payload_and_hashes_relation() {
+        let package = level_two_fixture_path();
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+            .expect("qualified Level 2 gameplay component");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Castle source-payload session");
+        session.select_level2_campaign_entry_stage();
+        let baseline_hash = session.campaign_state_hash();
+        let payload = Level2CastleProjectileLaunchPayload {
+            position: Position {
+                x: 8_192,
+                y: 8_448,
+                z: 256,
+            },
+            yaw: 1_792,
+            pitch: -321,
+            source_id_entity_index: 111,
+            source_subspell_index: 2,
+            source_mana: 2_400,
+            source_a4_byte_154: 7,
+        };
+        let flyer_slot = session
+            .economy_mut()
+            .spawn_castle_projectile_with_payload(payload, 0, 37)
+            .expect("source-payload Castle allocation");
+        let flyer = session
+            .economy()
+            .castle_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == flyer_slot)
+            .copied()
+            .expect("source-payload Castle carrier");
+        assert_eq!(flyer.position, payload.position);
+        assert_eq!(flyer.yaw, payload.yaw);
+        assert_eq!(flyer.pitch, payload.pitch);
+        assert_eq!(flyer.owner_entity_index, payload.source_id_entity_index);
+        assert_eq!(flyer.actual_speed, 384_i16.wrapping_add(37));
+        assert_eq!(flyer.minimum_speed, 384);
+        assert_eq!(
+            session.economy().source_owner(flyer_slot),
+            payload.source_id_entity_index,
+            "the source id relation is carried by the hashed economy owner map"
+        );
+        assert!(session.economy().map_chains().is_linked(flyer_slot));
+        assert_ne!(session.campaign_state_hash(), baseline_hash);
+
+        session
+            .economy_mut()
+            .disable_castle_projectile(flyer_slot, true);
+        session
+            .economy_mut()
+            .reclaim_hidden_castle_rows_at_source_boundary();
+        assert_eq!(session.economy().source_owner(flyer_slot), 0);
+        assert!(!session.economy().map_chains().is_linked(flyer_slot));
+    }
+
+    #[test]
     fn level_two_castle_flyer_lands_on_post_move_terrain_intercept() {
         let package = level_two_fixture_path();
         let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12079,14 +12544,13 @@ mod tests {
             },
             0,
         );
-        session.step_outer_turn(PlayerCommand::default(), 0);
         let flyer = session
             .economy()
             .castle_projectiles()
             .iter()
             .find(|projectile| projectile.active)
             .copied()
-            .expect("new-Castle flyer remains live after its gate-only callback");
+            .expect("new-Castle flyer remains live after its same-pass gate-only callback");
         let ground = session.terrain.ground_height(flyer.position);
         let blocker_index = session
             .entities
@@ -12173,7 +12637,7 @@ mod tests {
         };
         let flyer_slot = session
             .economy_mut()
-            .spawn_castle_projectile(initial, 111, 0, 0, 0)
+            .spawn_castle_projectile(initial, 111, 0, 0, 0, 0)
             .expect("new-Castle flyer");
         assert!(
             session
@@ -12280,14 +12744,6 @@ mod tests {
         for (class, model) in [(3_u8, 2_u8), (10_u8, 45_u8)] {
             session.reset();
             session.select_level2_campaign_entry_stage();
-            session.step_outer_turn(request, 0);
-            let flyer = session
-                .economy()
-                .castle_projectiles()
-                .iter()
-                .find(|projectile| projectile.active)
-                .copied()
-                .expect("new-Castle flyer before site gate");
             let blocker_index = session
                 .entities
                 .iter()
@@ -12300,25 +12756,70 @@ mod tests {
             blocker.model = model;
             blocker.record[88..90].copy_from_slice(&0_i16.to_le_bytes());
             blocker.record[90..92].copy_from_slice(&0_i16.to_le_bytes());
-            blocker.set_position(flyer.position);
-            let entities = session.entities.clone();
-            assert!(
-                !session
-                    .economy_mut()
-                    .step_castle_projectile_slot(flyer.source_entity_index, &entities),
-                "live class-{class}/model-{model} row rejects the 11CB0 site"
-            );
+            blocker.set_position(session.state.position);
+
+            // The source cursor visits the newly allocated flyer after the
+            // holder in this same request pass. Install the live blocker
+            // before that request so the first 11CB0 gate rejects the flyer;
+            // inserting it after the request would probe the later landing
+            // branch and incorrectly permit a Castle root.
+            session.step_outer_turn(request, 0);
             assert!(session.economy().castle().is_none());
+            let flyer = session
+                .economy()
+                .castle_projectiles()
+                .iter()
+                .find(|projectile| projectile.site_rejected && !projectile.active)
+                .copied()
+                .expect("same-pass site gate hides the blocked Castle flyer");
+            assert_eq!((flyer.source_class, flyer.source_model), (9, 10));
+            let flyer_generation = session.economy().slot_generation(flyer.source_entity_index);
+            assert!(flyer.drawing_disabled);
             assert!(
                 session
                     .economy()
+                    .map_chains()
+                    .is_linked(flyer.source_entity_index)
+            );
+            assert!(
+                !session
+                    .economy()
+                    .free_slots
+                    .contains(&flyer.source_entity_index)
+            );
+            assert!(!session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    kind: Level2DynamicArenaKind::CastleProjectile,
+                    ..
+                }
+            )));
+
+            // DisableEntityDrawing keeps the row linked and reserved until
+            // the next generic hidden-row prepass, where the source frees it.
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                !session
+                    .economy()
                     .castle_projectiles()
                     .iter()
-                    .any(|projectile| {
-                        projectile.source_entity_index == flyer.source_entity_index
-                            && projectile.site_rejected
-                            && !projectile.active
-                    })
+                    .any(|projectile| projectile.source_entity_index == flyer.source_entity_index)
+            );
+            assert!(
+                session
+                    .economy()
+                    .free_slots
+                    .contains(&flyer.source_entity_index)
+            );
+            assert!(
+                !session
+                    .economy()
+                    .map_chains()
+                    .is_linked(flyer.source_entity_index)
+            );
+            assert_eq!(
+                session.economy().slot_generation(flyer.source_entity_index),
+                flyer_generation
             );
         }
     }

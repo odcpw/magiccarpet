@@ -584,8 +584,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     runtime.Level2ProductionLastStepInput.z,
                     Is.EqualTo((short)256));
-                runtime.QualificationDriveLevel2Frames(281);
-                var hud = runtime.Level2ProductionDayHud;
+                var hud = DriveUntilRustOwnedFamily12Hud(runtime);
                 Assert.That(hud.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
                 Assert.That(hud.structSize, Is.EqualTo(272));
                 Assert.That(
@@ -733,8 +732,7 @@ namespace MagicCarpet.Native.Tests
                     runtime.Level2ProductionNextStepInput.z,
                     Is.EqualTo((short)256));
 
-                runtime.QualificationDriveLevel2Frames(282);
-                var replay = runtime.Level2ProductionDayHud;
+                var replay = DriveUntilRustOwnedFamily12Hud(runtime);
                 Assert.That(replay.generation, Is.EqualTo(1));
                 Assert.That(
                     runtime.Level2ProductionStepSnapshot.stateHash,
@@ -802,8 +800,12 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveLevel2Frames(1);
                 var armed = runtime.Level2ProductionDayHud;
                 Assert.That(armed.right.rawSpellSelector, Is.EqualTo(1));
-                Assert.That(armed.right.activeValue, Is.EqualTo(armed.right.activationValue));
-                Assert.That(armed.right.activeValue, Is.EqualTo(3));
+                Assert.That(armed.right.activationValue, Is.EqualTo(3));
+                Assert.That(
+                    armed.right.activeValue,
+                    Is.EqualTo(armed.right.activationValue - 1),
+                    "player111 arms Possession before holder116 pulses it in the same source pass");
+                Assert.That(armed.right.activeValue, Is.EqualTo(2));
 
                 runtime.QualificationDriveLevel2Frames(1);
                 var pulsed = runtime.Level2ProductionDayHud;
@@ -814,6 +816,97 @@ namespace MagicCarpet.Native.Tests
                         eventRow.family == 39),
                     Is.True,
                     "the following Rust source pass emits the Possession dynamic effect");
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void Level2RuntimeKeyboardMenuPreservesRawTierAndPhysicalHolderAuthority()
+        {
+            var root = new GameObject("Level 2 production spell-menu route");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
+
+                // Follow the ordinary startup/source route until the authored
+                // family-12 holder is present; no native setter is involved.
+                var acquired = DriveUntilRustOwnedFamily12Hud(runtime);
+                AssertDayHudFamily12(
+                    acquired.left,
+                    acquired.localPlayerEntityIndex);
+
+                // Drive the same semantic entry point used by the legacy
+                // keyboard dispatcher. Rust remains the only authority that
+                // accepts opcode 40 and returns the selected UI index.
+                NativeSim.CampaignPlayerSnapshot player = default;
+                var family12Selected = false;
+                for (var attempt = 0; attempt < 29; attempt++)
+                {
+                    Assert.That(
+                        runtime.SubmitLevel2SpellMenuInput(
+                            MagicCarpetRuntime.Level2SpellMenuInputAction.Next),
+                        Is.True);
+                    runtime.QualificationDriveLevel2Frames(1);
+                    player = runtime.Level2ProductionPlayers.Single(
+                        candidate => candidate.slot == 0);
+                    if (player.selectedSpellUiIndex == 12)
+                    {
+                        family12Selected = true;
+                        break;
+                    }
+                }
+                Assert.That(family12Selected, Is.True);
+                Assert.That(
+                    runtime.SubmitLevel2SpellMenuInput(
+                        MagicCarpetRuntime.Level2SpellMenuInputAction.Tier1),
+                    Is.True);
+                runtime.QualificationDriveLevel2Frames(1);
+                var locked = runtime.Level2ProductionDayHud.left;
+                Assert.That(locked.rawSpellSelector, Is.EqualTo(12));
+                Assert.That(locked.holderEntityIndex, Is.EqualTo(38));
+                Assert.That(locked.action, Is.EqualTo(36));
+                Assert.That(locked.tier, Is.EqualTo(0));
+                player = runtime.Level2ProductionPlayers.Single(
+                    candidate => candidate.slot == 0);
+                Assert.That(player.selectedSpellUiIndex, Is.EqualTo(12));
+                Assert.That(player.selectedSubspellIndex, Is.EqualTo(1));
+                Assert.That(player.leftSubspellIndex, Is.EqualTo(0));
+
+                // Raw opcode 41 selection does not manufacture a Tier-1
+                // holder. With the real parent still below the physical
+                // Tier-0 cost, the production selected-cast path must remain
+                // cold and preserve the source Tier-0 profile.
+                var beforeCast = runtime.Level2ProductionBeyondSight;
+                Assert.That(beforeCast.tier, Is.EqualTo(0));
+                Assert.That(beforeCast.manaCost, Is.EqualTo(1800));
+                Assert.That(beforeCast.parentMana, Is.LessThan(1800));
+                Assert.That(beforeCast.experienceAwarded, Is.Zero);
+                Assert.That(
+                    runtime.SubmitLevel2SpellMenuInput(
+                        MagicCarpetRuntime.Level2SpellMenuInputAction.CastSelected),
+                    Is.True);
+                runtime.QualificationDriveLevel2Frames(1);
+                var afterCast = runtime.Level2ProductionBeyondSight;
+                Assert.That(afterCast.tier, Is.EqualTo(0));
+                Assert.That(afterCast.manaCost, Is.EqualTo(1800));
+                Assert.That(afterCast.activeValue, Is.EqualTo(0));
+                Assert.That(
+                    afterCast.experienceAwarded,
+                    Is.EqualTo(beforeCast.experienceAwarded));
+                Assert.That(
+                    runtime.Level2ProductionDayHud.nyphur.visibilityFlags & 0x08,
+                    Is.Zero);
             }
             finally
             {
@@ -899,7 +992,7 @@ namespace MagicCarpet.Native.Tests
                     Is.False,
                     "unknown minimap subjects are absent from the Rust projection");
 
-                runtime.QualificationDriveLevel2Frames(282);
+                DriveUntilRustOwnedFamily12Hud(runtime);
                 var acquiredState = runtime.Level2ProductionMinimapState;
                 var acquiredEntities = runtime.Level2ProductionMinimapEntities;
                 var acquiredMarks = runtime.Level2ProductionMinimapMarks;
@@ -969,7 +1062,7 @@ namespace MagicCarpet.Native.Tests
                     resetState.markHash,
                     Is.EqualTo(initialState.markHash));
 
-                runtime.QualificationDriveLevel2Frames(282);
+                DriveUntilRustOwnedFamily12Hud(runtime);
                 var replayState = runtime.Level2ProductionMinimapState;
                 var replayEntities = runtime.Level2ProductionMinimapEntities;
                 var replayMarks = runtime.Level2ProductionMinimapMarks;
@@ -1036,6 +1129,35 @@ namespace MagicCarpet.Native.Tests
             Assert.That(slot.levelTextSelector, Is.EqualTo(0));
             Assert.That(slot.tier, Is.EqualTo(0));
             Assert.That(slot.drawAdmitted, Is.EqualTo(1));
+        }
+
+        private static NativeSim.CampaignDayHudSnapshot DriveUntilRustOwnedFamily12Hud(
+            MagicCarpetRuntime runtime)
+        {
+            var sourcePassBound = checked((int)runtime.Level2ProductionWorldInfo.entityCount);
+            Assert.That(sourcePassBound, Is.GreaterThan(0));
+            var hud = runtime.Level2ProductionDayHud;
+            for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
+            {
+                var family12 = new[] { hud.left, hud.right }.Any(slot =>
+                    slot.rawSpellSelector == 12 &&
+                    slot.holderEntityIndex != 0 &&
+                    slot.action == 36);
+                if (family12)
+                {
+                    return hud;
+                }
+
+                // The source arena census is the bounded ordinary-pass cap;
+                // this helper only observes the Rust-owned HUD and never
+                // queues a synthetic acquisition or menu command.
+                runtime.QualificationDriveLevel2Frames(1);
+                hud = runtime.Level2ProductionDayHud;
+            }
+
+            Assert.Fail(
+                $"Rust-owned family-12 HUD holder did not appear within {sourcePassBound} ordinary passes");
+            return hud;
         }
 
         [Test]
@@ -1811,7 +1933,11 @@ namespace MagicCarpet.Native.Tests
             Assert.That(activated.structSize, Is.EqualTo(72));
             Assert.That(activated.active, Is.EqualTo(1));
             Assert.That(activated.action, Is.EqualTo(18));
-            Assert.That(activated.activeValue, Is.EqualTo(activated.activationValue));
+            Assert.That(activated.activationValue, Is.EqualTo(101));
+            Assert.That(
+                activated.activeValue,
+                Is.EqualTo(activated.activationValue - 1),
+                "player111 arms Shield before its later holder pulses it in the same source pass");
             Assert.That(activated.activeValue, Is.GreaterThan(0));
             Assert.That(activated.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
             Assert.That(activated.generation, Is.EqualTo(session.Generation));

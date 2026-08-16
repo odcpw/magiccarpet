@@ -1562,8 +1562,11 @@ fn apply_spell_menu_command(command: PlayerCommand, context: &mut FlightContext)
                     spell_menu_indices(fire.selected_spell_ui_index.cast_signed())
                 && fire.enabled_holder_indices[spell_index] != 0
             {
-                let unlocked_tier = fire.spell_levels[spell_index].clamp(0, 2);
-                let tier = command.argument_1.clamp(0, unlocked_tier);
+                // PlayerEvents_51BB0 stores the raw requested tier.  The
+                // source only applies the downward unlocked-tier projection
+                // when sub_6D9C0 recomputes SpellLevels, never at this menu
+                // command boundary.
+                let tier = command.argument_1;
                 fire.selected_subspell_index = tier;
                 fire.family_selected_tiers[spell_index] = tier;
             }
@@ -2965,7 +2968,7 @@ fn turn_direction(from: i16, to: i16) -> i16 {
     difference.signum() as i16
 }
 
-fn turn_toward(from: i16, to: i16, maximum: i16) -> i16 {
+pub(crate) fn turn_toward(from: i16, to: i16, maximum: i16) -> i16 {
     if from == to {
         return 0;
     }
@@ -4556,7 +4559,10 @@ mod tests {
         assert_eq!(fire.right_subspell_index, 0);
         assert_eq!(fire.selected_holder_index, 21);
         assert_eq!(fire.selected_spell_ui_index, 0);
-        assert_eq!(fire.selected_subspell_index, 2);
+        assert_eq!(
+            fire.selected_subspell_index, 7,
+            "opcode 31 reconfigures the physical hand holder but does not overwrite opcode 41's raw menu selector"
+        );
         assert_eq!(fire.spell_menu_stage, 0);
         assert_eq!(fire.family_selected_tiers[0], 2);
         assert_eq!(fire.holders[0].level_gate, 2);

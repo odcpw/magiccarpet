@@ -12,6 +12,16 @@ namespace MagicCarpet.Native
 {
     public sealed partial class MagicCarpetRuntime : MonoBehaviour
     {
+        internal enum Level2SpellMenuInputAction
+        {
+            Previous,
+            Next,
+            Tier0,
+            Tier1,
+            Tier2,
+            CastSelected,
+        }
+
         internal readonly struct SpellMenuCommand
         {
             internal SpellMenuCommand(sbyte opcode, sbyte argument1, sbyte argument2)
@@ -759,6 +769,7 @@ namespace MagicCarpet.Native
         private bool rightSpellRequested;
         private bool selectedSpellRequested;
         private short requestedSpell = NativeSim.NoRequestedSpell;
+        private int level2SpellMenuCursor = -1;
         private bool spellMenuOpen;
         private int spellMenuHoverUiIndex = -1;
         private int spellMenuSelectedUiIndex = -1;
@@ -958,6 +969,12 @@ namespace MagicCarpet.Native
 
         internal NativeSim.CampaignDayHudSnapshot Level2ProductionDayHud =>
             level2DayHud;
+
+        internal NativeSim.CampaignPlayerSnapshot[] Level2ProductionPlayers =>
+            campaignSession?.Players() ?? System.Array.Empty<NativeSim.CampaignPlayerSnapshot>();
+
+        internal NativeSim.CampaignBeyondSightSnapshot Level2ProductionBeyondSight =>
+            campaignSession?.BeyondSightState() ?? default;
 
         internal NativeSim.CampaignDayMusicSnapshot Level2ProductionDayMusic =>
             level2DayMusic;
@@ -1318,6 +1335,135 @@ namespace MagicCarpet.Native
                     (sbyte)(rightHand ? 32 : 31),
                     family,
                     tier));
+        }
+
+        private bool TryReadLevel2LocalPlayer(
+            out NativeSim.CampaignPlayerSnapshot player)
+        {
+            player = default;
+            if (!level2Mode || campaignSession == null)
+            {
+                return false;
+            }
+            foreach (var candidate in campaignSession.Players())
+            {
+                if (candidate.slot == 0 && candidate.active != 0)
+                {
+                    player = candidate;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void SyncLevel2SelectedSpellFromRust()
+        {
+            requestedSpell = TryReadLevel2LocalPlayer(out var player) &&
+                player.selectedSpellUiIndex <= 28
+                    ? checked((short)player.selectedSpellUiIndex)
+                    : checked((short)NativeSim.NoRequestedSpell);
+        }
+
+        internal bool SubmitLevel2SpellMenuInput(
+            Level2SpellMenuInputAction action)
+        {
+            const int sourceSpellMenuUiCount = 29;
+            if (!level2Mode ||
+                !level2StartupReady ||
+                campaignSession == null ||
+                spellMenuOpen ||
+                spellMenuCommands.Count != 0)
+            {
+                return false;
+            }
+
+            if (action is Level2SpellMenuInputAction.Previous or
+                Level2SpellMenuInputAction.Next)
+            {
+                var cursor = level2SpellMenuCursor;
+                if (cursor < 0 && TryReadLevel2LocalPlayer(out var player))
+                {
+                    cursor = player.selectedSpellUiIndex <= 28
+                        ? player.selectedSpellUiIndex
+                        : 0;
+                }
+                if (cursor < 0)
+                {
+                    cursor = 0;
+                }
+                var delta = action == Level2SpellMenuInputAction.Previous
+                    ? -1
+                    : 1;
+                level2SpellMenuCursor =
+                    (cursor + delta + sourceSpellMenuUiCount) % sourceSpellMenuUiCount;
+                spellMenuCommands.Enqueue(
+                    new SpellMenuCommand(
+                        40,
+                        checked((sbyte)level2SpellMenuCursor),
+                        0));
+                return true;
+            }
+
+            if (action is Level2SpellMenuInputAction.Tier0 or
+                Level2SpellMenuInputAction.Tier1 or
+                Level2SpellMenuInputAction.Tier2)
+            {
+                var tier = action switch
+                {
+                    Level2SpellMenuInputAction.Tier0 => 0,
+                    Level2SpellMenuInputAction.Tier1 => 1,
+                    _ => 2,
+                };
+                spellMenuCommands.Enqueue(
+                    new SpellMenuCommand(41, checked((sbyte)tier), 0));
+                return true;
+            }
+
+            if (action == Level2SpellMenuInputAction.CastSelected &&
+                !selectedSpellRequested)
+            {
+                selectedSpellRequested = true;
+                fireInputLatchedCount++;
+                return true;
+            }
+            return false;
+        }
+
+        private void UpdateLevel2SpellMenuKeyboardInput()
+        {
+            if (AutomatedInput)
+            {
+                return;
+            }
+            var controlHeld = Input.GetKey(KeyCode.LeftControl) ||
+                Input.GetKey(KeyCode.RightControl);
+            if (controlHeld)
+            {
+                if (Input.GetKeyDown(KeyCode.LeftBracket))
+                {
+                    SubmitLevel2SpellMenuInput(Level2SpellMenuInputAction.Previous);
+                }
+                else if (Input.GetKeyDown(KeyCode.RightBracket))
+                {
+                    SubmitLevel2SpellMenuInput(Level2SpellMenuInputAction.Next);
+                }
+                else if (Input.GetKeyDown(KeyCode.Alpha1))
+                {
+                    SubmitLevel2SpellMenuInput(Level2SpellMenuInputAction.Tier0);
+                }
+                else if (Input.GetKeyDown(KeyCode.Alpha2))
+                {
+                    SubmitLevel2SpellMenuInput(Level2SpellMenuInputAction.Tier1);
+                }
+                else if (Input.GetKeyDown(KeyCode.Alpha3))
+                {
+                    SubmitLevel2SpellMenuInput(Level2SpellMenuInputAction.Tier2);
+                }
+            }
+            if (Input.GetKeyDown(KeyCode.Space))
+            {
+                SubmitLevel2SpellMenuInput(Level2SpellMenuInputAction.CastSelected);
+            }
         }
 
         internal bool QualificationCycleSpell(bool rightHand, bool backward)
@@ -2201,14 +2347,19 @@ namespace MagicCarpet.Native
             level2LastStepInputX = level2StepInputX;
             level2LastStepInputY = level2StepInputY;
             level2LastStepInputZ = level2StepInputZ;
-            // The Level 2 ABI already accepts a selected-spell UI index.  The
-            // menu buffer is presentation input; retain only the valid source
-            // index until the next ordinary selected-spell request consumes it.
-            if (spellMenuCommands.TryDequeue(out var spellMenuCommand) &&
-                spellMenuCommand.Opcode is 31 or 32 or 40 &&
-                spellMenuCommand.Argument1 is >= 0 and <= 28)
+            sbyte opcode = 0;
+            sbyte argument1 = 0;
+            sbyte argument2 = 0;
+            var sentMenuCommand = false;
+            // The menu buffer is presentation input, but its source-shaped
+            // opcode and arguments still belong to this ordinary Rust turn.
+            // Keep the selected-spell UI index as the separate cast latch.
+            if (spellMenuCommands.TryDequeue(out var spellMenuCommand))
             {
-                requestedSpell = spellMenuCommand.Argument1;
+                sentMenuCommand = true;
+                opcode = spellMenuCommand.Opcode;
+                argument1 = spellMenuCommand.Argument1;
+                argument2 = spellMenuCommand.Argument2;
             }
 
             // Preserve the existing live Level 2 movement bit and consume each
@@ -2225,7 +2376,7 @@ namespace MagicCarpet.Native
                 rightSpellRequested = false;
             }
             short selectedSpell = NativeSim.NoRequestedSpell;
-            if (selectedSpellRequested)
+            if (!sentMenuCommand && selectedSpellRequested)
             {
                 selectedSpellRequested = false;
                 if (requestedSpell is >= 0 and <= 28)
@@ -2233,7 +2384,6 @@ namespace MagicCarpet.Native
                     flags |= 0x40;
                     selectedSpell = requestedSpell;
                 }
-                requestedSpell = NativeSim.NoRequestedSpell;
             }
             appliedRoll = Cursor.lockState == CursorLockMode.Locked
                 ? ClampToSByte(steeringRoll)
@@ -2250,9 +2400,16 @@ namespace MagicCarpet.Native
                 flags: unchecked((sbyte)flags),
                 requestedSpell: selectedSpell,
                 roll: appliedRoll,
-                pitch: appliedPitch);
+                pitch: appliedPitch,
+                opcode: opcode,
+                argument1: argument1,
+                argument2: argument2);
             level2StepSnapshot = result.snapshot;
             level2StepEvents = result.events;
+            // Rust owns whether opcode 40 was accepted. Selected casting on a
+            // later fixed turn must use that returned value, never the raw
+            // presentation cursor or the outgoing command argument.
+            SyncLevel2SelectedSpellFromRust();
             UpdateLevel2DayMusicPresentation();
             level2AuthoredGroupEvents = campaignSession.AuthoredGroupEvents();
             level2TerrainState = campaignSession.TerrainState();
@@ -2495,7 +2652,11 @@ namespace MagicCarpet.Native
 
         private void Update()
         {
-            if (level2Mode) return;
+            if (level2Mode)
+            {
+                UpdateLevel2SpellMenuKeyboardInput();
+                return;
+            }
             if (localAudioQualificationMode || positionalAudioQualificationMode) return;
             if (level1AutoplayFast && !runtimeExitRequested)
             {
@@ -8185,6 +8346,10 @@ namespace MagicCarpet.Native
                 "Level 2 reset route requires a validated campaign session");
             DestroyLevel2IndexedFramePresentation();
             campaignSession.Reset();
+            spellMenuCommands.Clear();
+            selectedSpellRequested = false;
+            level2SpellMenuCursor = -1;
+            SyncLevel2SelectedSpellFromRust();
             level2StepSnapshot = default;
             level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
             level2AuthoredGroupEvents =
@@ -11388,6 +11553,10 @@ namespace MagicCarpet.Native
             {
                 campaignWorldInfo = campaignSession.WorldInfo();
                 SeedLevel2LocalPlayerPosition();
+                level2SpellMenuCursor = -1;
+                spellMenuCommands.Clear();
+                selectedSpellRequested = false;
+                SyncLevel2SelectedSpellFromRust();
                 level2TerrainState = campaignSession.TerrainState();
                 InitializeLevel2DayMusicPresentation();
                 Require(
@@ -11837,6 +12006,10 @@ namespace MagicCarpet.Native
             campaignSession = null;
             level2StartupReady = false;
             level2Mode = false;
+            spellMenuCommands.Clear();
+            selectedSpellRequested = false;
+            requestedSpell = NativeSim.NoRequestedSpell;
+            level2SpellMenuCursor = -1;
             level2StepSnapshot = default;
             level2TerrainState = default;
             level2DayHud = default;

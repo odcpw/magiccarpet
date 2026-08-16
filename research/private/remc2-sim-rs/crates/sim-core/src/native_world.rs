@@ -78,10 +78,11 @@ use crate::{
         POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT, POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
         POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET, POSSESSION_PROJECTILE_LIFETIME_TICKS,
         POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_SPEED, POSSESSION_SPELL_FAMILY,
-        SOURCE_REPLACEABLE_FLAG, SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY,
-        SPEED_SPELL_MANA_COST, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
+        PROJECTILE_ACQUISITION_ANGLE, SOURCE_REPLACEABLE_FLAG, SPEED_SPELL_ACTIVATION_TICKS,
+        SPEED_SPELL_FAMILY, SPEED_SPELL_MANA_COST, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
         SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal,
-        source_map_search_slots, source_search_offsets,
+        projectile_guidance_angles, projectile_target_score, source_map_search_slots,
+        source_search_offsets,
     },
     mark_source_audio_call,
     mission_content::{
@@ -97,12 +98,12 @@ use crate::{
         unknown_source_sprite_tuple,
     },
     spell_activation::{
-        BEYOND_SIGHT_ACTIVE_ACTION, BEYOND_SIGHT_FAMILY, BeyondSightState, BeyondSightStep,
-        INVISIBLE_ACTIVE_ACTION, INVISIBLE_FAMILY, INVISIBLE_STATUS_BIT, InvisibleState,
-        InvisibleStep, Level2SetSpellProfile, PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION,
-        SHIELD_FAMILY, ShieldDamage, ShieldState, ShieldStep, SpellActivationHolder,
-        SpellCasterState, SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult,
-        SpellHolderAcquisitionState, acquire_level2_spell_holder_with_return_side, activate_spell,
+        BEYOND_SIGHT_ACTIVE_ACTION, BEYOND_SIGHT_FAMILY, BeyondSightState, INVISIBLE_ACTIVE_ACTION,
+        INVISIBLE_FAMILY, INVISIBLE_STATUS_BIT, InvisibleState, InvisibleStep,
+        Level2SetSpellProfile, PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, SHIELD_FAMILY,
+        ShieldDamage, ShieldState, ShieldStep, SpellActivationHolder, SpellCasterState,
+        SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
+        acquire_level2_spell_holder_with_return_side, activate_spell, beyond_sight_unlocked_tier,
         level2_applied_tier, level2_set_spell_profile, physical_spell_action,
     },
     state_hash,
@@ -113,6 +114,7 @@ use crate::{
         Level1TerrainFrameCamera, Level1TerrainFrameResources, Level1WorldFrameResources,
         TerrainFrameError, render_level1_source_world_frame,
     },
+    turn_toward,
     villager::{
         LEVEL_ONE_VILLAGER_INDICES, LEVEL_TWO_VILLAGER_INDICES, VILLAGER_CLASS, VILLAGER_MODEL,
         VillagerBehaviorConfig, VillagerFamily, VillagerState, VillagerStepEffect,
@@ -1496,6 +1498,80 @@ fn level2_first_possession_target_sphere_slot(
     None
 }
 
+fn level2_possession_guidance_target_top(sphere: &ManaSphere) -> Position {
+    Position {
+        z: sphere
+            .position
+            .z
+            .wrapping_add(level2_mana_sphere_dimension(sphere.mana)),
+        ..sphere.position
+    }
+}
+
+/// Qualified Level-2 subset of `sub_67CB0`'s model-1/0x11 acquisition list.
+/// The represented arena currently carries model-39 rows; source rebuilds
+/// their special list in ascending arena-slot order and strict-lower score
+/// replacement preserves the earlier row on ties.
+fn level2_possession_guidance_target(
+    spheres: &[ManaSphere],
+    source_slots: &[u16],
+    projectile: Level2PossessionProjectile,
+) -> Option<(u16, Position)> {
+    let mut selected = None;
+    let mut selected_score = u32::MAX;
+    for source_slot in source_slots {
+        let Some(sphere) = spheres.iter().find(|sphere| {
+            sphere.source_entity_index == *source_slot
+                && (sphere.active || sphere.pending_delete)
+                && sphere.player_entity_index != projectile.source_id_entity_index
+        }) else {
+            continue;
+        };
+        let target_top = level2_possession_guidance_target_top(sphere);
+        let Some(score) = projectile_target_score(
+            projectile.position,
+            projectile.yaw,
+            projectile.pitch,
+            target_top,
+        ) else {
+            continue;
+        };
+        if score < selected_score {
+            selected = Some((sphere.source_entity_index, target_top));
+            selected_score = score;
+        }
+    }
+    selected
+}
+
+/// Resolve an already-installed source slot without a generation guard.
+/// If a model-39 row reuses that slot, source follows the reused row; if the
+/// slot is absent, the one-shot acquisition bit prevents retargeting.
+fn level2_possession_guidance_relation(
+    spheres: &[ManaSphere],
+    possession_projectiles: &[Level2PossessionProjectile],
+    stale_source_records: &BTreeMap<u16, Position>,
+    target_source_entity_index: u16,
+) -> Option<Position> {
+    spheres
+        .iter()
+        .find(|sphere| sphere.source_entity_index == target_source_entity_index)
+        .map(level2_possession_guidance_target_top)
+        .or_else(|| {
+            possession_projectiles
+                .iter()
+                .find(|projectile| projectile.source_entity_index == target_source_entity_index)
+                // A freshly constructed model-1 row has source array-yaw 0,
+                // so `sub_65580` uses its stored position without a Z offset.
+                .map(|projectile| projectile.position)
+        })
+        .or_else(|| {
+            stale_source_records
+                .get(&target_source_entity_index)
+                .copied()
+        })
+}
+
 fn level2_carrier_sphere_overlap(carrier: Position, sphere: &ManaSphere) -> bool {
     let extent = level2_mana_sphere_dimension(sphere.mana);
     let dx = i32::from(sphere.position.x.wrapping_sub(carrier.x).cast_signed());
@@ -1883,7 +1959,20 @@ pub struct PlayerSnapshot {
     /// Source `array_0x403` learned/acquired flags (record 424..450), kept
     /// distinct from the hand-side bytes at record 398..424.
     pub learned_spell_flags: [u8; PLAYER_SPELL_COUNT],
+    /// Source `array_0x3E9`/`SpellsEnabled` projection (record 450..476).
+    /// This is distinct from the hand-side eligibility bytes at record
+    /// 398..424 and the holder relations above.
+    pub spell_enabled_flags: [u8; PLAYER_SPELL_COUNT],
     pub family_selected_tiers: [i8; PLAYER_SPELL_COUNT],
+    /// Source `SpellExperience_0x263_611x`, stored after the 60-byte player
+    /// prefix. This persistent row is distinct from the runtime family-12
+    /// award buffer below.
+    pub persistent_spell_experience: [i32; PLAYER_SPELL_COUNT],
+    /// Source `spellsExperience_0x2CB_715x`, the runtime experience buffer.
+    pub runtime_spell_experience: [i32; PLAYER_SPELL_COUNT],
+    /// Source `SpellLevels_0x41D_1053z`, recomputed from persistent plus
+    /// runtime experience at the family threshold table.
+    pub spell_unlocked_levels: [i8; PLAYER_SPELL_COUNT],
     /// Source-exact Level 2 Type_str_164 carrier. Level 1 deliberately has no
     /// corresponding field because its sealed player record remains v2.
     pub type_str_164_auxiliary: Option<TypeStr164Auxiliary>,
@@ -4114,11 +4203,10 @@ pub struct Level2SharedSpellResetSession {
     baseline_invisible: Option<InvisibleState>,
     invisible: Option<InvisibleState>,
     /// Reachable family-12 active lifecycle. The first-pulse effect allocation
-    /// remains a typed outer-arena seam; holder timing and cleanup are live.
+    /// is intentionally not part of class-15/action-36; holder timing and
+    /// cleanup are live.
     baseline_beyond_sight: Option<BeyondSightState>,
     beyond_sight: Option<BeyondSightState>,
-    baseline_beyond_sight_pulse_pending: bool,
-    beyond_sight_pulse_pending: bool,
     baseline_shield_damage_mailbox: Option<Level2ShieldDamageMailbox>,
     shield_damage_mailbox: Option<Level2ShieldDamageMailbox>,
     /// Transient player/event state consumed by the Beyond Sight first-pulse
@@ -4137,6 +4225,8 @@ pub struct Level2SharedSpellResetSession {
     /// owner-package field.
     baseline_free_spell_usage: bool,
     free_spell_usage: bool,
+    baseline_persistent_spell_experience: [i32; PLAYER_SPELL_COUNT],
+    persistent_spell_experience: [i32; PLAYER_SPELL_COUNT],
     baseline_spell_experience: [i32; PLAYER_SPELL_COUNT],
     spell_experience: [i32; PLAYER_SPELL_COUNT],
     baseline_spell_levels: [i8; PLAYER_SPELL_COUNT],
@@ -4348,9 +4438,24 @@ pub struct Level2PossessionProjectile {
     pub action: u8,
     pub output_class: u8,
     pub output_model: u8,
+    /// Source `word_0x96`: the arena slot selected by the one-shot
+    /// `sub_67CB0` acquisition. Zero is the sentinel; keeping only the slot
+    /// deliberately preserves source reuse semantics.
+    pub target_source_entity_index: u16,
+    /// Source control-byte bit 0x02. A failed initial acquisition is not
+    /// retried on later callbacks.
+    pub acquisition_attempted: bool,
     pub position: Position,
+    /// Source `axis_0x9A`, projected 10,240 units from the raw parent
+    /// position using the wrapping A4 yaw/pitch sums. CastPosses does not
+    /// consume it, but it is part of the persistent model-1 record.
+    pub axis_position: Position,
     pub yaw: i16,
     pub pitch: i16,
+    /// Source roll/fov carry the desired guidance yaw/pitch separately from
+    /// the currently steered yaw/pitch.
+    pub roll: i16,
+    pub fov: i16,
     pub actual_speed: i16,
     pub minimum_speed: i16,
     pub life: i16,
@@ -4393,6 +4498,14 @@ pub struct Level2CastleProjectile {
     pub entity_rng: u16,
     pub owner_entity_index: u16,
     pub holder_entity_index: u16,
+    /// Source holder `subSpellIndex_0x2E` copied by `sub_69AB0` after the
+    /// successful class-9/model-10 allocation.
+    pub source_subspell_index: u16,
+    /// Source holder `mana_0x94` copied into the new flyer payload.
+    pub source_mana: i32,
+    /// Source parent `Type_str_164.byte_0x154`, transferred to the flyer and
+    /// cleared on the parent only after allocation succeeds.
+    pub source_a4_byte_154: u8,
     pub position: Position,
     /// Source `axis_0x9A_154x` target used after the gate-only first tick.
     pub axis_position: Position,
@@ -5763,11 +5876,10 @@ pub struct Level2HouseResidentSource {
     pub active: bool,
 }
 
-/// The first-pulse class-10/model-74 effect emitted by `sub_6CD20` for
-/// Beyond Sight.  The source creates it through class-9/subtype-25, then
-/// rewrites the class/model bytes to 10/74 and binds the holder/parent,
-/// subspell, life, movement, and sound payload before returning to the
-/// active-holder callback.
+/// The separately named class-10/model-74/action-72 effect payload. The
+/// class-15/action-36 `sub_6B310` callback never constructs or dispatches this
+/// row; a future/other dispatcher may use this typed arena seam when its
+/// pinned source route is admitted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2BeyondSightPulseEffect {
     pub source_entity_index: u16,
@@ -5790,7 +5902,8 @@ pub struct Level2BeyondSightPulseEffect {
     pub active: bool,
 }
 
-/// The transient `Type_str_164` projection consumed by `sub_6CD20`.
+/// The transient `Type_str_164` projection reserved for the separate
+/// action-72/model-74 path. It is not consumed by class-15/action-36.
 /// These values are not part of the serialized entity record: the outer
 /// player-input latch writes the two angle words, while the entity update
 /// pass advances and then consumes the byte-0x154 effect parameter.
@@ -6035,6 +6148,10 @@ pub struct Level2EconomyState {
     mana_attraction_fields: Vec<Level2ManaAttractionField>,
     baseline_possession_projectiles: Vec<Level2PossessionProjectile>,
     possession_projectiles: Vec<Level2PossessionProjectile>,
+    baseline_possession_guidance_source_slots: Vec<u16>,
+    possession_guidance_source_slots: Vec<u16>,
+    baseline_possession_guidance_stale_records: BTreeMap<u16, Position>,
+    possession_guidance_stale_records: BTreeMap<u16, Position>,
     baseline_possession_effects: Vec<Level2PossessionEffect>,
     possession_effects: Vec<Level2PossessionEffect>,
     baseline_carriers: Vec<ManaCarrier>,
@@ -6316,6 +6433,10 @@ impl Level2EconomyState {
             mana_attraction_fields: Vec::new(),
             baseline_possession_projectiles: Vec::new(),
             possession_projectiles: Vec::new(),
+            baseline_possession_guidance_source_slots: Vec::new(),
+            possession_guidance_source_slots: Vec::new(),
+            baseline_possession_guidance_stale_records: BTreeMap::new(),
+            possession_guidance_stale_records: BTreeMap::new(),
             baseline_possession_effects: Vec::new(),
             possession_effects: Vec::new(),
             baseline_carriers: Vec::new(),
@@ -6412,6 +6533,8 @@ impl Level2EconomyState {
 
     fn allocate_slot(&mut self) -> Option<u16> {
         if let Some(slot) = self.free_slots.pop() {
+            // `NewEvent` overwrites the fixed source record at this slot.
+            self.possession_guidance_stale_records.remove(&slot);
             let generation = self.slot_generations.entry(slot).or_default();
             *generation = generation.wrapping_add(1);
             return Some(slot);
@@ -6429,6 +6552,7 @@ impl Level2EconomyState {
             }
         });
         let (slot, kind) = candidate?;
+        self.possession_guidance_stale_records.remove(&slot);
 
         macro_rules! remove_flagged_row {
             ($rows:expr) => {{
@@ -10102,10 +10226,10 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    /// Allocate the first-pulse class-10/model-74 effect from source
-    /// `sub_6CD20`. The caller supplies the already source-derived payload;
-    /// this method owns the shared NewEvent slot/RNG, map link, and reclaim
-    /// identity just like the other dynamic Level 2 rows.
+    /// Allocate a separately dispatched class-10/model-74/action-72 effect.
+    /// The caller supplies the already source-derived payload; this method
+    /// owns the shared NewEvent slot/RNG, map link, and reclaim identity just
+    /// like the other dynamic Level 2 rows. Class-15/action-36 never calls it.
     pub fn allocate_beyond_sight_pulse_effect(
         &mut self,
         holder_entity_index: u16,
@@ -10160,9 +10284,9 @@ impl Level2EconomyState {
         Some(effect)
     }
 
-    /// The source effect has no separate generic movement callback in this
-    /// bounded slice; keep its payload live and map-linked for presentation
-    /// and later model-74 behavior without mutating constructor fields.
+    /// The separate action-72/model-74 effect has no generic movement callback
+    /// in this bounded slice; keep its payload live and map-linked for a
+    /// future admitted dispatcher without mutating constructor fields.
     pub fn step_beyond_sight_pulse_effect_slot(&mut self, source_slot: u16) -> bool {
         let Some(effect) = self
             .beyond_sight_effects
@@ -11006,24 +11130,26 @@ impl Level2EconomyState {
         true
     }
 
-    pub fn reclaim_inactive_slots(&mut self) {
-        let reclaimed_castle_projectiles = self
-            .castle_projectiles
+    /// Rebuild `UpdateEntities_57730`'s model-39 guidance membership once at
+    /// the source-pass boundary. Same-pass births are deliberately absent;
+    /// callbacks resolve these fixed slots against the current record.
+    fn rebuild_possession_guidance_source_slots(&mut self) {
+        self.possession_guidance_source_slots = self
+            .spheres
             .iter()
-            .filter(|projectile| !projectile.active)
-            .map(|projectile| (projectile.source_entity_index, projectile.entity_rng))
-            .collect::<Vec<_>>();
-        self.castle_projectiles
-            .retain(|projectile| projectile.active);
-        for (slot, entity_rng) in reclaimed_castle_projectiles {
-            let _ = self.map_chains.sync_entity(RenderableMapSeed {
-                entity_index: slot,
-                active: false,
-                x: 0,
-                y: 0,
-            });
-            self.release_slot(slot, Some(entity_rng));
-        }
+            .filter(|sphere| sphere.active || sphere.pending_delete)
+            .map(|sphere| sphere.source_entity_index)
+            .collect();
+        self.possession_guidance_source_slots.sort_unstable();
+        self.possession_guidance_source_slots.dedup();
+    }
+
+    pub fn reclaim_inactive_slots(&mut self) {
+        // Castle projectiles are disabled by their source callback and
+        // reclaimed only by reclaim_hidden_castle_rows_at_source_boundary at
+        // the following UpdateEntities prologue. Same-pass reclamation would
+        // erase a blocked flyer before the source cursor can observe the
+        // hidden row's reserved slot.
         let reclaimed_carriers = self
             .carriers
             .iter()
@@ -11038,10 +11164,21 @@ impl Level2EconomyState {
             .spheres
             .iter()
             .filter(|sphere| !sphere.active)
-            .map(|sphere| (sphere.source_entity_index, sphere.entity_rng))
+            .map(|sphere| {
+                (
+                    sphere.source_entity_index,
+                    sphere.entity_rng,
+                    level2_possession_guidance_target_top(sphere),
+                )
+            })
             .collect::<Vec<_>>();
         self.spheres.retain(|sphere| sphere.active);
-        for (slot, entity_rng) in reclaimed {
+        for (slot, entity_rng, target_top) in reclaimed {
+            // `sub_57F20` frees the slot but leaves its fixed entity record in
+            // place until `NewEvent` overwrites it. An already-guided flyer
+            // therefore continues `sub_65610` against this stale transform.
+            self.possession_guidance_stale_records
+                .insert(slot, target_top);
             self.release_slot(slot, Some(entity_rng));
         }
         let reclaimed_bursts = self
@@ -12430,12 +12567,13 @@ impl Level2EconomyState {
             hasher.update(field.life.to_le_bytes());
             hasher.update([field.action, u8::from(field.active)]);
         }
-        hasher.update(b"level2-possession-projectile-v1");
+        hasher.update(b"level2-possession-projectile-v2");
         for projectile in &self.possession_projectiles {
             hasher.update(projectile.source_entity_index.to_le_bytes());
             hasher.update(projectile.entity_rng.to_le_bytes());
             hasher.update(projectile.source_id_entity_index.to_le_bytes());
             hasher.update(projectile.holder_entity_index.to_le_bytes());
+            hasher.update(projectile.target_source_entity_index.to_le_bytes());
             hasher.update([
                 projectile.source_class,
                 projectile.source_model,
@@ -12443,17 +12581,34 @@ impl Level2EconomyState {
                 projectile.output_class,
                 projectile.output_model,
                 projectile.phase,
+                u8::from(projectile.acquisition_attempted),
                 u8::from(projectile.active),
             ]);
             hasher.update(projectile.position.x.to_le_bytes());
             hasher.update(projectile.position.y.to_le_bytes());
             hasher.update(projectile.position.z.to_le_bytes());
+            hasher.update(projectile.axis_position.x.to_le_bytes());
+            hasher.update(projectile.axis_position.y.to_le_bytes());
+            hasher.update(projectile.axis_position.z.to_le_bytes());
             hasher.update(projectile.yaw.to_le_bytes());
             hasher.update(projectile.pitch.to_le_bytes());
+            hasher.update(projectile.roll.to_le_bytes());
+            hasher.update(projectile.fov.to_le_bytes());
             hasher.update(projectile.actual_speed.to_le_bytes());
             hasher.update(projectile.minimum_speed.to_le_bytes());
             hasher.update(projectile.life.to_le_bytes());
             hasher.update(projectile.max_life.to_le_bytes());
+        }
+        hasher.update(b"level2-possession-guidance-source-slots-v1");
+        for source_slot in &self.possession_guidance_source_slots {
+            hasher.update(source_slot.to_le_bytes());
+        }
+        hasher.update(b"level2-possession-guidance-stale-records-v1");
+        for (source_slot, position) in &self.possession_guidance_stale_records {
+            hasher.update(source_slot.to_le_bytes());
+            hasher.update(position.x.to_le_bytes());
+            hasher.update(position.y.to_le_bytes());
+            hasher.update(position.z.to_le_bytes());
         }
         hasher.update(b"level2-possession-effect-v1");
         for effect in &self.possession_effects {
@@ -12508,6 +12663,9 @@ impl Level2EconomyState {
             hasher.update(projectile.entity_rng.to_le_bytes());
             hasher.update(projectile.owner_entity_index.to_le_bytes());
             hasher.update(projectile.holder_entity_index.to_le_bytes());
+            hasher.update(projectile.source_subspell_index.to_le_bytes());
+            hasher.update(projectile.source_mana.to_le_bytes());
+            hasher.update([projectile.source_a4_byte_154]);
             hasher.update(projectile.position.x.to_le_bytes());
             hasher.update(projectile.position.y.to_le_bytes());
             hasher.update(projectile.position.z.to_le_bytes());
@@ -12774,6 +12932,10 @@ impl Level2EconomyState {
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
         self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
         self.possession_projectiles = self.baseline_possession_projectiles.clone();
+        self.possession_guidance_source_slots =
+            self.baseline_possession_guidance_source_slots.clone();
+        self.possession_guidance_stale_records =
+            self.baseline_possession_guidance_stale_records.clone();
         self.possession_effects = self.baseline_possession_effects.clone();
         self.carriers = self.baseline_carriers.clone();
         self.castle_projectiles = self.baseline_castle_projectiles.clone();
@@ -13137,8 +13299,6 @@ impl Level2SharedSpellResetSession {
             invisible: None,
             baseline_beyond_sight: None,
             beyond_sight: None,
-            baseline_beyond_sight_pulse_pending: false,
-            beyond_sight_pulse_pending: false,
             baseline_shield_damage_mailbox: None,
             shield_damage_mailbox: None,
             baseline_beyond_sight_auxiliary: Level2PlayerEventAuxiliary {
@@ -13153,10 +13313,12 @@ impl Level2SharedSpellResetSession {
             acquisitions,
             baseline_free_spell_usage: false,
             free_spell_usage: false,
-            baseline_spell_experience: [0; PLAYER_SPELL_COUNT],
-            spell_experience: [0; PLAYER_SPELL_COUNT],
-            baseline_spell_levels: [0; PLAYER_SPELL_COUNT],
-            spell_levels: [0; PLAYER_SPELL_COUNT],
+            baseline_persistent_spell_experience: local_player.persistent_spell_experience,
+            persistent_spell_experience: local_player.persistent_spell_experience,
+            baseline_spell_experience: local_player.runtime_spell_experience,
+            spell_experience: local_player.runtime_spell_experience,
+            baseline_spell_levels: local_player.spell_unlocked_levels,
+            spell_levels: local_player.spell_unlocked_levels,
             baseline_persistent_acquisitions: BTreeMap::new(),
             persistent_acquisitions: BTreeMap::new(),
             player_entity_sha256: LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256.to_owned(),
@@ -13297,10 +13459,13 @@ impl Level2SharedSpellResetSession {
             player.enabled_spell_holders[index] = holder.index;
             player.learned_spell_flags[index] = 1;
             player.family_selected_tiers[index] = tier.cast_signed();
+            player.spell_unlocked_levels[index] =
+                player.spell_unlocked_levels[index].max(tier.cast_signed());
             player.record[268 + index * 2..270 + index * 2]
                 .copy_from_slice(&holder.index.to_le_bytes());
             player.record[424 + index] = 1;
             player.record[528 + index] = *tier;
+            player.record[502 + index] = player.spell_unlocked_levels[index].cast_unsigned();
             if left == -1 {
                 left = i16::from(*family);
                 player.left_subspell_index = 0;
@@ -13322,7 +13487,10 @@ impl Level2SharedSpellResetSession {
             .extend(rows.into_iter().map(|(_, _, holder)| holder));
         self.players[local_player_index] = player.clone();
         self.local_player = player;
-        self.spell_levels = self.local_player.family_selected_tiers;
+        for family in 0..PLAYER_SPELL_COUNT {
+            self.spell_levels[family] =
+                self.spell_levels[family].max(self.local_player.family_selected_tiers[family]);
+        }
         self.baseline_dynamic_pickups = self.dynamic_pickups.clone();
         self.baseline_players = self.players.clone();
         self.baseline_local_player = self.local_player.clone();
@@ -13345,6 +13513,20 @@ impl Level2SharedSpellResetSession {
         &self.authored_pickup_slots
     }
 
+    /// Borrow the source player rows for read-only campaign verification.
+    /// Gameplay mutation remains owned by the shared spell route.
+    #[must_use]
+    pub fn players(&self) -> &[PlayerSnapshot] {
+        &self.players
+    }
+
+    /// Borrow the source local-player entity used by spell activation and
+    /// Castle resource upkeep. This is an inspection-only projection.
+    #[must_use]
+    pub const fn player_entity(&self) -> &EntitySnapshot {
+        &self.player_entity
+    }
+
     fn pickup(&self, source_slot: u16) -> Option<&EntitySnapshot> {
         self.pickups
             .iter()
@@ -13363,26 +13545,6 @@ impl Level2SharedSpellResetSession {
         self.dynamic_pickups
             .iter_mut()
             .find(|entity| entity.index == source_slot)
-    }
-
-    fn entity_for_beyond_sight_special_spawn(&self, source_slot: u16) -> Option<EntitySnapshot> {
-        self.pickup(source_slot)
-            .cloned()
-            .or_else(|| {
-                (self.player_entity.index == source_slot).then(|| self.player_entity.clone())
-            })
-            .or_else(|| {
-                self.player_entities
-                    .iter()
-                    .find(|entity| entity.index == source_slot)
-                    .cloned()
-            })
-            .or_else(|| {
-                self.holders
-                    .iter()
-                    .find(|entity| entity.index == source_slot)
-                    .cloned()
-            })
     }
 
     #[must_use]
@@ -13864,20 +14026,6 @@ impl Level2SharedSpellResetSession {
         self.beyond_sight_auxiliary.entity_index2 = entity_index2.cast_signed();
     }
 
-    fn advance_beyond_sight_parent_auxiliary(&mut self, entity_index: u16) {
-        if self.beyond_sight_auxiliary.entity_index != entity_index {
-            self.beyond_sight_auxiliary = Level2PlayerEventAuxiliary {
-                entity_index,
-                ..Level2PlayerEventAuxiliary::default()
-            };
-        }
-        self.beyond_sight_auxiliary.effect_parameter = self
-            .beyond_sight_auxiliary
-            .effect_parameter
-            .saturating_add(1)
-            .min(200);
-    }
-
     pub fn activate_beyond_sight(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
         self.events.clear();
         let Some(beyond_sight) = self.beyond_sight.as_mut() else {
@@ -13920,6 +14068,44 @@ impl Level2SharedSpellResetSession {
         }
         if beyond_sight.parent_entity_index == self.player_entity.index {
             self.player_mana = beyond_sight.parent_mana;
+        }
+    }
+
+    /// Copy the post-upkeep entity-111 values into local typed parent caches
+    /// without invoking their projection writers. The next source callback
+    /// may legitimately consume the fresh mana/regen, while a projection
+    /// here would replay the previous callback's stale cache over the player.
+    fn sync_typed_spell_parent_caches_from_player_entity(&mut self) {
+        let parent_entity_index = self.player_entity.index;
+        let parent_life = self.player_entity.life;
+        let parent_mana = self.player_entity.mana;
+        let parent_mana_regen = self.player_entity.mana_regen;
+        if let Some(shield) = self
+            .shield
+            .as_mut()
+            .filter(|shield| shield.parent_entity_index == parent_entity_index)
+        {
+            shield.parent_life = parent_life;
+            shield.parent_mana = parent_mana;
+            shield.parent_mana_regen = parent_mana_regen;
+        }
+        if let Some(invisible) = self
+            .invisible
+            .as_mut()
+            .filter(|invisible| invisible.parent_entity_index == parent_entity_index)
+        {
+            invisible.parent_life = parent_life;
+            invisible.parent_mana = parent_mana;
+            invisible.parent_mana_regen = parent_mana_regen;
+        }
+        if let Some(beyond_sight) = self
+            .beyond_sight
+            .as_mut()
+            .filter(|beyond_sight| beyond_sight.parent_entity_index == parent_entity_index)
+        {
+            beyond_sight.parent_life = parent_life;
+            beyond_sight.parent_mana = parent_mana;
+            beyond_sight.parent_mana_regen = parent_mana_regen;
         }
     }
 
@@ -14014,18 +14200,27 @@ impl Level2SharedSpellResetSession {
         {
             return;
         }
-        let parent_entity_index = self
-            .beyond_sight
-            .map_or(0, |beyond_sight| beyond_sight.parent_entity_index);
-        self.advance_beyond_sight_parent_auxiliary(parent_entity_index);
-        if let Some(beyond_sight) = self.beyond_sight.as_mut() {
-            let step: BeyondSightStep = beyond_sight.step(parent_castle_mana);
-            // `sub_6CD20` allocates the model-74 effect only on the first
-            // sustained pulse, where the source awards family experience.
-            if step.experience_awarded != 0 {
-                self.beyond_sight_pulse_pending = true;
-            }
+        let Some(mut beyond_sight) = self.beyond_sight.take() else {
+            return;
+        };
+        if beyond_sight.holder_entity_index != source_slot {
+            self.beyond_sight = Some(beyond_sight);
+            return;
         }
+        let parent_entity_index = beyond_sight.parent_entity_index;
+        let experience_awarded = beyond_sight.award_experience_if_fresh_pulse();
+        if experience_awarded != 0 {
+            // `sub_6B310` orders sub_6D8B0 before sub_68D50. Publish the
+            // owner row and threshold presentation before the predicate
+            // can collapse a failed fresh pulse.
+            self.award_beyond_sight_experience(parent_entity_index, experience_awarded);
+        }
+        let _step =
+            beyond_sight.step_after_experience_award(parent_castle_mana, experience_awarded);
+        self.beyond_sight = Some(beyond_sight);
+        // `sub_6B310` ends after its own predicate/charge/countdown and
+        // never dispatches the separate class-10/model-74/action-72
+        // machinery.
         self.sync_beyond_sight_projection();
         if self
             .beyond_sight
@@ -14034,34 +14229,6 @@ impl Level2SharedSpellResetSession {
             self.apply_beyond_sight_cleanup();
             self.sync_beyond_sight_projection();
         }
-    }
-
-    fn take_beyond_sight_pulse_payload(
-        &mut self,
-    ) -> Option<(
-        BeyondSightState,
-        EntitySnapshot,
-        EntitySnapshot,
-        Level2PlayerEventAuxiliary,
-    )> {
-        if !self.beyond_sight_pulse_pending {
-            return None;
-        }
-        self.beyond_sight_pulse_pending = false;
-        let state = self.beyond_sight?;
-        let holder = self.pickup(state.holder_entity_index)?.clone();
-        let parent = if self.player_entity.index == state.parent_entity_index {
-            self.player_entity.clone()
-        } else {
-            self.player_entities
-                .iter()
-                .find(|entity| entity.index == state.parent_entity_index)
-                .cloned()?
-        };
-        let mut auxiliary = self.beyond_sight_auxiliary;
-        auxiliary.entity_index = parent.index;
-        self.beyond_sight_auxiliary.effect_parameter = 0;
-        Some((state, holder, parent, auxiliary))
     }
 
     /// Materialise one authored class-15 row from `sub_4A1E0`'s group pass.
@@ -14582,6 +14749,60 @@ impl Level2SharedSpellResetSession {
         &self.spell_levels
     }
 
+    /// Apply the source `sub_6D8B0(parent, 12, 1)` family-12 award and
+    /// `sub_6D9C0` projection to the exact owning player row. The persistent
+    /// and runtime words are summed with source i32 wrapping; a newly
+    /// computed unlocked level can clamp a selected tier downward, but never
+    /// raises it automatically. The convenience arrays are local-player
+    /// projections only.
+    fn award_beyond_sight_experience(&mut self, parent_entity_index: u16, amount: i32) {
+        let family = usize::from(BEYOND_SIGHT_FAMILY);
+        let owner_index = self
+            .players
+            .iter()
+            .position(|player| player.entity_index == parent_entity_index)
+            .expect("Beyond Sight parent remains in the source player rows");
+        let mut owner = self.players[owner_index].clone();
+        let previous_unlocked = owner.spell_unlocked_levels[family];
+        let runtime = owner.runtime_spell_experience[family].wrapping_add(amount);
+        let total = owner.persistent_spell_experience[family].wrapping_add(runtime);
+        let unlocked = beyond_sight_unlocked_tier(total);
+        owner.runtime_spell_experience[family] = runtime;
+        owner.spell_unlocked_levels[family] = unlocked;
+        owner.record[164 + family * std::mem::size_of::<i32>()
+            ..164 + (family + 1) * std::mem::size_of::<i32>()]
+            .copy_from_slice(&runtime.to_le_bytes());
+        owner.record[502 + family] = unlocked.cast_unsigned();
+        if owner.family_selected_tiers[family] > unlocked {
+            owner.family_selected_tiers[family] = unlocked;
+            owner.record[528 + family] = unlocked.cast_unsigned();
+        }
+        let source_family_enabled =
+            owner.spell_enabled_flags[family] != 0 || owner.enabled_spell_holders[family] != 0;
+        let owner_is_local = owner.entity_index == self.local_player.entity_index;
+        self.players[owner_index] = owner.clone();
+        if owner_is_local {
+            self.spell_experience[family] = runtime;
+            self.spell_levels[family] = unlocked;
+            self.local_player = owner;
+        }
+        if unlocked != previous_unlocked && source_family_enabled {
+            mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
+            self.pickup_events
+                .push(Level2SharedSpellEvent::AbilityImproved {
+                    source_family: BEYOND_SIGHT_FAMILY,
+                    tier: unlocked,
+                });
+            self.events.push(FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::AbilityImproved,
+                entity_index: 0,
+                player_index: -1,
+                sound_id: 61,
+            });
+        }
+    }
+
     /// Run the source `UpdateScroll_59C80` callback for a live model-5 row.
     /// The source scans every live model-0 player in linked-list order, but
     /// only the local LevelIndex player receives XP and tier updates. A
@@ -14646,32 +14867,39 @@ impl Level2SharedSpellResetSession {
                 local_player_index.expect("local player is present for a local collision");
             let enabled_holders = self.players[owner_index].enabled_spell_holders;
             let mut improved = Vec::new();
+            let mut owner = self.players[owner_index].clone();
             for family in 0..PLAYER_SPELL_COUNT {
                 if enabled_holders[family] == 0 {
                     continue;
                 }
-                let mut experience =
-                    self.spell_experience[family].saturating_add(LEVEL2_EXPERIENCE_SCROLL_AWARD);
+                let mut experience = owner.runtime_spell_experience[family]
+                    .wrapping_add(LEVEL2_EXPERIENCE_SCROLL_AWARD);
                 if family == usize::from(CASTLE_SPELL_FAMILY) {
                     experience = experience.min(7);
                 }
+                owner.runtime_spell_experience[family] = experience;
+                owner.record[164 + family * std::mem::size_of::<i32>()
+                    ..164 + (family + 1) * std::mem::size_of::<i32>()]
+                    .copy_from_slice(&experience.to_le_bytes());
                 self.spell_experience[family] = experience;
-                let previous_level = self.spell_levels[family];
+                let previous_level = owner.spell_unlocked_levels[family];
+                let total = owner.persistent_spell_experience[family].wrapping_add(experience);
                 let level = LEVEL2_SPELL_TIER_THRESHOLDS[family]
                     .iter()
-                    .rposition(|threshold| experience >= *threshold)
+                    .rposition(|threshold| total >= *threshold)
                     .unwrap_or(0) as i8;
+                owner.spell_unlocked_levels[family] = level;
+                owner.record[502 + family] = level.cast_unsigned();
                 self.spell_levels[family] = level;
-                if level > previous_level {
+                if owner.family_selected_tiers[family] > level {
+                    owner.family_selected_tiers[family] = level;
+                    owner.record[528 + family] = level.cast_unsigned();
+                }
+                if level != previous_level {
                     improved.push((family as u8, level));
                 }
             }
-            let spell_levels = self.spell_levels;
-            let owner = &mut self.players[owner_index];
-            for family in 0..PLAYER_SPELL_COUNT {
-                owner.family_selected_tiers[family] = spell_levels[family];
-                owner.record[528 + family] = spell_levels[family].cast_unsigned();
-            }
+            self.players[owner_index] = owner.clone();
             mark_source_audio_call(SourceAudioCallTag::ExperienceScrollPickup);
             self.events.push(FlightEvent::PrepareSound {
                 #[cfg(test)]
@@ -14695,7 +14923,7 @@ impl Level2SharedSpellResetSession {
                     sound_id: 61,
                 });
             }
-            self.local_player = owner.clone();
+            self.local_player = owner;
         }
         true
     }
@@ -15270,63 +15498,6 @@ impl Level2SharedSpellResetSession {
             parent_castle_mana,
             source_player_order,
         )?;
-        if family == BEYOND_SIGHT_FAMILY {
-            if let Some((beyond_sight, holder, parent, auxiliary)) =
-                self.take_beyond_sight_pulse_payload()
-            {
-                let profile = level2_set_spell_profile(BEYOND_SIGHT_FAMILY, beyond_sight.tier)
-                    .expect("validated Beyond Sight pulse tier");
-                // `sub_6CD20` keeps the 0x4000 forward move in the effect's
-                // axis_0x9A_154x payload. Its primary position is separately
-                // adjusted by `sub_68E50` from the holder's byte-1 control
-                // bits and terrain clamp.
-                let mut axis_position = parent.position;
-                let yaw = auxiliary.next_entity.wrapping_add(parent.yaw);
-                let pitch = auxiliary.entity_index2.wrapping_add(parent.pitch);
-                crate::move_entity(&mut axis_position, yaw, pitch, 0x4000);
-                let mut position = parent.position;
-                let parent_control_byte_1 = parent.control_flags.wrapping_shr(8) as u8;
-                if parent_control_byte_1 & 1 != 0 || parent_control_byte_1 & 2 != 0 {
-                    let mut candidate = position;
-                    let special_target = (holder.model == 4)
-                        .then(|| holder.source_word_96())
-                        .filter(|target| *target != 0)
-                        .and_then(|target| self.entity_for_beyond_sight_special_spawn(target));
-                    if let Some(target) = special_target {
-                        candidate.z = target.position.z.wrapping_add(target.array_yaw());
-                    } else {
-                        let lateral_yaw = if parent_control_byte_1 & 1 != 0 {
-                            parent.yaw.wrapping_sub(512)
-                        } else {
-                            parent.yaw.wrapping_add(0x200)
-                        };
-                        crate::move_entity(&mut candidate, lateral_yaw, 0, 256);
-                    }
-                    if self.terrain.ground_height(candidate) <= candidate.z {
-                        position = candidate;
-                    }
-                }
-                economy
-                    .allocate_beyond_sight_pulse_effect(
-                        beyond_sight.holder_entity_index,
-                        beyond_sight.parent_entity_index,
-                        parent.source_id,
-                        profile.subspell_index,
-                        0,
-                        auxiliary.effect_parameter,
-                        parent.actual_speed.wrapping_add(16),
-                        position,
-                        axis_position,
-                        yaw,
-                        pitch,
-                    )
-                    .ok_or_else(|| {
-                        NativeWorldError::new(
-                            "Level 2 Beyond Sight first-pulse effect could not allocate",
-                        )
-                    })?;
-            }
-        }
         let Some(outcome) = result else {
             return Ok(None);
         };
@@ -15483,13 +15654,36 @@ impl Level2SharedSpellResetSession {
         player_entity_index: u16,
         player_position: Position,
     ) -> Result<Level2SpeedPickupStep> {
+        self.step_speed_pickup_inner(player_entity_index, player_position, true)
+    }
+
+    /// Source `UpdateEntities` keeps one presentation/event stream across
+    /// ascending entity slots. The outer dispatcher therefore uses this
+    /// preserving variant; isolated direct calls retain the public method's
+    /// per-call event reset.
+    fn step_speed_pickup_in_source_order(
+        &mut self,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Level2SpeedPickupStep> {
+        self.step_speed_pickup_inner(player_entity_index, player_position, false)
+    }
+
+    fn step_speed_pickup_inner(
+        &mut self,
+        player_entity_index: u16,
+        player_position: Position,
+        clear_events: bool,
+    ) -> Result<Level2SpeedPickupStep> {
         if player_entity_index != self.player_entity.index {
             return Err(NativeWorldError::new(format!(
                 "Level 2 Speed pickup received player slot {player_entity_index}, expected {}",
                 self.player_entity.index
             )));
         }
-        self.events.clear();
+        if clear_events {
+            self.events.clear();
+        }
         let pickup_index = self
             .pickups
             .iter()
@@ -15624,7 +15818,7 @@ impl Level2SharedSpellResetSession {
                 self.player_entity.index
             ))),
             75 => self
-                .step_speed_pickup(player_entity_index, player_position)
+                .step_speed_pickup_in_source_order(player_entity_index, player_position)
                 .map(Some),
             _ => Err(NativeWorldError::new(format!(
                 "unknown Level 2 shared pickup source slot {source_slot}"
@@ -15654,6 +15848,9 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.terrain.deterministic_hash().to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
+        for experience in self.persistent_spell_experience {
+            hasher.update(experience.to_le_bytes());
+        }
         for experience in self.spell_experience {
             hasher.update(experience.to_le_bytes());
         }
@@ -15728,7 +15925,6 @@ impl Level2SharedSpellResetSession {
         } else {
             hasher.update([0]);
         }
-        hasher.update([u8::from(self.beyond_sight_pulse_pending)]);
         hasher.update(self.beyond_sight_auxiliary.entity_index.to_le_bytes());
         hasher.update(self.beyond_sight_auxiliary.next_entity.to_le_bytes());
         hasher.update(self.beyond_sight_auxiliary.entity_index2.to_le_bytes());
@@ -15812,12 +16008,12 @@ impl Level2SharedSpellResetSession {
         self.shield_damage_mailbox = self.baseline_shield_damage_mailbox;
         self.invisible = self.baseline_invisible;
         self.beyond_sight = self.baseline_beyond_sight;
-        self.beyond_sight_pulse_pending = self.baseline_beyond_sight_pulse_pending;
         self.beyond_sight_auxiliary = self.baseline_beyond_sight_auxiliary;
         self.acquisitions.clone_from(&self.baseline_acquisitions);
         self.free_spell_usage = self.baseline_free_spell_usage;
         self.persistent_acquisitions
             .clone_from(&self.baseline_persistent_acquisitions);
+        self.persistent_spell_experience = self.baseline_persistent_spell_experience;
         self.spell_experience = self.baseline_spell_experience;
         self.spell_levels = self.baseline_spell_levels;
         self.events.clear();
@@ -17699,8 +17895,9 @@ impl Level2ResetSession {
         for holder in &holders {
             for authoritative in self
                 .shared_spells
-                .holders
+                .pickups
                 .iter_mut()
+                .chain(self.shared_spells.holders.iter_mut())
                 .chain(self.shared_spells.dynamic_pickups.iter_mut())
             {
                 if authoritative.index != holder.entity_index {
@@ -17723,11 +17920,237 @@ impl Level2ResetSession {
             .sync_beyond_sight_from_spell_fire(caster, &holders);
     }
 
+    /// Persist the source ordinary menu commands after `latch_command` has
+    /// applied them to the transient Fire context. The generic latch owns the
+    /// command ABI projection; this Level 2 seam owns only the local acquired
+    /// holder, its raw player record, and the cold/active SetSpell distinction.
+    /// Remote or unowned relations fail closed and cannot borrow a local row.
+    fn reconcile_level2_spell_menu_command(&mut self, command: PlayerCommand) {
+        let is_menu_command = matches!(command.opcode, 31 | 32 | 40 | 41);
+        if !is_menu_command {
+            return;
+        }
+        let Some(fire_snapshot) = self.context.spell_fire.as_ref().cloned() else {
+            return;
+        };
+
+        let (ui_index, requested_tier, hand_side) = match command.opcode {
+            31 | 32 => {
+                let Ok(ui_index) = usize::try_from(command.argument_1) else {
+                    return;
+                };
+                if SOURCE_SPELL_INDEX_MAP.get(ui_index).is_none() {
+                    return;
+                }
+                (ui_index, command.argument_2, Some(command.opcode == 31))
+            }
+            40 => {
+                let Ok(ui_index) = usize::try_from(command.argument_1) else {
+                    return;
+                };
+                let Some(&family) = SOURCE_SPELL_INDEX_MAP.get(ui_index) else {
+                    return;
+                };
+                (
+                    ui_index,
+                    fire_snapshot.family_selected_tiers[usize::from(family)],
+                    None,
+                )
+            }
+            41 => {
+                let ui_index = usize::from(fire_snapshot.selected_spell_ui_index);
+                if SOURCE_SPELL_INDEX_MAP.get(ui_index).is_none() {
+                    return;
+                }
+                (ui_index, command.argument_1, None)
+            }
+            _ => return,
+        };
+        let Some(&family) = SOURCE_SPELL_INDEX_MAP.get(ui_index) else {
+            return;
+        };
+        let family_index = usize::from(family);
+        let holder_index = fire_snapshot.enabled_holder_indices[family_index];
+        if holder_index == 0
+            || !self
+                .shared_spells
+                .local_player
+                .enabled_spell_holders
+                .contains(&holder_index)
+            || !self
+                .shared_spells
+                .pickup(holder_index)
+                .is_some_and(|holder| {
+                    holder.active
+                        && holder.class == 15
+                        && holder.model == family
+                        && holder.source_spell_parent_entity_index()
+                            == self.shared_spells.local_player.entity_index
+                })
+        {
+            return;
+        }
+
+        // PlayerEvents_51BB0 preserves opcode-41's raw requested tier.  The
+        // source's downward unlocked-tier projection belongs to the later
+        // sub_6D9C0 XP recomputation, not this input boundary.
+        let selected_tier = requested_tier;
+        // `SetSpell_6D5E0` only applies the modeled family profile range for
+        // hand assignment (31/32). Opcode 41 is a raw PlayerEvents write;
+        // its selected tier remains raw until sub_6D9C0 recomputes the XP
+        // projection and applies any downward clamp.
+        let physical_tier = if hand_side.is_some() {
+            requested_tier.clamp(0, 2)
+        } else {
+            requested_tier
+        };
+        let local_player_index =
+            self.shared_spells.players.iter().position(|player| {
+                player.entity_index == self.shared_spells.local_player.entity_index
+            });
+        let Some(local_player_index) = local_player_index else {
+            return;
+        };
+
+        if let Some(fire) = self.context.spell_fire.as_mut() {
+            match command.opcode {
+                31 | 32 => {
+                    fire.family_selected_tiers[family_index] = selected_tier;
+                    if let Some(left) = hand_side {
+                        if left {
+                            fire.left_holder_index = holder_index;
+                            fire.left_subspell_index = selected_tier;
+                        } else {
+                            fire.right_holder_index = holder_index;
+                            fire.right_subspell_index = selected_tier;
+                        }
+                    }
+                    if let Some(holder) = fire
+                        .holders
+                        .iter_mut()
+                        .find(|holder| holder.entity_index == holder_index)
+                    {
+                        holder.level_gate = physical_tier;
+                    }
+                }
+                40 | 41 => {
+                    fire.selected_spell_ui_index = u8::try_from(ui_index)
+                        .expect("source spell UI index fits the exported selector");
+                    fire.selected_subspell_index = selected_tier;
+                    if command.opcode == 41 {
+                        fire.family_selected_tiers[family_index] = selected_tier;
+                    }
+                }
+                _ => unreachable!("menu command was checked above"),
+            }
+        }
+
+        let mut owner = self.shared_spells.players[local_player_index].clone();
+        match command.opcode {
+            31 | 32 => {
+                // The player/hand fields retain the raw selector. SetSpell's
+                // physical holder projection is clamped separately below.
+                owner.family_selected_tiers[family_index] = selected_tier;
+                owner.record[528 + family_index] = selected_tier.cast_unsigned();
+                let family_i16 = i16::from(family);
+                if hand_side == Some(true) {
+                    owner.left_spell_slot_raw = family_i16;
+                    owner.left_spell_slot = family;
+                    owner.left_subspell_index = selected_tier;
+                    owner.record[554..556].copy_from_slice(&family_i16.to_le_bytes());
+                    owner.record[558] = selected_tier.cast_unsigned();
+                } else {
+                    owner.right_spell_slot_raw = family_i16;
+                    owner.right_spell_slot = family;
+                    owner.right_subspell_index = selected_tier;
+                    owner.record[556..558].copy_from_slice(&family_i16.to_le_bytes());
+                    owner.record[559] = selected_tier.cast_unsigned();
+                }
+            }
+            40 => {
+                owner.selected_spell_ui_index = u8::try_from(ui_index)
+                    .expect("source spell UI index fits the exported selector");
+                owner.record[560] = command.argument_2.cast_unsigned();
+                owner.record[561] = owner.selected_spell_ui_index;
+                // Source opcode 0x28 writes only menu stage and UI index. It
+                // deliberately leaves subSpellIndex459/record[562] alone.
+            }
+            41 => {
+                owner.selected_spell_ui_index = u8::try_from(ui_index)
+                    .expect("source spell UI index fits the exported selector");
+                owner.selected_subspell_index = selected_tier;
+                owner.record[561] = owner.selected_spell_ui_index;
+                // Opcode 0x29 stores the requested argument byte in the raw
+                // subspell field and selected-family byte. No physical
+                // holder projection occurs here; sub_6D9C0 performs any
+                // downward clamp when XP recomputation later runs.
+                owner.record[562] = command.argument_1.cast_unsigned();
+                owner.family_selected_tiers[family_index] = selected_tier;
+                owner.record[528 + family_index] = selected_tier.cast_unsigned();
+            }
+            _ => unreachable!("menu command was checked above"),
+        }
+        self.shared_spells.players[local_player_index] = owner.clone();
+        self.shared_spells.local_player = owner;
+
+        // Only op31/32 call SetSpell. op40/41 change the menu selection but
+        // leave the holder's physical profile and queued word untouched.
+        if hand_side.is_none() {
+            return;
+        }
+
+        let active_word = self
+            .shared_spells
+            .pickup(holder_index)
+            .map(|holder| {
+                u16::from_le_bytes(
+                    holder.record[50..52]
+                        .try_into()
+                        .expect("menu holder active word extent"),
+                )
+            })
+            .unwrap_or_default();
+        if let Some(holder) = self.shared_spells.pickup_mut(holder_index) {
+            holder.level_gate = physical_tier;
+            holder.record[74] = physical_tier.cast_unsigned();
+            if active_word != 0 {
+                let queued_spell = u16::from(physical_tier.cast_unsigned()) + 1;
+                holder.record[48..50].copy_from_slice(&queued_spell.to_le_bytes());
+            } else if let Some(profile) =
+                level2_set_spell_profile(family, physical_tier.cast_unsigned())
+            {
+                holder.subspell_index = profile.subspell_index;
+                holder.activation_value = profile.word_0x30;
+                holder.byte_3b = profile.byte_0x3b;
+                holder.mana_regen = profile.mana_regen;
+                holder.max_mana = profile.max_mana;
+                holder.mana_cost = profile.max_mana;
+                holder.mana = profile.mana;
+                holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+                holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+                holder.record[63] = profile.byte_0x3b;
+                holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+                holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+                holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+            }
+        }
+        if family == BEYOND_SIGHT_FAMILY && active_word == 0 {
+            if let Some(profile) = level2_set_spell_profile(family, physical_tier.cast_unsigned())
+                && let Some(beyond_sight) = self.shared_spells.beyond_sight.as_mut()
+            {
+                beyond_sight.tier = physical_tier.cast_unsigned();
+                beyond_sight.activation_value = profile.word_0x30.cast_signed();
+                beyond_sight.mana_cost = profile.max_mana;
+                beyond_sight.mana_regen_requirement = profile.mana_regen;
+            }
+        }
+    }
+
     /// Source `sub_69640` for the ordinary direct Level 2 holder 116. The
     /// holder's allocation attempt is deliberately separate from its
     /// expenditure/decrement: remc2 advances the countdown even when the
     /// class-9/model-1 arena allocation fails.
-    fn step_level2_possession_holder_source_slot(&mut self, holder_index: u16) {
+    fn step_level2_possession_holder_source_slot(&mut self, holder_index: u16) -> Option<u16> {
         let Some(holder) = self
             .shared_spells
             .dynamic_pickups
@@ -17743,7 +18166,7 @@ impl Level2ResetSession {
             })
             .cloned()
         else {
-            return;
+            return None;
         };
 
         let activation_value = i16::try_from(holder.activation_value).unwrap_or(i16::MAX);
@@ -17773,16 +18196,47 @@ impl Level2ResetSession {
             }
         }
 
-        if holder.active_value == activation_value && holder.life == 0 {
-            let _ = self.economy.spawn_possession_projectile(
-                self.state.position,
+        let spawned = if holder.active_value == activation_value && holder.life == 0 {
+            // `sub_69900` applies the same `sub_68E50` hand carrier as the
+            // Castle source before the model-1 flyer's first guided callback:
+            // left/selected moves at yaw-512, right at yaw+512, strict ground
+            // penetration rolls the displacement back, then parent FOV is
+            // added with source-width wrapping.
+            let mut launch_position = self.state.position;
+            let direction_bits = self.shared_spells.player_entity.control_flags & 0x0300;
+            let hand_yaw = if direction_bits & 0x0100 != 0 {
+                Some(self.state.yaw.wrapping_sub(512))
+            } else if direction_bits & 0x0200 != 0 {
+                Some(self.state.yaw.wrapping_add(512))
+            } else {
+                None
+            };
+            if let Some(hand_yaw) = hand_yaw {
+                crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                if self.terrain.ground_height(launch_position) > launch_position.z {
+                    launch_position = self.state.position;
+                }
+            }
+            launch_position.z = launch_position.z.wrapping_add(self.state.entity_fov);
+            let auxiliary = self.shared_spells.beyond_sight_auxiliary();
+            let launch_yaw = auxiliary.next_entity.wrapping_add(self.state.yaw);
+            let launch_pitch = auxiliary
+                .entity_index2
+                .wrapping_add(self.state.display_pitch);
+            let mut axis_position = self.state.position;
+            crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 10_240);
+            self.economy.spawn_possession_projectile(
+                launch_position,
                 self.state.entity_index,
                 holder_index,
-                self.state.yaw,
-                self.state.effective_pitch,
+                launch_yaw,
+                launch_pitch,
                 self.state.actual_speed,
-            );
-        }
+                axis_position,
+            )
+        } else {
+            None
+        };
         let next_active_value = holder.active_value.saturating_sub(1);
         if let Some(authoritative) = self
             .shared_spells
@@ -17801,64 +18255,247 @@ impl Level2ResetSession {
         {
             in_flight.active_value = next_active_value;
         }
+        spawned
     }
 
-    /// Apply the player-side part of `sub_68DE0` before the class-9/model-10
-    /// Castle flyer allocation. Mana itself is not written here: the next
-    /// `AddPlayer03_00_5E010` upkeep consumes this negative regeneration.
-    fn prepare_castle_spell_projectile(&mut self, holder_index: u16) -> bool {
+    /// Re-run the queued `SetSpell_6D5E0` write when the Castle holder's
+    /// source countdown reaches zero. The active holder keeps its current
+    /// physical profile while W is nonzero; only the source cleanup boundary
+    /// consumes `word_0x2E` and reinstalls the selected profile.
+    fn apply_castle_spell_holder_cleanup(&mut self, holder_index: u16) {
+        let queued_spell = self
+            .shared_spells
+            .pickup(holder_index)
+            .map(|holder| {
+                u16::from_le_bytes(
+                    holder.record[48..50]
+                        .try_into()
+                        .expect("queued Castle SetSpell word extent"),
+                )
+            })
+            .unwrap_or_default();
+        if queued_spell != 0 {
+            let tier = queued_spell.saturating_sub(1).min(2) as u8;
+            if let Some(profile) = level2_direct_starting_spell_profile(CASTLE_SPELL_FAMILY, tier)
+                && let Some(holder) = self.shared_spells.pickup_mut(holder_index)
+            {
+                holder.level_gate = tier.cast_signed();
+                holder.subspell_index = profile.subspell_index;
+                holder.activation_value = profile.word_0x30;
+                holder.byte_3b = profile.byte_0x3b;
+                holder.mana_regen = profile.mana_regen;
+                holder.max_mana = profile.max_mana;
+                holder.mana_cost = profile.max_mana;
+                holder.mana = profile.mana;
+                holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+                holder.record[48..50].fill(0);
+                holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+                holder.record[63] = profile.byte_0x3b;
+                holder.record[74] = tier;
+                holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+                holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+                holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+            }
+        }
+    }
+
+    /// Dispatch the source class-15/model-2/action-6 Castle holder at slot
+    /// 117 through `sub_69AB0`. W==0 enters immediate cleanup; a valid fresh
+    /// pulse charges before attempting allocation and only a successful
+    /// class-9/model-10 allocation writes W=D-1. Allocation failure and an
+    /// invalid parent leave W unchanged. The route epilogue owns phase.
+    fn step_level2_castle_holder_source_slot(&mut self, holder_index: u16) -> Option<u16> {
         let Some(holder) = self
             .shared_spells
-            .holders
+            .dynamic_pickups
             .iter()
-            .chain(self.shared_spells.dynamic_pickups.iter())
             .find(|holder| {
                 holder.index == holder_index
+                    && holder.active
+                    && holder.class == 15
                     && holder.model == CASTLE_SPELL_FAMILY
-                    && holder.active_value != 0
+                    && holder.action == CASTLE_SPELL_FAMILY.saturating_mul(3)
             })
             .cloned()
         else {
-            return false;
+            return None;
         };
-        let mana_regen = if self.shared_spells.player_entity.mana_regen >= 0 {
-            -holder.mana_cost
-        } else {
-            self.shared_spells
-                .player_entity
-                .mana_regen
-                .wrapping_sub(holder.mana_cost)
-        };
-        self.shared_spells.player_entity.mana_regen = mana_regen;
-        self.shared_spells.player_entity.record[140..144]
-            .copy_from_slice(&mana_regen.to_le_bytes());
-        for entity in &mut self.shared_spells.player_entities {
-            if entity.index == self.shared_spells.player_entity.index {
-                entity.mana_regen = mana_regen;
-                entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
-            }
-        }
-        true
-    }
 
-    /// Commit `word_0x2E = word_0x30 - 1` only after the flyer allocation
-    /// succeeds. The shared dynamic holder is the authoritative class-15 row
-    /// used by both the source cursor and SpellFireContext.
-    fn finish_castle_spell_projectile(&mut self, holder_index: u16) -> bool {
-        for holder in self
-            .shared_spells
-            .holders
-            .iter_mut()
-            .chain(self.shared_spells.dynamic_pickups.iter_mut())
-        {
-            if holder.index != holder_index {
-                continue;
+        let parent_entity_index = self.shared_spells.player_entity.index;
+        let parent_relation_valid =
+            holder.source_spell_parent_entity_index() == parent_entity_index;
+        let mut next_active_value = holder.active_value;
+        let mut spawned = None;
+        if holder.active_value <= 0 {
+            // `sub_6D880` consumes the queued SetSpell word immediately at
+            // the zero-W callback. word36 still decrements below.
+            self.apply_castle_spell_holder_cleanup(holder_index);
+        } else if parent_relation_valid {
+            let fresh = holder.active_value == holder.activation_value.cast_signed();
+            let parent_life = self.shared_spells.player_entity.life;
+            let parent_mana = self.shared_spells.player_entity.mana;
+            let parent_mana_regen = self.shared_spells.player_entity.mana_regen;
+            let castle_mana = self
+                .economy
+                .castle()
+                .filter(|castle| {
+                    castle.active
+                        && self.economy.player_castle_entity_index() == castle.source_entity_index
+                })
+                .map(|castle| castle.mana);
+            let predicate = parent_life >= 0
+                && parent_mana >= 0
+                && (holder.mana_regen == 0
+                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
+                && (!fresh || parent_mana >= holder.max_mana);
+            if !predicate {
+                // Source leaves cleanup for the next zero-W callback.
+                next_active_value = 0;
+            } else if fresh {
+                let stage = self
+                    .economy
+                    .castle()
+                    .map_or(1, |castle| castle.level.saturating_add(1));
+                // Spells.cpp's Castle profile conversion feeds the source
+                // Type_str_164 arrays: stage coefficient is 256 plus the
+                // selected profile subspell index shifted by eight, while
+                // the controller coefficient is the physical tier byte.
+                let stage_coefficient =
+                    256_i32.wrapping_add(i32::from(holder.subspell_index as i8) << 8);
+                let _ = self
+                    .economy
+                    .set_castle_stage_coefficient(stage, stage_coefficient as u16);
+                let _ = self.economy.set_castle_controller_coefficient(
+                    stage,
+                    holder.level_gate.clamp(0, 2).cast_unsigned(),
+                );
+                // `sub_68DE0` charges before `sub_69AB0` attempts NewEvent;
+                // allocation failure therefore retains the charge but leaves
+                // W unchanged.
+                let mana_regen = if parent_mana_regen >= 0 {
+                    -holder.max_mana
+                } else {
+                    parent_mana_regen.wrapping_sub(holder.max_mana)
+                };
+                self.shared_spells.player_entity.mana_regen = mana_regen;
+                self.shared_spells.player_entity.record[140..144]
+                    .copy_from_slice(&mana_regen.to_le_bytes());
+                for entity in &mut self.shared_spells.player_entities {
+                    if entity.index == parent_entity_index {
+                        entity.mana_regen = mana_regen;
+                        entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
+                    }
+                }
+
+                // `sub_69AB0` calls `sub_68E50(parent, flyer, holder)` after
+                // NewEvent succeeds.  The selected/left hand displaces the
+                // raw parent position by yaw-512, the right hand by yaw+512;
+                // a strict ground penetration rolls the displacement back.
+                // The parent FOV and two A4 angle words are then copied with
+                // source-width wrapping into the new class-9/model-10 row.
+                let mut launch_position = self.state.position;
+                let direction_bits = self.shared_spells.player_entity.control_flags & 0x0300;
+                let hand_yaw = if direction_bits & 0x0100 != 0 {
+                    Some(self.state.yaw.wrapping_sub(512))
+                } else if direction_bits & 0x0200 != 0 {
+                    Some(self.state.yaw.wrapping_add(512))
+                } else {
+                    None
+                };
+                if let Some(hand_yaw) = hand_yaw {
+                    crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                    if self.terrain.ground_height(launch_position) > launch_position.z {
+                        launch_position = self.state.position;
+                    }
+                }
+                launch_position.z = launch_position.z.wrapping_add(self.state.entity_fov);
+
+                let auxiliary = self.shared_spells.beyond_sight_auxiliary();
+                let source_a4_byte_154 = self
+                    .shared_spells
+                    .players
+                    .iter()
+                    .find(|player| player.entity_index == parent_entity_index)
+                    .and_then(PlayerSnapshot::type_str_164_auxiliary)
+                    .map_or(0, |carrier| carrier.byte_0x154_340);
+                spawned = self.economy.spawn_castle_projectile_with_payload(
+                    level2_dynamic_economy::Level2CastleProjectileLaunchPayload {
+                        position: launch_position,
+                        yaw: auxiliary.next_entity.wrapping_add(self.state.yaw),
+                        pitch: auxiliary
+                            .entity_index2
+                            .wrapping_add(self.state.display_pitch),
+                        source_id_entity_index: parent_entity_index,
+                        source_subspell_index: holder.subspell_index,
+                        source_mana: holder.mana,
+                        source_a4_byte_154,
+                    },
+                    holder_index,
+                    self.state.actual_speed,
+                );
+                self.terrain = self.economy.terrain.clone();
+                self.synchronize_level2_terrain();
+                if let Some(spawned_slot) = spawned {
+                    // The A4 byte transfer and sound are success-only source
+                    // epilogue writes; predicate or allocator failure leaves
+                    // the parent byte and audio journal untouched.
+                    if let Some(player) = self
+                        .shared_spells
+                        .players
+                        .iter_mut()
+                        .find(|player| player.entity_index == parent_entity_index)
+                    {
+                        if let Some(carrier) = player.type_str_164_auxiliary.as_mut() {
+                            carrier.byte_0x154_340 = 0;
+                            player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+                        }
+                        if self.shared_spells.local_player.entity_index == parent_entity_index {
+                            self.shared_spells.local_player = player.clone();
+                        }
+                    }
+                    mark_source_audio_call(SourceAudioCallTag::InitialCastleLaunch);
+                    self.shared_spells.events.push(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::InitialCastleLaunch,
+                        entity_index: spawned_slot,
+                        player_index: -1,
+                        sound_id: 15,
+                    });
+                    next_active_value = holder.activation_value.cast_signed().wrapping_sub(1);
+                }
             }
-            holder.active_value = holder.active_value.saturating_sub(1);
-            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
-            return true;
         }
-        false
+        if let Some(authoritative) = self
+            .shared_spells
+            .dynamic_pickups
+            .iter_mut()
+            .find(|candidate| candidate.index == holder_index)
+        {
+            authoritative.active_value = next_active_value;
+            authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
+        }
+        // word36 is the package record word at bytes 58..60. It is consumed
+        // by every active action-6 callback, including invalid-parent and
+        // zero-W cleanup callbacks; bytes 40..42 are the unrelated word24.
+        if let Some(holder) = self.shared_spells.pickup_mut(holder_index) {
+            let word_36 = u16::from_le_bytes(
+                holder.record[58..60]
+                    .try_into()
+                    .expect("Castle holder word-36 extent"),
+            );
+            if word_36 != 0 {
+                holder.record[58..60].copy_from_slice(&word_36.saturating_sub(1).to_le_bytes());
+            }
+        }
+        if let Some(fire) = self.context.spell_fire.as_mut()
+            && let Some(in_flight) = fire
+                .holders
+                .iter_mut()
+                .find(|candidate| candidate.entity_index == holder_index)
+        {
+            in_flight.active_value = next_active_value;
+        }
+        spawned
     }
 
     /// `sub_5F890(caster, 0)` clears the originating model-2 holder's
@@ -17866,8 +18503,9 @@ impl Level2ResetSession {
     fn clear_castle_spell_holder_cooldown(&mut self, holder_index: u16) {
         for holder in self
             .shared_spells
-            .holders
+            .pickups
             .iter_mut()
+            .chain(self.shared_spells.holders.iter_mut())
             .chain(self.shared_spells.dynamic_pickups.iter_mut())
         {
             if holder.index == holder_index {
@@ -17911,8 +18549,9 @@ impl Level2ResetSession {
         let mut holders = Vec::new();
         for authoritative in self
             .shared_spells
-            .holders
+            .pickups
             .iter()
+            .chain(self.shared_spells.holders.iter())
             .chain(self.shared_spells.dynamic_pickups.iter())
         {
             if !enabled_holder_indices.contains(&authoritative.index)
@@ -17945,6 +18584,8 @@ impl Level2ResetSession {
         fire.selected_subspell_index = local_player.selected_subspell_index;
         fire.spell_hand_eligibility = local_player.spell_hand_eligibility;
         fire.family_selected_tiers = local_player.family_selected_tiers;
+        fire.spell_experience = self.shared_spells.spell_experience;
+        fire.spell_levels = self.shared_spells.spell_levels;
         fire.enabled_holder_indices = enabled_holder_indices;
         fire.holders = holders;
     }
@@ -17957,8 +18598,9 @@ impl Level2ResetSession {
         let caster = self.shared_spells.caster;
         let holders = self
             .shared_spells
-            .holders
+            .pickups
             .iter()
+            .chain(self.shared_spells.holders.iter())
             .chain(self.shared_spells.dynamic_pickups.iter())
             .map(|authoritative| SpellActivationHolder {
                 entity_index: authoritative.index,
@@ -18018,8 +18660,9 @@ impl Level2ResetSession {
             .unwrap_or(CASTLE_SPELL_FAMILY);
         let mut holders = Vec::new();
         for holder in shared_spells
-            .holders
+            .pickups
             .iter()
+            .chain(shared_spells.holders.iter())
             .chain(shared_spells.dynamic_pickups.iter())
         {
             if !enabled_holder_indices.contains(&holder.index)
@@ -18056,6 +18699,9 @@ impl Level2ResetSession {
                 selected_spell_ui_index: local_player.selected_spell_ui_index,
                 selected_subspell_index: local_player.selected_subspell_index,
                 enabled_holder_indices,
+                family_selected_tiers: local_player.family_selected_tiers,
+                spell_experience: shared_spells.spell_experience,
+                spell_levels: shared_spells.spell_levels,
                 caster: SpellCasterState {
                     entity_index: caster.entity_index,
                     model: caster.model,
@@ -20945,11 +21591,11 @@ impl Level2ResetSession {
         }
     }
 
-    /// Dispatch one newly allocated Possession row before the source cursor
-    /// reaches the next existing slot. This is deliberately limited to the
-    /// class-9/model-1 -> class-10/model-12 chain: it preserves the source
-    /// runagain cursor without turning the economy arena into a second
-    /// scheduler.
+    /// Dispatch one newly allocated dynamic row before the source cursor
+    /// reaches the next existing slot. This covers the class-9/model-1
+    /// Possession chain and the class-9/model-10 Castle flyer; it preserves
+    /// the source runagain cursor without turning the economy arena into a
+    /// second scheduler.
     fn step_level2_pending_possession_dynamic_row(
         &mut self,
         pass: u8,
@@ -20957,7 +21603,9 @@ impl Level2ResetSession {
     ) {
         debug_assert!(matches!(
             row.kind,
-            Level2DynamicArenaKind::PossessionProjectile | Level2DynamicArenaKind::PossessionEffect
+            Level2DynamicArenaKind::CastleProjectile
+                | Level2DynamicArenaKind::PossessionProjectile
+                | Level2DynamicArenaKind::PossessionEffect
         ));
         let source_slot = row.source_slot;
         let live = self.step_level2_dynamic_arena(pass, source_slot, row.kind);
@@ -20972,7 +21620,7 @@ impl Level2ResetSession {
         }
     }
 
-    /// Record only newly allocated Possession rows against the still-moving
+    /// Record only newly allocated Possession/Castle rows against the still-moving
     /// source cursor. Rows at or below the callback that allocated them are
     /// deferred to the next outer pass; a higher row is inserted before the
     /// next existing source slot, exactly as `UpdateEntities_57730`'s
@@ -20990,7 +21638,8 @@ impl Level2ResetSession {
             if live_before.contains(&key)
                 || !matches!(
                     row.kind,
-                    Level2DynamicArenaKind::PossessionProjectile
+                    Level2DynamicArenaKind::CastleProjectile
+                        | Level2DynamicArenaKind::PossessionProjectile
                         | Level2DynamicArenaKind::PossessionEffect
                 )
                 || dispatched_dynamic_slots.contains(&key)
@@ -21008,8 +21657,14 @@ impl Level2ResetSession {
     /// Dispatch the authored Level 2 rows in source-slot order alongside the
     /// generic player-flight pass. Each typed family remains authoritative for
     /// its own mutable state; unknown mission rows are not coerced into a
-    /// neighboring Level 1 handler.
-    fn step_level2_source_pass(&mut self, pass: u8) {
+    /// neighboring Level 1 handler. The generic player callback is spliced at
+    /// its source row (111), before later holder/Castle rows.
+    fn step_level2_source_pass_with_player(
+        &mut self,
+        pass: u8,
+        latched_command: crate::LatchedCommand,
+        evidence: &mut Vec<crate::StepEvidence>,
+    ) {
         let source_player_order = self.refresh_level2_spell_owner_candidates();
         let player_entity_index = self.state.entity_index;
         let player_position = self.state.position;
@@ -21024,6 +21679,7 @@ impl Level2ResetSession {
         // this generic prepass independent of Castle root/model/parent state
         // so a destroyed root cannot strand a hidden typed child.
         self.economy.reclaim_hidden_castle_rows_at_source_boundary();
+        self.economy.rebuild_possession_guidance_source_slots();
         // Pinned `UpdateEntities_57730` invokes `sub_60F00` once at the
         // owning-pass boundary (EventsFunctions.cpp:40115), before any
         // callback can spawn a fresh model-39 sphere or carrier. Rebuild the
@@ -21069,6 +21725,18 @@ impl Level2ResetSession {
                             && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
                     })
                     .map(|holder| (holder.index, 11_u8)),
+            )
+            .chain(
+                self.shared_spells
+                    .dynamic_pickups
+                    .iter()
+                    .filter(|holder| {
+                        holder.active
+                            && holder.class == 15
+                            && holder.model == CASTLE_SPELL_FAMILY
+                            && holder.action == CASTLE_SPELL_FAMILY.saturating_mul(3)
+                    })
+                    .map(|holder| (holder.index, 12_u8)),
             )
             .chain(
                 self.bad_stones
@@ -21182,6 +21850,17 @@ impl Level2ResetSession {
                         .get(usize::from(player_entity_index))
                         .is_some_and(|entity| entity.class == 3 && entity.model == 0);
                     if local_player_body {
+                        // `AddPlayer03_00_5E010` tests the Castle shift AABB
+                        // against the entity-111 position before the generic
+                        // body updates position. Preserve that source-time
+                        // observation for the following upkeep write.
+                        let castle_shift_overlap = self
+                            .entities
+                            .iter()
+                            .find(|entity| entity.index == self.state.entity_index)
+                            .is_some_and(|player| {
+                                self.economy.player_castle_shift_aabb_overlap(player)
+                            });
                         if let Some((damage, attacker, lethal)) =
                             self.consume_level2_player_damage()
                         {
@@ -21193,6 +21872,38 @@ impl Level2ResetSession {
                             });
                         }
                         self.append_new_economy_events(pass, source_slot);
+
+                        // `UpdateEntities_57730` reaches the local player at
+                        // source slot 111 before the later Possession holder
+                        // (116) and Castle (117). Keep the complete generic
+                        // flight/player callback here so its selected spell,
+                        // movement, and upkeep writes are visible to those
+                        // later source handlers in this same pass.
+                        self.refresh_level2_spell_fire_holder_projection();
+                        evidence.push(crate::step_entity_pass_with_context(
+                            &mut self.state,
+                            latched_command,
+                            self.profile,
+                            &self.terrain,
+                            &mut self.context,
+                        ));
+                        self.sync_level2_spell_fire_authority(latched_command.flags);
+                        self.set_level2_entity_position(
+                            self.state.entity_index,
+                            self.state.position,
+                        )
+                        .expect("qualified Level 2 local-player map carrier remains valid");
+                        self.shared_spells.step_local_player_unboosted_upkeep(
+                            self.economy.player_castle_entity_index(),
+                            castle_shift_overlap,
+                            self.economy
+                                .owner_max_mana
+                                .get(&self.state.entity_index)
+                                .copied(),
+                        );
+                        self.shared_spells
+                            .sync_typed_spell_parent_caches_from_player_entity();
+                        self.sync_level2_spell_fire_context();
                     }
                 }
                 0 => {
@@ -21492,6 +22203,10 @@ impl Level2ResetSession {
                     }
                 }
                 11 => {
+                    // The holder is a constructor/producer only. The
+                    // newly allocated row is dispatched by the source cursor
+                    // below, and emits DynamicArena only if its callback
+                    // returns live.
                     self.step_level2_possession_holder_source_slot(source_slot);
                     // `UpdateEntities_57730` advances `byte_0x3E_62` only
                     // after the dispatched callback has returned.  Keep this
@@ -21499,6 +22214,23 @@ impl Level2ResetSession {
                     // a zero countdown still receives the callback and the
                     // dispatcher epilogue, while an inactive row never
                     // enters this route at all.
+                    if let Some(holder) = self
+                        .shared_spells
+                        .dynamic_pickups
+                        .iter_mut()
+                        .find(|holder| holder.index == source_slot)
+                    {
+                        holder.set_phase(holder.phase.wrapping_add(1));
+                    }
+                }
+                12 => {
+                    // The holder is a constructor/producer only. The
+                    // higher-slot flyer callback owns the DynamicArena
+                    // receipt after step_level2_dynamic_arena returns live.
+                    self.step_level2_castle_holder_source_slot(source_slot);
+                    // The class-15/model-2/action-6 callback mutates W and
+                    // word36; the source dispatcher advances byte 0x3e once
+                    // after every active callback, including W=0.
                     if let Some(holder) = self
                         .shared_spells
                         .dynamic_pickups
@@ -21517,7 +22249,8 @@ impl Level2ResetSession {
                 }
                 if matches!(
                     row.kind,
-                    Level2DynamicArenaKind::PossessionProjectile
+                    Level2DynamicArenaKind::CastleProjectile
+                        | Level2DynamicArenaKind::PossessionProjectile
                         | Level2DynamicArenaKind::PossessionEffect
                 ) {
                     if row.source_slot <= source_slot {
@@ -21531,8 +22264,8 @@ impl Level2ResetSession {
             }
         }
         // The final source slot has no following static route, so drain the
-        // remaining higher Possession rows in ascending order. Any row born
-        // behind this moving cursor is deferred by the same helper.
+        // remaining higher Possession/Castle rows in ascending order. Any row
+        // born behind this moving cursor is deferred by the same helper.
         while let Some((key, row)) = pending_possession_rows
             .first_key_value()
             .map(|(key, row)| (*key, *row))
@@ -21632,7 +22365,8 @@ impl Level2ResetSession {
                         && (row.kind == Level2DynamicArenaKind::AuthoredSwitchProducer
                             || matches!(
                                 live_row.kind,
-                                Level2DynamicArenaKind::PossessionProjectile
+                                Level2DynamicArenaKind::CastleProjectile
+                                    | Level2DynamicArenaKind::PossessionProjectile
                                     | Level2DynamicArenaKind::PossessionEffect
                             ))
                         && live_row.source_slot <= source_slot
@@ -23117,6 +23851,16 @@ impl Level2ResetSession {
             .then_some((damage, attacker, lethal))
     }
 
+    #[cfg(test)]
+    fn step_level2_source_pass(&mut self, pass: u8) {
+        let mut evidence = Vec::new();
+        self.step_level2_source_pass_with_player(
+            pass,
+            crate::LatchedCommand::default(),
+            &mut evidence,
+        );
+    }
+
     /// Execute one source outer turn against the Day terrain and reset state.
     pub fn step_outer_turn(
         &mut self,
@@ -23126,6 +23870,14 @@ impl Level2ResetSession {
         self.dispatch_events.clear();
         self.nyphur_dispatch_traces.clear();
         self.economy_event_cursor = self.economy.events().len();
+        // The campaign/C ABI flight carrier writes `state.position` before
+        // entering the source outer turn. `UpdateEntities_57730` observes
+        // that same local-player position from the entity row, including the
+        // Castle shift-AABB probe that precedes the player body at slot 111.
+        // Synchronize the row before any source callback; the later slot-111
+        // write remains responsible for publishing the post-body position.
+        self.set_level2_entity_position(self.state.entity_index, self.state.position)
+            .expect("qualified Level 2 local-player map carrier remains valid");
         // `PlayerEvents_51BB0` handles cheat command 0x1e/9 before
         // `UpdateEntities_57730`: toggle the same session-global bit before
         // any source-pass SetSpell callback can observe it. Other 0x1e
@@ -23145,6 +23897,7 @@ impl Level2ResetSession {
         self.sync_level2_spell_fire_context();
         let latched_command =
             crate::latch_command_with_context(&mut self.state, command, &mut self.context);
+        self.reconcile_level2_spell_menu_command(command);
         let mut evidence = Vec::new();
         for pass in 0..crate::entity_passes_for_speed_index(speed_index) {
             // UpdateEntities performs the source 57F20 reclaim prologue
@@ -23153,57 +23906,11 @@ impl Level2ResetSession {
             // landing pass, then is released at the next pass boundary.
             self.economy
                 .reclaim_castle_upgrade_products_at_source_boundary();
-            self.step_level2_source_pass(u8::try_from(pass).unwrap_or(u8::MAX));
-            self.refresh_level2_spell_fire_holder_projection();
-            evidence.push(crate::step_entity_pass_with_context(
-                &mut self.state,
+            self.step_level2_source_pass_with_player(
+                u8::try_from(pass).unwrap_or(u8::MAX),
                 latched_command,
-                self.profile,
-                &self.terrain,
-                &mut self.context,
-            ));
-            self.sync_level2_spell_fire_authority(latched_command.flags);
-            let castle_holder_index = self
-                .context
-                .spell_fire
-                .as_ref()
-                .filter(|fire| fire.accepted_models.contains(&CASTLE_SPELL_FAMILY))
-                .map(|fire| fire.selected_holder_index);
-            if let Some(castle_holder_index) = castle_holder_index
-                && self.prepare_castle_spell_projectile(castle_holder_index)
-            {
-                let spawned = self.economy.spawn_castle_projectile(
-                    self.state.position,
-                    self.state.entity_index,
-                    castle_holder_index,
-                    self.state.yaw,
-                    self.shared_spells.beyond_sight_auxiliary().next_entity,
-                );
-                if spawned.is_some() {
-                    self.finish_castle_spell_projectile(castle_holder_index);
-                }
-                self.terrain = self.economy.terrain.clone();
-                self.synchronize_level2_terrain();
-            }
-            self.set_level2_entity_position(self.state.entity_index, self.state.position)
-                .expect("qualified Level 2 local-player map carrier remains valid");
-            // `AddPlayer03_00_5E010` runs once per complete entity pass after
-            // the player body callback; its Castle shift-AABB/boost branch
-            // remains in this same upkeep authority.
-            let castle_shift_overlap = self
-                .entities
-                .iter()
-                .find(|entity| entity.index == self.state.entity_index)
-                .is_some_and(|player| self.economy.player_castle_shift_aabb_overlap(player));
-            self.shared_spells.step_local_player_unboosted_upkeep(
-                self.economy.player_castle_entity_index(),
-                castle_shift_overlap,
-                self.economy
-                    .owner_max_mana
-                    .get(&self.state.entity_index)
-                    .copied(),
+                &mut evidence,
             );
-            self.sync_level2_spell_fire_context();
         }
         self.finish_level2_day_hud_frame();
         // remc2 evaluates objectives after the complete entity update and
@@ -26628,9 +27335,37 @@ fn parse_players(
         spell_hand_eligibility.copy_from_slice(&record[398..424]);
         let mut learned_spell_flags = [0_u8; PLAYER_SPELL_COUNT];
         learned_spell_flags.copy_from_slice(&record[424..450]);
+        let mut spell_enabled_flags = [0_u8; PLAYER_SPELL_COUNT];
+        spell_enabled_flags.copy_from_slice(&record[450..476]);
         let mut family_selected_tiers = [0_i8; PLAYER_SPELL_COUNT];
         for (tier, value) in family_selected_tiers.iter_mut().zip(&record[528..554]) {
             *tier = value.cast_signed();
+        }
+        let mut persistent_spell_experience = [0_i32; PLAYER_SPELL_COUNT];
+        for (index, experience) in persistent_spell_experience.iter_mut().enumerate() {
+            *experience = read_i32(
+                record,
+                60 + index * std::mem::size_of::<i32>(),
+                "persistent spell experience",
+            )?;
+        }
+        let mut runtime_spell_experience = [0_i32; PLAYER_SPELL_COUNT];
+        for (index, experience) in runtime_spell_experience.iter_mut().enumerate() {
+            *experience = read_i32(
+                record,
+                164 + index * std::mem::size_of::<i32>(),
+                "runtime spell experience",
+            )?;
+        }
+        let mut spell_unlocked_levels = [0_i8; PLAYER_SPELL_COUNT];
+        for (index, level) in spell_unlocked_levels.iter_mut().enumerate() {
+            let raw = read_u8(record, 502 + index, "unlocked spell level")?;
+            if raw > 2 {
+                return Err(NativeWorldError::new(format!(
+                    "player {slot} unlocked spell family {index} has invalid level {raw}"
+                )));
+            }
+            *level = raw.cast_signed();
         }
         let type_str_164_auxiliary = has_type_str_164_auxiliary
             .then(|| parse_type_str_164_auxiliary(record))
@@ -26652,7 +27387,11 @@ fn parse_players(
             enabled_spell_holders: holders,
             spell_hand_eligibility,
             learned_spell_flags,
+            spell_enabled_flags,
             family_selected_tiers,
+            persistent_spell_experience,
+            runtime_spell_experience,
+            spell_unlocked_levels,
             type_str_164_auxiliary,
             record: record.to_vec().into_boxed_slice(),
         });
@@ -33393,18 +34132,18 @@ mod tests {
             } if *source_slot == runtime_switch_slot
                 && authored_indices.as_ref() == expected_group28.as_slice()
         )));
-        assert!(session.economy().authored_class14().iter().any(|row| {
-            expected_group28.contains(&row.authored_index)
-                && row.source_entity_index > runtime_switch_slot
-        }));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::DynamicArena {
-                source_slot,
-                kind: Level2DynamicArenaKind::AuthoredClass14,
-                ..
-            } if *source_slot > runtime_switch_slot
-        )));
+        let collected_scroll_slots = session
+            .shared_spells()
+            .pickup_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, .. } => {
+                    Some(*source_slot)
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(collected_scroll_slots.len(), expected_group28.len());
         assert!(
             !session
                 .economy()
@@ -33788,6 +34527,88 @@ mod tests {
                 .any(|source| source.source_entity_index == source_slot)
         );
         assert!(session.economy().free_slots.contains(&source_slot));
+    }
+
+    #[test]
+    fn level_two_experience_scroll_uses_wrapping_runtime_xp_and_downward_selection() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 experience-scroll projection session");
+        let source = session
+            .allocate_level2_authored_class14(248)
+            .expect("authored subtype-5 row");
+        let scroll_position = source.position;
+        session
+            .shared_spells_mut()
+            .acquire_level2_spell_holder(12, PhysicalSpellActionRole::OrdinaryPickup, true)
+            .expect("source-shaped family-12 acquisition");
+        let local_entity_index = session.state.entity_index;
+        {
+            let shared = session.shared_spells_mut();
+            let owner_index = shared
+                .players
+                .iter()
+                .position(|player| player.entity_index == local_entity_index)
+                .expect("local player row");
+            let owner = &mut shared.players[owner_index];
+            owner.runtime_spell_experience[12] = i32::MAX - 2;
+            owner.record[212..216].copy_from_slice(&(i32::MAX - 2).to_le_bytes());
+            owner.spell_unlocked_levels[12] = 2;
+            owner.record[514] = 2;
+            owner.family_selected_tiers[12] = 2;
+            owner.record[540] = 2;
+            shared.local_player = owner.clone();
+            shared.spell_experience[12] = i32::MAX - 2;
+            shared.spell_levels[12] = 2;
+            shared.events.clear();
+            shared.pickup_events.clear();
+        }
+        session.state.position = scroll_position;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let expected_runtime = (i32::MAX - 2).wrapping_add(LEVEL2_EXPERIENCE_SCROLL_AWARD);
+        let shared = session.shared_spells();
+        let owner = shared
+            .players
+            .iter()
+            .find(|player| player.entity_index == local_entity_index)
+            .expect("local player row after scroll");
+        assert_eq!(owner.runtime_spell_experience[12], expected_runtime);
+        assert_eq!(
+            owner.record_bytes()[212..216],
+            expected_runtime.to_le_bytes()
+        );
+        assert_eq!(owner.spell_unlocked_levels[12], 0);
+        assert_eq!(owner.record_bytes()[514], 0);
+        assert_eq!(owner.family_selected_tiers[12], 0);
+        assert_eq!(owner.record_bytes()[540], 0);
+        assert_eq!(shared.spell_experience()[12], expected_runtime);
+        assert_eq!(shared.spell_levels()[12], 0);
+        assert_eq!(
+            shared
+                .pickup_events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2SharedSpellEvent::AbilityImproved {
+                        source_family: 12,
+                        tier: 0,
+                    }
+                ))
+                .count(),
+            1,
+            "scroll level projection notifies on the source's wrapping 2->0 change"
+        );
+        assert_eq!(
+            shared
+                .activation_events()
+                .iter()
+                .filter(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 61, .. }))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -42137,9 +42958,9 @@ mod tests {
             .expect("family-6 acquisition seeds Shield state");
         assert_eq!(cold.holder_entity_index, outcome.source_slot);
         assert_eq!(cold.active_value, 0);
-        // The public selected-spell command is latched after this source
-        // pass. It must hand the generic family-6 holder back to Shield's
-        // typed lifecycle, rather than relying on the direct test helper.
+        // Player slot 111 activates the selected holder before the later
+        // dynamic family-6 source row. The same outer pass therefore includes
+        // Shield's first active pulse rather than deferring it one turn.
         session.step_outer_turn(
             PlayerCommand {
                 opcode: 6,
@@ -42153,7 +42974,7 @@ mod tests {
             .shared_spells()
             .shield_state()
             .expect("selected family-6 Shield state");
-        assert_eq!(active.active_value, active.activation_value);
+        assert_eq!(active.active_value, active.activation_value - 1);
         assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
 
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -42784,16 +43605,17 @@ mod tests {
             .context
             .spell_fire
             .as_ref()
-            .expect("acquisition refreshes Level 2 command context");
+            .expect("Level 2 command context remains available");
         assert_eq!(
-            acquired_fire.enabled_holder_indices[11], outcome.source_slot,
-            "the next selected-spell command resolves the newly acquired holder"
+            acquired_fire.enabled_holder_indices[11], 0,
+            "the later-slot acquisition cannot rewrite the already-visited player callback's command projection"
         );
         assert!(
             acquired_fire
                 .holders
                 .iter()
-                .any(|holder| { holder.entity_index == outcome.source_slot && holder.model == 11 })
+                .all(|holder| holder.entity_index != outcome.source_slot),
+            "the next player visit refreshes the newly acquired holder before selected fire"
         );
 
         // The actual campaign supplies this mana through Castle/economy. The
@@ -42846,14 +43668,20 @@ mod tests {
             .expect("selected command retains the family-11 registry holder");
         assert_eq!(
             armed_holder.active_value,
-            i16::try_from(armed_holder.activation_value).expect("source timer fits i16")
+            i16::try_from(armed_holder.activation_value).expect("source timer fits i16"),
+            "the player command projection records the slot-111 activation before the later typed holder pulse"
         );
         let armed = session
             .shared_spells()
             .invisible_state()
             .expect("ordinary command retains acquired Invisible authority");
-        assert_eq!(armed.active_value, armed.activation_value);
-        assert_eq!(armed.parent_mana, 5_000);
+        assert_eq!(armed.active_value, armed.activation_value - 1);
+        assert_eq!(
+            armed.parent_mana,
+            session.shared_spells().player_entity.mana,
+            "the typed holder observes the authoritative post-upkeep player mana"
+        );
+        assert!(armed.parent_mana >= 5_000);
         assert_eq!(
             session
                 .shared_spells()
@@ -42885,13 +43713,13 @@ mod tests {
                 ..
             } if *source_slot == outcome.source_slot
         )));
-        let first_pulse = session
+        let second_pulse = session
             .shared_spells()
             .invisible_state()
             .expect("family-11 remains authoritative on its following source pass");
-        assert_eq!(first_pulse.active_value, armed.activation_value - 1);
-        assert_eq!(first_pulse.parent_visibility_mode, 1);
-        assert_ne!(first_pulse.spell_status_flags & INVISIBLE_STATUS_BIT, 0);
+        assert_eq!(second_pulse.active_value, armed.active_value - 1);
+        assert_eq!(second_pulse.parent_visibility_mode, 1);
+        assert_ne!(second_pulse.spell_status_flags & INVISIBLE_STATUS_BIT, 0);
         assert!(
             session
                 .economy()
@@ -43409,29 +44237,19 @@ mod tests {
             .expect("Beyond Sight state after outer source turn");
         assert_eq!(stepped.active_value, active.active_value - 1);
         assert_eq!(stepped.experience_awarded, 1);
-        assert!(stepped.parent_mana_regen <= 0);
-        assert_eq!(stepped.countdown, active.countdown - 1);
-        let effect = session
-            .economy()
-            .beyond_sight_effects()
-            .iter()
-            .find(|effect| effect.holder_entity_index == outcome.source_slot)
-            .copied()
-            .expect("Beyond Sight first-pulse model-74 effect");
         assert_eq!(
-            (
-                effect.source_class,
-                effect.model,
-                effect.origin_subtype,
-                effect.subspell_index,
-                effect.life,
-                effect.sound_id,
-            ),
-            (10, 74, 25, 0, 0, 9)
+            stepped.parent_mana_regen,
+            session.shared_spells().player_entity.mana_regen
         );
-        assert_eq!(effect.parent_entity_index, stepped.parent_entity_index);
-        assert_eq!(effect.effect_parameter, 1);
-        assert_ne!(effect.axis_position, effect.position);
+        assert!(
+            stepped.parent_mana_regen > 0,
+            "slot 38 charges the fresh pulse before slot 111 consumes it and selects the next ordinary recharge rate"
+        );
+        assert_eq!(stepped.countdown, active.countdown - 1);
+        assert!(
+            session.economy().beyond_sight_effects().is_empty(),
+            "ordinary class-15/action-36 never constructs the separate action-72/model-74 row"
+        );
         assert_eq!(
             session
                 .shared_spells()
@@ -43439,32 +44257,364 @@ mod tests {
                 .effect_parameter,
             0
         );
-        assert_eq!(
-            session.shared_spells().beyond_sight_auxiliary().next_entity,
-            0x1234_i16
-        );
-        assert_eq!(
-            session
-                .shared_spells()
-                .beyond_sight_auxiliary()
-                .entity_index2,
-            -21_555_i16
-        );
-        let parent_speed = session.shared_spells().player_entity.actual_speed;
-        assert_eq!(effect.actual_speed, parent_speed.wrapping_add(16));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::DynamicArena {
                 kind: Level2DynamicArenaKind::BeyondSightPulseEffect,
-                source_slot,
                 ..
-            } if *source_slot == effect.source_entity_index
+            }
         )));
+        assert!(
+            !session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .any(|event| matches!(event, Level2SharedSpellEvent::AbilityImproved { .. }))
+        );
+        assert!(
+            !session
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .any(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 61, .. }))
+        );
 
         session.reset();
         assert!(session.shared_spells().beyond_sight_state().is_none());
         assert!(session.economy().beyond_sight_effects().is_empty());
         assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_beyond_sight_threshold_crossing_emits_improvement_after_award() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Beyond Sight threshold session");
+        let pickup_position = session.shared_spells().pickups()[0].position;
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.state.position = pickup_position;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let outcome = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    family: 12,
+                    result: Some(outcome),
+                    ..
+                } => Some(*outcome),
+                _ => None,
+            })
+            .expect("ordinary family-12 acquisition");
+        let local_entity_index = session.state.entity_index;
+        session
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                local_entity_index,
+                false,
+                true,
+            )
+            .expect("source-order threshold Castle allocation");
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("source-order threshold Castle")
+            .mana = 9_999;
+
+        {
+            let shared = session.shared_spells_mut();
+            let owner_index = shared
+                .players
+                .iter()
+                .position(|player| player.entity_index == local_entity_index)
+                .expect("local player row");
+            let owner = &mut shared.players[owner_index];
+            owner.runtime_spell_experience[12] = 359;
+            owner.record[212..216].copy_from_slice(&359_i32.to_le_bytes());
+            owner.spell_unlocked_levels[12] = 0;
+            owner.record[514] = 0;
+            owner.family_selected_tiers[12] = 0;
+            owner.record[540] = 0;
+            owner.enabled_spell_holders[12] = 0;
+            owner.record[268 + 12 * 2..270 + 12 * 2].fill(0);
+            owner.spell_hand_eligibility[12] = 0;
+            owner.record[398 + 12] = 0;
+            owner.spell_enabled_flags[12] = 1;
+            owner.record[450 + 12] = 1;
+            shared.local_player = owner.clone();
+            shared.spell_experience[12] = 359;
+            shared.spell_levels[12] = 0;
+            shared.pickup_events.clear();
+            shared.events.clear();
+            shared.player_mana = 5_000;
+            shared.player_entity.mana = 5_000;
+            shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared.player_entities[0].mana = 5_000;
+            shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared
+                .beyond_sight
+                .as_mut()
+                .expect("cold Beyond Sight state")
+                .parent_mana = 5_000;
+            let beyond_sight = shared
+                .beyond_sight
+                .as_mut()
+                .expect("fresh tier-1 Beyond Sight state");
+            beyond_sight.tier = 1;
+            beyond_sight.activation_value = 261;
+            beyond_sight.mana_cost = 2_400;
+            beyond_sight.mana_regen_requirement = 10_000;
+        }
+        assert!(
+            session
+                .shared_spells_mut()
+                .activate_beyond_sight(256, false)
+        );
+        session.shared_spells_mut().events.clear();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let shared = session.shared_spells();
+        let owner = shared
+            .players
+            .iter()
+            .find(|player| player.entity_index == local_entity_index)
+            .expect("local player row after threshold crossing");
+        assert_eq!(owner.runtime_spell_experience[12], 360);
+        assert_eq!(owner.record_bytes()[212..216], 360_i32.to_le_bytes());
+        assert_eq!(owner.spell_unlocked_levels[12], 1);
+        assert_eq!(owner.record_bytes()[514], 1);
+        assert_eq!(owner.family_selected_tiers[12], 0);
+        assert_eq!(owner.record_bytes()[540], 0);
+        assert_eq!(shared.spell_experience()[12], 360);
+        assert_eq!(shared.spell_levels()[12], 1);
+        let stepped = shared
+            .beyond_sight_state()
+            .expect("tier-1 Beyond Sight state after source-order pulse");
+        assert_eq!(stepped.tier, 1);
+        assert_eq!(stepped.active_value, 0);
+        assert_eq!(stepped.experience_awarded, 1);
+        assert_eq!(
+            shared.pickup_events(),
+            &[Level2SharedSpellEvent::AbilityImproved {
+                source_family: 12,
+                tier: 1,
+            }]
+        );
+        assert_eq!(
+            shared
+                .activation_events()
+                .iter()
+                .filter(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 61, .. }))
+                .count(),
+            1
+        );
+
+        let runtime_after_first_pulse = owner.runtime_spell_experience[12];
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.shared_spells().spell_experience()[12],
+            runtime_after_first_pulse,
+            "a terminal/later pulse cannot award a second first-pulse XP"
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .filter(|event| matches!(event, Level2SharedSpellEvent::AbilityImproved { .. }))
+                .count(),
+            0
+        );
+        assert_eq!(outcome.parent_entity_index, local_entity_index);
+    }
+
+    #[test]
+    fn level_two_beyond_sight_threshold_without_source_enabled_array_or_holder_is_silent() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Beyond Sight gate session");
+        let pickup_position = session.shared_spells().pickups()[0].position;
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.state.position = pickup_position;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let outcome = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    family: 12,
+                    result: Some(outcome),
+                    ..
+                } => Some(*outcome),
+                _ => None,
+            })
+            .expect("ordinary family-12 acquisition");
+        let local_entity_index = session.state.entity_index;
+
+        {
+            let shared = session.shared_spells_mut();
+            let owner_index = shared
+                .players
+                .iter()
+                .position(|player| player.entity_index == local_entity_index)
+                .expect("local player row");
+            let owner = &mut shared.players[owner_index];
+            owner.runtime_spell_experience[12] = 359;
+            owner.record[212..216].copy_from_slice(&359_i32.to_le_bytes());
+            owner.spell_unlocked_levels[12] = 0;
+            owner.record[514] = 0;
+            owner.family_selected_tiers[12] = 2;
+            owner.record[540] = 2;
+            owner.left_spell_slot_raw = -1;
+            owner.right_spell_slot_raw = -1;
+            owner.record[554..556].copy_from_slice(&(-1_i16).to_le_bytes());
+            owner.record[556..558].copy_from_slice(&(-1_i16).to_le_bytes());
+            owner.spell_hand_eligibility[12] = 1;
+            owner.record[398 + 12] = 1;
+            owner.spell_enabled_flags[12] = 0;
+            owner.record[450 + 12] = 0;
+            owner.enabled_spell_holders[12] = 0;
+            owner.record[268 + 12 * 2..270 + 12 * 2].fill(0);
+            shared.local_player = owner.clone();
+            shared.spell_experience[12] = 359;
+            shared.spell_levels[12] = 0;
+            shared.pickup_events.clear();
+            shared.events.clear();
+            shared.player_mana = 5_000;
+            shared.player_entity.mana = 5_000;
+            shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared.player_entities[0].mana = 5_000;
+            shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            let beyond_sight = shared
+                .beyond_sight
+                .as_mut()
+                .expect("cold Beyond Sight state");
+            beyond_sight.tier = 1;
+            beyond_sight.activation_value = 261;
+            beyond_sight.mana_cost = 2_400;
+            beyond_sight.mana_regen_requirement = 10_000;
+            beyond_sight.parent_mana = 5_000;
+        }
+        assert!(
+            session
+                .shared_spells_mut()
+                .activate_beyond_sight(256, false)
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let shared = session.shared_spells();
+        let owner = shared
+            .players
+            .iter()
+            .find(|player| player.entity_index == local_entity_index)
+            .expect("local player row after silent threshold crossing");
+        assert_eq!(owner.runtime_spell_experience[12], 360);
+        assert_eq!(owner.record_bytes()[212..216], 360_i32.to_le_bytes());
+        assert_eq!(owner.spell_unlocked_levels[12], 1);
+        assert_eq!(owner.record_bytes()[514], 1);
+        assert_eq!(owner.family_selected_tiers[12], 1);
+        assert_eq!(owner.record_bytes()[540], 1);
+        assert_eq!(shared.spell_experience()[12], 360);
+        assert_eq!(shared.spell_levels()[12], 1);
+        assert!(shared.pickup_events().is_empty());
+        assert!(
+            !shared
+                .activation_events()
+                .iter()
+                .any(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 61, .. }))
+        );
+        assert_eq!(outcome.parent_entity_index, local_entity_index);
+    }
+
+    #[test]
+    fn level_two_beyond_sight_wrapping_level_drop_still_emits_source_improvement() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Beyond Sight wrapping session");
+        let pickup_position = session.shared_spells().pickups()[0].position;
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.state.position = pickup_position;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let local_entity_index = session.state.entity_index;
+        {
+            let shared = session.shared_spells_mut();
+            let owner_index = shared
+                .players
+                .iter()
+                .position(|player| player.entity_index == local_entity_index)
+                .expect("local player row");
+            let owner = &mut shared.players[owner_index];
+            owner.persistent_spell_experience[12] = 0;
+            owner.record[108..112].fill(0);
+            owner.runtime_spell_experience[12] = i32::MAX;
+            owner.record[212..216].copy_from_slice(&i32::MAX.to_le_bytes());
+            owner.spell_unlocked_levels[12] = 2;
+            owner.record[514] = 2;
+            owner.family_selected_tiers[12] = 2;
+            owner.record[540] = 2;
+            shared.local_player = owner.clone();
+            shared.spell_experience[12] = i32::MAX;
+            shared.spell_levels[12] = 2;
+            shared.pickup_events.clear();
+            shared.events.clear();
+            shared.player_mana = 5_000;
+            shared.player_entity.mana = 5_000;
+            shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared
+                .beyond_sight
+                .as_mut()
+                .expect("cold Beyond Sight state")
+                .parent_mana = 5_000;
+        }
+        assert!(
+            session
+                .shared_spells_mut()
+                .activate_beyond_sight(256, false)
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let shared = session.shared_spells();
+        let owner = shared
+            .players
+            .iter()
+            .find(|player| player.entity_index == local_entity_index)
+            .expect("local player row after wrapping award");
+        assert_eq!(owner.runtime_spell_experience[12], i32::MIN);
+        assert_eq!(owner.record_bytes()[212..216], i32::MIN.to_le_bytes());
+        assert_eq!(owner.spell_unlocked_levels[12], 0);
+        assert_eq!(owner.record_bytes()[514], 0);
+        assert_eq!(owner.family_selected_tiers[12], 0);
+        assert_eq!(owner.record_bytes()[540], 0);
+        assert_eq!(shared.spell_experience()[12], i32::MIN);
+        assert_eq!(shared.spell_levels()[12], 0);
+        assert_eq!(
+            shared.pickup_events(),
+            &[Level2SharedSpellEvent::AbilityImproved {
+                source_family: 12,
+                tier: 0,
+            }]
+        );
+        assert_eq!(
+            shared.activation_events(),
+            &[FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::AbilityImproved,
+                entity_index: 0,
+                player_index: -1,
+                sound_id: 61,
+            }]
+        );
     }
 
     #[test]
@@ -43512,6 +44662,281 @@ mod tests {
         assert_eq!(beyond_sight.parent_entity_index, 112);
         assert_eq!(beyond_sight.parent_mana, remote_mana);
         assert_eq!(session.shared_spells().player_mana(), local_mana);
+
+        {
+            let shared = session.shared_spells_mut();
+            let remote_player = &mut shared.players[1];
+            remote_player.runtime_spell_experience[12] = 359;
+            remote_player.record[212..216].copy_from_slice(&359_i32.to_le_bytes());
+            remote_player.spell_unlocked_levels[12] = 0;
+            remote_player.record[514] = 0;
+            remote_player.family_selected_tiers[12] = 0;
+            remote_player.record[540] = 0;
+            assert!(shared.activate_beyond_sight(0, false));
+            let activation = shared
+                .beyond_sight
+                .expect("remote Beyond Sight state remains active")
+                .activation_value;
+            shared
+                .beyond_sight
+                .as_mut()
+                .expect("remote Beyond Sight state remains mutable")
+                .active_value = activation;
+            shared.pickup_events.clear();
+            shared.events.clear();
+        }
+        let local_runtime_before = session.shared_spells().spell_experience()[12];
+        let local_level_before = session.shared_spells().spell_levels()[12];
+        let local_record_before =
+            session.shared_spells().local_player.record_bytes()[212..216].to_vec();
+        let remote_runtime_before = session.shared_spells().players[1].runtime_spell_experience[12];
+        let hash_before = session.shared_spells().reset_hash();
+        session
+            .shared_spells_mut()
+            .step_level2_spell_acquisition(12, 111, far_position)
+            .expect("remote action-36 source pulse");
+        let shared = session.shared_spells();
+        assert_eq!(
+            shared.players[1].runtime_spell_experience[12],
+            remote_runtime_before.wrapping_add(1)
+        );
+        assert_eq!(
+            shared.players[1].record_bytes()[212..216],
+            360_i32.to_le_bytes()
+        );
+        assert_eq!(shared.players[1].spell_unlocked_levels[12], 1);
+        assert_eq!(shared.players[1].record_bytes()[514], 1);
+        assert_eq!(shared.players[1].family_selected_tiers[12], 0);
+        assert_eq!(shared.players[1].record_bytes()[540], 0);
+        assert_eq!(shared.spell_experience()[12], local_runtime_before);
+        assert_eq!(shared.spell_levels()[12], local_level_before);
+        assert_eq!(
+            shared.local_player.record_bytes()[212..216],
+            local_record_before
+        );
+        assert_ne!(
+            shared.reset_hash(),
+            hash_before,
+            "the global hash includes the remote row"
+        );
+        assert_eq!(
+            shared.pickup_events(),
+            &[Level2SharedSpellEvent::AbilityImproved {
+                source_family: 12,
+                tier: 1,
+            }]
+        );
+        assert_eq!(
+            shared.activation_events(),
+            &[FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::AbilityImproved,
+                entity_index: 0,
+                player_index: -1,
+                sound_id: 61,
+            }]
+        );
+    }
+
+    fn level_two_acquired_family12_menu_session() -> (Level2ResetSession, u16) {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 core menu session");
+        let source_position = session.shared_spells().pickups()[0].position;
+        session
+            .set_level2_entity_position(session.state.entity_index, source_position)
+            .expect("public player-position input for family-12 source");
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source_slot = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    family: 12,
+                    result: Some(outcome),
+                    ..
+                } => Some(outcome.source_slot),
+                _ => None,
+            })
+            .expect("ordinary family-12 acquisition");
+        assert_eq!(
+            session.shared_spells().local_player.enabled_spell_holders[12],
+            source_slot
+        );
+        assert!(
+            session
+                .context
+                .spell_fire
+                .as_ref()
+                .expect("spell context after acquisition")
+                .holders
+                .iter()
+                .any(|holder| holder.entity_index == source_slot)
+        );
+
+        (session, source_slot)
+    }
+
+    #[test]
+    fn level_two_beyond_sight_core_menu_preserves_raw_opcode41_without_physical_mutation() {
+        let (mut session, source_slot) = level_two_acquired_family12_menu_session();
+
+        let shared = session.shared_spells();
+        let holder_before_locked_menu = shared
+            .pickups()
+            .iter()
+            .chain(shared.dynamic_pickups().iter())
+            .find(|holder| holder.index == source_slot)
+            .expect("acquired family-12 holder");
+        assert_eq!(holder_before_locked_menu.level_gate, 0);
+        assert_eq!(holder_before_locked_menu.action, BEYOND_SIGHT_ACTIVE_ACTION);
+        assert_eq!(holder_before_locked_menu.record_bytes()[74], 0);
+        assert_eq!(holder_before_locked_menu.mana_cost, 1_800);
+        let holder_before_locked_menu = (
+            holder_before_locked_menu.level_gate,
+            holder_before_locked_menu.action,
+            holder_before_locked_menu.activation_value,
+            holder_before_locked_menu.mana_cost,
+            holder_before_locked_menu.record_bytes()[74],
+        );
+
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 40,
+                argument_1: 12,
+                argument_2: 7,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let shared = session.shared_spells();
+        assert_eq!(shared.players[0].record_bytes()[560], 7);
+        assert_eq!(shared.players[0].record_bytes()[561], 12);
+        assert_eq!(shared.players[0].record_bytes()[562], 0);
+        assert_eq!(shared.players[0].family_selected_tiers[12], 0);
+        let holder_after_op40 = shared
+            .pickups()
+            .iter()
+            .chain(shared.dynamic_pickups().iter())
+            .find(|holder| holder.index == source_slot)
+            .map(|holder| {
+                (
+                    holder.level_gate,
+                    holder.action,
+                    holder.activation_value,
+                    holder.mana_cost,
+                    holder.record_bytes()[74],
+                )
+            })
+            .expect("family-12 holder after opcode 40");
+        assert_eq!(holder_after_op40, holder_before_locked_menu);
+
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 41,
+                argument_1: 1,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let shared = session.shared_spells();
+        assert_eq!(shared.players[0].record_bytes()[561], 12);
+        assert_eq!(shared.players[0].record_bytes()[562], 1);
+        assert_eq!(shared.players[0].selected_spell_ui_index, 12);
+        assert_eq!(shared.players[0].selected_subspell_index, 1);
+        assert_eq!(shared.players[0].family_selected_tiers[12], 1);
+        assert_eq!(shared.players[0].record_bytes()[540], 1);
+        assert_eq!(shared.spell_levels()[12], 0);
+        let holder_after_op41 = shared
+            .pickups()
+            .iter()
+            .chain(shared.dynamic_pickups().iter())
+            .find(|holder| holder.index == source_slot)
+            .map(|holder| {
+                (
+                    holder.level_gate,
+                    holder.action,
+                    holder.activation_value,
+                    holder.mana_cost,
+                    holder.record_bytes()[74],
+                )
+            })
+            .expect("family-12 holder after opcode 41");
+        assert_eq!(holder_after_op41, holder_before_locked_menu);
+    }
+
+    #[test]
+    fn level_two_beyond_sight_core_opcode31_applies_profile_at_zero_unlocked_tier() {
+        let (mut session, source_slot) = level_two_acquired_family12_menu_session();
+        // The source menu protocol is 40 -> 41 -> 31/32. The raw opcode-41
+        // write remains visible at XP tier zero; opcode 31 is the separate
+        // physical SetSpell projection, not a UI-level locked-tier refusal.
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 40,
+                argument_1: 12,
+                argument_2: 7,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 41,
+                argument_1: 1,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 31,
+                argument_1: 12,
+                argument_2: 1,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let shared = session.shared_spells();
+        assert_eq!(shared.spell_levels()[12], 0);
+        assert_eq!(shared.players[0].family_selected_tiers[12], 1);
+        assert_eq!(shared.players[0].record_bytes()[540], 1);
+        assert_eq!(shared.players[0].left_spell_slot_raw, 12);
+        assert_eq!(shared.players[0].left_subspell_index, 1);
+        assert_eq!(shared.players[0].record_bytes()[558], 1);
+        let holder_after_op31 = shared
+            .pickups()
+            .iter()
+            .chain(shared.dynamic_pickups().iter())
+            .find(|holder| holder.index == source_slot)
+            .expect("family-12 holder after opcode 31");
+        assert_eq!(holder_after_op31.level_gate, 1);
+        assert_eq!(holder_after_op31.record_bytes()[74], 1);
+        assert_eq!(holder_after_op31.activation_value, 261);
+        assert_eq!(
+            shared
+                .beyond_sight_state()
+                .expect("cold Beyond Sight state")
+                .tier,
+            1
+        );
+
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 32,
+                argument_1: 12,
+                argument_2: 1,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let shared = session.shared_spells();
+        assert_eq!(shared.players[0].right_spell_slot_raw, 12);
+        assert_eq!(shared.players[0].right_subspell_index, 1);
+        assert_eq!(shared.players[0].record_bytes()[559], 1);
     }
 
     #[test]
@@ -48854,58 +50279,116 @@ mod tests {
         assert_eq!(baseline_holder.active_value, 0);
         assert_eq!(baseline_holder.record[66], baseline_holder.phase);
 
-        // The requested-spell command is latched after this source pass.  In
-        // this first ordinary pass `sub_69640` sees its zero countdown and
-        // performs no projectile allocation, but `UpdateEntities_57730`
-        // still advances byte_0x3E after the callback returns.
+        // PlayerEvents arms the holder before its later source-slot 116
+        // callback. The same ordinary pass therefore consumes W=3 -> 2 and
+        // allocates the class-9/model-1 projectile before the phase epilogue.
         let request = PlayerCommand {
             opcode: 6,
             argument_1: 1,
             flags: 0x40,
+            argument_6: 17,
+            argument_8: (-23_i16).cast_unsigned(),
             ..PlayerCommand::default()
         };
+        session.state.entity_fov = 29;
+        let mut expected_launch = session.state.position;
+        crate::move_entity(
+            &mut expected_launch,
+            session.state.yaw.wrapping_sub(512),
+            0,
+            256,
+        );
+        if session.terrain.ground_height(expected_launch) > expected_launch.z {
+            expected_launch = session.state.position;
+        }
+        expected_launch.z = expected_launch.z.wrapping_add(session.state.entity_fov);
+        let mut expected_axis_position = session.state.position;
+        crate::move_entity(
+            &mut expected_axis_position,
+            session.state.yaw.wrapping_add(17),
+            session.state.display_pitch.wrapping_sub(23),
+            10_240,
+        );
+        let mut expected_first_callback_position = expected_launch;
+        crate::move_entity(
+            &mut expected_first_callback_position,
+            session.state.yaw.wrapping_add(17),
+            session.state.display_pitch.wrapping_sub(23),
+            384_i16.wrapping_add(session.state.actual_speed),
+        );
+        let ground_height = session
+            .terrain
+            .ground_height(expected_first_callback_position);
+        if ground_height > expected_first_callback_position.z {
+            expected_first_callback_position.z = ground_height;
+        }
+        if let Some(cave_limit) = session
+            .terrain
+            .ceiling_height(expected_first_callback_position)
+            .map(|height| height.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT))
+            && cave_limit < expected_first_callback_position.z
+        {
+            expected_first_callback_position.z = cave_limit;
+        }
         session.step_outer_turn(request, 0);
         let armed_holder = holder(&session);
         assert_eq!(
-            armed_holder.active_value,
-            i16::try_from(armed_holder.activation_value)
-                .expect("Possession activation value fits its signed source field")
+            armed_holder.active_value, 2,
+            "same-pass player111 -> Possession116 consumes W=3 to W=2"
         );
         assert_eq!(
             armed_holder.phase,
             baseline_holder.phase.wrapping_add(1),
-            "one zero-countdown holder callback advances byte_0x3E exactly once"
+            "same-pass holder callback advances byte_0x3E exactly once"
         );
         assert_eq!(armed_holder.record[66], armed_holder.phase);
-        assert!(
-            session
-                .economy()
-                .possession_projectiles()
-                .iter()
-                .all(|projectile| !projectile.active),
-            "zero-countdown dispatch does not bypass the ordinary arming boundary"
+        assert_eq!(armed_holder.activation_value, 3);
+        let first_projectile = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.active)
+            .copied()
+            .expect("same-pass Possession callback allocates one live projectile");
+        assert_eq!(
+            first_projectile.position, expected_first_callback_position,
+            "the production selected request applies sub_68E50 hand displacement, strict terrain rollback, parent FOV, then the first model-1 callback"
+        );
+        assert_eq!(
+            (first_projectile.yaw, first_projectile.pitch),
+            (
+                session.state.yaw.wrapping_add(17) & 0x07ff,
+                session.state.display_pitch.wrapping_sub(23) & 0x07ff,
+            ),
+            "the production flyer carries the player's wrapping A4 yaw/pitch sums"
+        );
+        assert_eq!(
+            first_projectile.axis_position, expected_axis_position,
+            "the persistent model-1 axis projects 10240 units from the raw parent position"
         );
         assert_ne!(session.shared_spells().reset_hash(), baseline_shared_hash);
 
-        // The following ordinary source pass consumes the now-armed holder.
-        // The typed callback's countdown/decrement happens before the shared
-        // dispatcher epilogue writes the next phase byte.
+        // The following ordinary source pass consumes W=2 -> 1. It is
+        // nonfresh, so it must not allocate a second projectile.
         session.step_outer_turn(PlayerCommand::default(), 0);
-        let launched_holder = holder(&session);
-        assert_eq!(launched_holder.active_value, armed_holder.active_value - 1);
+        let second_pass_holder = holder(&session);
+        assert_eq!(second_pass_holder.active_value, 1);
         assert_eq!(
-            launched_holder.phase,
+            second_pass_holder.phase,
             armed_holder.phase.wrapping_add(1),
-            "the armed holder callback advances exactly one additional phase"
+            "the following holder callback advances exactly one additional phase"
         );
-        assert_eq!(launched_holder.record[66], launched_holder.phase);
-        assert!(
-            session
-                .economy()
-                .possession_projectiles()
-                .iter()
-                .any(|projectile| projectile.active),
-            "ordinary holder lifecycle produces its source class-9/model-1 row"
+        assert_eq!(second_pass_holder.record[66], second_pass_holder.phase);
+        let second_projectile = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.active)
+            .copied()
+            .expect("the first Possession projectile remains live");
+        assert_eq!(
+            second_projectile.source_entity_index, first_projectile.source_entity_index,
+            "nonfresh W=2 callback does not allocate another projectile"
         );
         let stepped_hash = session.campaign_state_hash();
         let stepped_shared_hash = session.shared_spells().reset_hash();
@@ -48916,11 +50399,22 @@ mod tests {
         assert_eq!(session.shared_spells().reset_hash(), baseline_shared_hash);
         assert_eq!(holder(&session), baseline_holder);
 
+        session.state.entity_fov = 29;
         session.step_outer_turn(request, 0);
+        assert_eq!(holder(&session), armed_holder);
+        assert_eq!(
+            session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .find(|projectile| projectile.active)
+                .map(|projectile| projectile.source_entity_index),
+            Some(first_projectile.source_entity_index)
+        );
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert_eq!(session.campaign_state_hash(), stepped_hash);
         assert_eq!(session.shared_spells().reset_hash(), stepped_shared_hash);
-        assert_eq!(holder(&session), launched_holder);
+        assert_eq!(holder(&session), second_pass_holder);
 
         // The source field is a byte, so the dispatcher uses byte wrapping
         // rather than saturating after every ordinary callback.  The first
@@ -48976,8 +50470,29 @@ mod tests {
             opcode: 6,
             argument_1: 2,
             flags: 0x40,
+            argument_6: 17,
+            argument_8: (-23_i16).cast_unsigned(),
             ..PlayerCommand::default()
         };
+        session.state.actual_speed = 37;
+        session.state.target_speed = 37;
+        session.state.entity_fov = 29;
+        let transferred_a4_byte = 7;
+        {
+            let shared = session.shared_spells_mut();
+            let player = shared
+                .players
+                .iter_mut()
+                .find(|player| player.entity_index == shared.player_entity.index)
+                .expect("qualified local Level 2 player row");
+            player
+                .type_str_164_auxiliary
+                .as_mut()
+                .expect("Level 2 player A4 carrier")
+                .byte_0x154_340 = transferred_a4_byte;
+            player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = transferred_a4_byte;
+            shared.local_player = player.clone();
+        }
         session.step_outer_turn(requested_cast, 0);
         assert_eq!(
             session.economy().player_castle_entity_index(),
@@ -48996,6 +50511,70 @@ mod tests {
             .copied()
             .expect("successful holder callback creates a live Castle flyer");
         assert_eq!((flyer.source_class, flyer.source_model), (9, 10));
+        let mut expected_launch_position = session.state.position;
+        crate::move_entity(
+            &mut expected_launch_position,
+            session.state.yaw.wrapping_sub(512),
+            0,
+            256,
+        );
+        if session.terrain.ground_height(expected_launch_position) > expected_launch_position.z {
+            expected_launch_position = session.state.position;
+        }
+        expected_launch_position.z = expected_launch_position
+            .z
+            .wrapping_add(session.state.entity_fov);
+        assert_eq!(
+            flyer.position, expected_launch_position,
+            "selected 0x40 uses the source left-hand displacement, strict terrain rollback, and parent FOV"
+        );
+        assert_eq!(flyer.yaw, 17_i16.wrapping_add(session.state.yaw));
+        assert_eq!(
+            flyer.pitch,
+            (-23_i16).wrapping_add(session.state.display_pitch),
+            "sub_69AB0 wraps the parent A4 pitch word with the live display pitch"
+        );
+        assert_eq!(flyer.source_subspell_index, 0);
+        assert_eq!(flyer.source_mana, 9);
+        assert_eq!(flyer.source_a4_byte_154, transferred_a4_byte);
+        let local_player_after_launch = session
+            .shared_spells()
+            .players
+            .iter()
+            .find(|player| player.entity_index == session.state.entity_index)
+            .expect("qualified local player remains materialized");
+        assert_eq!(
+            local_player_after_launch
+                .type_str_164_auxiliary()
+                .expect("Level 2 A4 carrier")
+                .byte_0x154_340,
+            0,
+            "successful allocation transfers and clears the parent A4 byte"
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::InitialCastleLaunch,
+                        sound_id: 15,
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "successful sub_69AB0 allocation emits exactly one launch sound 15"
+        );
+        let player_actual_speed_after_callback = session.state.actual_speed;
+        assert_ne!(player_actual_speed_after_callback, 0);
+        assert_eq!(
+            flyer.actual_speed,
+            384_i16.wrapping_add(player_actual_speed_after_callback)
+        );
+        assert_eq!(flyer.minimum_speed, 384);
         assert_eq!((flyer.source_byte_43, flyer.source_byte_44), (3, 2));
         assert_eq!(flyer.target_castle_slot, 0);
         assert!(
@@ -49006,30 +50585,89 @@ mod tests {
                 .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) })
         );
 
-        session.step_outer_turn(PlayerCommand::default(), 0);
+        let request_family38_receipts = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| {
+                if let Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::CastleProjectile,
+                    ..
+                } = event
+                {
+                    Some((
+                        *source_slot,
+                        session.economy().slot_generation(*source_slot),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            session.economy().player_castle_entity_index(),
-            0,
-            "the first flyer callback still has no Castle relation"
+            request_family38_receipts.len(),
+            1,
+            "the live higher-slot Castle callback emits exactly one family38 receipt"
         );
+        assert_eq!(
+            request_family38_receipts[0].0, flyer.source_entity_index,
+            "the receipt is bound to the allocated flyer source row"
+        );
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::CastleRoot,
+                ..
+            }
+        )));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             session
                 .economy()
                 .castle_projectiles()
                 .iter()
-                .any(|projectile| projectile.active),
-            "the first live flyer callback is gate-only"
+                .all(|projectile| !projectile.active),
+            "the following callback consumes the gate-passed flyer"
         );
-        assert!(session.economy().castle().is_none());
-        let mut root = None;
-        for _ in 0..32 {
-            session.step_outer_turn(PlayerCommand::default(), 0);
-            root = session.economy().castle();
-            if root.is_some() {
-                break;
-            }
-        }
-        let root = root.expect("later flyer landing allocates a class-3/model-2 Castle seed");
+        let consumed_flyer = session
+            .economy()
+            .castle_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == flyer.source_entity_index)
+            .expect("the consumed flyer remains inspectable after DisableEntityDrawing");
+        assert_ne!(
+            consumed_flyer.position, flyer.position,
+            "the first Castle callback moves the flyer at its source-derived speed"
+        );
+        let following_family1_receipt = session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    kind: Level2DynamicArenaKind::CastleRoot,
+                    ..
+                }
+            )
+        });
+        let following_family38_receipt = session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    kind: Level2DynamicArenaKind::CastleProjectile,
+                    ..
+                }
+            )
+        });
+        assert!(
+            following_family1_receipt,
+            "the following source callback dispatches the Castle root"
+        );
+        assert!(!following_family38_receipt);
+        let root = session
+            .economy()
+            .castle()
+            .expect("following flyer callback allocates a class-3/model-2 Castle seed");
+        assert_eq!(session.economy().player_castle_entity_index(), 0);
         assert_eq!((root.source_class, root.source_model), (3, 2));
         assert_eq!(root.action, 5);
         assert_eq!(root.source_word_2e, 0);
@@ -49091,6 +50729,99 @@ mod tests {
         assert_eq!(session.shared_spells().reset_hash(), baseline_shared_hash);
         assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_castle_public_hands_apply_source_launch_displacement() {
+        let package = level_two_fixture_path();
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+            .expect("qualified Level 2 gameplay component");
+
+        for (label, assignment_opcode, flags, yaw_delta) in [
+            ("left", Some(31_i8), 0x10_i8, -512_i16),
+            ("right", Some(32_i8), 0x20_i8, 512_i16),
+            ("selected", None, 0x40_i8, -512_i16),
+        ] {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("Level 2 Castle hand-displacement session");
+            session.select_level2_campaign_entry_stage();
+            if let Some(opcode) = assignment_opcode {
+                session.step_outer_turn(
+                    PlayerCommand {
+                        opcode,
+                        argument_1: CASTLE_SPELL_FAMILY.cast_signed(),
+                        argument_2: 0,
+                        ..PlayerCommand::default()
+                    },
+                    0,
+                );
+            }
+
+            session.state.position = Position {
+                x: 384,
+                y: 62_080,
+                z: 256,
+            };
+            session.state.yaw = 0;
+            session.state.actual_speed = 0;
+            session.state.target_speed = 0;
+            session.state.entity_fov = 0;
+            session.step_outer_turn(
+                PlayerCommand {
+                    opcode: if assignment_opcode.is_none() { 6 } else { 0 },
+                    argument_1: if assignment_opcode.is_none() {
+                        CASTLE_SPELL_FAMILY.cast_signed()
+                    } else {
+                        0
+                    },
+                    flags,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+
+            let flyer = session
+                .economy()
+                .castle_projectiles()
+                .iter()
+                .find(|projectile| projectile.active)
+                .copied()
+                .unwrap_or_else(|| panic!("{label} public hand allocates a live Castle flyer"));
+            let mut expected = session.state.position;
+            crate::move_entity(
+                &mut expected,
+                session.state.yaw.wrapping_add(yaw_delta),
+                0,
+                256,
+            );
+            if session.terrain.ground_height(expected) > expected.z {
+                expected = session.state.position;
+            }
+            assert_eq!(
+                flyer.position, expected,
+                "{label} hand follows sub_68E50 displacement and strict terrain rollback"
+            );
+            assert_eq!(
+                session
+                    .shared_spells()
+                    .activation_events()
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        FlightEvent::PrepareSound {
+                            audio_site: crate::MissionAudioSite::InitialCastleLaunch,
+                            sound_id: 15,
+                            ..
+                        }
+                    ))
+                    .count(),
+                1,
+                "{label} successful allocation emits one launch sound"
+            );
+        }
     }
 
     #[test]
@@ -49179,6 +50910,35 @@ mod tests {
             .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
             .cloned()
             .expect("family-2 holder");
+        let word24_before = 0x1357_u16;
+        let word36_before = 3_u16;
+        {
+            let holder = allocation_failed
+                .shared_spells_mut()
+                .dynamic_pickups
+                .iter_mut()
+                .find(|holder| holder.index == holder_before.index)
+                .expect("family-2 holder for source word offsets");
+            holder.record[40..42].copy_from_slice(&word24_before.to_le_bytes());
+            holder.record[58..60].copy_from_slice(&word36_before.to_le_bytes());
+        }
+        let retained_a4_byte = 11;
+        {
+            let shared = allocation_failed.shared_spells_mut();
+            let player_entity_index = shared.player_entity.index;
+            let player = shared
+                .players
+                .iter_mut()
+                .find(|player| player.entity_index == player_entity_index)
+                .expect("qualified local Level 2 player row");
+            player
+                .type_str_164_auxiliary
+                .as_mut()
+                .expect("Level 2 player A4 carrier")
+                .byte_0x154_340 = retained_a4_byte;
+            player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = retained_a4_byte;
+            shared.local_player = player.clone();
+        }
         allocation_failed.economy_mut().free_slots.clear();
         allocation_failed.step_outer_turn(request, 0);
         assert_eq!(allocation_failed.economy().player_castle_entity_index(), 0);
@@ -49201,6 +50961,41 @@ mod tests {
         // source mana-regeneration side effect; only the absent flyer is
         // rolled back by the failed NewEvent allocation.
         assert_ne!(holder_after.active_value, 0);
+        assert_eq!(
+            u16::from_le_bytes([holder_after.record[40], holder_after.record[41]]),
+            word24_before,
+            "Castle action-6 must leave package word24 untouched"
+        );
+        assert_eq!(
+            u16::from_le_bytes([holder_after.record[58], holder_after.record[59]]),
+            word36_before - 1,
+            "Castle action-6 decrements package word36 at bytes 58..60"
+        );
+        assert_eq!(
+            allocation_failed
+                .shared_spells()
+                .local_player
+                .type_str_164_auxiliary()
+                .expect("Level 2 A4 carrier")
+                .byte_0x154_340,
+            retained_a4_byte,
+            "failed NewEvent allocation leaves the source parent A4 byte untouched"
+        );
+        assert!(
+            allocation_failed
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::InitialCastleLaunch,
+                        sound_id: 15,
+                        ..
+                    }
+                )),
+            "failed NewEvent allocation emits no Castle launch sound"
+        );
         allocation_failed.reset();
         assert_eq!(allocation_failed.campaign_state_hash(), baseline_hash);
 
@@ -49243,12 +51038,67 @@ mod tests {
             .expect("family-2 holder")
             .index;
         site_rejected.step_outer_turn(request, 0);
+        let family38_receipts = site_rejected
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| {
+                if let Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::CastleProjectile,
+                    ..
+                } = event
+                {
+                    Some(*source_slot)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            family38_receipts.is_empty(),
+            "a blocked first flyer callback returns false without a DynamicArena receipt"
+        );
+        assert!(
+            !site_rejected.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    kind: Level2DynamicArenaKind::CastleRoot,
+                    ..
+                }
+            )),
+            "a blocked first flyer cannot produce a same-call Castle root"
+        );
+        let hidden_projectile = site_rejected
+            .economy()
+            .castle_projectiles()
+            .iter()
+            .find(|projectile| projectile.site_rejected && !projectile.active)
+            .copied()
+            .expect("blocked flyer remains hidden until the next source prepass");
+        let hidden_generation = site_rejected
+            .economy()
+            .slot_generation(hidden_projectile.source_entity_index);
+        assert!(hidden_projectile.drawing_disabled);
         assert!(
             site_rejected
                 .economy()
-                .castle_projectiles()
-                .iter()
-                .any(|projectile| projectile.active)
+                .map_chains()
+                .is_linked(hidden_projectile.source_entity_index),
+            "DisableEntityDrawing leaves the map relation reserved"
+        );
+        assert!(
+            !site_rejected
+                .economy()
+                .free_slots
+                .contains(&hidden_projectile.source_entity_index),
+            "the hidden flyer slot is not reusable in the same pass"
+        );
+        assert_eq!(
+            site_rejected
+                .economy()
+                .slot_generation(hidden_projectile.source_entity_index),
+            hidden_generation,
+            "the hidden row keeps its source generation before following-pass reclaim"
         );
         site_rejected.step_outer_turn(PlayerCommand::default(), 0);
         assert_eq!(site_rejected.economy().player_castle_entity_index(), 0);
@@ -49258,7 +51108,21 @@ mod tests {
                 .economy()
                 .castle_projectiles()
                 .iter()
-                .all(|projectile| !projectile.active)
+                .all(|projectile| projectile.source_entity_index
+                    != hidden_projectile.source_entity_index)
+        );
+        assert!(
+            site_rejected
+                .economy()
+                .free_slots
+                .contains(&hidden_projectile.source_entity_index),
+            "the following source prepass reclaims the hidden flyer"
+        );
+        assert!(
+            !site_rejected
+                .economy()
+                .map_chains()
+                .is_linked(hidden_projectile.source_entity_index)
         );
         let holder_projections = site_rejected
             .shared_spells()
@@ -49329,7 +51193,6 @@ mod tests {
             .expect("Level 2 construction-child retry session");
         child_failed.select_level2_campaign_entry_stage();
         child_failed.step_outer_turn(request, 0);
-        child_failed.step_outer_turn(PlayerCommand::default(), 0);
         let free_slots = child_failed.economy().free_slots.clone();
         child_failed.economy_mut().free_slots = vec![free_slots[0]];
         for _ in 0..32 {
@@ -49565,12 +51428,14 @@ mod tests {
             .economy()
             .castle_projectiles()
             .iter()
-            .find(|projectile| projectile.active)
+            .find(|projectile| projectile.target_castle_slot == root_slot)
             .copied()
-            .expect("occupied Castle launches an upgrade flyer");
+            .expect("occupied Castle allocates an upgrade flyer");
         assert_eq!((upgrade.source_byte_43, upgrade.source_byte_44), (10, 43));
         assert_eq!(upgrade.source_word_96, root_slot);
         assert_eq!(upgrade.target_castle_slot, root_slot);
+        assert!(!upgrade.active);
+        assert!(upgrade.drawing_disabled);
         assert_eq!(
             occupied
                 .economy()
@@ -49581,34 +51446,33 @@ mod tests {
             1
         );
         assert!(
-            occupied
-                .economy()
-                .castle_projectiles()
-                .iter()
-                .any(|projectile| projectile.active),
-            "the occupied flyer remains live for its first gate-free callback"
+            occupied.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    pass: 0,
+                    kind: Level2DynamicArenaKind::CastleChild,
+                    ..
+                }
+            )),
+            "the occupied-root hit dispatches its 10/43 product later in the same source pass"
+        );
+        assert!(
+            occupied.dispatch_events().iter().all(|event| !matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    kind: Level2DynamicArenaKind::CastleProjectile,
+                    ..
+                }
+            )),
+            "the immediately consumed flyer does not publish a live-projectile callback"
         );
         let upgrade_spawn_position = upgrade.position;
-        let mut upgrade_product_landed = false;
-        for _ in 0..32 {
-            occupied.step_outer_turn(PlayerCommand::default(), 0);
-            if occupied.economy().castle().is_some_and(|castle| {
-                castle.source_word_7c == 10 && castle.source_word_80 == upgrade.owner_entity_index
-            }) {
-                upgrade_product_landed = true;
-                break;
-            }
-        }
-        assert!(
-            upgrade_product_landed,
-            "occupied flyer lands through the 10/43 product and writes the Castle mailbox"
-        );
         let landed_root = occupied.economy().castle().expect("live Castle root");
         assert_eq!(landed_root.source_word_7c, 10);
         assert_eq!(landed_root.source_word_80, upgrade.owner_entity_index);
-        assert_ne!(
+        assert_eq!(
             upgrade_spawn_position, landed_root.position,
-            "the occupied flyer transports before the landing product is created"
+            "the occupied-root contact geometry retires the flyer at the Castle position in the same source pass"
         );
         let upgrade_product_slot = occupied
             .economy()
@@ -49697,10 +51561,18 @@ mod tests {
                 .castle_projectiles()
                 .iter()
                 .any(|projectile| {
-                    projectile.active
-                        && (projectile.source_byte_43, projectile.source_byte_44) == (10, 43)
+                    (projectile.source_byte_43, projectile.source_byte_44) == (10, 43)
                 }),
-            "a later public recast is not permanently rejected"
+            "a later public recast allocates a new upgrade flyer even when occupied-root contact retires it in the same pass"
+        );
+        assert!(
+            occupied
+                .shared_spells()
+                .dynamic_pickups
+                .iter()
+                .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
+                .is_some_and(|holder| holder.active_value > 0),
+            "the successful recast advances the family-2 holder lifecycle"
         );
     }
 
@@ -49736,7 +51608,7 @@ mod tests {
             .index;
         let flyer_slot = session
             .economy_mut()
-            .spawn_castle_projectile(root_position, owner_entity_index, holder_slot, 0, 0)
+            .spawn_castle_projectile(root_position, owner_entity_index, holder_slot, 0, 0, 0)
             .expect("occupied Castle flyer");
         let flyer_generation = session.economy().slot_generation(flyer_slot);
         let slot_generations_before = session.economy().slot_generations.clone();

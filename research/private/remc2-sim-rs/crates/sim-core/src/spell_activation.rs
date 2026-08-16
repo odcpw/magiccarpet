@@ -1083,7 +1083,7 @@ pub struct InvisibleStep {
 /// table.  The active callback is deliberately separate from Invisible:
 /// Beyond Sight does not set the Invisible parent/entity status bits, but it
 /// does charge the same owner/castle predicate and awards family-12
-/// experience on its first pulse (`sub_6CD20`).
+/// experience on its first pulse (`sub_6B310`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BeyondSightTierProfile {
     pub mana_cost: i32,
@@ -1115,6 +1115,15 @@ const BEYOND_SIGHT_TIERS: [BeyondSightTierProfile; 3] = [
 
 pub const BEYOND_SIGHT_FAMILY: u8 = 12;
 pub const BEYOND_SIGHT_ACTIVE_ACTION: u8 = 36;
+pub const BEYOND_SIGHT_XP_THRESHOLDS: [i32; 3] = [0, 360, 1_080];
+
+#[must_use]
+pub fn beyond_sight_unlocked_tier(total_experience: i32) -> i8 {
+    BEYOND_SIGHT_XP_THRESHOLDS
+        .iter()
+        .rposition(|threshold| total_experience >= *threshold)
+        .unwrap_or(0) as i8
+}
 
 #[must_use]
 pub const fn beyond_sight_tier_profile(tier: u8) -> Option<BeyondSightTierProfile> {
@@ -1124,9 +1133,9 @@ pub const fn beyond_sight_tier_profile(tier: u8) -> Option<BeyondSightTierProfil
     }
 }
 
-/// Renderer-free state for source family-12/model-12 action 36
-/// (`sub_6CD20`, `AddSpell12_36_51320`).  The first-pulse class-10/model-74
-/// effect allocation remains an outer arena concern; this state owns the
+/// Renderer-free state for source class-15/family-12 action 36
+/// (`sub_6B310`).  Class-10/model-74/action-72 is a separate source path and
+/// is never a consumer or reveal effect of this state. This state owns the
 /// exact holder, owner/castle predicate, charge, experience, countdown and
 /// SetSpell cleanup transition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1227,23 +1236,38 @@ impl BeyondSightState {
         self.active_value != self.activation_value || self.parent_mana >= self.mana_cost
     }
 
+    /// Apply the source `sub_6D8B0(parent, 12, 1)` first-pulse award. The
+    /// caller may publish the owning player's XP/level projection before the
+    /// later `sub_68D50` predicate runs.
+    pub fn award_experience_if_fresh_pulse(&mut self) -> i32 {
+        if self.parent_entity_index == 0 || self.active_value != self.activation_value {
+            return 0;
+        }
+        let profile = beyond_sight_tier_profile(self.tier).expect("validated Beyond Sight tier");
+        self.experience_awarded = self
+            .experience_awarded
+            .wrapping_add(profile.experience_award);
+        profile.experience_award
+    }
+
     pub fn step(&mut self, parent_castle_mana: Option<i32>) -> BeyondSightStep {
+        let experience_awarded = self.award_experience_if_fresh_pulse();
+        self.step_after_experience_award(parent_castle_mana, experience_awarded)
+    }
+
+    /// Complete one source pulse after the ordered XP award has been applied.
+    pub fn step_after_experience_award(
+        &mut self,
+        parent_castle_mana: Option<i32>,
+        experience_awarded: i32,
+    ) -> BeyondSightStep {
         let active_before = self.active_value;
         let countdown_before = self.countdown;
         let mut sustained = false;
-        let mut experience_awarded = 0;
         if self.active_value > 0 {
             if self.parent_entity_index != 0 {
                 if self.authoritative_predicate(parent_castle_mana) {
                     sustained = true;
-                    if self.active_value == self.activation_value {
-                        let profile = beyond_sight_tier_profile(self.tier)
-                            .expect("validated Beyond Sight tier");
-                        self.experience_awarded = self
-                            .experience_awarded
-                            .wrapping_add(profile.experience_award);
-                        experience_awarded = profile.experience_award;
-                    }
                     if self.active_value == self.activation_value {
                         self.parent_mana_regen = if self.parent_mana_regen >= 0 {
                             self.mana_cost.wrapping_neg()
@@ -2036,6 +2060,34 @@ mod tests {
         let end = beyond_sight.step(Some(10_000));
         assert_eq!(end.active_after, 0);
         assert!(end.cleanup_requested);
+    }
+
+    #[test]
+    fn beyond_sight_first_pulse_awards_before_failed_predicate_without_downstream_effect() {
+        let mut beyond_sight = BeyondSightState::new(1, 513, 7, 2_400, 100).expect("tier");
+        beyond_sight.active_value = beyond_sight.activation_value;
+
+        let first = beyond_sight.step(Some(9_999));
+
+        assert!(!first.sustained);
+        assert_eq!(first.experience_awarded, 1);
+        assert_eq!(beyond_sight.experience_awarded, 1);
+        assert_eq!(first.active_after, 0);
+        assert!(first.cleanup_requested);
+    }
+
+    #[test]
+    fn beyond_sight_xp_projection_uses_wrapping_total_and_exact_thresholds() {
+        assert_eq!(beyond_sight_unlocked_tier(0), 0);
+        assert_eq!(beyond_sight_unlocked_tier(359), 0);
+        assert_eq!(beyond_sight_unlocked_tier(360), 1);
+        assert_eq!(beyond_sight_unlocked_tier(1_079), 1);
+        assert_eq!(beyond_sight_unlocked_tier(1_080), 2);
+        assert_eq!(
+            beyond_sight_unlocked_tier(i32::MAX.wrapping_add(1)),
+            0,
+            "the source i32 sum wraps before threshold selection"
+        );
     }
 
     #[test]
