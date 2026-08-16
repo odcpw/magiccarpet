@@ -15476,8 +15476,8 @@ fn load_optional_level2_day_music(
     let _ = read_qualified_cache_file(
         &audio_root,
         "audio/descriptor.json",
-        171_163,
-        "6147506de0d33ede9106e0b3236580c1b408b3fe567a799c9f4aa3526c92c142",
+        171_379,
+        "53b04308fe28b218d122fb515c12e902259eab60c1b91bc031bd154ca8aa477a",
     )?;
     let _ = read_qualified_cache_file(
         &audio_root,
