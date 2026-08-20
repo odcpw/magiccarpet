@@ -861,62 +861,47 @@ def verify_reset_projection(
     }
 
 
-def verify_collision_masks(package: Path, manifest: dict) -> None:
-    metadata = manifest.get("collision_masks")
-    require(isinstance(metadata, dict), "Level 2 collision-mask metadata is missing")
-    assert metadata == {
-        "file": "collision-masks.bin",
-        "magic": "MCM1",
-        "version": 1,
-        "header_bytes": 20,
-        "record_header_bytes": 12,
-        "bank": "MSPRD0-0",
-        "vga_resolution_selector": 1,
-        "selector_source": "authored class-10/model-45 par1 selectors",
-        "pixel_encoding": "signed i16 little-endian",
-        "pixel_order": "row-major (y then x)",
-        "transparent_value": -1,
-        "source_files": metadata["source_files"],
-        "selectors": metadata["selectors"],
-    }
-    source_files = metadata["source_files"]
-    require(set(source_files) == {"tab", "dat"}, "collision-mask source file set differs")
-    for key, logical_path, expected_bytes, expected_hash in (
-        ("tab", "CD_Files/DATA/MSPRD0-0.TAB", 1572, MSPRD0_0_TAB_SHA256),
-        ("dat", "CD_Files/DATA/MSPRD0-0.DAT", 49202, MSPRD0_0_DAT_SHA256),
-    ):
-        entry = source_files[key]
-        assert entry == {
-            "logical_path": logical_path,
-            "bytes": expected_bytes,
-            "sha256": expected_hash,
-        }
+def authored_model_45_rows(authored: bytes) -> list[tuple[int, int]]:
+    require(len(authored) == 0x6604, "authored-level.bin extent changed")
+    rows = []
+    for index in range(1, 1200):
+        record = authored[1091 + index * 20 : 1091 + (index + 1) * 20]
+        if (
+            u16(record, 0) == 10
+            and struct.unpack_from("<h", record, 2)[0] == 45
+            and struct.unpack_from("<h", record, 8)[0] == -1
+        ):
+            rows.append((index, u16(record, 14)))
+    return rows
 
-    content = (package / "collision-masks.bin").read_bytes()
-    require(
-        len(content) == LEVEL2_COLLISION_MASK_BANK_BYTES,
-        "Level 2 collision-mask bank byte identity differs from the qualified source bank",
-    )
-    require(
-        hashlib.sha256(content).hexdigest() == LEVEL2_COLLISION_MASK_BANK_SHA256,
-        "Level 2 collision-mask bank SHA-256 differs from the qualified source bank",
-    )
+
+def validate_collision_mask_contract(
+    authored: bytes,
+    content: bytes,
+    metadata: dict,
+    *,
+    external_level: int,
+) -> list[dict]:
+    authored_rows = authored_model_45_rows(authored)
+    declared_rows = metadata.get("selectors")
+    require(isinstance(declared_rows, list), "collision-mask selector metadata is missing")
     require(len(content) >= 20, "collision-mask carrier header is truncated")
     require(content[:4] == b"MCM1", "collision-mask carrier magic mismatch")
     require(u16(content, 4) == 1, "collision-mask carrier version mismatch")
     require(u16(content, 6) == 20, "collision-mask carrier header extent mismatch")
-    require(u16(content, 8) == 1, "collision-mask VGA selector mismatch")
+    require(
+        u16(content, 8) == metadata.get("vga_resolution_selector"),
+        "collision-mask VGA selector mismatch",
+    )
     require(u16(content, 10) == 0, "collision-mask header reserved field is non-zero")
-    selector_rows = metadata["selectors"]
-    require(selector_rows, "collision-mask carrier has no selectors")
     count = u32(content, 12)
-    require(count == len(selector_rows), "collision-mask count disagrees with metadata")
+    require(count == len(declared_rows), "collision-mask count disagrees with metadata")
     require(u32(content, 16) == 12, "collision-mask record header extent mismatch")
 
     cursor = 20
     previous_selector = -1
     parsed_rows = []
-    for index in range(count):
+    for _ in range(count):
         require(cursor + 12 <= len(content), "collision-mask record header is truncated")
         selector = u16(content, cursor)
         width = u16(content, cursor + 2)
@@ -941,13 +926,103 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
         previous_selector = selector
         cursor = payload_end
     require(cursor == len(content), "collision-mask carrier has trailing bytes")
-    assert parsed_rows == selector_rows
+    require(parsed_rows == declared_rows, "collision-mask metadata differs from decoded records")
+
+    expected_selectors = sorted({selector for _index, selector in authored_rows})
+    actual_selectors = [row["selector"] for row in parsed_rows]
+    require(
+        actual_selectors == expected_selectors,
+        f"external Level {external_level} collision-mask selectors differ from authored rows",
+    )
+    if external_level >= 3:
+        recorded_count = metadata.get("authored_model_45_row_count")
+        require(
+            isinstance(recorded_count, int)
+            and not isinstance(recorded_count, bool)
+            and recorded_count >= 0,
+            f"external Level {external_level} authored model-45 row count is missing",
+        )
+        require(
+            recorded_count == len(authored_rows),
+            f"external Level {external_level} authored model-45 row count disagrees with authored data",
+        )
+    return parsed_rows
+
+
+def verify_collision_masks(package: Path, manifest: dict) -> None:
+    external_level = manifest["level"]["external"]
+    metadata = manifest.get("collision_masks")
+    require(
+        isinstance(metadata, dict),
+        f"external Level {external_level} collision-mask metadata is missing",
+    )
+    base_metadata = {
+        "file": "collision-masks.bin",
+        "magic": "MCM1",
+        "version": 1,
+        "header_bytes": 20,
+        "record_header_bytes": 12,
+        "bank": "MSPRD0-0",
+        "vga_resolution_selector": 1,
+        "selector_source": "authored class-10/model-45 par1 selectors",
+        "pixel_encoding": "signed i16 little-endian",
+        "pixel_order": "row-major (y then x)",
+        "transparent_value": -1,
+    }
+    if external_level == 2:
+        assert metadata == {
+            **base_metadata,
+            "source_files": metadata["source_files"],
+            "selectors": metadata["selectors"],
+        }
+    else:
+        require(
+            set(metadata) == set(base_metadata) | {"source_files", "selectors", "authored_model_45_row_count"},
+            f"external Level {external_level} collision-mask metadata shape changed",
+        )
+        for key, expected in base_metadata.items():
+            require(metadata.get(key) == expected, f"external Level {external_level} collision-mask metadata field {key} changed")
+    source_files = metadata["source_files"]
+    require(set(source_files) == {"tab", "dat"}, "collision-mask source file set differs")
+    for key, logical_path, expected_bytes, expected_hash in (
+        ("tab", "CD_Files/DATA/MSPRD0-0.TAB", 1572, MSPRD0_0_TAB_SHA256),
+        ("dat", "CD_Files/DATA/MSPRD0-0.DAT", 49202, MSPRD0_0_DAT_SHA256),
+    ):
+        entry = source_files[key]
+        assert entry == {
+            "logical_path": logical_path,
+            "bytes": expected_bytes,
+            "sha256": expected_hash,
+        }
+
+    content_path = package / "collision-masks.bin"
+    require(
+        content_path.is_file(),
+        f"external Level {external_level} collision-mask member is absent",
+    )
+    content = content_path.read_bytes()
+    if external_level == 2:
+        require(
+            len(content) == LEVEL2_COLLISION_MASK_BANK_BYTES,
+            "Level 2 collision-mask bank byte identity differs from the qualified source bank",
+        )
+        require(
+            hashlib.sha256(content).hexdigest() == LEVEL2_COLLISION_MASK_BANK_SHA256,
+            "Level 2 collision-mask bank SHA-256 differs from the qualified source bank",
+        )
+    validate_collision_mask_contract(
+        (package / "authored-level.bin").read_bytes(),
+        content,
+        metadata,
+        external_level=external_level,
+    )
 
 
 def verify_binary_structure(package: Path, manifest: dict) -> None:
     external_level = manifest["level"]["external"]
     level_two_v4 = external_level == 2 and manifest["schema"] == SCHEMA_V4
     level_two_v5 = external_level == 2 and manifest["schema"] == SCHEMA_V5
+    extended_v5 = external_level >= 2 and manifest["schema"] == SCHEMA_V5
     authored = (package / "authored-level.bin").read_bytes()
     assert len(authored) == 0x6604
     require(
@@ -995,10 +1070,10 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
         b"MCP1",
         (
             LEVEL2_PLAYER_COMPONENT_VERSION
-            if level_two_v5
+            if extended_v5
             else LEVEL2_V4_PLAYER_COMPONENT_VERSION
         )
-        if level_two_v4 or level_two_v5
+        if level_two_v4 or extended_v5
         else (2 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5} else 1),
         8,
         manifest["record_sizes"]["player"],
@@ -1006,7 +1081,7 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
     player_record_size = manifest["record_sizes"]["player"]
     expected_player_size = (
         LEVEL2_PLAYER_RECORD_BYTES
-        if level_two_v5
+        if extended_v5
         else (
             LEVEL2_V4_PLAYER_RECORD_BYTES
             if level_two_v4
@@ -1022,39 +1097,40 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             u16(players, offset + 4) < manifest["counts"]["entity_slots"],
             f"player slot {index} entity relation is out of range",
         )
-    if level_two_v5:
+    if extended_v5:
         verify_type_str_164_carrier(manifest, LEVEL2_PLAYER_LAYOUT)
         verify_banishment_state_carrier(manifest)
         layout = manifest["record_layouts"]["player"]
         auxiliary_offset = layout["type_str_164_auxiliary"]["record_offset"]
         auxiliary_end = auxiliary_offset + TYPE_STR_164_AUXILIARY_BYTES
         banishment_offset = layout["banishment_state_0x006"]["record_offset"]
-        require(
-            [
-                players[12 + index * player_record_size + banishment_offset]
-                for index in range(8)
-            ]
-            == [1, 1, 0, 0, 0, 0, 0, 0],
-            "Level 2 v5 banishment-state values differ from the qualified source capture",
-        )
-        require(
-            [
-                struct.unpack_from("<h", players, 12 + index * player_record_size + 6)[0]
-                for index in range(8)
-            ]
-            == [31] * 8,
-            "Level 2 v5 compact ActPlayerIndex values differ from the qualified source capture",
-        )
+        if level_two_v5:
+            require(
+                [
+                    players[12 + index * player_record_size + banishment_offset]
+                    for index in range(8)
+                ]
+                == [1, 1, 0, 0, 0, 0, 0, 0],
+                "Level 2 v5 banishment-state values differ from the qualified source capture",
+            )
+            require(
+                [
+                    struct.unpack_from("<h", players, 12 + index * player_record_size + 6)[0]
+                    for index in range(8)
+                ]
+                == [31] * 8,
+                "Level 2 v5 compact ActPlayerIndex values differ from the qualified source capture",
+            )
         for index in range(8):
             offset = 12 + index * player_record_size
             require(
                 len(players[offset : offset + player_record_size]) >= auxiliary_end,
-                f"Level 2 player slot {index} Type_str_164 carrier is truncated",
+                f"external Level {external_level} player slot {index} Type_str_164 carrier is truncated",
             )
             require(
                 len(players[offset : offset + player_record_size])
                 >= banishment_offset + BANISHMENT_STATE_BYTES,
-                f"Level 2 player slot {index} banishment-state carrier is truncated",
+                f"external Level {external_level} player slot {index} banishment-state carrier is truncated",
             )
     elif level_two_v4:
         verify_type_str_164_carrier(manifest, LEVEL2_V4_PLAYER_LAYOUT)
@@ -1115,13 +1191,22 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             }
         ]
         assert u32(runtime, 32) == 1
-    else:
-        assert external_level == LEVEL2_PROFILE["external"]
+    elif external_level == 2:
         require(
             divergences == [],
             "Level 2 runtime scalar divergences must be empty",
         )
         require(u32(runtime, 32) == 2, "Level 2 runtime music selector must be 2")
+    else:
+        require(
+            divergences == [],
+            f"external Level {external_level} runtime scalar divergences must be empty",
+        )
+        expected_music_selector = {"Day": 2, "Night": 1, "Cave": 3}[manifest["level"]["map_type"]["name"]]
+        require(
+            u32(runtime, 32) == expected_music_selector,
+            f"external Level {external_level} runtime music selector differs from map type",
+        )
     if external_level == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}:
         verify_reset_projection(manifest, players, entities, runtime)
     elif external_level == 1:
@@ -1373,31 +1458,53 @@ def verify(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     require(manifest["schema"] in SCHEMAS, "unsupported owner-package schema")
     level = manifest["level"]
-    require(level.get("external") in {1, 2}, "unsupported owner-package level profile")
-    if level["external"] == 1:
+    external_level = level.get("external")
+    require(
+        isinstance(external_level, int)
+        and not isinstance(external_level, bool)
+        and 1 <= external_level <= 24,
+        "unsupported owner-package level profile",
+    )
+    if external_level == 1:
         assert level["internal"] == 0
         assert level["map_type"] == {"id": 1, "name": "Night"}
         require(
             manifest["schema"] not in {SCHEMA_V4, SCHEMA_V5},
-            "v4/v5 collision-mask schemas are Level 2-only",
+            "v4/v5 collision-mask schemas require an external level at least 2",
         )
-    else:
+    elif external_level == 2:
         require(level == {
             "external": LEVEL2_PROFILE["external"],
             "internal": LEVEL2_PROFILE["internal"],
             "map_type": LEVEL2_PROFILE["map_type"],
         }, "Level 2 profile identity mismatch (expected external 2/internal 1/Day)")
+    else:
+        require(
+            manifest["schema"] == SCHEMA_V5,
+            f"external Level {external_level} requires the v5 collision-mask schema",
+        )
+        require(
+            level.get("internal") == external_level - 1,
+            f"external Level {external_level} internal index differs from one-based identity",
+        )
+        require(
+            level.get("map_type") in (
+                {"id": 0, "name": "Day"},
+                {"id": 1, "name": "Night"},
+                {"id": 2, "name": "Cave"},
+            ),
+            f"external Level {external_level} map type identity is not pinned",
+        )
     assert manifest["capture"] == {"frame": 0, "site": "0x002285ff"}
     assert manifest["byte_order"] == "little-endian"
     assert manifest["counts"]["authored_features"] == 1200
     assert manifest["counts"]["entity_slots"] == 1000
-    expected_active_entities = (
-        177 if level["external"] == 1 else LEVEL2_PROFILE["active_entities"]
-    )
-    require(
-        manifest["counts"]["active_entities"] == expected_active_entities,
-        f"active entity count differs for external level {level['external']}",
-    )
+    expected_active_entities = {1: 177, 2: LEVEL2_PROFILE["active_entities"]}.get(external_level)
+    if expected_active_entities is not None:
+        require(
+            manifest["counts"]["active_entities"] == expected_active_entities,
+            f"active entity count differs for external level {external_level}",
+        )
     assert manifest["dimensions"]["terrain"] == [256, 256]
     if manifest["schema"] == SCHEMA_V5:
         required_files = V5_FILES
@@ -1430,7 +1537,10 @@ def verify(
                 "6806c7204d17220ecc0430759f784aea8ee2ddb2"
             )
     if manifest["schema"] in {SCHEMA_V4, SCHEMA_V5}:
-        require(level["external"] == 2, "v4/v5 collision-mask schemas require Level 2")
+        require(
+            external_level >= 2,
+            f"v4/v5 collision-mask schemas require external Level at least 2 (got {external_level})",
+        )
         require(
             "reset_projection" not in manifest,
             "Level 2 v4/v5 packages must not carry reset projection",

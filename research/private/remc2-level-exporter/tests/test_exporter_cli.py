@@ -308,6 +308,39 @@ def _assert_l2_v5_upgrade(fresh: Path, preserved_v4: Path) -> None:
     _assert_l2_v5_player_extension(fresh, preserved_v4)
 
 
+def _assert_l2_v5_package_matches(fresh: Path, preserved: Path) -> None:
+    """Keep Level 2 emitted bytes sealed while allowing honest source provenance."""
+
+    fresh_manifest = json.loads((fresh / "manifest.json").read_text(encoding="utf-8"))
+    preserved_manifest = json.loads((preserved / "manifest.json").read_text(encoding="utf-8"))
+    assert fresh_manifest["files"] == preserved_manifest["files"]
+    assert fresh_manifest["package_sha256"] == preserved_manifest["package_sha256"]
+    for name in sorted(fresh_manifest["files"]):
+        assert (fresh / name).read_bytes() == (preserved / name).read_bytes(), (
+            f"Level 2 emitted member drifted: {name}"
+        )
+
+    fresh_source = copy.deepcopy(fresh_manifest["source"])
+    preserved_source = copy.deepcopy(preserved_manifest["source"])
+    fresh_compiled = {
+        entry["path"]: entry["sha256"] for entry in fresh_source.pop("compiled_files")
+    }
+    preserved_compiled = {
+        entry["path"]: entry["sha256"] for entry in preserved_source.pop("compiled_files")
+    }
+    fresh_source.pop("compiled_source_sha256")
+    preserved_source.pop("compiled_source_sha256")
+    assert fresh_source == preserved_source
+    changed_path = "private-exporter/src/exporter_main.cpp"
+    assert set(fresh_compiled) == set(preserved_compiled)
+    assert {
+        path: digest for path, digest in fresh_compiled.items() if path != changed_path
+    } == {
+        path: digest for path, digest in preserved_compiled.items() if path != changed_path
+    }
+    assert fresh_compiled[changed_path] != preserved_compiled[changed_path]
+
+
 def _assert_legacy_terrain_semantics(fresh: Path, preserved: Path) -> None:
     for name in ("terrain.bin", "terrain-pre-features.bin", "terrain-post-features.bin"):
         fresh_terrain = (fresh / name).read_bytes()
@@ -470,7 +503,7 @@ def test_deterministic_level_profiles() -> None:
                 _assert_l2_v5_upgrade(level_two_a, preserved)
             elif preserved_manifest["schema"] == SCHEMA_V5:
                 verify(preserved, enforce_reference_hashes=False)
-                assert _tree_bytes(level_two_a) == _tree_bytes(preserved)
+                _assert_l2_v5_package_matches(level_two_a, preserved)
             else:
                 raise AssertionError(
                     f"unsupported preserved Level 2 corpus schema: {preserved_manifest['schema']}"

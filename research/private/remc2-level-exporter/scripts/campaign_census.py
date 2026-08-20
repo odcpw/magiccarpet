@@ -398,30 +398,68 @@ def parse_authored_stages(data: bytes) -> tuple[list[dict[str, Any]], list[dict[
     return stages, variables
 
 
-def parse_collision(manifest: Mapping[str, Any], package: Path) -> dict[str, Any]:
+def parse_collision(
+    manifest: Mapping[str, Any],
+    package: Path,
+    authored_rows: Sequence[Mapping[str, Any]],
+    external_level: int,
+) -> dict[str, Any]:
     metadata = manifest.get("collision_masks")
-    require(isinstance(metadata, dict), "v5 collision-mask metadata is missing")
+    require(isinstance(metadata, dict), f"external Level {external_level} collision-mask metadata is missing")
     require(metadata.get("file") == "collision-masks.bin" and metadata.get("magic") == "MCM1", "collision-mask metadata identity changed")
-    data = (package / "collision-masks.bin").read_bytes()
+    member = package / "collision-masks.bin"
+    require(member.is_file(), f"external Level {external_level} collision-mask member is absent")
+    data = member.read_bytes()
+    require(len(data) >= 20, "collision-masks.bin header is truncated")
     require(data[:4] == b"MCM1", "collision-masks.bin magic mismatch")
     version, header_bytes, vga, reserved, count, record_header = struct.unpack_from("<HHHHII", data, 4)
     require((version, header_bytes, vga, reserved, record_header) == (1, 20, metadata.get("vga_resolution_selector"), 0, 12), "collision-mask header changed")
     selectors: list[dict[str, Any]] = []
     offset = header_bytes
+    previous_selector = -1
     for _ in range(count):
+        require(offset + record_header <= len(data), "collision-mask record header is truncated")
         selector, width, height, reserved_record, pixel_bytes = struct.unpack_from("<HHHHI", data, offset)
+        require(selector > previous_selector, "collision-mask selectors are not strictly ordered")
+        require(width > 0 and height > 0, "collision-mask dimensions are empty")
         require(reserved_record == 0 and pixel_bytes == width * height * 2, "collision-mask record extent changed")
         payload = data[offset + record_header : offset + record_header + pixel_bytes]
         require(len(payload) == pixel_bytes, "collision-mask record is truncated")
         selectors.append({"selector": selector, "width": width, "height": height, "pixel_bytes": pixel_bytes, "sha256": sha256_bytes(payload)})
         offset += record_header + pixel_bytes
+        previous_selector = selector
     require(offset == len(data), "collision-masks.bin has an unknown tail")
     declared = metadata.get("selectors")
     require(declared == selectors, "collision-mask metadata differs from decoded records")
+    model_45_rows = [
+        row
+        for row in authored_rows
+        if row["class"] == 10
+        and row["subtype"] == 45
+        and row["source_fields"]["DisId"] == -1
+    ]
+    expected_selectors = sorted({row["model"] for row in model_45_rows})
+    require(
+        [row["selector"] for row in selectors] == expected_selectors,
+        f"external Level {external_level} collision-mask selectors differ from authored rows",
+    )
+    if external_level >= 3:
+        recorded_count = metadata.get("authored_model_45_row_count")
+        require(
+            isinstance(recorded_count, int)
+            and not isinstance(recorded_count, bool)
+            and recorded_count >= 0,
+            f"external Level {external_level} authored model-45 row count is missing",
+        )
+        require(
+            recorded_count == len(model_45_rows),
+            f"external Level {external_level} authored model-45 row count disagrees with authored data",
+        )
     return {
         "member": "collision-masks.bin",
         "member_sha256": sha256_bytes(data),
         "selectors": selectors,
+        "authored_model_45_row_count": len(model_45_rows),
         "source_files": metadata.get("source_files"),
         "selector_source": metadata.get("selector_source"),
     }
@@ -485,7 +523,7 @@ def source_facts(manifest: Mapping[str, Any], package: Path, authored_rows: Sequ
     facts = [
         {"fact_id": "level-records", "kind": "authored_level_records", "version": 1, "member": "authored-level.bin", "member_sha256": sha256_file(package / "authored-level.bin"), "selector_provenance": [], "source_artifacts": level_records, "lifetime": "immutable-through-session"},
         {"fact_id": "feature-construction-inputs", "kind": "feature_construction_inputs", "version": 1, "member": construction["member"], "member_sha256": construction["member_sha256"], "selector_provenance": [{"source_field": "building_selector", "selector_value": selector} for selector in construction["selectors"]], "source_artifacts": construction_artifacts, "lifetime": "immutable-through-session"},
-        {"fact_id": "collision-mask-bank", "kind": "collision_mask", "version": 1, "member": collision["member"], "member_sha256": collision["member_sha256"], "selector_provenance": selector_provenance, "source_artifacts": mask_artifacts, "lifetime": "immutable-through-session"},
+        {"fact_id": "collision-mask-bank", "kind": "collision_mask", "version": 1, "member": collision["member"], "member_sha256": collision["member_sha256"], "authored_model_45_row_count": collision["authored_model_45_row_count"], "selector_provenance": selector_provenance, "source_artifacts": mask_artifacts, "lifetime": "immutable-through-session"},
     ]
     for fact in facts:
         require(fact["source_artifacts"], f"source fact {fact['fact_id']} has no owner artifact")
@@ -648,7 +686,7 @@ def package_evidence(package: Path, expected_level: int, root: Path, atlas: tupl
     require(len(players) == 12 + player_count * player_bytes, "players.bin extent changed")
     runtime = parse_runtime((package / "runtime.bin").read_bytes())
     authored_stages, authored_stage_variables = parse_authored_stages(authored_data)
-    collision = parse_collision(manifest, package)
+    collision = parse_collision(manifest, package, authored_rows, expected_level)
     construction = parse_feature_inputs(manifest, package)
     facts = source_facts(manifest, package, authored_rows, collision, construction)
     actions, constructors, atlas_sha = atlas

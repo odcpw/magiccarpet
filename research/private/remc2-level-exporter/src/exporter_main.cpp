@@ -409,13 +409,16 @@ Bytes capture_feature_boundary(const char (&magic)[5]) {
 }
 
 std::vector<std::uint16_t> building_selectors(
-    const Type_Level_2FECE& authored) {
+    const Type_Level_2FECE& authored,
+    std::size_t& authored_model_45_row_count) {
     std::set<std::uint16_t> selectors;
+    authored_model_45_row_count = 0;
     for (std::size_t index = 1; index < kAuthoredFeatures; ++index) {
         const auto& feature = authored.entity_0x30311[index];
         if (feature.DisId == -1 &&
             feature.type_0x30311 == 10 &&
             feature.subtype_0x30311 == 45) {
+            ++authored_model_45_row_count;
             if (feature.par1_14 >= str_D93C0_bldgprmbuffer.size()) {
                 throw std::runtime_error("authored house BLDGPRM selector is outside the source table");
             }
@@ -432,12 +435,16 @@ struct CollisionMaskCapture {
 
 CollisionMaskCapture capture_collision_masks(
     const fs::path& owner_root,
-    const std::vector<std::uint16_t>& selectors) {
+    const std::vector<std::uint16_t>& selectors,
+    std::size_t authored_model_45_row_count,
+    std::uint16_t external_level) {
     if (x_WORD_180660_VGA_type_resolution != 1) {
         throw std::runtime_error("MSPRD collision masks require VGA selector 1");
     }
-    if (selectors.empty()) {
-        throw std::runtime_error("Level 2 has no authored model-45 collision selectors");
+    if ((selectors.empty()) != (authored_model_45_row_count == 0)) {
+        throw std::runtime_error(
+            "external Level " + std::to_string(external_level) +
+            " has an unprovable authored class-10/model-45 collision selector count");
     }
     if (MSPRD00TAB_BEGIN_BUFFER == nullptr || MSPRD00TAB_END_BUFFER == nullptr ||
         MSPRD00DAT_BEGIN_BUFFER == nullptr) {
@@ -524,17 +531,21 @@ CollisionMaskCapture capture_collision_masks(
         }},
         {"selectors", selector_metadata}
     };
+    if (external_level > 2) {
+        result.metadata["authored_model_45_row_count"] = authored_model_45_row_count;
+    }
     return result;
 }
 
 Bytes capture_feature_construction_inputs(
     const Type_Level_2FECE& authored,
     std::vector<std::uint16_t>& selectors,
+    std::size_t& authored_model_45_row_count,
     bool level_one) {
     if (level_one && x_WORD_180660_VGA_type_resolution != 1) {
         throw std::runtime_error("isolated Level 1 feature seam requires VGA selector 1");
     }
-    selectors = building_selectors(authored);
+    selectors = building_selectors(authored, authored_model_45_row_count);
     if (level_one && selectors.empty()) {
         throw std::runtime_error("Level 1 has no source house construction selectors");
     }
@@ -1846,11 +1857,20 @@ int run(const Arguments& arguments) {
         throw std::runtime_error("Level 1 isolated feature seam is not using VGA selector 1");
     }
     std::vector<std::uint16_t> feature_building_selectors;
+    std::size_t authored_model_45_row_count = 0;
     Bytes feature_construction_inputs =
-        capture_feature_construction_inputs(authored, feature_building_selectors, level_one);
+        capture_feature_construction_inputs(
+            authored,
+            feature_building_selectors,
+            authored_model_45_row_count,
+            level_one);
     CollisionMaskCapture collision_masks;
     if (!level_one) {
-        collision_masks = capture_collision_masks(owner_root, feature_building_selectors);
+        collision_masks = capture_collision_masks(
+            owner_root,
+            feature_building_selectors,
+            authored_model_45_row_count,
+            arguments.level.external);
     }
     const Type_Level_2FECE feature_expectation = authored;
     const auto feature_allocator_trace = level_one
