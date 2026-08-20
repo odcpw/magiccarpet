@@ -81,12 +81,17 @@ namespace MagicCarpet.Native
 
         private readonly Dictionary<byte, Level2SpellPresentationReceipt> receipts =
             new();
+        private readonly Level2EffectPresenter rootedEffectPresenter =
+            new();
         private Level2SpellPresentation[] activeEffects =
             Array.Empty<Level2SpellPresentation>();
         private ulong observedGeneration = ulong.MaxValue;
         private ulong observedTick;
 
         internal Level2SpellPresentation[] ActiveEffects => activeEffects;
+
+        internal Level2EffectPresentation[] RootedEffects =>
+            rootedEffectPresenter.ActiveEffects;
 
         internal Level2SpellPresentationReceipt[] Receipts
         {
@@ -111,6 +116,7 @@ namespace MagicCarpet.Native
             // Every call starts with no visible effect. A malformed or stale
             // record therefore cannot leave a prior frame's Unity effect live.
             activeEffects = Array.Empty<Level2SpellPresentation>();
+            rootedEffectPresenter.Present(step, events);
             if (!FrameIsBound(step, events, hud, shield, invisible, beyondSight))
             {
                 return;
@@ -148,6 +154,7 @@ namespace MagicCarpet.Native
         {
             receipts.Clear();
             activeEffects = Array.Empty<Level2SpellPresentation>();
+            rootedEffectPresenter.Reset(generation);
             observedGeneration = generation;
             observedTick = 0;
         }
@@ -156,6 +163,7 @@ namespace MagicCarpet.Native
         {
             receipts.Clear();
             activeEffects = Array.Empty<Level2SpellPresentation>();
+            rootedEffectPresenter.Dispose();
             observedGeneration = ulong.MaxValue;
             observedTick = 0;
         }
@@ -178,8 +186,12 @@ namespace MagicCarpet.Native
             NativeSim.CampaignInvisibleSnapshot invisible,
             NativeSim.CampaignBeyondSightSnapshot beyondSight)
         {
-            if (events == null ||
-                step.abiVersion != NativeSim.AbiVersion ||
+            if (events == null)
+            {
+                return false;
+            }
+
+            if (step.abiVersion != NativeSim.AbiVersion ||
                 step.structSize != 112 ||
                 step.eventCount != (uint)events.Length ||
                 hud.abiVersion != NativeSim.AbiVersion ||
