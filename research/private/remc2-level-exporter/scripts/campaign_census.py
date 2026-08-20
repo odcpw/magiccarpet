@@ -789,7 +789,7 @@ def build_receipt(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         first = package_evidence(package_a, external_level, root, atlas, capability)
         second = package_evidence(package_b, external_level, root, atlas, capability)
         compare_twins(first, second)
-        entries.append({"external_level": external_level, "byte_identical_twins": True, "run_a": first, "run_b": second, "observed": first["observed"], "diff": first["diff"]})
+        entries.append({"external_level": external_level, "byte_identical_twins": True, "map_type": first["map_type"], "run_a": first, "run_b": second, "observed": first["observed"], "diff": first["diff"]})
         print(f"census: Level {external_level} exported twice and matched", file=sys.stderr)
     aggregate = {
         "level_count": len(entries),

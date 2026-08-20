@@ -21,6 +21,32 @@ def test_level_selector_is_exact_remaining_campaign() -> None:
         census.level_list("3-23")
 
 
+def test_summary_includes_each_level_map_type() -> None:
+    receipt = {
+        "scope": {"source_commit": census.COMMIT, "external_levels": [3]},
+        "aggregate": {"level_count": 1, "byte_identical_level_count": 1},
+        "inputs": {"run_a": "generated/a", "run_b": "generated/b"},
+        "levels": [
+            {
+                "external_level": 3,
+                "map_type": {"name": "Day"},
+                "observed": {
+                    "reset": {"active_count": 1},
+                    "authored": {"nonzero_record_count": 2},
+                    "class_action_model_subtype": [(1, 2, 3, 4)],
+                    "behavior_closure": {"closure_key_count": 3},
+                },
+                "diff": {
+                    "tuples": {"new_tuples": [(1, 2, 3, 4)]},
+                    "objective_forms": {"stage": {"new_values": ["new"]}},
+                    "source_facts": [{"new_selector_values": [1], "new_source_artifacts": []}],
+                },
+            }
+        ],
+    }
+    assert "| 3 | 2 | Day | 1 | 2 | 1 | 3 | 1 | 1 | 1 |" in census.summary_markdown(receipt)
+
+
 def test_canonical_hash_and_closure_are_declaration_order_independent() -> None:
     left = {"rows": [{"class": 5, "action": 9}, {"class": 2, "action": 1}], "facts": {"b": 2, "a": 1}}
     right = {"facts": {"a": 1, "b": 2}, "rows": [{"class": 5, "action": 9}, {"class": 2, "action": 1}]}
