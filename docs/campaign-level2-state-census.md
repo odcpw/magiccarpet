@@ -20,19 +20,16 @@ The bead description's 127/53/88 field counts and 128 twin pairs match the older
 
 | Struct | Current fields | Current pairs | Current unpaired | Older fields | Older pairs | Older unpaired |
 |---|---:|---:|---:|---:|---:|---:|
-| `Level2EconomyState` | 151 | 75 | 1 | 127 | 63 | 1 |
+| `Level2EconomyState` | 152 | 75 | 2 | 127 | 63 | 1 |
 | `Level2SharedSpellResetSession` | 57 | 27 | 3 | 53 | 25 | 3 |
 | `Level2ResetSession` | 89 | 40 | 9 | 88 | 40 | 8 |
-| **Total** | **297** | **142** | **13** | **268** | **128** | **12** |
+| **Total** | **298** | **142** | **14** | **268** | **128** | **12** |
 
 The requested 128-pair denominator is accounted for as 127 retained current pair rows plus one explicitly retired pair. The current source adds 15 pair rows, for a net current total of 142.
 
-The checkout also contains an uncommitted source-only addition from another
-worker: `fireball_projectiles` is currently visible in the working tree
-`Level2EconomyState`, but it was absent at the evidence revision above. It is
-intentionally not folded into this committed-revision census; the guard below
-will identify that moving-tree field until its owner lands a stable revision
-and the census is remeasured.
+The current source adds `fireball_projectiles` as a resettable live, unpaired
+dynamic-arena sidecar. Its producer, callback, following-pass reclaim, and
+reset treatment are recorded in the classification row below.
 
 | Delta | Struct | Pair(s) | Evidence |
 |---|---|---|---|
@@ -40,6 +37,7 @@ and the census is remeasured.
 | added after denominator | Level2SharedSpellResetSession | player_life_regen; free_spell_usage; persistent_spell_experience | Declarations native_world.rs:4243-4244, 4295-4298; constructor/reset writers native_world.rs:13343-13346, 13383-13387, 16064-16086. |
 | retired from denominator | Level2SharedSpellResetSession | beyond_sight_pulse_pending | Present in the older 5b1214 source pair; absent at current HEAD. Current beyond_sight and auxiliary writers are native_world.rs:14139-14289 and 23763-23791. |
 | added current unpaired | Level2ResetSession | collision_masks | Constructor retention native_world.rs:18870 and read-only accessor native_world.rs:18979-18981; no live reset writer. |
+| added current unpaired | Level2EconomyState | fireball_projectiles | Public family-0 producer native_world.rs:18559-18734; shared dynamic callback and following-pass reclaim native_world/level2_dynamic_economy.rs:245-439,729-747; reset writer native_world.rs:13135. |
 
 This is a denominator reconciliation, not a claim that the older pair was semantically correct. The current tables are the authoritative field inventory.
 
@@ -113,6 +111,7 @@ This is a denominator reconciliation, not a claim that the older pair was semant
 | `Level2EconomyState` | `baseline_possession_guidance_source_slots`, `possession_guidance_source_slots` | tick scratch / derived cache | decl native_world.rs:6220; init native_world.rs:6505; no live writer in scoped range; live decl native_world.rs:6221; init native_world.rs:6506; live writer(s) native_world.rs:11206,11212; reset writer native_world.rs:13004 | Live resets from its baseline at native_world.rs:13004 |
 | `Level2EconomyState` | `baseline_possession_guidance_stale_records`, `possession_guidance_stale_records` | immutable fact / resettable live | decl native_world.rs:6222; init native_world.rs:6507; no live writer in scoped range; live decl native_world.rs:6223; init native_world.rs:6508; live writer(s) native_world.rs:6606,6624; reset writer native_world.rs:13006 | Live resets from its baseline at native_world.rs:13006 |
 | `Level2EconomyState` | `baseline_possession_effects`, `possession_effects` | immutable fact / resettable live | decl native_world.rs:6224; init native_world.rs:6509; no live writer in scoped range; live decl native_world.rs:6225; init native_world.rs:6510; no live writer in scoped range; reset writer native_world.rs:13008 | Live resets from its baseline at native_world.rs:13008 |
+| `Level2EconomyState` | `fireball_projectiles` | resettable live | decl native_world.rs:6279; init native_world.rs:6565; live writers native_world.rs:10678-10685,18559-18734; callback/reclaim native_world/level2_dynamic_economy.rs:245-439,729-747; reset writer native_world.rs:13135 | Cleared by `Level2EconomyState::reset` at native_world.rs:13135; hidden rows remain linked through the landing pass and are reclaimed at the following source boundary. |
 | `Level2EconomyState` | `baseline_carriers`, `carriers` | immutable fact / resettable live | decl native_world.rs:6226; init native_world.rs:6511; no live writer in scoped range; live decl native_world.rs:6227; init native_world.rs:6512; live writer(s) native_world.rs:11228; reset writer native_world.rs:13009 | Live resets from its baseline at native_world.rs:13009 |
 | `Level2EconomyState` | `baseline_castle_projectiles`, `castle_projectiles` | immutable fact / resettable live | decl native_world.rs:6228; init native_world.rs:6513; no live writer in scoped range; live decl native_world.rs:6229; init native_world.rs:6514; no live writer in scoped range; reset writer native_world.rs:13010 | Live resets from its baseline at native_world.rs:13010 |
 | `Level2EconomyState` | `baseline_castle`, `castle` | immutable fact / resettable live | decl native_world.rs:6230; init native_world.rs:6515; no live writer in scoped range; live decl native_world.rs:6231; init native_world.rs:6516; live writer(s) native_world.rs:11756; reset writer native_world.rs:13011 | Live resets from its baseline at native_world.rs:13011 |

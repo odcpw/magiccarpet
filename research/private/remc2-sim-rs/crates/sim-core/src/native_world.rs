@@ -52,10 +52,11 @@ use crate::{
         CASTLE_STAGE_ONE_LIFE, CASTLE_STAGE_ONE_MANA_CAPACITY, CastleBuildFootprint,
         CastleTerrainUpdate, DEATH_BURST_ACTION, DEATH_BURST_CLASS, DEATH_BURST_MODEL,
         FIREBALL_BASE_TMAP, FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT,
-        FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT,
-        FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT,
-        FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP,
-        GROUND_FIRE_FIRST_RENDER_INDEX, GROUND_FIRE_LOGICAL_HEIGHTS,
+        FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LIFETIME_TICKS,
+        FIREBALL_LOGICAL_HEIGHT, FIREBALL_PROJECTILE_CLASS, FIREBALL_PROJECTILE_MODEL,
+        FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FIREBALL_SPEED, FIREBALL_SPELL_FAMILY,
+        FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE,
+        GROUND_FIRE_BASE_TMAP, GROUND_FIRE_FIRST_RENDER_INDEX, GROUND_FIRE_LOGICAL_HEIGHTS,
         GROUND_FIRE_PRESENTATION_BYTE_11, GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE,
         HouseResidentRequest, Level1AmbientEntity, Level1CastlePlacementBlocker,
         Level1CollisionTarget, Level1MissionState, Level1MissionTemplate,
@@ -4053,6 +4054,13 @@ const LEVEL2_BEE_CONTACT_SUBSPELL: i32 = 200;
 const LEVEL2_BEE_GROUND_CLEARANCE: i16 = 0x0033;
 const LEVEL2_BEE_GROUND_RELAXATION: i16 = -32;
 const LEVEL2_BEE_COLLISION_HALF_EXTENT: i16 = 128;
+/// `sub_106C0` Fireball source dimensions.  These are kept local to the Day
+/// producer because the Level 1 projectile helper owns the same values for a
+/// different arena, while this route must not create a second shared
+/// projectile framework.
+const LEVEL2_FIREBALL_COLLISION_HALF_WIDTH: i16 = 48;
+const LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET: i16 = 50;
+const LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT: i16 = 50;
 const LEVEL2_BEE_TERRAIN_THRESHOLD: i32 = 20;
 const LEVEL2_BEE_TURN_LIMIT: i16 = 0x0071;
 const LEVEL2_BEE_MOVEMENT_SKIP_BIT: u32 = 0x0000_0800;
@@ -4599,6 +4607,43 @@ pub struct Level2CastleProjectile {
     pub drawing_disabled: bool,
 }
 
+/// The ordinary public family-0 Fireball flyer created by `sub_693F0` and
+/// `sub_6DCA0`.  It remains a distinct source row because its callback owns
+/// the one-shot collision gate, RNG/audio tail, and following-pass reclaim;
+/// the target Bee owns only the destination mailbox transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2FireballProjectile {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub owner_entity_index: u16,
+    pub holder_entity_index: u16,
+    pub source_subspell_index: u16,
+    pub source_mana: i32,
+    pub source_class: u8,
+    pub source_model: u8,
+    pub action: u8,
+    pub payload: i32,
+    pub position: Position,
+    pub axis_position: Position,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub actual_speed: i16,
+    pub minimum_speed: i16,
+    pub life: i16,
+    pub max_life: i16,
+    /// Source `dword_0x10`, copied from the parent A4 byte and consumed by
+    /// the delay prefix before movement/collision/RNG.
+    pub dword_0x10: i32,
+    /// Source byte-0 bit 1: after the first callback the collision scan is
+    /// never repeated, including when no Bee was eligible.
+    pub control_flags: u32,
+    /// Source word-0x2c random displacement after the collision scan.
+    pub source_word_2c: i16,
+    pub phase: u8,
+    pub active: bool,
+    pub drawing_disabled: bool,
+}
+
 /// One source-linked construction/defense child record. The root keeps the
 /// current slots for quick dispatch, while this ordered chain mirrors the
 /// source `next_0` walk used by state 4's model-42 scan.
@@ -4991,6 +5036,12 @@ pub struct Level2AuthoredBeeSource {
     pub mana: i32,
     pub max_life: i16,
     pub life: i16,
+    /// Source `sub_1BF90` damage mailbox. A Fireball writes these fields;
+    /// action 17 consumes and clears them at the next Bee callback.
+    pub pending_damage: i32,
+    pub pending_attacker_entity_index: u16,
+    /// Source word-0x26 after mailbox consumption.
+    pub damage_attacker_entity_index: u16,
     pub subspell_index: u16,
     pub dword_0x10: i32,
     pub target_entity_index: Option<u16>,
@@ -6223,6 +6274,9 @@ pub struct Level2EconomyState {
     possession_guidance_stale_records: BTreeMap<u16, Position>,
     baseline_possession_effects: Vec<Level2PossessionEffect>,
     possession_effects: Vec<Level2PossessionEffect>,
+    /// Transient public Fireball products.  These are born from the live
+    /// family-0 holder and therefore intentionally have no baseline twin.
+    fireball_projectiles: Vec<Level2FireballProjectile>,
     baseline_carriers: Vec<ManaCarrier>,
     carriers: Vec<ManaCarrier>,
     baseline_castle_projectiles: Vec<Level2CastleProjectile>,
@@ -6508,6 +6562,7 @@ impl Level2EconomyState {
             possession_guidance_stale_records: BTreeMap::new(),
             baseline_possession_effects: Vec::new(),
             possession_effects: Vec::new(),
+            fireball_projectiles: Vec::new(),
             baseline_carriers: Vec::new(),
             carriers: Vec::new(),
             baseline_castle_projectiles: Vec::new(),
@@ -6749,6 +6804,12 @@ impl Level2EconomyState {
                     .iter()
                     .filter(|effect| !effect.active)
                     .map(|effect| effect.source_entity_index),
+            )
+            .chain(
+                self.fireball_projectiles
+                    .iter()
+                    .filter(|projectile| !projectile.active && projectile.drawing_disabled)
+                    .map(|projectile| projectile.source_entity_index),
             )
             .collect::<BTreeSet<_>>();
         self.free_slots = self
@@ -7329,6 +7390,9 @@ impl Level2EconomyState {
             mana: 1500,
             max_life: 3000,
             life: 3000,
+            pending_damage: 0,
+            pending_attacker_entity_index: 0,
+            damage_attacker_entity_index: 0,
             subspell_index: 200,
             dword_0x10: i32::from(source_entity_index % 100),
             target_entity_index: None,
@@ -8261,6 +8325,16 @@ impl Level2EconomyState {
             return false;
         };
         let mut source = self.authored_bees[source_index];
+        // `sub_1BF90` consumes the class-5/model-2 action-17 damage mailbox
+        // before its ordinary target/steering branch.  The attacker word is
+        // copied exactly once and the mailbox is cleared in the same callback;
+        // later Fireball callbacks therefore cannot duplicate the hit.
+        if source.action == 17 && source.pending_attacker_entity_index != 0 {
+            source.life = source.life.wrapping_sub(source.pending_damage as i16);
+            source.damage_attacker_entity_index = source.pending_attacker_entity_index;
+            source.pending_damage = 0;
+            source.pending_attacker_entity_index = 0;
+        }
         match source.action {
             16 => {
                 if target
@@ -10546,6 +10620,11 @@ impl Level2EconomyState {
     }
 
     #[must_use]
+    pub fn fireball_projectiles(&self) -> &[Level2FireballProjectile] {
+        &self.fireball_projectiles
+    }
+
+    #[must_use]
     pub fn possession_effects(&self) -> &[Level2PossessionEffect] {
         &self.possession_effects
     }
@@ -10593,6 +10672,16 @@ impl Level2EconomyState {
             visit(
                 projectile.source_entity_index,
                 Level2DynamicArenaKind::CastleProjectile,
+            );
+        }
+        for projectile in self
+            .fireball_projectiles
+            .iter()
+            .filter(|projectile| projectile.active)
+        {
+            visit(
+                projectile.source_entity_index,
+                Level2DynamicArenaKind::FireballProjectile,
             );
         }
         for projectile in self
@@ -11965,6 +12054,9 @@ impl Level2EconomyState {
             hasher.update(source.mana.to_le_bytes());
             hasher.update(source.max_life.to_le_bytes());
             hasher.update(source.life.to_le_bytes());
+            hasher.update(source.pending_damage.to_le_bytes());
+            hasher.update(source.pending_attacker_entity_index.to_le_bytes());
+            hasher.update(source.damage_attacker_entity_index.to_le_bytes());
             hasher.update(source.subspell_index.to_le_bytes());
             hasher.update(source.dword_0x10.to_le_bytes());
             hasher.update(source.target_entity_index.unwrap_or(u16::MAX).to_le_bytes());
@@ -12636,6 +12728,40 @@ impl Level2EconomyState {
             hasher.update(field.life.to_le_bytes());
             hasher.update([field.action, u8::from(field.active)]);
         }
+        for projectile in &self.fireball_projectiles {
+            hasher.update(projectile.source_entity_index.to_le_bytes());
+            hasher.update(projectile.entity_rng.to_le_bytes());
+            hasher.update(projectile.owner_entity_index.to_le_bytes());
+            hasher.update(projectile.holder_entity_index.to_le_bytes());
+            hasher.update(projectile.source_subspell_index.to_le_bytes());
+            hasher.update(projectile.source_mana.to_le_bytes());
+            hasher.update([
+                projectile.source_class,
+                projectile.source_model,
+                projectile.action,
+            ]);
+            hasher.update(projectile.payload.to_le_bytes());
+            hasher.update(projectile.position.x.to_le_bytes());
+            hasher.update(projectile.position.y.to_le_bytes());
+            hasher.update(projectile.position.z.to_le_bytes());
+            hasher.update(projectile.axis_position.x.to_le_bytes());
+            hasher.update(projectile.axis_position.y.to_le_bytes());
+            hasher.update(projectile.axis_position.z.to_le_bytes());
+            hasher.update(projectile.yaw.to_le_bytes());
+            hasher.update(projectile.pitch.to_le_bytes());
+            hasher.update(projectile.actual_speed.to_le_bytes());
+            hasher.update(projectile.minimum_speed.to_le_bytes());
+            hasher.update(projectile.life.to_le_bytes());
+            hasher.update(projectile.max_life.to_le_bytes());
+            hasher.update(projectile.dword_0x10.to_le_bytes());
+            hasher.update(projectile.control_flags.to_le_bytes());
+            hasher.update(projectile.source_word_2c.to_le_bytes());
+            hasher.update([
+                projectile.phase,
+                u8::from(projectile.active),
+                u8::from(projectile.drawing_disabled),
+            ]);
+        }
         hasher.update(b"level2-possession-projectile-v2");
         for projectile in &self.possession_projectiles {
             hasher.update(projectile.source_entity_index.to_le_bytes());
@@ -13006,6 +13132,7 @@ impl Level2EconomyState {
         self.possession_guidance_stale_records =
             self.baseline_possession_guidance_stale_records.clone();
         self.possession_effects = self.baseline_possession_effects.clone();
+        self.fireball_projectiles.clear();
         self.carriers = self.baseline_carriers.clone();
         self.castle_projectiles = self.baseline_castle_projectiles.clone();
         self.castle = self.baseline_castle;
@@ -16882,6 +17009,7 @@ pub enum Level2DispatchEvent {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Level2DynamicArenaKind {
     CastleProjectile,
+    FireballProjectile,
     PossessionProjectile,
     PossessionEffect,
     CastleRoot,
@@ -17028,6 +17156,7 @@ impl Level2DispatchEvent {
 pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
     match kind {
         Level2DynamicArenaKind::CastleProjectile => 38,
+        Level2DynamicArenaKind::FireballProjectile => 41,
         // Appended production family codes. Existing consumer projections
         // retain their established values.
         Level2DynamicArenaKind::PossessionProjectile => 39,
@@ -18366,6 +18495,243 @@ impl Level2ResetSession {
                 holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
             }
         }
+    }
+
+    /// `sub_6D880` cleanup for the direct family-0 holder.  Keep the profile
+    /// lookup explicit: a queued unsupported tier or a non-family-0 row is a
+    /// closed no-op rather than a neighboring-family fallback.
+    fn apply_fireball_spell_holder_cleanup(&mut self, holder_index: u16) {
+        let queued_spell = self
+            .shared_spells
+            .pickup(holder_index)
+            .map(|holder| {
+                u16::from_le_bytes(
+                    holder.record[48..50]
+                        .try_into()
+                        .expect("queued Fireball SetSpell word extent"),
+                )
+            })
+            .unwrap_or_default();
+        if queued_spell == 0 {
+            return;
+        }
+        let Some(tier) = queued_spell
+            .checked_sub(1)
+            .and_then(|value| u8::try_from(value).ok())
+            .filter(|tier| *tier <= 2)
+        else {
+            return;
+        };
+        let Some(profile) = level2_direct_starting_spell_profile(FIREBALL_SPELL_FAMILY, tier)
+        else {
+            return;
+        };
+        if let Some(holder) = self
+            .shared_spells
+            .pickup_mut(holder_index)
+            .filter(|holder| {
+                holder.class == 15 && holder.model == FIREBALL_SPELL_FAMILY && holder.action == 0
+            })
+        {
+            holder.level_gate = tier.cast_signed();
+            holder.subspell_index = profile.subspell_index;
+            holder.activation_value = profile.word_0x30;
+            holder.byte_3b = profile.byte_0x3b;
+            holder.mana_regen = profile.mana_regen;
+            holder.max_mana = profile.max_mana;
+            holder.mana_cost = profile.max_mana;
+            holder.mana = profile.mana;
+            holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+            holder.record[48..50].fill(0);
+            holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+            holder.record[63] = profile.byte_0x3b;
+            holder.record[74] = tier;
+            holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+            holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+            holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+        }
+    }
+
+    /// Source `sub_693F0` for the ordinary class-15/model-0/action-0
+    /// Fireball holder.  The parent gate, source charge, allocator, A4
+    /// transfer, launch sound, W decrement, and word-36 epilogue are kept in
+    /// one transition so an invalid producer cannot partially cast.
+    fn step_level2_fireball_holder_source_slot(&mut self, holder_index: u16) -> Option<u16> {
+        let Some(holder) = self
+            .shared_spells
+            .dynamic_pickups
+            .iter()
+            .find(|holder| {
+                holder.index == holder_index
+                    && holder.active
+                    && holder.class == 15
+                    && holder.model == FIREBALL_SPELL_FAMILY
+                    && holder.action == 0
+            })
+            .cloned()
+        else {
+            return None;
+        };
+        let parent_entity_index = self.shared_spells.player_entity.index;
+        if holder.source_spell_parent_entity_index() != parent_entity_index {
+            return None;
+        }
+
+        let mut next_active_value = holder.active_value;
+        let mut spawned = None;
+        if holder.active_value <= 0 {
+            self.apply_fireball_spell_holder_cleanup(holder_index);
+        } else {
+            let fresh = holder.active_value == holder.activation_value.cast_signed();
+            let parent_life = self.shared_spells.player_entity.life;
+            let parent_mana = self.shared_spells.player_entity.mana;
+            let parent_mana_regen = self.shared_spells.player_entity.mana_regen;
+            let castle_mana = self
+                .economy
+                .castle()
+                .filter(|castle| {
+                    castle.active
+                        && self.economy.player_castle_entity_index() == castle.source_entity_index
+                })
+                .map(|castle| castle.mana);
+            let predicate = holder.level_gate >= 0
+                && holder.level_gate <= 2
+                && parent_life >= 0
+                && parent_mana >= 0
+                && (holder.mana_regen == 0
+                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
+                && (!fresh || parent_mana >= holder.max_mana);
+            if !predicate {
+                // `sub_693F0` sets W=1 before its unconditional decrement on
+                // a failed `sub_68D50` gate.
+                next_active_value = 0;
+            } else {
+                let mana_regen = if fresh {
+                    Some(if parent_mana_regen >= 0 {
+                        -holder.max_mana
+                    } else {
+                        parent_mana_regen.wrapping_sub(holder.max_mana)
+                    })
+                } else if parent_mana_regen > 0 {
+                    Some(0)
+                } else {
+                    None
+                };
+                if let Some(mana_regen) = mana_regen {
+                    self.shared_spells.player_entity.mana_regen = mana_regen;
+                    self.shared_spells.player_entity.record[140..144]
+                        .copy_from_slice(&mana_regen.to_le_bytes());
+                    for entity in &mut self.shared_spells.player_entities {
+                        if entity.index == parent_entity_index {
+                            entity.mana_regen = mana_regen;
+                            entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
+                        }
+                    }
+                }
+
+                if fresh {
+                    let mut launch_position = self.state.position;
+                    let direction_bits = self.shared_spells.player_entity.control_flags & 0x0300;
+                    let hand_yaw = if direction_bits & 0x0100 != 0 {
+                        Some(self.state.yaw.wrapping_sub(512))
+                    } else if direction_bits & 0x0200 != 0 {
+                        Some(self.state.yaw.wrapping_add(512))
+                    } else {
+                        None
+                    };
+                    if let Some(hand_yaw) = hand_yaw {
+                        crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                        if self.terrain.ground_height(launch_position) > launch_position.z {
+                            launch_position = self.state.position;
+                        }
+                    }
+                    launch_position.z = launch_position.z.wrapping_add(self.state.entity_fov);
+                    let auxiliary = self.shared_spells.beyond_sight_auxiliary();
+                    let launch_yaw = auxiliary.next_entity.wrapping_add(self.state.yaw);
+                    let launch_pitch = auxiliary
+                        .entity_index2
+                        .wrapping_add(self.state.display_pitch);
+                    let mut axis_position = self.state.position;
+                    crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 0x4000);
+                    let source_dword_0x10 = self
+                        .shared_spells
+                        .players
+                        .iter()
+                        .find(|player| player.entity_index == parent_entity_index)
+                        .and_then(PlayerSnapshot::type_str_164_auxiliary)
+                        .map_or(0, |carrier| i32::from(carrier.byte_0x154_340));
+                    spawned = self.economy.spawn_fireball_projectile_with_payload(
+                        level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                            position: launch_position,
+                            yaw: launch_yaw,
+                            pitch: launch_pitch,
+                            axis_position,
+                            source_id_entity_index: parent_entity_index,
+                            holder_entity_index: holder_index,
+                            source_subspell_index: holder.subspell_index,
+                            source_mana: holder.mana,
+                            source_dword_0x10,
+                        },
+                        self.state.actual_speed,
+                    );
+                    self.terrain = self.economy.terrain.clone();
+                    self.synchronize_level2_terrain();
+                    if let Some(spawned_slot) = spawned {
+                        if let Some(player) = self
+                            .shared_spells
+                            .players
+                            .iter_mut()
+                            .find(|player| player.entity_index == parent_entity_index)
+                        {
+                            if let Some(carrier) = player.type_str_164_auxiliary.as_mut() {
+                                carrier.byte_0x154_340 = 0;
+                                player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+                            }
+                            if self.shared_spells.local_player.entity_index == parent_entity_index {
+                                self.shared_spells.local_player = player.clone();
+                            }
+                        }
+                        mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
+                        self.shared_spells.events.push(FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::FireballLaunch,
+                            entity_index: spawned_slot,
+                            player_index: -1,
+                            sound_id: 9,
+                        });
+                    }
+                }
+                next_active_value = holder.active_value.saturating_sub(1);
+            }
+        }
+        if let Some(authoritative) = self
+            .shared_spells
+            .dynamic_pickups
+            .iter_mut()
+            .find(|candidate| candidate.index == holder_index)
+        {
+            authoritative.active_value = next_active_value;
+            authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
+        }
+        if let Some(holder) = self.shared_spells.pickup_mut(holder_index) {
+            let word_36 = u16::from_le_bytes(
+                holder.record[58..60]
+                    .try_into()
+                    .expect("Fireball holder word-36 extent"),
+            );
+            if word_36 != 0 {
+                holder.record[58..60].copy_from_slice(&word_36.saturating_sub(1).to_le_bytes());
+            }
+        }
+        if let Some(fire) = self.context.spell_fire.as_mut()
+            && let Some(in_flight) = fire
+                .holders
+                .iter_mut()
+                .find(|candidate| candidate.entity_index == holder_index)
+        {
+            in_flight.active_value = next_active_value;
+        }
+        spawned
     }
 
     /// Dispatch the source class-15/model-2/action-6 Castle holder at slot
@@ -21675,6 +22041,7 @@ impl Level2ResetSession {
         debug_assert!(matches!(
             row.kind,
             Level2DynamicArenaKind::CastleProjectile
+                | Level2DynamicArenaKind::FireballProjectile
                 | Level2DynamicArenaKind::PossessionProjectile
                 | Level2DynamicArenaKind::PossessionEffect
         ));
@@ -21710,6 +22077,7 @@ impl Level2ResetSession {
                 || !matches!(
                     row.kind,
                     Level2DynamicArenaKind::CastleProjectile
+                        | Level2DynamicArenaKind::FireballProjectile
                         | Level2DynamicArenaKind::PossessionProjectile
                         | Level2DynamicArenaKind::PossessionEffect
                 )
@@ -21745,6 +22113,7 @@ impl Level2ResetSession {
         let goat_players = self.level2_goat_player_targets();
         self.economy.advance_global_rng();
         self.economy.reclaim_possession_rows_at_source_boundary();
+        self.economy.reclaim_fireball_rows_at_source_boundary();
         // `UpdateEntities_57730` scans every hidden active entity and calls
         // `sub_57F20` before rebuilding lists or dispatching any root. Keep
         // this generic prepass independent of Castle root/model/parent state
@@ -21796,6 +22165,19 @@ impl Level2ResetSession {
                             && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
                     })
                     .map(|holder| (holder.index, 11_u8)),
+            )
+            .chain(
+                self.shared_spells
+                    .dynamic_pickups
+                    .iter()
+                    .filter(|holder| {
+                        holder.active
+                            && holder.class == 15
+                            && holder.model == FIREBALL_SPELL_FAMILY
+                            && holder.action == 0
+                            && holder.source_spell_parent_entity_index() == self.state.entity_index
+                    })
+                    .map(|holder| (holder.index, 13_u8)),
             )
             .chain(
                 self.shared_spells
@@ -22311,6 +22693,20 @@ impl Level2ResetSession {
                         holder.set_phase(holder.phase.wrapping_add(1));
                     }
                 }
+                13 => {
+                    // Family-0's class/action keyed handler owns the
+                    // producer transition; the higher-slot Fireball callback
+                    // receives the ordinary dynamic-arena dispatch below.
+                    self.step_level2_fireball_holder_source_slot(source_slot);
+                    if let Some(holder) = self
+                        .shared_spells
+                        .dynamic_pickups
+                        .iter_mut()
+                        .find(|holder| holder.index == source_slot)
+                    {
+                        holder.set_phase(holder.phase.wrapping_add(1));
+                    }
+                }
                 _ => unreachable!("bounded Level 2 source route"),
             }
             for row in self.economy.live_arena_cursor_rows() {
@@ -22321,6 +22717,7 @@ impl Level2ResetSession {
                 if matches!(
                     row.kind,
                     Level2DynamicArenaKind::CastleProjectile
+                        | Level2DynamicArenaKind::FireballProjectile
                         | Level2DynamicArenaKind::PossessionProjectile
                         | Level2DynamicArenaKind::PossessionEffect
                 ) {
@@ -22437,6 +22834,7 @@ impl Level2ResetSession {
                             || matches!(
                                 live_row.kind,
                                 Level2DynamicArenaKind::CastleProjectile
+                                    | Level2DynamicArenaKind::FireballProjectile
                                     | Level2DynamicArenaKind::PossessionProjectile
                                     | Level2DynamicArenaKind::PossessionEffect
                             ))
@@ -23108,6 +23506,20 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::CastleProjectile => self
                 .economy
                 .step_castle_projectile_slot(source_slot, &self.entities),
+            Level2DynamicArenaKind::FireballProjectile => {
+                let step = self.economy.step_fireball_projectile_slot(source_slot);
+                if step.impact_sound {
+                    mark_source_audio_call(SourceAudioCallTag::Class10Action00FirstEligibleSound);
+                    self.shared_spells.events.push(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::FireballImpact,
+                        entity_index: source_slot,
+                        player_index: -1,
+                        sound_id: 3,
+                    });
+                }
+                step.live
+            }
             Level2DynamicArenaKind::PossessionProjectile => {
                 self.economy.step_possession_projectile_slot(source_slot)
             }
@@ -50826,6 +51238,642 @@ mod tests {
         let wrapped_holder = holder(&session);
         assert_eq!(wrapped_holder.phase, baseline_holder.phase);
         assert_eq!(wrapped_holder.record[66], baseline_holder.phase);
+    }
+
+    #[test]
+    fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
+        let package = level_two_fixture_path();
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+            .expect("qualified Level 2 gameplay component");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 session");
+        session.select_level2_campaign_entry_stage();
+        let baseline_hash = session.campaign_state_hash();
+        let bee_slot = 119;
+
+        // Use the ordinary authored action-23 -> action-18 -> action-17
+        // transitions to qualify the real Day-Bee row. No Bee field is
+        // written by this setup; only the public local-player position is
+        // supplied to the source turn.
+        for _ in 0..100 {
+            let bee = session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == bee_slot)
+                .copied();
+            if let Some(bee) = bee {
+                if bee.action == 17 {
+                    break;
+                }
+                let player_position = if bee.action == 23 {
+                    let mut position = bee.position;
+                    crate::move_entity(&mut position, bee.yaw, 0, 1_000);
+                    position.z = bee.position.z;
+                    position
+                } else {
+                    Position { x: 0, y: 0, z: 0 }
+                };
+                session
+                    .set_level2_entity_position(session.state.entity_index, player_position)
+                    .expect("local player position remains map-linked");
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == bee_slot)
+                .is_some_and(|bee| bee.action == 17)
+            {
+                break;
+            }
+        }
+        let bee = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == bee_slot)
+            .copied()
+            .expect("action-17 production Bee");
+        assert_eq!(bee.action, 17);
+
+        // The public Fireball is launched close enough for the source's
+        // first non-delayed collision scan, while the player remains the
+        // ordinary owner (entity 111). The Bee stays on its source callback;
+        // the following callback consumes the mailbox.
+        let player_position = Position {
+            x: bee.position.x.wrapping_add(256),
+            y: bee.position.y.wrapping_add(360),
+            z: bee
+                .position
+                .z
+                .wrapping_add(280)
+                .wrapping_sub(session.state.entity_fov),
+        };
+        session
+            .set_level2_entity_position(session.state.entity_index, player_position)
+            .expect("Fireball launch position remains map-linked");
+        session.state.yaw = 0;
+        session.state.display_pitch = 0;
+        session.state.effective_pitch = 0;
+        session.state.actual_speed = 0;
+        session.state.target_speed = 0;
+        let launch_event_start = session.shared_spells().activation_events().len();
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 0,
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let projectile = session
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .find(|projectile| projectile.active)
+            .copied()
+            .expect("ordinary family-0 cast allocates a live Fireball row");
+        assert_eq!(
+            (
+                projectile.source_class,
+                projectile.source_model,
+                projectile.action
+            ),
+            (9, 0, 0)
+        );
+        assert_eq!(projectile.owner_entity_index, session.state.entity_index);
+        assert_eq!(projectile.holder_entity_index, 115);
+        assert_eq!(projectile.source_subspell_index, 250);
+        assert_eq!(projectile.source_mana, 20);
+        assert_eq!(projectile.phase, 1);
+        assert_eq!(projectile.life, projectile.max_life);
+        assert_eq!(projectile.control_flags, 0);
+        assert_eq!(projectile.dword_0x10, 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::FireballProjectile,
+                ..
+            } if *source_slot == projectile.source_entity_index
+        )));
+        let launch_events = &session.shared_spells().activation_events()[launch_event_start..];
+        assert!(launch_events.iter().any(|event| matches!(
+            event,
+            FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::FireballLaunch,
+                entity_index,
+                player_index: -1,
+                sound_id: 9,
+            } if *entity_index == projectile.source_entity_index
+        )));
+
+        let launch_rng = projectile.entity_rng;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let hit_projectile = session
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == projectile.source_entity_index)
+            .copied()
+            .expect("Fireball remains inspectable after its first collision callback");
+        assert_eq!(hit_projectile.control_flags & 0x2, 0x2);
+        assert_eq!(
+            hit_projectile.entity_rng,
+            level2_next_rng16(launch_rng),
+            "the first non-delayed callback consumes exactly one source RNG draw"
+        );
+        assert_eq!(
+            hit_projectile.source_word_2c,
+            i16::try_from(hit_projectile.entity_rng % 0x41).expect("Fireball RNG fits") - 32
+        );
+        let pending = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == bee_slot)
+            .copied()
+            .expect("target Bee remains live after mailbox write");
+        assert_eq!(pending.pending_damage, 250);
+        assert_eq!(
+            pending.pending_attacker_entity_index,
+            session.state.entity_index
+        );
+        assert_eq!(pending.damage_attacker_entity_index, 0);
+        assert!(
+            session
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        event,
+                        FlightEvent::PrepareSound {
+                            audio_site: crate::MissionAudioSite::FireballImpact,
+                            entity_index,
+                            player_index: -1,
+                            sound_id: 3,
+                        } if *entity_index == projectile.source_entity_index
+                    )
+                })
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let consumed = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == bee_slot)
+            .copied()
+            .expect("target Bee remains addressable after mailbox consumption");
+        assert_eq!(consumed.life, pending.life - 250);
+        assert_eq!(consumed.pending_damage, 0);
+        assert_eq!(consumed.pending_attacker_entity_index, 0);
+        assert_eq!(
+            consumed.damage_attacker_entity_index,
+            session.state.entity_index
+        );
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert!(session.economy().fireball_projectiles().is_empty());
+    }
+
+    #[test]
+    fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 session");
+        session.select_level2_campaign_entry_stage();
+
+        // A public family-0 opcode without the source cast flag is a closed
+        // no-op: the holder is not armed and no dynamic row or event is
+        // published.
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 0,
+                flags: 0,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert!(session.economy().fireball_projectiles().is_empty());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::FireballProjectile,
+                ..
+            }
+        )));
+        session.reset();
+
+        let source_rng_before = session.economy().source_rng.clone();
+        let free_slots_before = session.economy().free_slots.clone();
+        macro_rules! assert_no_launch {
+            () => {
+                assert!(session.economy().fireball_projectiles().is_empty());
+                assert_eq!(session.economy().source_rng, source_rng_before);
+                assert_eq!(session.economy().free_slots, free_slots_before);
+                assert!(
+                    session
+                        .shared_spells()
+                        .activation_events()
+                        .iter()
+                        .all(|event| !matches!(
+                            event,
+                            FlightEvent::PrepareSound {
+                                audio_site: crate::MissionAudioSite::FireballLaunch,
+                                ..
+                            }
+                        ))
+                );
+            };
+        }
+
+        // The producer is keyed by the acquired holder's exact class/family
+        // and supported tier. Wrong family, an unsupported tier, or an absent
+        // holder cannot borrow a neighboring route.
+        session
+            .shared_spells_mut()
+            .dynamic_pickups
+            .retain(|holder| holder.index != 115);
+        assert!(
+            session
+                .step_level2_fireball_holder_source_slot(115)
+                .is_none()
+        );
+        assert_no_launch!();
+        session.reset();
+
+        {
+            let holder = session
+                .shared_spells_mut()
+                .dynamic_pickups
+                .iter_mut()
+                .find(|holder| holder.index == 115)
+                .expect("materialized family-0 holder");
+            holder.model = POSSESSION_SPELL_FAMILY;
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[40] = POSSESSION_SPELL_FAMILY;
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        }
+        assert!(
+            session
+                .step_level2_fireball_holder_source_slot(115)
+                .is_none()
+        );
+        assert_no_launch!();
+        session.reset();
+
+        {
+            let holder = session
+                .shared_spells_mut()
+                .dynamic_pickups
+                .iter_mut()
+                .find(|holder| holder.index == 115)
+                .expect("materialized family-0 holder");
+            holder.level_gate = 3;
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[74] = 3;
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        }
+        assert!(
+            session
+                .step_level2_fireball_holder_source_slot(115)
+                .is_none()
+        );
+        assert_no_launch!();
+        session.reset();
+
+        // Fresh Fireball admission requires the source max-mana threshold;
+        // failure consumes only the source holder countdown, never an arena
+        // slot, NewEvent RNG draw, or launch sound.
+        {
+            let shared = session.shared_spells_mut();
+            let holder = shared
+                .dynamic_pickups
+                .iter_mut()
+                .find(|holder| holder.index == 115)
+                .expect("materialized family-0 holder");
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            shared.player_entity.mana = holder.max_mana - 1;
+            shared.player_entity.record[148..152]
+                .copy_from_slice(&shared.player_entity.mana.to_le_bytes());
+        }
+        assert!(
+            session
+                .step_level2_fireball_holder_source_slot(115)
+                .is_none()
+        );
+        assert_no_launch!();
+        assert_eq!(
+            session
+                .shared_spells()
+                .dynamic_pickups
+                .iter()
+                .find(|holder| holder.index == 115)
+                .expect("family-0 holder remains after failed gate")
+                .active_value,
+            0
+        );
+        session.reset();
+
+        // Exhausting the ordinary free stack and disabling every existing
+        // replaceable carrier makes NewEvent fail before it consumes its RNG
+        // or publishes a partial Fireball row.
+        let mut exhausted = session.economy().clone();
+        exhausted.free_slots.clear();
+        for row in &mut exhausted.castle_children {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.spheres {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.death_bursts {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.authored_model1 {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.model59_smoke_children {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.authored_model5_water_splashes {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.authored_model13 {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.authored_model6 {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.model13_spawned_children {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.model17_spawned_children {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for row in &mut exhausted.model76_tail_spawns {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        let before_exhaustion = exhausted.clone();
+        assert!(
+            exhausted
+                .spawn_fireball_projectile_with_payload(
+                    level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                        position: Position::default(),
+                        yaw: 0,
+                        pitch: 0,
+                        axis_position: Position::default(),
+                        source_id_entity_index: 111,
+                        holder_entity_index: 115,
+                        source_subspell_index: 250,
+                        source_mana: 20,
+                        source_dword_0x10: 0,
+                    },
+                    0,
+                )
+                .is_none()
+        );
+        assert_eq!(exhausted, before_exhaustion);
+    }
+
+    #[test]
+    fn level_two_fireball_collision_rejects_invalid_targets_and_duplicate_mailbox() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 session");
+        session.select_level2_campaign_entry_stage();
+        let bee_slot = 119;
+
+        // Produce the authored Bee through its ordinary source transition so
+        // every collision negative below still resolves against the live Day
+        // row and its reset map relation.
+        for _ in 0..100 {
+            let bee = session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == bee_slot)
+                .copied();
+            if let Some(bee) = bee {
+                if bee.action == 17 {
+                    break;
+                }
+                let player_position = if bee.action == 23 {
+                    let mut position = bee.position;
+                    crate::move_entity(&mut position, bee.yaw, 0, 1_000);
+                    position.z = bee.position.z;
+                    position
+                } else {
+                    Position { x: 0, y: 0, z: 0 }
+                };
+                session
+                    .set_level2_entity_position(session.state.entity_index, player_position)
+                    .expect("local player position remains map-linked");
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == bee_slot)
+                .is_some_and(|bee| bee.action == 17)
+            {
+                break;
+            }
+        }
+        let bee = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == bee_slot)
+            .copied()
+            .expect("action-17 production Bee");
+        assert_eq!(bee.action, 17);
+        let qualified_economy = session.economy().clone();
+        let edge_x = u16::try_from(
+            i32::from(LEVEL2_FIREBALL_COLLISION_HALF_WIDTH)
+                + i32::from(LEVEL2_BEE_COLLISION_HALF_EXTENT),
+        )
+        .expect("Fireball/Bee edge extent fits");
+
+        let new_projectile = || {
+            let mut economy = qualified_economy.clone();
+            let source_slot = economy
+                .spawn_fireball_projectile_with_payload(
+                    level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                        position: bee.position,
+                        yaw: 0,
+                        pitch: 0,
+                        axis_position: bee.position,
+                        source_id_entity_index: session.state.entity_index,
+                        holder_entity_index: 115,
+                        source_subspell_index: 250,
+                        source_mana: 20,
+                        source_dword_0x10: 0,
+                    },
+                    0,
+                )
+                .expect("qualified negative case has an arena slot");
+            let projectile = economy
+                .fireball_projectiles
+                .iter_mut()
+                .find(|projectile| projectile.source_entity_index == source_slot)
+                .expect("new Fireball row is stored in the shared arena");
+            projectile.actual_speed = 0;
+            (economy, source_slot)
+        };
+
+        // A zero/edge overlap, same owner, disabled/absent/stale target, and
+        // every wrong class/model/action are all closed without a mailbox.
+        for case in 0..9_u8 {
+            let (mut economy, source_slot) = new_projectile();
+            match case {
+                0 => {
+                    economy
+                        .fireball_projectiles
+                        .iter_mut()
+                        .find(|projectile| projectile.source_entity_index == source_slot)
+                        .expect("Fireball row")
+                        .position
+                        .x = bee.position.x.wrapping_add(1_000);
+                }
+                1 => {
+                    economy
+                        .fireball_projectiles
+                        .iter_mut()
+                        .find(|projectile| projectile.source_entity_index == source_slot)
+                        .expect("Fireball row")
+                        .position
+                        .x = bee.position.x.wrapping_add(edge_x);
+                }
+                2 => {
+                    economy
+                        .fireball_projectiles
+                        .iter_mut()
+                        .find(|projectile| projectile.source_entity_index == source_slot)
+                        .expect("Fireball row")
+                        .owner_entity_index = bee.entity_id;
+                }
+                3 => {
+                    economy
+                        .authored_bees
+                        .iter_mut()
+                        .find(|target| target.source_entity_index == bee_slot)
+                        .expect("target Bee")
+                        .drawing_enabled = false;
+                }
+                4 => economy
+                    .authored_bees
+                    .retain(|target| target.source_entity_index != bee_slot),
+                5 => economy.map_chains.set_map_entity_unlink(bee_slot),
+                6 => {
+                    economy
+                        .authored_bees
+                        .iter_mut()
+                        .find(|target| target.source_entity_index == bee_slot)
+                        .expect("target Bee")
+                        .source_class = 4;
+                }
+                7 => {
+                    economy
+                        .authored_bees
+                        .iter_mut()
+                        .find(|target| target.source_entity_index == bee_slot)
+                        .expect("target Bee")
+                        .model = 1;
+                }
+                8 => {
+                    economy
+                        .authored_bees
+                        .iter_mut()
+                        .find(|target| target.source_entity_index == bee_slot)
+                        .expect("target Bee")
+                        .action = 18;
+                }
+                _ => unreachable!("bounded Fireball negative case"),
+            }
+            let before_rng = economy
+                .source_rng
+                .get(&source_slot)
+                .copied()
+                .expect("NewEvent source RNG");
+            let _ = economy.step_fireball_projectile_slot(source_slot);
+            let pending_damage = economy
+                .authored_bees
+                .iter()
+                .find(|target| target.source_entity_index == bee_slot)
+                .map_or(0, |target| target.pending_damage);
+            assert_eq!(pending_damage, 0, "negative Fireball case {case}");
+            assert_eq!(
+                economy.source_rng.get(&source_slot).copied(),
+                Some(before_rng.wrapping_mul(9_377).wrapping_add(9_439)),
+                "the source callback still consumes its pinned one-shot RNG tail for case {case}"
+            );
+        }
+
+        // A second callback cannot duplicate a previously occupied mailbox or
+        // consume another source RNG draw. Direct invalid mailbox arguments
+        // are rejected for the same reason as the source-shaped scan.
+        let (mut economy, source_slot) = new_projectile();
+        let first_rng = economy
+            .source_rng
+            .get(&source_slot)
+            .copied()
+            .expect("NewEvent source RNG");
+        let first_step = economy.step_fireball_projectile_slot(source_slot);
+        assert!(first_step.impact_sound);
+        let pending_after_first = economy
+            .authored_bees
+            .iter()
+            .find(|target| target.source_entity_index == bee_slot)
+            .copied()
+            .expect("target Bee after first hit");
+        assert_eq!(pending_after_first.pending_damage, 250);
+        let hit_rng = economy
+            .source_rng
+            .get(&source_slot)
+            .copied()
+            .expect("Fireball RNG after first callback");
+        assert_eq!(hit_rng, first_rng.wrapping_mul(9_377).wrapping_add(9_439));
+        assert!(
+            !economy
+                .step_fireball_projectile_slot(source_slot)
+                .impact_sound
+        );
+        let pending_after_duplicate = economy
+            .authored_bees
+            .iter()
+            .find(|target| target.source_entity_index == bee_slot)
+            .copied()
+            .expect("target Bee after duplicate callback");
+        assert_eq!(pending_after_duplicate.pending_damage, 250);
+        assert_eq!(economy.source_rng.get(&source_slot).copied(), Some(hit_rng));
+        assert!(!economy.submit_authored_bee_damage(bee_slot, 1, 0));
+        assert!(!economy.submit_authored_bee_damage(999, 1, session.state.entity_index));
+        assert!(!economy.submit_authored_bee_damage(bee_slot, 0, session.state.entity_index));
+        assert_eq!(
+            economy
+                .authored_bees
+                .iter()
+                .find(|target| target.source_entity_index == bee_slot)
+                .expect("target Bee after invalid mailbox writes")
+                .pending_damage,
+            250
+        );
     }
 
     #[test]

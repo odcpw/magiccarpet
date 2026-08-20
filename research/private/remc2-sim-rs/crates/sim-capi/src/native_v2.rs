@@ -23212,6 +23212,176 @@ mod tests {
     }
 
     #[test]
+    fn level2_campaign_public_family0_fireball_reaches_authored_bee_mailbox() {
+        let handle =
+            open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: valid_command(),
+            player_slot: 0,
+            speed_index: 0,
+            ..McCampaignStepInputV2::default()
+        };
+        let read_bee = || {
+            with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                    return Err(AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "Fireball proof requires a Level 2 campaign session",
+                    ));
+                };
+                Ok(reset
+                    .economy()
+                    .authored_bees()
+                    .iter()
+                    .find(|bee| bee.source_entity_index == 119)
+                    .copied())
+            })
+            .expect("read public authored Bee state")
+        };
+
+        // Qualify the real authored action-23 -> action-18 -> action-17 route
+        // using only public player positions. The eight compass probes cover
+        // the source Bee's live yaw without a second movement implementation
+        // in the C-ABI test.
+        let approach_offsets = [
+            (1_000_i16, 0_i16),
+            (707, 707),
+            (0, 1_000),
+            (-707, 707),
+            (-1_000, 0),
+            (-707, -707),
+            (0, -1_000),
+            (707, -707),
+        ];
+        for attempt in 0..100_usize {
+            let Some(bee) = read_bee() else {
+                let _ = step_level2_campaign_public(handle, input);
+                continue;
+            };
+            if bee.action == 17 {
+                break;
+            }
+            if bee.action == 23 {
+                let (dx, dy) = approach_offsets[attempt % approach_offsets.len()];
+                input.player_x = bee.position.x.wrapping_add_signed(dx);
+                input.player_y = bee.position.y.wrapping_add_signed(dy);
+                input.player_z = bee.position.z;
+            } else {
+                input.player_x = 0;
+                input.player_y = 0;
+                input.player_z = 0;
+            }
+            let _ = step_level2_campaign_public(handle, input);
+        }
+        // Keep the public cast pass on a non-acquisition action-17 cadence.
+        // The source Bee still performs its ordinary movement callback, but
+        // it must not retarget the local player before the Fireball cursor
+        // reaches the real target row.
+        for _ in 0..32 {
+            let Some(bee) = read_bee() else {
+                break;
+            };
+            if bee.action == 17
+                && (bee.action_window == 0
+                    || bee.source_byte_3e
+                        % u8::try_from(bee.action_window).expect("positive Bee action window")
+                        != 0)
+            {
+                break;
+            }
+            input.player_x = 0;
+            input.player_y = 0;
+            input.player_z = 0;
+            input.command = valid_command();
+            let _ = step_level2_campaign_public(handle, input);
+        }
+        let bee = read_bee().expect("action-17 production Bee");
+        assert_eq!(bee.action, 17);
+
+        let (entity_fov, player_entity_index) = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Fireball proof requires a Level 2 campaign session",
+                ));
+            };
+            Ok((reset.state.entity_fov, reset.state.entity_index))
+        })
+        .expect("read public player source state");
+        input.player_x = bee.position.x.wrapping_add(256);
+        input.player_y = bee.position.y.wrapping_add(360);
+        input.player_z = bee.position.z.wrapping_add(280).wrapping_sub(entity_fov);
+        input.command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 0x40,
+            requested_spell: 0,
+            ..valid_command()
+        };
+        let (_, cast_events) = step_level2_campaign_public(handle, input);
+        let projectile = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Fireball proof requires a Level 2 campaign session",
+                ));
+            };
+            reset
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .find(|projectile| projectile.active)
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        "public family-0 cast did not allocate a Fireball",
+                    )
+                })
+        })
+        .expect("public family-0 cast allocates a live Fireball");
+        assert_eq!(
+            (
+                projectile.source_class,
+                projectile.source_model,
+                projectile.action,
+                projectile.owner_entity_index,
+                projectile.holder_entity_index,
+                projectile.source_subspell_index,
+                projectile.source_mana,
+            ),
+            (9, 0, 0, player_entity_index, 115, 250, 20)
+        );
+        assert!(cast_events.iter().any(|event| {
+            event.kind == 8
+                && event.family == 41
+                && event.source_slot == projectile.source_entity_index
+        }));
+
+        input.command = valid_command();
+        let (_, collision_events) = step_level2_campaign_public(handle, input);
+        let pending = read_bee().expect("target Bee remains public after collision");
+        assert_eq!(pending.pending_damage, 250);
+        assert_eq!(pending.pending_attacker_entity_index, player_entity_index);
+        assert!(collision_events.iter().any(|event| {
+            event.kind == 8
+                && event.family == 41
+                && event.source_slot == projectile.source_entity_index
+        }));
+
+        let (_, _) = step_level2_campaign_public(handle, input);
+        let consumed = read_bee().expect("target Bee remains public after mailbox consume");
+        assert_eq!(consumed.life, pending.life - 250);
+        assert_eq!(consumed.pending_damage, 0);
+        assert_eq!(consumed.pending_attacker_entity_index, 0);
+        assert_eq!(consumed.damage_attacker_entity_index, player_entity_index);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn level2_campaign_public_castle_requires_mana_then_emits_family38() {
         let handle =
             open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());

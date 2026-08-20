@@ -148,6 +148,28 @@ pub struct Level2CastleProjectileLaunchPayload {
     pub source_a4_byte_154: u8,
 }
 
+/// Source fields copied by `sub_693F0` after `sub_6DCA0` returns the ordinary
+/// class-9/model-0 Fireball row.  The producer computes the hand/auxiliary
+/// transform; the economy owns only the arena product and its callback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2FireballProjectileLaunchPayload {
+    pub position: Position,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub axis_position: Position,
+    pub source_id_entity_index: u16,
+    pub holder_entity_index: u16,
+    pub source_subspell_index: u16,
+    pub source_mana: i32,
+    pub source_dword_0x10: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Level2FireballStep {
+    pub live: bool,
+    pub impact_sound: bool,
+}
+
 impl Level2EconomyState {
     #[must_use]
     pub fn source_owner(&self, source_entity_index: u16) -> u16 {
@@ -214,6 +236,206 @@ impl Level2EconomyState {
         self.source_rng.insert(source_entity_index, entity_rng);
         self.possession_projectiles.push(projectile);
         Some(source_entity_index)
+    }
+
+    /// Source `sub_6DCA0(..., a3=0)` / `sub_693F0` product for the ordinary
+    /// public family-0 cast. Allocation, NewEvent RNG, map linkage, and the
+    /// source payload are committed together; a failed map link rolls back the
+    /// slot without publishing a partial row.
+    pub(super) fn spawn_fireball_projectile_with_payload(
+        &mut self,
+        payload: Level2FireballProjectileLaunchPayload,
+        player_speed: i16,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let projectile = Level2FireballProjectile {
+            source_entity_index,
+            entity_rng,
+            owner_entity_index: payload.source_id_entity_index,
+            holder_entity_index: payload.holder_entity_index,
+            source_subspell_index: payload.source_subspell_index,
+            source_mana: payload.source_mana,
+            source_class: FIREBALL_PROJECTILE_CLASS,
+            source_model: FIREBALL_PROJECTILE_MODEL,
+            action: 0,
+            payload: i32::from(payload.source_subspell_index),
+            position: payload.position,
+            axis_position: payload.axis_position,
+            yaw: payload.yaw & 0x07ff,
+            pitch: payload.pitch & 0x07ff,
+            actual_speed: FIREBALL_SPEED
+                .wrapping_add(player_speed)
+                .clamp(FIREBALL_SPEED, 0x2000),
+            minimum_speed: FIREBALL_SPEED,
+            life: FIREBALL_LIFETIME_TICKS,
+            max_life: FIREBALL_LIFETIME_TICKS,
+            dword_0x10: payload.source_dword_0x10,
+            control_flags: 0,
+            source_word_2c: 0,
+            phase: 0,
+            active: true,
+            drawing_disabled: false,
+        };
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: payload.position.x,
+                y: payload.position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, Some(entity_rng));
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.source_owner
+            .insert(source_entity_index, payload.source_id_entity_index);
+        self.fireball_projectiles.push(projectile);
+        Some(source_entity_index)
+    }
+
+    /// Submit one source-shaped Fireball damage mailbox write. The target is
+    /// resolved by class/model/action and live map relation at write time, and
+    /// an already occupied mailbox is rejected so a one-shot projectile cannot
+    /// duplicate its hit before the Bee callback consumes it.
+    pub(super) fn submit_authored_bee_damage(
+        &mut self,
+        target_slot: u16,
+        damage: i32,
+        attacker: u16,
+    ) -> bool {
+        if damage <= 0 || attacker == 0 || !self.map_chains.is_linked(target_slot) {
+            return false;
+        }
+        let Some(bee) = self.authored_bees.iter_mut().find(|bee| {
+            bee.active
+                && bee.drawing_enabled
+                && bee.life >= 0
+                && bee.source_entity_index == target_slot
+                && bee.entity_id != attacker
+                && bee.source_class == 5
+                && bee.model == 2
+                && bee.action == 17
+                && bee.pending_attacker_entity_index == 0
+                && bee.pending_damage == 0
+        }) else {
+            return false;
+        };
+        bee.pending_damage = damage;
+        bee.pending_attacker_entity_index = attacker;
+        true
+    }
+
+    /// Source `sub_30D50` callback. Collision is attempted once on the first
+    /// non-delayed callback, before the callback RNG/audio tail; the hidden row
+    /// remains map-linked until the following source boundary reclaims it.
+    pub(super) fn step_fireball_projectile_slot(&mut self, source_slot: u16) -> Level2FireballStep {
+        let Some(projectile_index) = self.fireball_projectiles.iter().position(|projectile| {
+            projectile.active && projectile.source_entity_index == source_slot
+        }) else {
+            return Level2FireballStep {
+                live: false,
+                impact_sound: false,
+            };
+        };
+        let mut projectile = self.fireball_projectiles[projectile_index];
+        projectile.phase = projectile.phase.wrapping_add(1);
+        let first_callback = projectile.control_flags & 0x2 == 0;
+        if projectile.dword_0x10 & 3 != 0 {
+            projectile.dword_0x10 = projectile.dword_0x10.wrapping_sub(1);
+        } else {
+            projectile.life = projectile.life.wrapping_sub(1);
+            if projectile.life < -1 {
+                projectile.active = false;
+                projectile.drawing_disabled = true;
+            } else {
+                crate::move_entity(
+                    &mut projectile.position,
+                    projectile.yaw,
+                    projectile.pitch,
+                    projectile.actual_speed,
+                );
+                if projectile.control_flags & 0x2 == 0 {
+                    // The source's byte-2 bit 0 suppresses the damage scan
+                    // while still allowing the one-shot callback tail below.
+                    // The typed row keeps that source byte in the high byte
+                    // of the existing control word; ordinary Fireball rows
+                    // are constructed with it clear.
+                    if projectile.control_flags & 0x0001_0000 == 0 {
+                        let target = self
+                            .authored_bees
+                            .iter()
+                            .filter(|bee| {
+                                bee.active
+                                    && bee.drawing_enabled
+                                    && bee.life >= 0
+                                    && bee.source_class == 5
+                                    && bee.model == 2
+                                    && bee.action == 17
+                                    && bee.source_entity_index != projectile.owner_entity_index
+                                    && bee.entity_id != projectile.owner_entity_index
+                                    && bee.pending_damage == 0
+                                    && bee.pending_attacker_entity_index == 0
+                                    && self.map_chains.is_linked(bee.source_entity_index)
+                                    && crate::level1_mission::source_entities_overlap(
+                                        projectile.position,
+                                        LEVEL2_FIREBALL_COLLISION_HALF_WIDTH,
+                                        LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET,
+                                        LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT,
+                                        bee.position,
+                                        LEVEL2_BEE_COLLISION_HALF_EXTENT,
+                                        LEVEL2_BEE_GROUND_CLEARANCE,
+                                        LEVEL2_BEE_COLLISION_HALF_EXTENT,
+                                    )
+                            })
+                            .min_by_key(|bee| bee.source_entity_index)
+                            .map(|bee| bee.source_entity_index);
+                        if let Some(target_slot) = target {
+                            let _ = self.submit_authored_bee_damage(
+                                target_slot,
+                                projectile.payload,
+                                projectile.owner_entity_index,
+                            );
+                        }
+                    }
+                    projectile.control_flags |= 0x2;
+                    projectile.entity_rng = level2_next_rng16(projectile.entity_rng);
+                    projectile.source_word_2c = i16::try_from(projectile.entity_rng % 0x41)
+                        .expect("Fireball RNG fits")
+                        - 32;
+                }
+                // `sub_580E0(position, ground, 0, 0, word_0x2c)` runs on
+                // every non-delayed live callback, including callbacks after
+                // the one-shot collision/audio gate has closed.
+                let ground = self.terrain.ground_height(projectile.position);
+                if projectile.position.z > ground {
+                    projectile.position.z = projectile
+                        .position
+                        .z
+                        .wrapping_add(projectile.source_word_2c);
+                }
+                if projectile.position.z <= ground {
+                    projectile.position.z = ground;
+                }
+                let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: projectile.position.x,
+                    y: projectile.position.y,
+                });
+            }
+        }
+        self.source_rng.insert(source_slot, projectile.entity_rng);
+        self.fireball_projectiles[projectile_index] = projectile;
+        Level2FireballStep {
+            live: projectile.active,
+            impact_sound: projectile.active
+                && first_callback
+                && projectile.control_flags & 0x2 != 0,
+        }
     }
 
     /// Source `NewAdd0A0C_4E8C0` product for a successful possession flyer
@@ -497,6 +719,30 @@ impl Level2EconomyState {
                 x: 0,
                 y: 0,
             });
+            self.release_slot(slot, Some(entity_rng));
+        }
+    }
+
+    /// Source `sub_57F20` reclaim for hidden class-9/model-0 Fireballs.  The
+    /// callback leaves the disabled row linked for the remainder of the pass;
+    /// only this next source boundary unlinks it and returns its slot.
+    pub(super) fn reclaim_fireball_rows_at_source_boundary(&mut self) {
+        let reclaimed = self
+            .fireball_projectiles
+            .iter()
+            .filter(|projectile| !projectile.active && projectile.drawing_disabled)
+            .map(|projectile| (projectile.source_entity_index, projectile.entity_rng))
+            .collect::<Vec<_>>();
+        self.fireball_projectiles
+            .retain(|projectile| projectile.active || !projectile.drawing_disabled);
+        for (slot, entity_rng) in reclaimed {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.source_owner.remove(&slot);
             self.release_slot(slot, Some(entity_rng));
         }
     }
