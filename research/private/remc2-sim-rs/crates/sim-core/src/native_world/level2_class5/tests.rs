@@ -29,6 +29,122 @@ where
     goat
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CreatureAudioReceipt {
+    source_slot: u16,
+    entity_index: u16,
+    sound_id: u16,
+    action: u8,
+    position: Position,
+    audio_site: crate::MissionAudioSite,
+}
+
+fn creature_audio_receipts(session: &Level2ResetSession) -> Vec<CreatureAudioReceipt> {
+    let mut receipts = Vec::new();
+    for dispatch in session.dispatch_events() {
+        let Level2DispatchEvent::Goat {
+            source_slot,
+            events,
+            ..
+        } = dispatch
+        else {
+            continue;
+        };
+        for event in events {
+            if let GoatStepEvent::Bleat {
+                audio_site,
+                entity_index,
+                sound_id,
+                position,
+                action,
+            } = event
+            {
+                receipts.push(CreatureAudioReceipt {
+                    source_slot: *source_slot,
+                    entity_index: *entity_index,
+                    sound_id: *sound_id,
+                    action: *action,
+                    position: *position,
+                    audio_site: *audio_site,
+                });
+            }
+        }
+    }
+    receipts
+}
+
+fn configure_three_level_two_creature_sounds(session: &mut Level2ResetSession) {
+    let selected = [39_u16, 40, 42];
+    for mut goat in session.goats().to_vec() {
+        if selected.contains(&goat.entity_index) {
+            continue;
+        }
+        goat.action = 0;
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        goat.current_attacker = 0;
+        goat.partner_entity_index = None;
+        goat.target_entity_index = None;
+        assert!(session.goats.replace_goat_for_test(goat));
+    }
+
+    // AUD-L2-005: sub_1F470/action 11, whose null-partner transition reaches
+    // the one-draw sound-46 tail before the source cursor epilogue.
+    update_level_two_goat(session, 39, |goat| {
+        goat.action = 11;
+        goat.partner_entity_index = None;
+        goat.target_entity_index = None;
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        goat.current_attacker = 0;
+        goat.rng = 129;
+        goat.phase = 0;
+    });
+
+    // AUD-L2-004: sub_1F3C0/action 9, kept off its two-draw perception
+    // cadence so the receipt isolates its one-draw sound-46 tail.
+    update_level_two_goat(session, 40, |goat| {
+        goat.action = 9;
+        goat.partner_entity_index = None;
+        goat.target_entity_index = None;
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        goat.current_attacker = 0;
+        goat.actual_speed = 0;
+        goat.rng = 129;
+        goat.phase = 1;
+        goat.proximity_countdown = 0;
+        goat.proximity_subcounter = 0;
+    });
+
+    // AUD-L2-006: HitGoat_1F530/action 14, whose direct-hit tail uses the
+    // independent modulo-43 sound-46 gate.
+    let player_entity_index = session.state.entity_index;
+    let hit_goat = update_level_two_goat(session, 42, |goat| {
+        goat.action = 14;
+        goat.partner_entity_index = None;
+        goat.target_entity_index = Some(player_entity_index);
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        goat.current_attacker = 0;
+        goat.rng = 62;
+        goat.phase = 1;
+    });
+    session.state.position = hit_goat.position;
+    session.entities[usize::from(player_entity_index)].position = hit_goat.position;
+    session
+        .submit_goat_damage(42, 1, player_entity_index)
+        .expect("qualified direct-hit Goat audio branch");
+}
+
+fn assert_no_goat_bleat(events: &[GoatStepEvent]) {
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, GoatStepEvent::Bleat { .. }))
+    );
+}
+
 fn activate_group20_archers() -> (Level2ResetSession, u64) {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
@@ -1838,6 +1954,209 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
 
     // A Level 1/Night package is an unsupported profile for this Day route;
     // profile rejection happens before a mutable creature session exists.
+    let level_one_package =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/level1-export-m");
+    assert!(NativeWorld::inspect_level2(level_one_package).is_err());
+}
+
+#[test]
+fn level_two_three_reachable_creature_sounds_emit_in_pinned_source_order() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 creature audio session");
+    let baseline_campaign_hash = session.campaign_state_hash();
+    let baseline_goat_hash = session.goat_hash();
+
+    configure_three_level_two_creature_sounds(&mut session);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+
+    let receipts = creature_audio_receipts(&session);
+    assert_eq!(receipts.len(), 3, "exactly the three selected audio calls");
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|receipt| receipt.source_slot)
+            .collect::<Vec<_>>(),
+        [39, 40, 42],
+        "UpdateEntities source order is the audio journal order"
+    );
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|receipt| receipt.entity_index)
+            .collect::<Vec<_>>(),
+        [39, 40, 42],
+        "PrepareEventSound owner is the visited Goat source row"
+    );
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|receipt| receipt.sound_id)
+            .collect::<Vec<_>>(),
+        [46, 46, 46],
+        "AUD-L2-004..006 all prepare owner sound 46"
+    );
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|receipt| receipt.action)
+            .collect::<Vec<_>>(),
+        [9, 9, 14],
+        "action-11 transitions before its sub_1F470 tail; HitGoat stays action 14"
+    );
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| receipt.audio_site == crate::MissionAudioSite::GoatBleat)
+    );
+    for receipt in &receipts {
+        let goat = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == receipt.source_slot)
+            .expect("audio source remains in the typed Goat projection");
+        assert_eq!(receipt.position, goat.position);
+    }
+
+    // Each source slot contributes one typed audio event to this pass. A
+    // second ordinary visit does not replay the just-consumed modulo tail.
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|receipt| receipt.source_slot)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([39, 40, 42])
+    );
+    let first_audio_hash = session.campaign_state_hash();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        creature_audio_receipts(&session).is_empty(),
+        "a duplicate source visit cannot duplicate the prior audio journal"
+    );
+
+    // Reset clears the ordered journal and restores the exact state carriers;
+    // replaying the same ordinary route reproduces the three receipts/hash.
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+    assert_eq!(session.goat_hash(), baseline_goat_hash);
+    assert!(session.dispatch_events().is_empty());
+
+    configure_three_level_two_creature_sounds(&mut session);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(creature_audio_receipts(&session), receipts);
+    assert_eq!(session.campaign_state_hash(), first_audio_hash);
+}
+
+#[test]
+fn level_two_creature_audio_negative_branches_emit_nothing_and_preserve_state() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 creature audio negative session");
+
+    // Stale, wrong-action, and wrong-patrol-subtype visits fail closed before
+    // the three source audio tails and leave their typed journal/hash alone.
+    let stale_hash = session.goat_hash();
+    assert_no_goat_bleat(&session.goats.step_source_slot(999, &session.terrain, &[]));
+    assert_eq!(session.goat_hash(), stale_hash);
+
+    let wrong_action = update_level_two_goat(&mut session, 40, |goat| {
+        goat.action = 8;
+        goat.rng = 129;
+        goat.phase = 1;
+    });
+    let wrong_action_hash = session.goat_hash();
+    let wrong_action_events = session.goats.step_source_slot(40, &session.terrain, &[]);
+    assert_no_goat_bleat(&wrong_action_events);
+    assert_eq!(
+        session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .expect("wrong-action Goat remains present"),
+        &wrong_action
+    );
+    assert_eq!(session.goat_hash(), wrong_action_hash);
+
+    let wrong_subtype = update_level_two_goat(&mut session, 44, |goat| {
+        goat.action = GOAT_PATROL_ACTION;
+        goat.stage_var_2 = 1;
+        goat.rng = 129;
+        goat.phase = 1;
+    });
+    let wrong_subtype_hash = session.goat_hash();
+    let wrong_subtype_events = session.goats.step_source_slot(44, &session.terrain, &[]);
+    assert_no_goat_bleat(&wrong_subtype_events);
+    assert_eq!(
+        session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 44)
+            .expect("wrong-subtype Goat remains present"),
+        &wrong_subtype
+    );
+    assert_eq!(session.goat_hash(), wrong_subtype_hash);
+
+    // A dead row and a following-pass reclaimed row cannot emit after their
+    // lifecycle gate has rejected the ordinary callback.
+    let dead = update_level_two_goat(&mut session, 45, |goat| {
+        goat.active = false;
+        goat.action = 14;
+        goat.rng = 62;
+    });
+    let dead_hash = session.goat_hash();
+    assert_no_goat_bleat(&session.goats.step_source_slot(45, &session.terrain, &[]));
+    assert_eq!(session.goat_hash(), dead_hash);
+    assert_eq!(
+        session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 45)
+            .expect("dead Goat remains in reset projection"),
+        &dead
+    );
+
+    let reclaimed = update_level_two_goat(&mut session, 43, |goat| {
+        goat.action = 11;
+        goat.rng = 129;
+        goat.control_flags |= 0x0000_0400;
+    });
+    let reclaim_events = session.goats.begin_source_turn(&[]);
+    assert!(
+        reclaim_events
+            .iter()
+            .any(|event| matches!(event, GoatStepEvent::Reclaimed { entity_index: 43 }))
+    );
+    assert_no_goat_bleat(&reclaim_events);
+    let reclaimed_after = session
+        .goats()
+        .iter()
+        .find(|goat| goat.entity_index == 43)
+        .expect("reclaimed Goat remains in reset projection");
+    assert!(!reclaimed_after.active);
+    assert_eq!(reclaimed_after.rng, reclaimed.rng);
+
+    // Wrong class/model allocation is rejected before a class-5 source row
+    // exists, so it cannot manufacture a creature audio event.
+    let economy_before = session.economy().clone();
+    let economy_hash = session.economy().reset_hash();
+    for wrong_model in [1, 2, 13] {
+        assert!(
+            session
+                .economy_mut()
+                .allocate_authored_class5(900, wrong_model, Position::default())
+                .is_none()
+        );
+    }
+    assert_eq!(session.economy(), &economy_before);
+    assert_eq!(session.economy().reset_hash(), economy_hash);
+    assert!(creature_audio_receipts(&session).is_empty());
+
+    // Unsupported Level 1/Night input fails before a mutable Level 2 audio
+    // session can exist.
     let level_one_package =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/level1-export-m");
     assert!(NativeWorld::inspect_level2(level_one_package).is_err());

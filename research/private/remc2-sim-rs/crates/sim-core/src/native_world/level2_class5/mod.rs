@@ -7,7 +7,10 @@
 //! remain single-sourced in `crate::goat` and `crate::villager`; the enclosing
 //! Level 2 session reaches those handlers through the same source-ordered
 //! cursor. This module must not grow a parallel Goat/Villager arena or RNG
-//! sidecar while its class-5 authored rows are folded into the campaign.
+//! sidecar while its class-5 authored rows are folded into the campaign. The
+//! three reachable creature audio calls likewise remain the typed
+//! `GoatStepEvent::Bleat` carrier from those handlers; this module owns the
+//! production-route receipts without introducing a second audio journal.
 
 use super::*;
 
