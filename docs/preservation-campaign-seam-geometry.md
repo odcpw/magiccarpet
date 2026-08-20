@@ -768,6 +768,37 @@ rather than being reimplemented by the fold graph.
 | CF-14 Level 3 descriptor proof and shared deltas | L2-CLOSE; `mc-iol7n` census | Level 3 package descriptor plus one Bead per genuinely missing shared behavior family, each with ordinary producer-to-consumer lifecycle and disjoint handler files; final integrator owns descriptor/composition | real owner-package Rust -> C ABI -> Unity positive route, missing capability/fact negatives, replay/reset/hash, and no `Level3Session`/per-level ABI symbols | proves first generalization only; does not claim remaining campaign coverage |
 | CF-15 Terminal Level 1 descriptor re-expression | capability saturation across folded Level 2 and representative Level 3+ realms; CF-14 or later evidence | Level 1 descriptor/SourceFacts/mappings onto shared compiled behaviors plus dual-observer qualification; sealed implementation remains available during comparison | byte-identical complete frozen corpus replay and fresh 182/182 matrix at one exact revision; no golden/tolerance change | mandatory end-state, not an early generalization proof; sealed path retires only after exact match |
 
+The adopted tracker mapping is:
+
+| Proposal | Implementation Bead |
+|---|---|
+| CF-00 | `mc-cf00-seal-fold-inputs-omega-iplbq` |
+| CF-01 | `mc-cf01-pure-campaign-module-extraction-19t39` |
+| CF-02 | `mc-cf02-package-descriptor-sourcefacts-v1-g3z5i` |
+| CF-03 | `mc-cf03-static-registry-drift-guard-z34uk` |
+| CF-04 | `mc-cf04-carrier-shell-dual-observer-6pxmp` |
+| CF-05 | `mc-cf05-terrain-single-owner-cutover-7pws6` |
+| CF-06 | `mc-cf06-source-arena-topology-cutover-0fyke` |
+| CF-07 | `mc-cf07-rng-flight-player-runtime-cutover-8yf18` |
+| CF-08 | `mc-cf08-objectives-effect-journal-cutover-mrdri` |
+| CF-09 | `mc-cf09-baseline-twin-deletion-canonical-reset-hj11g` |
+| CF-10 | `mc-cf10-source-scheduler-cutover-c9q74` |
+| CF-11 | `mc-cf11-descriptor-backed-level2-session-yg8j2` |
+| CF-12 | `mc-cf12-generic-campaign-abi-subset-hs687` |
+| CF-13 | `mc-cf13-generic-managed-campaign-consumer-reneq` |
+| L2-CLOSE | existing `mc-fi4n`, now blocked by CF-13 |
+| CF-14 | `mc-cf14-level3-descriptor-shared-deltas-nrs2v` |
+| CF-15 | `mc-cf15-terminal-level1-descriptor-reexpression-inim6` |
+
+The tracker encodes CF-05 through CF-11 as one blocking single-writer chain.
+CF-10 also has the table's explicit CF-03, CF-06-through-CF-09, and read/write
+inventory edges. CF-00 is blocked by the contract-adoption Bead and every
+frozen Stage-A receipt. CF-14 is blocked by `mc-fi4n` and the remaining-realm
+census. CF-15 is deferred until a later capability-saturation receipt is named;
+CF-14 alone proves only the first generalization. `br dep cycles
+--blocking-only --json` reported zero active cycles when this mapping was
+created.
+
 Every created Bead packet MUST copy its prerequisite receipts, exact owned files
 or logical carrier, ordinary production route, following-pass consumer/cleanup,
 focused command, negative, and no-claim from this table. CF-05 through CF-11
@@ -801,6 +832,73 @@ No dependent research artifact landed before this contract was written:
 If any artifact lands before `mc-campaign-fold-contract-r78sq` adopts the
 contract, that parent MUST reconcile its results with D1-D5 and exercise the
 named falsifier. Silence is not acceptance.
+
+### Adoption reconciliation at the implementation-graph revision
+
+`mc-campaign-fold-contract-r78sq` adopted contract v1 on 2026-08-21 after the
+following receipts landed:
+
+- the API/seam memo itself at `3a73019c` and the sealed Level 1 facade at
+  `0f43caf6`, independently accepted by `mc-fold0-level1-facade-uf827` at
+  `be739f7b`;
+- the state census `mc-campaign-state-census-dxvvd` at `7bf3862`, which
+  classified 151 outer, 57 economy, and 89 Nyphur fields and reconciled 127
+  retained baseline/live pairs plus one retired pair without an orphan or
+  multiply classified state cell;
+- the registry probe `mc-campaign-registry-probe-udemg` at `0a0881f0`, whose
+  deterministic pinned-source inventory contains 17 class rows, 486 active
+  source keys, 127 matching Rust keys, zero implemented keys absent from the
+  source, and 359 explicit source-only backlog keys;
+- the remaining-realm census `mc-iol7n` at `00520df3`: external Levels 3
+  through 24, all three map types, 22/22 byte-identical twin package trees,
+  330 files per tree, and 44/44 strict package validations. Independent
+  adoption verification is comment 511 on that Bead; and
+- the qualified empty-collision package decision
+  `mc-pkg-v5-no-collision-ugou9` at `6e3aeb70`.
+
+The last receipt exercises D1 and does not falsify it: every remaining realm
+fits the existing external-level/internal-level/map-type identity plus the
+validated package identity; no additional identity-critical caller input was
+observed. It exercises D2 without admitting executable content: the observed
+delta is bounded typed tuple/objective selector values and immutable
+source-fact selector/artifact identities. It exercises D3 without requiring a
+runtime registry or generated behavior: the large source-only set remains an
+explicit capability backlog keyed by source site and selector. The state
+census does not falsify D4. The dependency graph above is the D5 response and
+keeps every semantic ownership change behind an old/new observation relation.
+
+The empty-collision decision is explicitly blessed as part of contract v1.
+For a qualified realm such as Level 8 with exporter-recorded zero authored
+class-10/model-45 rows, the v5 package MUST carry an explicitly empty typed
+collision member. An absent member, an empty member with authored rows, or a
+nonempty member without authored rows rejects. The 15-test exporter/census
+lane independently rerun during adoption includes the positive zero-row case,
+both count/member mismatch directions, absent-member rejection, and census
+cross-check. Level 1 and Level 2 package identities remain unchanged by that
+decision.
+
+The read/write inventory needs one narrower qualification. The generator and
+schema from `mc-campaign-rw-inventory-sh828` are deterministic, but neither its
+closure artifact at `03723bd4` nor refresh `1d28bf83` is an exact-revision
+receipt: independent comment 510 shows that two fresh runs at the declared
+`bdc545ca` revision produce 52 transitions, 13 route kinds, and 218 open
+questions, while the checked artifact contains 54/14/224 and hashes an
+uncommitted later Fireball tree. Contract v1 therefore adopts the inventory
+method and its conservative read/write/RNG/emission vocabulary, not that stale
+artifact hash. This is not allowed to leak into a semantic migration:
+CF-00 (`mc-cf00-seal-fold-inputs-omega-iplbq`) MUST regenerate the inventory
+twice from one exact current committed revision, enumerate every accepted
+transition-style receipt, and seal that fresh result in Omega before CF-01 can
+start. The blocking edge makes this a hard gate rather than a waived defect.
+
+The operator sequencing decision remains the hybrid path recorded in comments
+453 and 502 on the adoption Bead: remaining Level 2 behavior lands
+transition-style; CF-00 through CF-13 fold the accepted engine; `mc-fi4n` is
+the sole Level 2 close on the folded engine; Level 3 is the first generalized
+descriptor proof; and terminal Level 1 re-expression waits for capability
+saturation and exact frozen-corpus plus 182/182 equality. Adoption authorizes
+only the created Beads and does not itself mutate production, close Level 2,
+or amend sealed Level 1.
 
 ## Evidence at the measured revision
 
