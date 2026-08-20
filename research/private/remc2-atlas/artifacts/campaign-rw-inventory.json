@@ -224,7 +224,7 @@
       },
       {
         "file": "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
-        "sha256": "1da53ffe93bb854124113cc2aa92fc3c02a8eeaf507d96774b6372c2e6a760b0"
+        "sha256": "ea118b35cc2aad7a94cd2c049c5c042b3109febec75553ac9e5eede317326b47"
       },
       {
         "file": "research/private/remc2-sim-rs/crates/sim-core/src/presentation_frame.rs",
@@ -312,7 +312,7 @@
       }
     ],
     "remc2_revision": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-    "rust_revision": "0f43caf6b4575be711ef460278c73ff8a455e629"
+    "rust_revision": "bdc545ca847d663ab59e27e517de3a011e038060"
   },
   "open_questions": [
     "Indirect or packed Rust access at research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs:18018 remains unresolved.",
