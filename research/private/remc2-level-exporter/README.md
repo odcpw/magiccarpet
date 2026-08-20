@@ -160,3 +160,34 @@ and four full production captures (default Level 1, explicit Level 1, and two
 Level 2 captures), comparing complete trees and asserting the Level 2 manifest
 is external `2`, internal `1`, and Day. Build the binary only from the clean
 pinned source described above.
+
+## Remaining-realm campaign census
+
+The bounded census tool is `scripts/campaign_census.py`. It is the production
+route for the private `mc-iol7n` evidence receipt: it invokes this pinned
+exporter exactly twice for each external Level 3 through 24, compares every
+regular file and manifest identity, and records only hashes plus bounded
+authored/reset tuples, objective sections, map gates, owner source facts, and
+capability diffs. It never launches the original executable or changes the
+Rust/Unity implementation.
+
+Run it from the repository root after the clean exporter build and with the
+existing private owner runtime, Level 2 evidence baseline, and source dispatch
+atlas:
+
+```sh
+python3 research/private/remc2-level-exporter/scripts/campaign_census.py
+```
+
+The exact ignored output roots are
+`research/private/generated/mc-iol7n-campaign-census-run-a/` and
+`research/private/generated/mc-iol7n-campaign-census-run-b/`. The committed
+receipt and bounded Markdown summary are
+`census/campaign-census-mc-iol7n.json` and
+`census/campaign-census-mc-iol7n.md`.
+
+The tool fails closed if a realm cannot be represented by the current exporter
+profile. In particular, the current non-Level-1 v5 path requires a nonempty
+authored class-10/model-45 collision-mask selector set; a qualified realm with
+none needs an explicitly reviewed empty-mask or alternate package contract.
+The census must not invent a selector or skip that realm.
