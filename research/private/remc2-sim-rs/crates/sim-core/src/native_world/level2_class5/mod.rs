@@ -3,7 +3,11 @@
 //! The source arena, free stack, RNG, activation schedule, reset, and hash
 //! composition remain owned by the enclosing Level 2 economy/session. This
 //! module only gives the existing family packet and model-specific callbacks
-//! narrow physical work surfaces.
+//! narrow physical work surfaces. The ten reachable non-Bee creature draws
+//! remain single-sourced in `crate::goat` and `crate::villager`; the enclosing
+//! Level 2 session reaches those handlers through the same source-ordered
+//! cursor. This module must not grow a parallel Goat/Villager arena or RNG
+//! sidecar while its class-5 authored rows are folded into the campaign.
 
 use super::*;
 

@@ -3,7 +3,31 @@ use super::super::*;
 use super::archer::{
     ARCHER_ACTION_ATTACK, ARCHER_DESCRIPTOR_CADENCE, ARCHER_MODEL, ArcherChildRequest,
 };
+use crate::{
+    goat::{GOAT_PATROL_ACTION, GoatState, GoatStepEvent},
+    villager::{VILLAGER_DEATH_ACTION, VILLAGER_HIT_ACTION},
+};
 use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+fn update_level_two_goat<F>(
+    session: &mut Level2ResetSession,
+    source_slot: u16,
+    update: F,
+) -> GoatState
+where
+    F: FnOnce(&mut GoatState),
+{
+    let mut goat = session
+        .goats()
+        .iter()
+        .find(|goat| goat.entity_index == source_slot)
+        .cloned()
+        .expect("qualified Level 2 Goat source row");
+    update(&mut goat);
+    assert!(session.goats.replace_goat_for_test(goat.clone()));
+    goat
+}
 
 fn activate_group20_archers() -> (Level2ResetSession, u64) {
     let inspection =
@@ -1411,4 +1435,410 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     assert_eq!(session.economy(), &economy_before_failure);
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
+}
+
+#[test]
+fn level_two_non_bee_creature_rng_draws_follow_pinned_source_order() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 non-Bee creature session");
+    let baseline_campaign_hash = session.campaign_state_hash();
+    let baseline_goat_hash = session.goat_hash();
+    let baseline_ordinary_hash = session.ordinary().reset_hash();
+
+    // `sub_1F470` is the only reset action-11 path.  Its null partner branch
+    // returns before the mailbox/movement body and then reaches the one-draw
+    // wrapper tail (RNG-L2-0034/0035).
+    let action_11_row_39 = update_level_two_goat(&mut session, 39, |goat| {
+        goat.action = 11;
+        goat.partner_entity_index = None;
+        goat.target_entity_index = None;
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        goat.current_attacker = 0;
+        goat.rng = 0x1357;
+        goat.phase = 0;
+    });
+    let action_11_row_71 = update_level_two_goat(&mut session, 71, |goat| {
+        goat.action = 11;
+        goat.partner_entity_index = None;
+        goat.target_entity_index = None;
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        goat.current_attacker = 0;
+        goat.rng = 0x2468;
+        goat.phase = 0;
+    });
+
+    // Keep action 9 off its separate perception cadence so this receipt
+    // isolates the `sub_1F3C0` wrapper tail (RNG-L2-0032/0033).
+    let action_9_row_40 = update_level_two_goat(&mut session, 40, |goat| {
+        goat.action = 9;
+        goat.partner_entity_index = None;
+        goat.target_entity_index = None;
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        goat.current_attacker = 0;
+        goat.actual_speed = 0;
+        goat.rng = 0x3579;
+        goat.phase = 1;
+        goat.proximity_countdown = 0;
+        goat.proximity_subcounter = 0;
+    });
+
+    // Action 10 enters `sub_1F440`, which forces action 14 and immediately
+    // calls `HitGoat_1F530`; with no target it transitions to action 9 only
+    // after the distinct modulo-43 one-draw tail (RNG-L2-0036/0037).
+    let action_10_row_42 = update_level_two_goat(&mut session, 42, |goat| {
+        goat.action = 10;
+        goat.partner_entity_index = None;
+        goat.target_entity_index = None;
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        goat.current_attacker = 0;
+        goat.actual_speed = 0;
+        goat.rng = 0x468a;
+        goat.phase = 1;
+    });
+
+    // Row 78 is a qualified reset action-105 source with no target.  Advance
+    // its ordinary source phase directly to the next cadence boundary without
+    // stepping the enclosing cursor; the following real outer pass then
+    // observes the two source draws (RNG-L2-0094..0097) alongside the Goat
+    // rows in one source-ordered production pass.
+    for _ in 0..38 {
+        session.ordinary_mut().step_villager_action_105(78);
+    }
+    let villager_before = session
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 78)
+        .cloned()
+        .expect("qualified Level 2 action-105 Villager");
+    assert_eq!(villager_before.action, 105);
+    assert_eq!(villager_before.target_entity_index, None);
+    assert_eq!(villager_before.phase % 40, 0);
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+
+    let villager_after = session
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 78)
+        .expect("action-105 Villager after source draw");
+    let villager_first = level2_next_rng16(villager_before.rng);
+    let villager_second = level2_next_rng16(villager_first);
+    let villager_direction = 2 * (i32::from(villager_first % 157) / 79) - 1;
+    let villager_magnitude = i32::from(villager_second & 0xff) + 85;
+    let villager_roll = (i32::from(villager_before.roll)
+        .wrapping_add(villager_direction * villager_magnitude)
+        & 0x07ff) as i16;
+    assert_eq!(villager_after.rng, villager_second);
+    assert_eq!(villager_after.roll, villager_roll);
+    assert_eq!(villager_after.phase, villager_before.phase.wrapping_add(1));
+
+    for (before, expected_rng) in [
+        (&action_11_row_39, level2_next_rng16(action_11_row_39.rng)),
+        (&action_9_row_40, level2_next_rng16(action_9_row_40.rng)),
+        (&action_10_row_42, level2_next_rng16(action_10_row_42.rng)),
+        (&action_11_row_71, level2_next_rng16(action_11_row_71.rng)),
+    ] {
+        let after = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == before.entity_index)
+            .expect("Goat remains live after qualified callback");
+        assert_eq!(after.rng, expected_rng, "Goat {} RNG", before.entity_index);
+        assert_eq!(after.phase, before.phase.wrapping_add(1));
+    }
+    assert_eq!(
+        session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("action-11 row 39")
+            .action,
+        9
+    );
+    assert_eq!(
+        session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 71)
+            .expect("action-11 row 71")
+            .action,
+        9
+    );
+    assert_eq!(
+        session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 42)
+            .expect("action-10 row 42")
+            .action,
+        9
+    );
+
+    // The outer source cursor is globally ascending.  These four rows are
+    // intentionally separated so the receipt observes both action-11 rows
+    // and the action-9/action-10 wrappers in their source-slot order.
+    let selected_source_dispatch = session
+        .dispatch_events()
+        .iter()
+        .filter_map(|event| match event {
+            Level2DispatchEvent::Goat { source_slot, .. }
+                if matches!(*source_slot, 39 | 40 | 42 | 71) =>
+            {
+                Some(*source_slot)
+            }
+            Level2DispatchEvent::Villager {
+                source_slot: 78,
+                pass: 0,
+                ..
+            } => Some(78),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(selected_source_dispatch, [39, 40, 42, 71, 78]);
+
+    // Reset restores every authoritative carrier, including the one RNG per
+    // Goat/Villager row, the dispatch journal, and the hashes consumed by the
+    // production route.
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+    assert_eq!(session.goat_hash(), baseline_goat_hash);
+    assert_eq!(session.ordinary().reset_hash(), baseline_ordinary_hash);
+    assert!(session.dispatch_events().is_empty());
+}
+
+#[test]
+fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+
+    // A stale/absent source slot is a no-op in the live class-5 cursor.  The
+    // wrong action is also fail-closed before any Goat callback body.
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 negative-branch session");
+    let absent_hash = session.goat_hash();
+    assert!(
+        session
+            .goats
+            .step_source_slot(999, &session.terrain, &[])
+            .is_empty()
+    );
+    assert_eq!(session.goat_hash(), absent_hash);
+
+    let wrong_action = update_level_two_goat(&mut session, 40, |goat| {
+        goat.action = 8;
+        goat.rng = 0x1234;
+        goat.phase = 7;
+    });
+    let wrong_hash = session.goat_hash();
+    let wrong_events = session.goats.step_source_slot(40, &session.terrain, &[]);
+    let wrong_after = session
+        .goats()
+        .iter()
+        .find(|goat| goat.entity_index == 40)
+        .expect("wrong-action Goat remains present");
+    assert!(wrong_events.is_empty());
+    assert_eq!(wrong_after, &wrong_action);
+    assert_eq!(session.goat_hash(), wrong_hash);
+
+    // A patrol row with the wrong stage subtype is rejected before the
+    // class-5 callback tail; neither its RNG nor its cursor phase may move.
+    let wrong_subtype = update_level_two_goat(&mut session, 44, |goat| {
+        goat.action = GOAT_PATROL_ACTION;
+        goat.stage_var_2 = 1;
+        goat.rng = 0x1a2b;
+        goat.phase = 9;
+    });
+    let wrong_subtype_hash = session.goat_hash();
+    let wrong_subtype_events = session.goats.step_source_slot(44, &session.terrain, &[]);
+    let wrong_subtype_after = session
+        .goats()
+        .iter()
+        .find(|goat| goat.entity_index == 44)
+        .expect("wrong-subtype Goat remains present");
+    assert!(wrong_subtype_events.is_empty());
+    assert_eq!(wrong_subtype_after, &wrong_subtype);
+    assert_eq!(session.goat_hash(), wrong_subtype_hash);
+
+    // Action 13 is terminal but phase-gated.  At a nonzero phase it advances
+    // only the source cursor; it cannot consume the mana-conversion draw.
+    let terminal = update_level_two_goat(&mut session, 41, |goat| {
+        goat.action = 13;
+        goat.phase = 1;
+        goat.mana = 0;
+        goat.rng = 0x2345;
+    });
+    let terminal_events = session.goats.step_source_slot(41, &session.terrain, &[]);
+    let terminal_after = session
+        .goats()
+        .iter()
+        .find(|goat| goat.entity_index == 41)
+        .expect("terminal Goat remains present");
+    assert!(terminal_events.is_empty());
+    assert_eq!(terminal_after.rng, terminal.rng);
+    assert_eq!(terminal_after.phase, terminal.phase.wrapping_add(1));
+
+    // UpdateEntities reclaims a drawing-disabled row before the source
+    // callback.  The reclaim event is allowed; the forbidden creature draw
+    // and callback phase are not.
+    let disabled = update_level_two_goat(&mut session, 43, |goat| {
+        goat.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        goat.rng = 0x3456;
+    });
+    let begin_events = session.goats.begin_source_turn(&[]);
+    assert!(
+        begin_events
+            .iter()
+            .any(|event| matches!(event, GoatStepEvent::Reclaimed { entity_index: 43 }))
+    );
+    let disabled_after = session
+        .goats()
+        .iter()
+        .find(|goat| goat.entity_index == 43)
+        .expect("reclaimed Goat remains in the reset projection");
+    assert!(!disabled_after.active);
+    assert_eq!(disabled_after.rng, disabled.rng);
+    assert!(
+        session
+            .goats
+            .step_source_slot(43, &session.terrain, &[])
+            .is_empty()
+    );
+
+    // Wrong class/model allocation is rejected before the class-5 arena or
+    // its sidecar/RNG map can change; an absent economy source is the same
+    // fail-closed boundary used by the real dynamic cursor.
+    let economy_before = session.economy().clone();
+    let economy_hash = session.economy().reset_hash();
+    for wrong_model in [1, 2, 13] {
+        assert!(
+            session
+                .economy_mut()
+                .allocate_authored_class5(900, wrong_model, Position::default())
+                .is_none()
+        );
+    }
+    assert!(!session.economy_mut().step_authored_class5_slot(999));
+    assert_eq!(session.economy(), &economy_before);
+    assert_eq!(session.economy().reset_hash(), economy_hash);
+
+    // A zero attacker/owner sentinel is rejected at the mailbox boundary and
+    // cannot create a partial source mutation or draw.
+    let wrong_owner_goat_hash = session.goat_hash();
+    assert!(session.submit_goat_damage(40, 1, 0).is_err());
+    assert_eq!(session.goat_hash(), wrong_owner_goat_hash);
+
+    // A Villager mailbox hit and the following terminal transition mutate
+    // only their source action/mailbox/phase; the action-105 RNG tail is not
+    // entered on either path.
+    let mut nonlethal = inspection
+        .level2_reset_session()
+        .expect("Level 2 Villager negative session");
+    let villager_before = nonlethal
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 77)
+        .cloned()
+        .expect("qualified Villager row");
+    nonlethal
+        .ordinary_mut()
+        .inject_villager_damage(77, 1, 152)
+        .expect("nonlethal Villager mailbox");
+    nonlethal.ordinary_mut().step_villager_action_105(77);
+    let villager_after_hit = nonlethal
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 77)
+        .expect("Villager after nonlethal mailbox");
+    assert_eq!(villager_after_hit.rng, villager_before.rng);
+    assert_eq!(villager_after_hit.action, VILLAGER_HIT_ACTION);
+
+    let mut lethal = inspection
+        .level2_reset_session()
+        .expect("Level 2 lethal Villager session");
+    let lethal_before = lethal
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 77)
+        .cloned()
+        .expect("qualified lethal Villager row");
+    lethal
+        .ordinary_mut()
+        .inject_villager_damage(77, lethal_before.life + 1, 152)
+        .expect("lethal Villager mailbox");
+    lethal.ordinary_mut().step_villager_action_105(77);
+    let after_death = lethal
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 77)
+        .expect("Villager after lethal mailbox");
+    assert_eq!(after_death.rng, lethal_before.rng);
+    assert_eq!(after_death.action, VILLAGER_DEATH_ACTION);
+    lethal.ordinary_mut().step_villager_action_105(77);
+    let after_terminal = lethal
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 77)
+        .expect("Villager after death transition");
+    assert_eq!(after_terminal.rng, lethal_before.rng);
+    assert_eq!(after_terminal.action, VILLAGER_DEATH_ACTION);
+    assert!(!after_terminal.active);
+
+    // Once a valid house relation exists, the action-105 target branch is
+    // source-defined and draw-free.  Run the preceding phase slots without
+    // changing the target, then cross the exact cadence boundary.
+    let mut target_branch = inspection
+        .level2_reset_session()
+        .expect("Level 2 Villager target-branch session");
+    target_branch.ordinary_mut().step_villager_action_105(77);
+    let after_acquire = target_branch
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 77)
+        .cloned()
+        .expect("Villager after target acquisition");
+    let target = after_acquire
+        .target_entity_index
+        .expect("qualified action-105 branch acquires a house target");
+    let target_rng = after_acquire.rng;
+    for _ in 0..38 {
+        target_branch.ordinary_mut().step_villager_action_105(77);
+    }
+    let at_target_cadence = target_branch
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 77)
+        .expect("Villager at target cadence");
+    assert_eq!(at_target_cadence.phase % 40, 0);
+    assert_eq!(at_target_cadence.target_entity_index, Some(target));
+    target_branch.ordinary_mut().step_villager_action_105(77);
+    let after_target_branch = target_branch
+        .ordinary()
+        .villagers()
+        .iter()
+        .find(|villager| villager.entity_index == 77)
+        .expect("Villager after target branch");
+    assert_eq!(after_target_branch.rng, target_rng);
+
+    // A Level 1/Night package is an unsupported profile for this Day route;
+    // profile rejection happens before a mutable creature session exists.
+    let level_one_package =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/level1-export-m");
+    assert!(NativeWorld::inspect_level2(level_one_package).is_err());
 }
