@@ -1,0 +1,224 @@
+{
+  "schema": "mc2-rust-behavior-registry/v1",
+  "source_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+  "selection": "named_level1_level2_behavior_families",
+  "description": "Hand-authored cross-check keys for named Rust Level 1/2 behavior families. The extractor supplies provenance and drift evidence; this file does not generate handlers or claim semantic equivalence from callback addresses.",
+  "entries": [
+    {
+      "name": "level1-tree-lifecycle",
+      "class": 2,
+      "models": [0],
+      "level_scopes": {"1": [0, 1, 2]},
+      "behavior": "Tree live, dying, and dead source lifecycle",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"],
+      "evidence": ["TREE_LIVE_ACTION", "TREE_DYING_ACTION", "TREE_DEAD_ACTION"]
+    },
+    {
+      "name": "level1-stone",
+      "class": 2,
+      "models": [1],
+      "level_scopes": {"1": [3]},
+      "behavior": "Static stone collision/presentation row",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"],
+      "evidence": ["STONE_CLASS", "STONE_ACTION"]
+    },
+    {
+      "name": "level1-dolmen",
+      "class": 2,
+      "models": [2],
+      "level_scopes": {"1": [6]},
+      "behavior": "Dolmen recharge contact callback",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"],
+      "evidence": ["step_dolmen_source_slot", "AddDolmen02_02_65080"]
+    },
+    {
+      "name": "level2-bad-stone",
+      "class": 2,
+      "models": [3],
+      "level_scopes": {"2": [9]},
+      "behavior": "Level 2 bad-stone terrain/action-9 lifecycle",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["LEVEL2_BAD_STONE_ACTION", "step_bad_stone_action_9"]
+    },
+    {
+      "name": "player-flight",
+      "class": 3,
+      "models": [0],
+      "level_scopes": {"1": [0], "2": [0]},
+      "behavior": "Authoritative player flight/economy callback",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["AddPlayer03_00_5E010", "step_level2_source_pass_with_player"]
+    },
+    {
+      "name": "level2-nyphur-player",
+      "class": 3,
+      "models": [1],
+      "level_scopes": {"2": [1]},
+      "behavior": "Level 2 Nyphur model-1 source dispatch",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/native_world/level2_nyphur.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["level2_nyphur_dispatcher.step_dispatch", "class-3/model-1 route"]
+    },
+    {
+      "name": "castle-root",
+      "class": 3,
+      "models": [2],
+      "level_scopes": {"1": [5], "2": [5]},
+      "behavior": "Castle root construction/economy lifecycle",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["CASTLE_ROOT_ACTION", "step_castle_action"]
+    },
+    {
+      "name": "level1-mana-carrier",
+      "class": 3,
+      "models": [3],
+      "level_scopes": {"1": [9]},
+      "behavior": "Mana carrier transfer callback",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"],
+      "evidence": ["MANA_CARRIER_ACTION", "AddBallon_60AB0"]
+    },
+    {
+      "name": "goat-family",
+      "class": 5,
+      "models": [1],
+      "level_scopes": {"1": [9, 10, 11, 12, 13, 14, 15], "2": [9, 10, 11, 12, 13, 14, 15]},
+      "behavior": "Goat roam, hit, partner, death, and patrol callbacks",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/goat.rs"],
+      "evidence": ["step_source_slot", "LEVEL_ONE_GOAT_INDICES", "LEVEL_TWO_GOAT_INDICES"]
+    },
+    {
+      "name": "multipart-family",
+      "class": 5,
+      "models": [3],
+      "level_scopes": {"1": [25, 26, 27, 28, 29, 30, 31, 232], "2": [25, 26, 27, 28, 29, 30, 232]},
+      "behavior": "Multipart head/segment action lifecycle",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world/level2_class5/model3.rs"],
+      "evidence": ["MULTIPART_ROAM_ACTION", "step_authored_class5_model3", "MULTIPART_SEGMENT_ACTION"]
+    },
+    {
+      "name": "archer-family",
+      "class": 5,
+      "models": [4],
+      "level_scopes": {"1": [33], "2": [33, 34, 35, 36, 37, 38, 39]},
+      "behavior": "Archer root movement/combat/visual action family",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world/level2_class5/archer.rs"],
+      "evidence": ["ARCHER_ACTION", "step_authored_archer_slot", "ARCHER_ACTION_IDLE_VISUAL"]
+    },
+    {
+      "name": "level2-model9-family",
+      "class": 5,
+      "models": [9],
+      "level_scopes": {"2": [72, 73]},
+      "behavior": "Level 2 model-9 countdown and movement callbacks",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/native_world/level2_class5/model9.rs"],
+      "evidence": ["MODEL9_ACTION_COUNTDOWN", "MODEL9_ACTION_MOVEMENT", "model9_step"]
+    },
+    {
+      "name": "level1-builder-family",
+      "class": 5,
+      "models": [12],
+      "level_scopes": {"1": [96, 97, 98, 99, 100, 101, 102, 103]},
+      "behavior": "Builder search, movement, construction, and combat callbacks",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"],
+      "evidence": ["BUILDER_SEARCH_ACTION", "BUILDER_RESET_ACTION", "step_builder_source_slot"]
+    },
+    {
+      "name": "villager-family",
+      "class": 5,
+      "models": [13],
+      "level_scopes": {"1": [104, 106, 107, 108, 109, 110, 111]},
+      "behavior": "Villager spawn, free, hit, death, and staged callbacks",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/villager.rs"],
+      "evidence": ["VILLAGER_INITIAL_ACTION", "VILLAGER_DEATH_ACTION", "step_villager_state"]
+    },
+    {
+      "name": "builder-villager-post-build",
+      "class": 5,
+      "models": [12, 13],
+      "level_scopes": {"1": [105], "2": [105]},
+      "behavior": "Shared action-105 post-build/villager source cursor",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["BUILDER_POST_BUILD_ACTION", "VILLAGER_FREE_ACTION", "level_two_action_105 production cursor"]
+    },
+    {
+      "name": "trader-family",
+      "class": 5,
+      "models": [14],
+      "level_scopes": {"1": [112, 113, 114, 115, 116, 117, 118, 119], "2": [113, 116, 118]},
+      "behavior": "Trader movement, hit, death, and staged callbacks",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world/level2_class5/trader.rs"],
+      "evidence": ["TRADER_INITIAL_ACTION", "TRADER_HIT_ACTION", "step_authored_trader_slot"]
+    },
+    {
+      "name": "level1-firefly-family",
+      "class": 5,
+      "models": [19],
+      "level_scopes": {"1": [153, 154, 155, 156, 157, 159]},
+      "behavior": "Firefly roam, attack, link, death, and stage callbacks",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"],
+      "evidence": ["FIREFLY_ROAM_ACTION", "FIREFLY_STAGE_ACTION", "step_firefly_source_slot"]
+    },
+    {
+      "name": "projectile-family",
+      "class": 9,
+      "models": [0, 1, 10, 13, 17],
+      "level_scopes": {"1": [0, 1, 10, 13, 18], "2": [0, 1, 10, 13]},
+      "behavior": "Fireball, possession, Castle, archer-arrow, and strong-possession projectiles",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world/level2_dynamic_economy.rs"],
+      "evidence": ["FIREBALL_PROJECTILE_CLASS", "POSSESSION_PROJECTILE_ACTION", "CASTLE_PROJECTILE_ACTION"]
+    },
+    {
+      "name": "level2-model6-projectile-child",
+      "class": 9,
+      "models": [14],
+      "level_scopes": {"2": [15]},
+      "behavior": "Level 2 generated model-14 child callback",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["Level2Model6SpawnedChild", "step_model6_spawned_child_slot"]
+    },
+    {
+      "name": "class10-effects",
+      "class": 10,
+      "models": [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 77, 79, 91],
+      "level_scopes": {"1": [0, 1, 2, 5, 6, 12, 13, 14, 41, 42, 44, 45, 48, 51, 52, 53, 59, 64, 65, 77, 86, 98], "2": [0, 1, 5, 6, 12, 13, 14, 17, 19, 22, 41, 43, 44, 45, 51, 52, 53, 58, 59, 64, 76, 83, 86]},
+      "behavior": "Level 1 ambient, spell, Castle, house, terrain, and reward effects",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/house.rs"],
+      "evidence": ["MANA_SPHERE_ACTION", "HOUSE_LIVE_ACTION", "CASTLE_DEFENSE_ACTION", "SPELL_JAR_REWARD_ACTION"]
+    },
+    {
+      "name": "level2-switch-producers",
+      "class": 11,
+      "models": [0, 1, 12],
+      "level_scopes": {"2": [0, 1, 12]},
+      "behavior": "Level 2 authored switch producer callbacks",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["allocate_authored_switch_producer", "step_level2_authored_switch_producer"]
+    },
+    {
+      "name": "level2-objective-switch",
+      "class": 11,
+      "models": [32],
+      "level_scopes": {"2": [32]},
+      "behavior": "Level 2 model-32 objective switch callback",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["allocate_authored_model32", "Level2AuthoredModel32Source"]
+    },
+    {
+      "name": "level2-class14-events",
+      "class": 14,
+      "models": [3, 5],
+      "level_scopes": {"2": [8, 10]},
+      "behavior": "Level 2 class-14 model-3/model-5 terrain callbacks",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["allocate_authored_class14", "step_authored_class14_slot"]
+    },
+    {
+      "name": "spell-holder-and-pickup-family",
+      "class": 15,
+      "models": [0, 1, 2, 3, 6, 11, 12],
+      "level_scopes": {"1": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], "2": [0, 3, 6, 9, 18, 19, 20, 33, 34, 35, 36, 37, 38, 78]},
+      "behavior": "Level 1 holders/pickups and Level 2 physical spell action roles",
+      "rust_paths": ["research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs", "research/private/remc2-sim-rs/crates/sim-core/src/spell_activation.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+      "evidence": ["SPELL_HOLDER_ACTIONS", "physical_spell_action", "LEVEL2_GENERIC_SPELL_PICKUPS"]
+    }
+  ]
+}
