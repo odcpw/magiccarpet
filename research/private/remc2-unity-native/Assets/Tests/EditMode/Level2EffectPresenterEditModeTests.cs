@@ -41,7 +41,7 @@ namespace MagicCarpet.Native.Tests
                 new byte[] { 17, 19, 21, 11, 23 },
                 effects.Select(effect => effect.Family).ToArray());
             CollectionAssert.AreEqual(
-                new byte[] { 17, 22, 13, 45, 76 },
+                new byte[] { 17, 22, 19, 45, 76 },
                 effects.Select(effect => effect.Model).ToArray());
             CollectionAssert.AreEqual(
                 new byte[] { 17, 22, 19, 51, 83 },
@@ -151,24 +151,33 @@ namespace MagicCarpet.Native.Tests
             var presenter = new Level2SpellPresenter();
             presenter.Reset(session.Generation);
 
+            var seen = new Dictionary<byte, Level2EffectPresentation>();
+            var positions = new HashSet<(ushort x, ushort y, short z)>();
+            foreach (var candidate in session.Entities())
+            {
+                if (candidate.active != 1)
+                {
+                    continue;
+                }
+                positions.Add((candidate.x, candidate.y, candidate.z));
+            }
             var player = session.Players().Single(candidate => candidate.slot == 0);
             var playerEntity = session.Entities()
                 .Single(candidate => candidate.entityIndex == player.entityIndex);
+            positions.Add((playerEntity.x, playerEntity.y, playerEntity.z));
             var objective = session.ObjectiveStageState();
-            var seen = new Dictionary<byte, Level2EffectPresentation>();
-            var positions = session.Entities()
-                .Where(candidate => candidate.active == 1)
-                .Select(candidate => (candidate.x, candidate.y, candidate.z))
-                .Append((playerEntity.x, playerEntity.y, playerEntity.z))
-                .Append((
-                    unchecked((ushort)objective.axisX),
-                    unchecked((ushort)objective.axisY),
-                    (short)256))
-                .Distinct()
-                .ToArray();
-            foreach (var position in positions)
+            positions.Add((
+                unchecked((ushort)objective.axisX),
+                unchecked((ushort)objective.axisY),
+                (short)256));
+
+            // New authored group rows become native entities only after their
+            // producer's source pass. Refreshing the position frontier between
+            // bounded rounds lets the ordinary group-25 -> group-26 chain
+            // reach its later model-19 source without inventing a setter.
+            for (var round = 0; round < 16 && seen.Count < 5; round++)
             {
-                for (var pulse = 0; pulse < 4; pulse++)
+                foreach (var position in positions.ToArray())
                 {
                     var stepped = session.Step(position.x, position.y, position.z);
                     var hud = session.DayHudState(stepped.snapshot.revision);
@@ -189,10 +198,19 @@ namespace MagicCarpet.Native.Tests
                         break;
                     }
                 }
-                if (seen.Count == 5)
+
+                foreach (var candidate in session.Entities())
                 {
-                    break;
+                    if (candidate.active != 1)
+                    {
+                        continue;
+                    }
+                    positions.Add((candidate.x, candidate.y, candidate.z));
                 }
+                player = session.Players().Single(candidate => candidate.slot == 0);
+                playerEntity = session.Entities()
+                    .Single(candidate => candidate.entityIndex == player.entityIndex);
+                positions.Add((playerEntity.x, playerEntity.y, playerEntity.z));
             }
 
             var expectedFamilies = new byte[] { 11, 17, 19, 21, 23 };
@@ -201,6 +219,15 @@ namespace MagicCarpet.Native.Tests
                 Is.EquivalentTo(expectedFamilies),
                 $"production rooted families observed: " +
                 string.Join(",", seen.Keys.OrderBy(family => family)));
+            CollectionAssert.AreEqual(
+                new byte[] { 45, 17, 22, 19, 76 },
+                expectedFamilies.Select(family => seen[family].Model).ToArray());
+            CollectionAssert.AreEqual(
+                new byte[] { 51, 17, 22, 19, 83 },
+                expectedFamilies.Select(family => seen[family].Action).ToArray());
+            Assert.That(
+                seen.Values.All(effect => effect.UsesMsprd == (effect.Family == 23)),
+                Is.True);
             Assert.That(
                 seen.Values.All(effect => effect.Generation == session.Generation),
                 Is.True);

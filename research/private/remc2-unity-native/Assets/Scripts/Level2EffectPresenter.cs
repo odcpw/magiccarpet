@@ -228,7 +228,7 @@ namespace MagicCarpet.Native
                     recipe = Level2EffectRecipe.None;
                     return true;
                 case Model13Family:
-                    model = 13;
+                    model = 19;
                     action = 19;
                     recipe = Level2EffectRecipe.None;
                     return true;
