@@ -1009,6 +1009,42 @@ mod tests {
     }
 
     #[test]
+    fn add_house_rng_gate_receipt_preserves_0257_0258_order_and_rejection() {
+        // Pinned remc2 6806c72, EventsFunctions.cpp:28051-28052:
+        // AddHouse0A_2D_38330 advances RNG-L2-0257, then applies the
+        // RNG-L2-0258 eligibility comparison. Only the eligible branch may
+        // enter GetRandManaSphere_38270; this test is a house-gate receipt,
+        // not a Level 2 reachability claim for RNG-L2-0255..0256.
+        let world = load_world();
+        let mut eligible = HouseFamily::from_entities(world.entities()).expect("house family");
+        eligible.houses[0].phase = 0;
+        eligible.houses[0].occupants = 48;
+        eligible.houses[0].capacity = 48;
+        eligible.houses[0].rng = 46;
+        let events = eligible.step_source_slot(1, &world);
+        assert!(matches!(
+            events.as_slice(),
+            [HouseStepEvent::ResidentRequested {
+                attacker_entity_index: 0,
+                model: 4,
+                action: 33,
+                ..
+            }]
+        ));
+        assert_eq!(eligible.houses[0].rng, next_rng(next_rng(46)));
+
+        // Seed zero fails the post-0257 eligibility comparison. The rejected
+        // branch consumes no GetRandManaSphere draw and emits no request.
+        let mut rejected = HouseFamily::from_entities(world.entities()).expect("house family");
+        rejected.houses[0].phase = 0;
+        rejected.houses[0].occupants = 48;
+        rejected.houses[0].capacity = 48;
+        rejected.houses[0].rng = 0;
+        assert!(rejected.step_source_slot(1, &world).is_empty());
+        assert_eq!(rejected.houses[0].rng, next_rng(0));
+    }
+
+    #[test]
     fn action_51_emits_post_decrement_passes_then_completion_after_state_transition() {
         let world = load_world();
         let mut family = HouseFamily::from_entities(world.entities()).expect("house family");
