@@ -3,6 +3,8 @@
 //! All paths and data are supplied explicitly by the caller. This module does
 //! not use the embedded owner regression bytes retained by the legacy v1 ABI.
 
+mod campaign_facade;
+
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -14,6 +16,9 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+use campaign_facade::{
+    CampaignFacade, InternalCampaignAdapter, InternalCampaignOpen, SealedLevel1Adapter,
+};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 use sim_core::native_world::resolve_level1_presentation_cache_root;
@@ -8189,21 +8194,15 @@ pub extern "C" fn mc_native_session_open(
                 "package_dir and closure_path must be non-empty",
             ));
         }
-        let world = if let Some(cache_root) = std::env::var_os("MC_ASSET_CACHE_PATH") {
-            NativeWorld::load_with_owner_cache(&package, &closure, PathBuf::from(cache_root))
-        } else {
-            NativeWorld::load(&package, &closure)
-        }
-        .map_err(|error| {
-            let message = error.to_string();
-            let status = if message.starts_with("cannot read ") {
-                MC_STATUS_IO_ERROR
-            } else {
-                MC_STATUS_VALIDATION_FAILED
-            };
-            AbiError::new(status, message)
-        })?;
-        let session = SessionRecord::new(world)?;
+        let owner_cache = std::env::var_os("MC_ASSET_CACHE_PATH").map(PathBuf::from);
+        let session = CampaignFacade::<SealedLevel1Adapter>::open(
+            SealedLevel1Adapter::KEY,
+            InternalCampaignOpen {
+                package_dir: Path::new(&package),
+                closure_path: Some(Path::new(&closure)),
+                owner_cache: owner_cache.as_deref(),
+            },
+        )?;
         with_registry_mut(|registry| registry.insert(session))
     })
 }
@@ -10541,10 +10540,7 @@ pub extern "C" fn mc_native_session_reset(
     out_snapshot_size: u32,
 ) -> i32 {
     boundary_value(out_snapshot, out_snapshot_size, || {
-        with_session_mut(handle, |session| {
-            session.reset();
-            Ok(session.snapshot())
-        })
+        with_session_mut(handle, CampaignFacade::<SealedLevel1Adapter>::reset)
     })
 }
 
@@ -10720,8 +10716,7 @@ pub extern "C" fn mc_native_session_step(
         validate_command(&command)?;
         let command = player_command(command)?;
         with_session_mut(handle, |session| {
-            session.step(command);
-            Ok(session.snapshot())
+            CampaignFacade::<SealedLevel1Adapter>::step(session, command)
         })
     })
 }
