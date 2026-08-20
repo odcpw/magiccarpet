@@ -47916,6 +47916,531 @@ mod tests {
         }));
     }
 
+    const LEVEL2_SCHEDULER_RNG_ROWS: [(&str, &str, &str); 11] = [
+        (
+            "RNG-L2-0464",
+            "remc2/engine/EventsFunctions.cpp:62474",
+            "AddTree02_00_64E20",
+        ),
+        (
+            "RNG-L2-0465",
+            "remc2/engine/EventsFunctions.cpp:62475",
+            "AddTree02_00_64E20",
+        ),
+        (
+            "RNG-L2-0477",
+            "remc2/engine/Events.cpp:420",
+            "ApplyEvents_498A0",
+        ),
+        (
+            "RNG-L2-0478",
+            "remc2/engine/Events.cpp:578",
+            "NewEvent_4A050",
+        ),
+        (
+            "RNG-L2-0479",
+            "remc2/engine/Events.cpp:604",
+            "NewEvent_4A050",
+        ),
+        (
+            "RNG-L2-0480",
+            "remc2/engine/Terrain.cpp:22",
+            "GenerateLevelMap_43830",
+        ),
+        ("RNG-L2-0489", "remc2/engine/Basic.cpp:2997", "file_scope"),
+        ("RNG-L2-0490", "remc2/engine/Basic.cpp:3035", "file_scope"),
+        ("RNG-L2-0491", "remc2/engine/Basic.cpp:3190", "file_scope"),
+        ("RNG-L2-0492", "remc2/engine/Basic.cpp:3228", "file_scope"),
+        (
+            "RNG-L2-0493",
+            "remc2/engine/Sound.cpp:6333",
+            "PrepareEventSound_6E450",
+        ),
+    ];
+
+    fn configure_level2_scheduler_audio_rows(session: &mut Level2ResetSession) {
+        let selected = [39_u16, 40, 42];
+        for mut goat in session.goats().to_vec() {
+            if selected.contains(&goat.entity_index) {
+                continue;
+            }
+            goat.action = 0;
+            goat.pending_damage = 0;
+            goat.pending_attacker = 0;
+            goat.current_attacker = 0;
+            goat.partner_entity_index = None;
+            goat.target_entity_index = None;
+            assert!(session.goats.replace_goat_for_test(goat));
+        }
+
+        let mut action_11 = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .cloned()
+            .expect("qualified action-11 Goat");
+        action_11.action = 11;
+        action_11.partner_entity_index = None;
+        action_11.target_entity_index = None;
+        action_11.pending_damage = 0;
+        action_11.pending_attacker = 0;
+        action_11.current_attacker = 0;
+        action_11.rng = 129;
+        action_11.phase = 0;
+        assert!(session.goats.replace_goat_for_test(action_11));
+
+        let mut action_9 = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .cloned()
+            .expect("qualified action-9 Goat");
+        action_9.action = 9;
+        action_9.partner_entity_index = None;
+        action_9.target_entity_index = None;
+        action_9.pending_damage = 0;
+        action_9.pending_attacker = 0;
+        action_9.current_attacker = 0;
+        action_9.actual_speed = 0;
+        action_9.rng = 129;
+        action_9.phase = 1;
+        action_9.proximity_countdown = 0;
+        action_9.proximity_subcounter = 0;
+        assert!(session.goats.replace_goat_for_test(action_9));
+
+        let player_entity_index = session.state.entity_index;
+        let mut action_14 = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 42)
+            .cloned()
+            .expect("qualified action-14 Goat");
+        action_14.action = 14;
+        action_14.partner_entity_index = None;
+        action_14.target_entity_index = Some(player_entity_index);
+        action_14.pending_damage = 0;
+        action_14.pending_attacker = 0;
+        action_14.current_attacker = 0;
+        action_14.rng = 62;
+        action_14.phase = 1;
+        let hit_position = action_14.position;
+        assert!(session.goats.replace_goat_for_test(action_14));
+        session.state.position = hit_position;
+        session.entities[usize::from(player_entity_index)].position = hit_position;
+        session
+            .submit_goat_damage(42, 1, player_entity_index)
+            .expect("qualified action-14 audio branch");
+    }
+
+    fn level2_scheduler_bleat_slots(session: &Level2ResetSession) -> Vec<u16> {
+        session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::Goat {
+                    source_slot,
+                    events,
+                    ..
+                } if events
+                    .iter()
+                    .any(|event| matches!(event, GoatStepEvent::Bleat { sound_id: 46, .. })) =>
+                {
+                    Some(*source_slot)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
+        let declared_ids = LEVEL2_SCHEDULER_RNG_ROWS
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<Vec<_>>();
+        assert_eq!(declared_ids.len(), 11);
+        assert_eq!(
+            declared_ids,
+            vec![
+                "RNG-L2-0464",
+                "RNG-L2-0465",
+                "RNG-L2-0477",
+                "RNG-L2-0478",
+                "RNG-L2-0479",
+                "RNG-L2-0480",
+                "RNG-L2-0489",
+                "RNG-L2-0490",
+                "RNG-L2-0491",
+                "RNG-L2-0492",
+                "RNG-L2-0493",
+            ]
+        );
+        let unique_ids = declared_ids.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(unique_ids.len(), declared_ids.len());
+        assert_eq!(
+            LEVEL2_SCHEDULER_RNG_ROWS
+                .iter()
+                .map(|(_, token, _)| *token)
+                .collect::<Vec<_>>(),
+            vec![
+                "remc2/engine/EventsFunctions.cpp:62474",
+                "remc2/engine/EventsFunctions.cpp:62475",
+                "remc2/engine/Events.cpp:420",
+                "remc2/engine/Events.cpp:578",
+                "remc2/engine/Events.cpp:604",
+                "remc2/engine/Terrain.cpp:22",
+                "remc2/engine/Basic.cpp:2997",
+                "remc2/engine/Basic.cpp:3035",
+                "remc2/engine/Basic.cpp:3190",
+                "remc2/engine/Basic.cpp:3228",
+                "remc2/engine/Sound.cpp:6333",
+            ]
+        );
+
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 scheduler/global RNG package");
+        let initial_global = inspection.runtime().random_state;
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 scheduler/global RNG session");
+        let baseline = (
+            session.campaign_state_hash(),
+            session.dispatch_observability_hash(),
+            session.economy().reset_hash(),
+            session.economy().global_rng,
+            session.entities.clone(),
+            session.economy().free_slots.clone(),
+        );
+
+        // GenerateLevelMap writes the package runtime seed and the two
+        // file-scope Basic.cpp copies carry that same global/entity projection
+        // into and back out of the session reset. No secondary RNG carrier is
+        // allowed to appear at this boundary (RNG-L2-0480, 0489..0492).
+        assert_eq!(baseline.3, initial_global);
+        assert_eq!(
+            session
+                .entities
+                .iter()
+                .map(|entity| (entity.index, entity.entity_rng))
+                .collect::<Vec<_>>(),
+            inspection
+                .entities()
+                .iter()
+                .map(|entity| (entity.index, entity.entity_rng))
+                .collect::<Vec<_>>()
+        );
+
+        // ApplyEvents advances the full-width session stream exactly once
+        // before its ascending source walk (RNG-L2-0477). The qualified idle
+        // pass has no tree row, no dynamic row, and no sound-46 emission, so
+        // no later branch is permitted to perturb this transition.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let pass_one_global = level2_next_rng32(initial_global);
+        assert_eq!(session.economy().global_rng, pass_one_global);
+
+        // NewEvent's ordinary free-stack branch seeds a carrier with the
+        // allocated slot plus the post-ApplyEvents global low word
+        // (RNG-L2-0478). The sphere constructor uses the same NewEvent seed
+        // before its two source-local draws (RNG-L2-0479).
+        let carrier_slot = session
+            .economy()
+            .free_slots
+            .last()
+            .copied()
+            .expect("ordinary NewEvent free slot");
+        let carrier_id = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("ordinary NewEvent carrier allocation");
+        assert_eq!(carrier_id, carrier_slot);
+        let carrier = session
+            .economy()
+            .carriers()
+            .iter()
+            .find(|carrier| carrier.source_entity_index == carrier_slot)
+            .expect("allocated carrier row");
+        assert_eq!(
+            carrier.entity_rng,
+            carrier_slot.wrapping_add(pass_one_global as u16)
+        );
+
+        let sphere_slot = session
+            .economy()
+            .free_slots
+            .last()
+            .copied()
+            .expect("second ordinary NewEvent free slot");
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 10, 111)
+            .expect("ordinary NewEvent sphere allocation");
+        assert_eq!(sphere_id, u32::from(sphere_slot));
+        let sphere_seed = sphere_slot.wrapping_add(pass_one_global as u16);
+        let sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("allocated sphere row");
+        assert_eq!(
+            sphere.entity_rng,
+            level2_next_rng16(level2_next_rng16(sphere_seed))
+        );
+
+        // Both rows are visible in the same ordinary source pass in ascending
+        // source-slot order. Absorbing the sphere disables it after that
+        // callback; the following pass owns reclaim/index rebuild, not the
+        // same-pass producer (UpdateEntities_57730 boundary).
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let mut dynamic_slots = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::DynamicArena {
+                    pass: 0,
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaCarrier | Level2DynamicArenaKind::ManaSphere,
+                } if *source_slot == carrier_slot || *source_slot == sphere_slot => {
+                    Some(*source_slot)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut expected_dynamic_slots = vec![carrier_slot, sphere_slot];
+        expected_dynamic_slots.sort_unstable();
+        assert_eq!(dynamic_slots.len(), 2);
+        dynamic_slots.sort_unstable();
+        assert_eq!(dynamic_slots, expected_dynamic_slots);
+        assert_eq!(
+            session.economy().global_rng,
+            level2_next_rng32(pass_one_global)
+        );
+
+        session.economy_mut().begin_turn();
+        assert!(
+            session
+                .economy_mut()
+                .absorb_sphere_into_carrier(sphere_slot, carrier_slot)
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.economy().free_slots.contains(&sphere_slot));
+        assert!(
+            !session
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| sphere.source_entity_index == sphere_slot)
+        );
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot: slot,
+                    kind: Level2DynamicArenaKind::ManaSphere,
+                    ..
+                } if *slot == sphere_slot
+            )
+        }));
+
+        // Force NewEvent's replaceable-row fallback after the ordinary free
+        // stack is exhausted. The dying burst is the only eligible fallback;
+        // the replacement must overwrite its source slot with the same
+        // post-pass global seed (RNG-L2-0479's secondary arena branch).
+        let fallback_slot = session
+            .economy_mut()
+            .spawn_death_burst_from_death_with_id(902, 111, Position::default())
+            .expect("replaceable NewEvent row");
+        let fallback_global = session.economy().global_rng;
+        session.economy_mut().free_slots.clear();
+        let replacement_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("replaceable NewEvent fallback allocation");
+        assert_eq!(replacement_slot, fallback_slot);
+        let replacement = session
+            .economy()
+            .carriers()
+            .iter()
+            .find(|carrier| carrier.source_entity_index == replacement_slot)
+            .expect("replacement carrier row");
+        assert_eq!(
+            replacement.entity_rng,
+            replacement_slot.wrapping_add(fallback_global as u16)
+        );
+
+        // The three sound-46 events are downstream of the same source pass.
+        // PrepareEventSound computes `9377 * global + 9439` for its play-rate
+        // variation (RNG-L2-0493) but does not write D41A0.rand_0x8 back; the
+        // scheduler stream therefore remains exactly one draw per pass.
+        session.reset();
+        configure_level2_scheduler_audio_rows(&mut session);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(level2_scheduler_bleat_slots(&session), [39, 40, 42]);
+        assert_eq!(
+            session.economy().global_rng,
+            level2_next_rng32(initial_global),
+            "sound-46's RNG-L2-0493 derived value is not a second global-state advance"
+        );
+        let prepare_sound_rng = level2_next_rng32(session.economy().global_rng);
+        assert_eq!(
+            prepare_sound_rng,
+            session
+                .economy()
+                .global_rng
+                .wrapping_mul(9_377)
+                .wrapping_add(9_439)
+        );
+        assert_eq!(
+            session
+                .dispatch_events()
+                .iter()
+                .filter_map(|event| match event {
+                    Level2DispatchEvent::Goat {
+                        source_slot,
+                        events,
+                        ..
+                    } if events.iter().any(|event| {
+                        matches!(
+                            event,
+                            GoatStepEvent::Bleat {
+                                sound_id: 46,
+                                action: 9 | 14,
+                                ..
+                            }
+                        )
+                    }) =>
+                        Some(*source_slot),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![39, 40, 42]
+        );
+
+        // Reset restores the package seed, all copied entity RNG words, the
+        // arena/free-list/index projection, the event journal, and both
+        // observable hashes in one transition.
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline.0);
+        assert_eq!(session.dispatch_observability_hash(), baseline.1);
+        assert_eq!(session.economy().reset_hash(), baseline.2);
+        assert_eq!(session.economy().global_rng, baseline.3);
+        assert_eq!(session.entities, baseline.4);
+        assert_eq!(session.economy().free_slots, baseline.5);
+        assert!(session.dispatch_events().is_empty());
+    }
+
+    #[test]
+    fn level_two_scheduler_global_rng_rejections_are_exact_no_ops() {
+        let (level_one_package, _) = fixture_paths();
+        assert!(NativeWorld::inspect_level2(level_one_package).is_err());
+
+        let package = level_two_fixture_path();
+        let players = fs::read(package.join("players.bin")).expect("Level 2 players member");
+        assert!(
+            parse_players(
+                &players[..players.len() - 1],
+                OwnerPackageProfile::Level2,
+                OwnerPackageSchema::V5
+            )
+            .is_err()
+        );
+
+        let inspection = NativeWorld::inspect_level2(&package)
+            .expect("qualified Level 2 negative scheduler package");
+        assert!(
+            inspection
+                .entities()
+                .iter()
+                .all(|entity| { !(entity.active && entity.class == 2 && entity.model == 0) })
+        );
+        let dolmen = inspection
+            .entities()
+            .iter()
+            .find(|entity| entity.active && entity.class == 2 && entity.model == 2)
+            .expect("qualified dolmen row");
+        assert_eq!(dolmen.action, 6);
+        assert_ne!((dolmen.class, dolmen.model), (2, 0));
+
+        // Exhausting the ordinary free list with no replaceable live row
+        // rejects NewEvent before it can seed a source row or publish an
+        // event/index/hash mutation.
+        let mut exhausted = inspection
+            .level2_reset_session()
+            .expect("free-list negative session");
+        exhausted.economy_mut().free_slots.clear();
+        let exhausted_before = (
+            exhausted.campaign_state_hash(),
+            exhausted.dispatch_observability_hash(),
+            exhausted.economy().reset_hash(),
+            exhausted.economy().global_rng,
+            exhausted.economy().source_rng.clone(),
+            exhausted.economy().events.clone(),
+        );
+        assert!(
+            exhausted
+                .economy_mut()
+                .spawn_mana_carrier(Position::default(), 111, 0)
+                .is_none()
+        );
+        assert_eq!(exhausted.campaign_state_hash(), exhausted_before.0);
+        assert_eq!(exhausted.dispatch_observability_hash(), exhausted_before.1);
+        assert_eq!(exhausted.economy().reset_hash(), exhausted_before.2);
+        assert_eq!(exhausted.economy().global_rng, exhausted_before.3);
+        assert_eq!(exhausted.economy().source_rng, exhausted_before.4);
+        assert_eq!(exhausted.economy().events, exhausted_before.5);
+        assert!(exhausted.dispatch_events().is_empty());
+
+        // A rejected event and a stale cursor are no-ops before the source
+        // scheduler can reach any handler draw. The tree callback is likewise
+        // absent from this qualified reset; the dolmen row above must not be
+        // coerced into AddTree02_00_64E20.
+        let mut rejected = inspection
+            .level2_reset_session()
+            .expect("rejected-event negative session");
+        let rejected_before = (
+            rejected.campaign_state_hash(),
+            rejected.dispatch_observability_hash(),
+            rejected.economy().reset_hash(),
+            rejected.economy().global_rng,
+            rejected.economy().events.clone(),
+        );
+        assert!(
+            rejected
+                .economy_mut()
+                .allocate_spell_pickup(0, 0, 0, Position::default())
+                .is_none()
+        );
+        assert!(!rejected.economy_mut().step_mana_sphere_slot(u16::MAX));
+        assert_eq!(rejected.campaign_state_hash(), rejected_before.0);
+        assert_eq!(rejected.dispatch_observability_hash(), rejected_before.1);
+        assert_eq!(rejected.economy().reset_hash(), rejected_before.2);
+        assert_eq!(rejected.economy().global_rng, rejected_before.3);
+        assert_eq!(rejected.economy().events, rejected_before.4);
+        assert!(rejected.dispatch_events().is_empty());
+
+        // A real outer pass is not a no-op: its ApplyEvents global draw is
+        // expected. Reset, however, must remove that draw and every resulting
+        // source/index/event/hash change.
+        let mut reset = inspection
+            .level2_reset_session()
+            .expect("reset negative session");
+        let baseline_hash = reset.campaign_state_hash();
+        let baseline_economy_hash = reset.economy().reset_hash();
+        let baseline_global = reset.economy().global_rng;
+        reset.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            reset.economy().global_rng,
+            level2_next_rng32(baseline_global)
+        );
+        assert_ne!(reset.campaign_state_hash(), baseline_hash);
+        assert_ne!(reset.economy().reset_hash(), baseline_economy_hash);
+        reset.reset();
+        assert_eq!(reset.campaign_state_hash(), baseline_hash);
+        assert_eq!(reset.economy().reset_hash(), baseline_economy_hash);
+        assert_eq!(reset.economy().global_rng, baseline_global);
+        assert!(reset.dispatch_events().is_empty());
+    }
+
     #[test]
     fn level_two_mana_sphere_dynamic_handler_moves_and_updates_source_chain() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
