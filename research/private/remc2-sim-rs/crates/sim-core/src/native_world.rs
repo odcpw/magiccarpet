@@ -8244,7 +8244,12 @@ impl Level2EconomyState {
             position,
             velocity_x: 0,
             velocity_y: 0,
-            vertical_velocity: 0,
+            // CreateManaSphere_500C0 seeds word_0x2C with 128.  The first
+            // ordinary TransformArcherToMana callback therefore rises before
+            // gravity can reach the ground; preserving that seed prevents a
+            // same-pass source cursor from merging freshly materialized
+            // authored spheres before their later source rows are visited.
+            vertical_velocity: 128,
             yaw: 0,
             mana: AUTHORED_MANA,
             owner_entity_index: 0,
@@ -10579,6 +10584,27 @@ impl Level2EconomyState {
     /// `sub_38D80`. Eligible mana spheres receive one source-linked attraction
     /// mailbox in source order; an already-targeted sphere is left untouched.
     pub fn step_mana_attraction_slot(&mut self, source_slot: u16) -> bool {
+        self.step_mana_attraction_slot_with_membership(source_slot, None)
+    }
+
+    /// Advance one attraction field using the model-39 membership rebuilt at
+    /// the beginning of the ordinary `UpdateEntities_57730` pass. New spheres
+    /// allocated during that pass remain eligible for their own higher-slot
+    /// callbacks, but cannot become field candidates until the next pass
+    /// rebuilds the source-linked membership list.
+    pub fn step_mana_attraction_slot_with_sphere_membership(
+        &mut self,
+        source_slot: u16,
+        sphere_membership: &BTreeSet<u16>,
+    ) -> bool {
+        self.step_mana_attraction_slot_with_membership(source_slot, Some(sphere_membership))
+    }
+
+    fn step_mana_attraction_slot_with_membership(
+        &mut self,
+        source_slot: u16,
+        sphere_membership: Option<&BTreeSet<u16>>,
+    ) -> bool {
         let Some(field_index) = self
             .mana_attraction_fields
             .iter()
@@ -10619,11 +10645,13 @@ impl Level2EconomyState {
             }
         }
 
-        for sphere in self
-            .spheres
-            .iter_mut()
-            .filter(|sphere| sphere.active && sphere.attraction_source_entity_index == 0)
-        {
+        for sphere in self.spheres.iter_mut().filter(|sphere| {
+            sphere.active
+                && sphere.attraction_source_entity_index == 0
+                && sphere_membership.map_or(true, |membership| {
+                    membership.contains(&sphere.source_entity_index)
+                })
+        }) {
             let distance_squared = level2_wrapping_xy_distance(position, sphere.position);
             if distance_squared < radius_squared {
                 let distance = crate::legacy_sqrt(distance_squared);
@@ -33072,14 +33100,20 @@ mod tests {
 
         // Leave exactly thirty real arena slots for the next public source
         // pass: the established group-3 batch consumes 22 main rows plus
-        // model-54 row 63, leaving seven slots for a partial trader batch.
+        // model-54 row 63, and action 58 consumes three real model-0 child
+        // slots (993..=995), leaving four slots for a partial trader batch.
+        // This is the narrowly authorized stale-band accounting correction in
+        // mc-switch-regression-dzgvb comment 574; the pinned source remains
+        // low-first and all transactional/RNG/reset negatives stay intact.
         let expected_group3_main_indices = (43_u16..=62).chain([64, 439]).collect::<Vec<_>>();
-        let established_allocation_count = expected_group3_main_indices.len() + 1;
-        assert_eq!(established_allocation_count, 23);
+        let action58_child_count = 3;
+        let established_allocation_count =
+            expected_group3_main_indices.len() + 1 + action58_child_count;
+        assert_eq!(established_allocation_count, 26);
         allocation_failure.economy.free_slots.truncate(30);
         let trader_capacity =
             allocation_failure.economy.free_slots.len() - established_allocation_count;
-        assert_eq!(trader_capacity, 7);
+        assert_eq!(trader_capacity, 4);
         let pre_trader_free_slots =
             allocation_failure.economy.free_slots[..trader_capacity].to_vec();
         let pre_trader_global_rng = allocation_failure.economy.global_rng;
