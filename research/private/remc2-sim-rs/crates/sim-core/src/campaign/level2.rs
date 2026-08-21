@@ -5160,24 +5160,56 @@ impl Level2ResetSession {
     }
 
     /// Dispatch one newly allocated dynamic row before the source cursor
-    /// reaches the next existing slot. This covers the class-9/model-1
-    /// Possession chain and the class-9/model-10 Castle flyer; it preserves
-    /// the source runagain cursor without turning the economy arena into a
-    /// second scheduler.
-    pub(super) fn step_level2_pending_possession_dynamic_row(
+    /// reaches the next existing slot. The ordinary gameplay cursor admits
+    /// every higher-slot source-active birth, including authored switches,
+    /// model-39 spheres/fields, and the existing projectile families. This is
+    /// one ascending cursor, not a late ApplyEvents-style resweep.
+    pub(super) fn step_level2_pending_source_row(
         &mut self,
         pass: u8,
         row: Level2DynamicArenaCursorRow,
+        player_entity_index: u16,
+        player_position: Position,
+        source_player_order: &[usize],
+        sphere_membership: &BTreeSet<u16>,
     ) {
-        debug_assert!(matches!(
-            row.kind,
-            Level2DynamicArenaKind::CastleProjectile
-                | Level2DynamicArenaKind::FireballProjectile
-                | Level2DynamicArenaKind::PossessionProjectile
-                | Level2DynamicArenaKind::PossessionEffect
-        ));
         let source_slot = row.source_slot;
-        let live = self.step_level2_dynamic_arena(pass, source_slot, row.kind);
+        if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
+            if let Some(target_group) = self
+                .economy
+                .authored_model45()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .map(|source| source.target_group)
+                .filter(|target_group| *target_group != 0)
+            {
+                self.activate_level2_authored_spell_group(pass, source_slot, target_group);
+            }
+        }
+        let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
+            self.step_level2_dynamic_spell_pickup(
+                pass,
+                source_slot,
+                player_entity_index,
+                player_position,
+                source_player_order,
+            )
+        } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
+            self.step_level2_dynamic_spell_replacement(
+                pass,
+                source_slot,
+                player_entity_index,
+                player_position,
+                source_player_order,
+            )
+        } else {
+            self.step_level2_dynamic_arena_with_sphere_membership(
+                pass,
+                source_slot,
+                row.kind,
+                Some(sphere_membership),
+            )
+        };
         self.append_new_economy_events(pass, source_slot);
         if live {
             self.dispatch_events
@@ -5189,37 +5221,37 @@ impl Level2ResetSession {
         }
     }
 
-    /// Record only newly allocated Possession/Castle rows against the still-moving
-    /// source cursor. Rows at or below the callback that allocated them are
-    /// deferred to the next outer pass; a higher row is inserted before the
-    /// next existing source slot, exactly as `UpdateEntities_57730`'s
-    /// ascending array walk observes it.
-    pub(super) fn schedule_new_possession_rows_in_source_order(
+    /// Record every newly allocated source-active row against the still-moving
+    /// cursor. Rows at or below the callback that allocated them are deferred
+    /// to the next outer pass; a higher row is inserted before the next
+    /// existing source slot, exactly as `UpdateEntities_57730`'s ascending
+    /// array walk observes it.
+    pub(super) fn schedule_new_source_rows_in_source_order(
         &self,
         live_before: &BTreeSet<(u16, u32)>,
         source_slot: u16,
         dispatched_dynamic_slots: &BTreeSet<(u16, u32)>,
         deferred_dynamic_slots: &mut BTreeSet<(u16, u32)>,
-        pending_possession_rows: &mut BTreeMap<(u16, u32), Level2DynamicArenaCursorRow>,
+        pending_source_rows: &mut BTreeMap<(u16, u32), Level2DynamicArenaCursorRow>,
     ) {
         for row in self.economy.live_arena_cursor_rows() {
             let key = (row.source_slot, row.generation);
-            if live_before.contains(&key)
-                || !matches!(
-                    row.kind,
-                    Level2DynamicArenaKind::CastleProjectile
-                        | Level2DynamicArenaKind::FireballProjectile
-                        | Level2DynamicArenaKind::PossessionProjectile
-                        | Level2DynamicArenaKind::PossessionEffect
-                )
-                || dispatched_dynamic_slots.contains(&key)
-            {
+            if live_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
                 continue;
             }
-            if row.source_slot <= source_slot {
+            // A persistent spell acquisition can retire the source currently
+            // being walked and allocate its replacement into that same arena
+            // slot with a new generation. Preserve that source-local
+            // generation handoff without reopening the ordinary cursor for
+            // arbitrary lower-slot births; all other lower/equal rows defer.
+            let reclaimed_generation_reuse = row.kind == Level2DynamicArenaKind::SpellReplacement
+                && dispatched_dynamic_slots
+                    .iter()
+                    .any(|(dispatched_slot, _)| *dispatched_slot == row.source_slot);
+            if row.source_slot <= source_slot && !reclaimed_generation_reuse {
                 deferred_dynamic_slots.insert(key);
             } else {
-                pending_possession_rows.insert(key, row);
+                pending_source_rows.insert(key, row);
             }
         }
     }
@@ -5270,6 +5302,24 @@ impl Level2ResetSession {
         self.activate_level2_authored_model76(pass);
         self.activate_level2_authored_class14(pass);
         self.sync_level2_model76_targets_from_entities();
+        // Complete the source-bound class-11 downstream activation before
+        // taking the initial cursor view.  A model-54 field produced by an
+        // already-live producer is an ordinary source row for this pass; its
+        // callback must be reached at its allocated slot, not manufactured by
+        // a post-cursor drain.
+        self.activate_level2_authored_mana_attraction_fields(pass);
+        // `UpdateEntities_57730` rebuilds the model-39 linked membership once
+        // at the ordinary-pass boundary. Keep that source snapshot separate
+        // from the live arena cursor: spheres born later in this walk may
+        // receive their own higher-slot callback, but attraction fields must
+        // not target them until the next pass rebuild.
+        let pass_start_mana_sphere_slots = self
+            .economy
+            .live_arena_cursor_rows()
+            .into_iter()
+            .filter(|row| row.kind == Level2DynamicArenaKind::ManaSphere)
+            .map(|row| row.source_slot)
+            .collect::<BTreeSet<_>>();
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
         for event in self.goats.begin_source_turn(&goat_players) {
             let source_slot = match event {
@@ -5401,21 +5451,20 @@ impl Level2ResetSession {
             .collect::<BTreeMap<_, _>>();
         routes.extend(dynamic_rows.keys().copied().map(|slot| (slot, 6_u8)));
         routes.sort_unstable_by_key(|(slot, _)| *slot);
-        // `ApplyEvents_498A0` keeps a source cursor and repeats the arena
-        // walk when a handler allocates or retires a row.  The typed routes
-        // above are the first walk; remember which dynamic rows it exposed
-        // so a bounded follow-up walk can surface same-turn allocations
-        // without replaying an already observed row indefinitely.
+        // Ordinary `UpdateEntities_57730` makes one ascending in-place walk
+        // over the live source rows.  The typed routes above are its initial
+        // source-slot view; a callback-created row is inserted into the
+        // moving cursor only when its allocated slot is still ahead of the
+        // callback, while a lower/equal birth waits for the next invocation.
         let mut dispatched_dynamic_slots = BTreeSet::new();
         let mut deferred_dynamic_slots = BTreeSet::new();
-        let mut pending_possession_rows =
-            BTreeMap::<(u16, u32), Level2DynamicArenaCursorRow>::new();
+        let mut pending_source_rows = BTreeMap::<(u16, u32), Level2DynamicArenaCursorRow>::new();
         for (source_slot, kind) in routes {
             // A NewEvent row with a higher source slot joins the same ascending
             // source pass before this next existing row. A lower row was
             // already passed and is intentionally deferred by the helper.
             loop {
-                let Some((key, row)) = pending_possession_rows
+                let Some((key, row)) = pending_source_rows
                     .first_key_value()
                     .map(|(key, row)| (*key, *row))
                 else {
@@ -5424,7 +5473,7 @@ impl Level2ResetSession {
                 if row.source_slot >= source_slot {
                     break;
                 }
-                pending_possession_rows.remove(&key);
+                pending_source_rows.remove(&key);
                 let live_dynamic_before = self
                     .economy
                     .live_arena_cursor_rows()
@@ -5432,19 +5481,22 @@ impl Level2ResetSession {
                     .map(|row| (row.source_slot, row.generation))
                     .collect::<BTreeSet<_>>();
                 dispatched_dynamic_slots.insert(key);
-                self.step_level2_pending_possession_dynamic_row(pass, row);
-                self.schedule_new_possession_rows_in_source_order(
+                self.step_level2_pending_source_row(
+                    pass,
+                    row,
+                    player_entity_index,
+                    player_position,
+                    &source_player_order,
+                    &pass_start_mana_sphere_slots,
+                );
+                self.schedule_new_source_rows_in_source_order(
                     &live_dynamic_before,
                     row.source_slot,
                     &dispatched_dynamic_slots,
                     &mut deferred_dynamic_slots,
-                    &mut pending_possession_rows,
+                    &mut pending_source_rows,
                 );
             }
-            let source_is_authored_switch = kind == 6
-                && dynamic_rows
-                    .get(&source_slot)
-                    .is_some_and(|row| row.kind == Level2DynamicArenaKind::AuthoredSwitchProducer);
             let live_dynamic_before = self
                 .economy
                 .live_arena_cursor_rows()
@@ -5756,7 +5808,12 @@ impl Level2ResetSession {
                             &source_player_order,
                         )
                     } else {
-                        self.step_level2_dynamic_arena(pass, source_slot, row.kind)
+                        self.step_level2_dynamic_arena_with_sphere_membership(
+                            pass,
+                            source_slot,
+                            row.kind,
+                            Some(&pass_start_mana_sphere_slots),
+                        )
                     };
                     self.append_new_economy_events(pass, source_slot);
                     if live {
@@ -5808,8 +5865,9 @@ impl Level2ResetSession {
                             message: error.to_string(),
                         }),
                     }
-                    // `ApplyEvents_498A0` advances byte_0x3E after every
-                    // action callback, including the class-3/model-1 AI row.
+                    // The ordinary source dispatcher advances byte_0x3E after
+                    // every action callback, including the class-3/model-1 AI
+                    // row.
                     if let Some(entity) = self
                         .entities
                         .iter_mut()
@@ -5900,31 +5958,27 @@ impl Level2ResetSession {
                 if live_dynamic_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
                     continue;
                 }
-                if matches!(
-                    row.kind,
-                    Level2DynamicArenaKind::CastleProjectile
-                        | Level2DynamicArenaKind::FireballProjectile
-                        | Level2DynamicArenaKind::PossessionProjectile
-                        | Level2DynamicArenaKind::PossessionEffect
-                ) {
-                    if row.source_slot <= source_slot {
-                        deferred_dynamic_slots.insert(key);
-                    } else {
-                        pending_possession_rows.insert(key, row);
-                    }
-                } else if source_is_authored_switch && row.source_slot <= source_slot {
+                let reclaimed_generation_reuse = row.kind == Level2DynamicArenaKind::SpellReplacement
+                    && dispatched_dynamic_slots
+                        .iter()
+                        .any(|(dispatched_slot, _)| *dispatched_slot == row.source_slot);
+                if row.source_slot <= source_slot && !reclaimed_generation_reuse {
                     deferred_dynamic_slots.insert(key);
+                } else {
+                    pending_source_rows.insert(key, row);
                 }
             }
         }
-        // The final source slot has no following static route, so drain the
-        // remaining higher Possession/Castle rows in ascending order. Any row
-        // born behind this moving cursor is deferred by the same helper.
-        while let Some((key, row)) = pending_possession_rows
+        // The final static route has no following source row to trigger the
+        // cursor's insertion point, so consume the already-queued higher
+        // births in ascending order. This is the tail of the same moving
+        // queue, not a gameplay rescan; births behind the cursor remain
+        // deferred to the next `UpdateEntities_57730` invocation.
+        while let Some((key, row)) = pending_source_rows
             .first_key_value()
             .map(|(key, row)| (*key, *row))
         {
-            pending_possession_rows.remove(&key);
+            pending_source_rows.remove(&key);
             let live_dynamic_before = self
                 .economy
                 .live_arena_cursor_rows()
@@ -5932,126 +5986,23 @@ impl Level2ResetSession {
                 .map(|row| (row.source_slot, row.generation))
                 .collect::<BTreeSet<_>>();
             dispatched_dynamic_slots.insert(key);
-            self.step_level2_pending_possession_dynamic_row(pass, row);
-            self.schedule_new_possession_rows_in_source_order(
+            self.step_level2_pending_source_row(
+                pass,
+                row,
+                player_entity_index,
+                player_position,
+                &source_player_order,
+                &pass_start_mana_sphere_slots,
+            );
+            self.schedule_new_source_rows_in_source_order(
                 &live_dynamic_before,
                 row.source_slot,
                 &dispatched_dynamic_slots,
                 &mut deferred_dynamic_slots,
-                &mut pending_possession_rows,
+                &mut pending_source_rows,
             );
         }
-        self.activate_level2_authored_mana_attraction_fields(pass);
-        // A root/typed handler may have allocated a Castle child, carrier, or
-        // sphere after the initial cursor reached its slot.  Re-scan live
-        // projections until no previously unseen slot remains, just as the
-        // source `runagain` loop does.  The underlying per-object handlers
-        // remain explicit follow-on work; this seam only guarantees cursor
-        // reachability and deterministic reclaim ordering.
         self.economy.reclaim_inactive_slots();
-        for _ in 0..1_000 {
-            let unseen = self
-                .economy
-                .live_arena_cursor_rows()
-                .into_iter()
-                .filter(|row| {
-                    let key = (row.source_slot, row.generation);
-                    !dispatched_dynamic_slots.contains(&key)
-                        && !deferred_dynamic_slots.contains(&key)
-                })
-                .collect::<Vec<_>>();
-            if unseen.is_empty() {
-                break;
-            }
-            for row in unseen {
-                let source_slot = row.source_slot;
-                let key = (source_slot, row.generation);
-                let live_dynamic_before = self
-                    .economy
-                    .live_arena_cursor_rows()
-                    .into_iter()
-                    .map(|live| (live.source_slot, live.generation))
-                    .collect::<BTreeSet<_>>();
-                dispatched_dynamic_slots.insert(key);
-                if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
-                    if let Some(target_group) = self
-                        .economy
-                        .authored_model45()
-                        .iter()
-                        .find(|source| source.source_entity_index == source_slot)
-                        .map(|source| source.target_group)
-                        .filter(|target_group| *target_group != 0)
-                    {
-                        self.activate_level2_authored_spell_group(pass, source_slot, target_group);
-                    }
-                }
-                let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
-                    self.step_level2_dynamic_spell_pickup(
-                        pass,
-                        source_slot,
-                        player_entity_index,
-                        player_position,
-                        &source_player_order,
-                    )
-                } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
-                    self.step_level2_dynamic_spell_replacement(
-                        pass,
-                        source_slot,
-                        player_entity_index,
-                        player_position,
-                        &source_player_order,
-                    )
-                } else {
-                    self.step_level2_dynamic_arena(pass, source_slot, row.kind)
-                };
-                self.append_new_economy_events(pass, source_slot);
-                if live {
-                    self.dispatch_events
-                        .push(Level2DispatchEvent::DynamicArena {
-                            pass,
-                            source_slot,
-                            kind: row.kind,
-                        });
-                }
-                for live_row in self.economy.live_arena_cursor_rows() {
-                    let live_key = (live_row.source_slot, live_row.generation);
-                    if !live_dynamic_before.contains(&live_key)
-                        && (row.kind == Level2DynamicArenaKind::AuthoredSwitchProducer
-                            || matches!(
-                                live_row.kind,
-                                Level2DynamicArenaKind::CastleProjectile
-                                    | Level2DynamicArenaKind::FireballProjectile
-                                    | Level2DynamicArenaKind::PossessionProjectile
-                                    | Level2DynamicArenaKind::PossessionEffect
-                            ))
-                        && live_row.source_slot <= source_slot
-                        && !dispatched_dynamic_slots.contains(&live_key)
-                    {
-                        deferred_dynamic_slots.insert(live_key);
-                    }
-                }
-            }
-            self.economy.reclaim_inactive_slots();
-        }
-        let remaining_dynamic = self
-            .economy
-            .live_arena_cursor_rows()
-            .into_iter()
-            .filter(|row| {
-                let key = (row.source_slot, row.generation);
-                !dispatched_dynamic_slots.contains(&key) && !deferred_dynamic_slots.contains(&key)
-            })
-            .collect::<Vec<_>>();
-        if !remaining_dynamic.is_empty() {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
-                pass,
-                source_slot: 0,
-                message: format!(
-                    "Level 2 dynamic runagain cap reached with {} undispatched rows",
-                    remaining_dynamic.len()
-                ),
-            });
-        }
         self.goats.finish_source_turn();
     }
 
@@ -6790,6 +6741,16 @@ impl Level2ResetSession {
         source_slot: u16,
         kind: Level2DynamicArenaKind,
     ) -> bool {
+        self.step_level2_dynamic_arena_with_sphere_membership(pass, source_slot, kind, None)
+    }
+
+    fn step_level2_dynamic_arena_with_sphere_membership(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+        kind: Level2DynamicArenaKind,
+        sphere_membership: Option<&BTreeSet<u16>>,
+    ) -> bool {
         let live = match kind {
             Level2DynamicArenaKind::CastleProjectile => self
                 .economy
@@ -7127,9 +7088,12 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::BeyondSightPulseEffect => self
                 .economy
                 .step_beyond_sight_pulse_effect_slot(source_slot),
-            Level2DynamicArenaKind::ManaAttraction => {
-                self.economy.step_mana_attraction_slot(source_slot)
-            }
+            Level2DynamicArenaKind::ManaAttraction => match sphere_membership {
+                Some(membership) => self
+                    .economy
+                    .step_mana_attraction_slot_with_sphere_membership(source_slot, membership),
+                None => self.economy.step_mana_attraction_slot(source_slot),
+            },
             Level2DynamicArenaKind::CastleAuxiliary
             | Level2DynamicArenaKind::CastleChild
             | Level2DynamicArenaKind::CastleController => {
