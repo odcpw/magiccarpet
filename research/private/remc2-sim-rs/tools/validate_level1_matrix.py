@@ -2140,10 +2140,15 @@ def validate_audio_call_ledger(
     production_lib = all_impl.sub("", lib_source)
     production_lib = production_lib.replace(binding_match.group(0), "")
     production_sources = [production_lib]
-    production_sources.extend(
-        (core_root / filename).read_text(encoding="utf-8")
-        for filename in ("goat.rs", "level1_mission.rs", "spell_activation.rs")
-    )
+    for filename in ("goat.rs", "level1_mission.rs", "spell_activation.rs"):
+        source = (core_root / filename).read_text(encoding="utf-8")
+        test_module = re.search(
+            r"(?m)^#\[cfg\(test\)\]\s*\nmod tests\s*\{",
+            source,
+        )
+        production_sources.append(
+            source if test_module is None else source[: test_module.start()]
+        )
     production_text = "\n".join(production_sources)
     for tag in enum_tags:
         count = len(re.findall(rf"\bSourceAudioCallTag::{re.escape(tag)}\b", production_text))

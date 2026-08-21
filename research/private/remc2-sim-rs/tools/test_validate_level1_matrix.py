@@ -291,6 +291,28 @@ class Level1MatrixValidatorTests(unittest.TestCase):
         )
         validator.validate_audio_call_ledger(self.canonical)
 
+    def test_audio_binding_census_rejects_a_second_production_reference(self) -> None:
+        original_read_text = Path.read_text
+
+        def read_text_with_duplicate(path: Path, *args: Any, **kwargs: Any) -> str:
+            source = original_read_text(path, *args, **kwargs)
+            if path.name != "spell_activation.rs":
+                return source
+            test_module = "#[cfg(test)]\nmod tests {"
+            self.assertIn(test_module, source)
+            duplicate = (
+                "const SYNTHETIC_DUPLICATE: SourceAudioCallTag = "
+                "SourceAudioCallTag::NotEnoughManaImmediate;\n\n"
+            )
+            return source.replace(test_module, duplicate + test_module, 1)
+
+        with mock.patch.object(Path, "read_text", read_text_with_duplicate):
+            with self.assertRaisesRegex(
+                validator.ValidationError,
+                "NotEnoughManaImmediate.*2 production bindings",
+            ):
+                validator.validate_audio_call_ledger(self.canonical)
+
     def test_correction_contract_rejects_invented_scheduler_and_incomplete_rng_census(self) -> None:
         invented = copy.deepcopy(self.canonical)
         scheduler = next(row for row in invented["rows"] if row["id"] == "SCH-004")
