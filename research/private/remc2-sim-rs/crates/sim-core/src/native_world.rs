@@ -6190,6 +6190,16 @@ pub enum Level2EconomyEvent {
         source_entity_index: u16,
         sound_id: u16,
     },
+    /// Source `PrepareEventSound_6E450(source, player, sound)` emitted by a
+    /// Level 2 economy/building/switch callback. `source_entity_index` keeps
+    /// the handler's scheduler slot distinct from the exact entity argument
+    /// passed to the sound preparation helper.
+    PreparedSound {
+        source_entity_index: u16,
+        entity_index: u16,
+        player_index: i16,
+        sound_id: u16,
+    },
 }
 
 /// Production Level 2 economy projection for the shared mana sphere, carrier,
@@ -8968,6 +8978,7 @@ impl Level2EconomyState {
             if source.control_flags & 0x02 == 0 {
                 source.control_flags |= 0x02;
                 source.last_sound_id = 3;
+                self.prepare_sound(source_slot, source_slot, -1, 3);
             }
             for (offset_x, offset_y) in [(0_i32, 0_i32), (1, 0), (0, 1)] {
                 source.entity_rng = level2_next_rng16(source.entity_rng);
@@ -11209,6 +11220,25 @@ impl Level2EconomyState {
     #[must_use]
     pub fn events(&self) -> &[Level2EconomyEvent] {
         &self.events
+    }
+
+    /// Record one source-shaped `PrepareEventSound_6E450` call. The handler
+    /// slot and the exact entity argument are separate because house and
+    /// switch callbacks prepare sound on an owner/player row rather than on
+    /// their triggering source row.
+    pub(super) fn prepare_sound(
+        &mut self,
+        source_entity_index: u16,
+        entity_index: u16,
+        player_index: i16,
+        sound_id: u16,
+    ) {
+        self.events.push(Level2EconomyEvent::PreparedSound {
+            source_entity_index,
+            entity_index,
+            player_index,
+            sound_id,
+        });
     }
 
     /// Start a new source turn's economy event stream. Mutations append to
@@ -16680,8 +16710,11 @@ impl Level2OrdinaryResetSession {
                 HouseStepEvent::Possessed {
                     entity_index,
                     owner_entity_index,
-                    ..
-                } => economy.set_house_owner_relation(entity_index, owner_entity_index),
+                    payload: _,
+                } => {
+                    economy.prepare_sound(entity_index, owner_entity_index, -1, 4);
+                    economy.set_house_owner_relation(entity_index, owner_entity_index);
+                }
                 HouseStepEvent::Damaged { .. } | HouseStepEvent::DestructionStarted { .. } => {}
             }
         }
@@ -17403,6 +17436,7 @@ pub const fn level2_economy_event_family(event: Level2EconomyEvent) -> u8 {
         Level2EconomyEvent::DamageApplied { .. } => 5,
         Level2EconomyEvent::FireSphereCollisionSound { .. } => 6,
         Level2EconomyEvent::AuthoredClass5Model3Sound { .. } => 7,
+        Level2EconomyEvent::PreparedSound { .. } => 8,
     }
 }
 
@@ -17475,6 +17509,10 @@ fn level2_economy_event_source_slot(event: Level2EconomyEvent, fallback: u16) ->
             ..
         } => u32::from(target_entity_index),
         Level2EconomyEvent::AuthoredClass5Model3Sound {
+            source_entity_index,
+            ..
+        } => u32::from(source_entity_index),
+        Level2EconomyEvent::PreparedSound {
             source_entity_index,
             ..
         } => u32::from(source_entity_index),
@@ -20155,6 +20193,34 @@ impl Level2ResetSession {
         overlap == expected_overlap
     }
 
+    fn level2_model0_overlap_owner<F>(
+        &self,
+        switch_position: Position,
+        mut entity_position: F,
+    ) -> Option<u16>
+    where
+        F: FnMut(&EntitySnapshot) -> Position,
+    {
+        const SWITCH_HALF_WIDTH: i16 = 121;
+        self.entities
+            .iter()
+            .find(|entity| {
+                entity.active
+                    && entity.class == 3
+                    && entity.model == 0
+                    && entity.life >= 0
+                    && crate::level1_mission::source_entities_overlap_xy(
+                        switch_position,
+                        SWITCH_HALF_WIDTH,
+                        SWITCH_HALF_WIDTH,
+                        entity_position(entity),
+                        SWITCH_HALF_WIDTH,
+                        SWITCH_HALF_WIDTH,
+                    )
+            })
+            .map(|entity| entity.index)
+    }
+
     /// Evaluate one authored model-0/model-1 switch against the live model-0
     /// source list using remc2's strict XY comparator. The source scan is the
     /// live class-3/model-0 arena rebuilt by the source turn pre-pass; dead
@@ -21604,6 +21670,17 @@ impl Level2ResetSession {
                     entity.position
                 }
             });
+            let matched_owner = if model == 0 && overlap {
+                self.level2_model0_overlap_owner(position, |entity| {
+                    if entity.index == self.state.entity_index {
+                        self.state.position
+                    } else {
+                        entity.position
+                    }
+                })
+            } else {
+                None
+            };
             let target_group = if cooldown == 0 && phase & 7 == 0 && overlap {
                 Some(target_group_id)
             } else {
@@ -21630,6 +21707,11 @@ impl Level2ResetSession {
                 entity.set_source_word_10(u16::from(next_cooldown));
             }
             if let Some(target_group) = target_group {
+                if let Some(owner_entity_index) = matched_owner {
+                    self.economy
+                        .prepare_sound(source_slot, owner_entity_index, -1, 41);
+                    self.append_new_economy_events(pass, source_slot);
+                }
                 self.activate_level2_authored_switch_group(pass, source_slot, target_group);
                 // `AddSwitch0B_00_6F030` (model 0) and
                 // `CheckpointArrived_6F070` (model 1) both consume their
@@ -22417,7 +22499,23 @@ impl Level2ResetSession {
                     self.level2_group10_switch25 = Some(switch);
                     return;
                 };
+                let Some(owner_entity_index) =
+                    self.level2_model0_overlap_owner(switch.position, |entity| {
+                        if entity.index == self.state.entity_index {
+                            self.state.position
+                        } else {
+                            entity.position
+                        }
+                    })
+                else {
+                    switch.phase = switch.phase.wrapping_add(1);
+                    self.level2_group10_switch25 = Some(switch);
+                    return;
+                };
                 self.level2_model76_activated.insert(switch.authored_index);
+                self.economy
+                    .prepare_sound(switch.source_slot, owner_entity_index, -1, 41);
+                self.append_new_economy_events(pass, switch.source_slot);
                 if let Some(entity) = self
                     .entities
                     .get_mut(usize::from(switch.source_slot))
@@ -23122,6 +23220,7 @@ impl Level2ResetSession {
                         .apply_house_terrain_events(&mut self.economy, &events)
                     {
                         Ok(()) => {
+                            self.append_new_economy_events(pass, source_slot);
                             self.dispatch_events.push(Level2DispatchEvent::House {
                                 pass,
                                 source_slot,
@@ -23812,12 +23911,28 @@ impl Level2ResetSession {
                 entity.position
             }
         });
+        let matched_owner = if model == 0 && overlap {
+            self.level2_model0_overlap_owner(position, |entity| {
+                if entity.index == self.state.entity_index {
+                    self.state.position
+                } else {
+                    entity.position
+                }
+            })
+        } else {
+            None
+        };
         let Some(target_group) = self
             .economy
             .step_authored_switch_producer_slot(source_slot, overlap)
         else {
             return false;
         };
+        if let Some(owner_entity_index) = matched_owner {
+            self.economy
+                .prepare_sound(source_slot, owner_entity_index, -1, 41);
+            self.append_new_economy_events(pass, source_slot);
+        }
         self.activate_level2_authored_switch_group(pass, source_slot, target_group);
         true
     }

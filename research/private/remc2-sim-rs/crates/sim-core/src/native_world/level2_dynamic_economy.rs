@@ -13069,4 +13069,350 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn level_two_economy_sound_receipts_pin_source_owner_channel_and_negatives() {
+        let mut session = level_two_possession_lifecycle_session();
+
+        // AUD-L2-036: the qualified Quickfair callback latches sound before
+        // its three shape-cell RNG branches. Drive the real row-214 ->
+        // group-20 source chain; no allocator or narrative helper is used.
+        let authored_features = session.mission.authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("qualified Quickfair source-chain row")
+                .world_position(0)
+        };
+        session.state.position = feature_position(11);
+        session.runtime.objectives[0].stage_selectors[1] = 2;
+        session.runtime.objectives[0].stage_selectors[2] = 2;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.runtime.objectives[0].stage_selectors[3] = 2;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 214)
+        );
+        session.state.position = feature_position(214);
+        let expected_group20 = [
+            216_u16, 217, 218, 219, 220, 221, 222, 223, 232, 233, 234, 235,
+        ];
+        let mut activated = false;
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 20,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == expected_group20
+                )
+            }) {
+                activated = true;
+                break;
+            }
+        }
+        assert!(activated, "row 214 must activate group 20 in production");
+        let quickfair = session
+            .economy()
+            .authored_model1()
+            .iter()
+            .find(|source| source.authored_index == 216)
+            .copied()
+            .expect("production group-20 Quickfair source");
+        assert_eq!(
+            session
+                .dispatch_events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Level2DispatchEvent::Economy {
+                            source_slot,
+                            event: Level2EconomyEvent::PreparedSound {
+                                source_entity_index,
+                                entity_index,
+                                player_index: -1,
+                                sound_id: 3,
+                            },
+                            ..
+                        } if *source_slot == quickfair.source_entity_index
+                            && *source_entity_index == quickfair.source_entity_index
+                            && *entity_index == quickfair.source_entity_index
+                    )
+                })
+                .count(),
+            1,
+            "the production Quickfair callback emits one sound-3 receipt"
+        );
+
+        // A following callback does not duplicate the sound latch.
+        session.economy_mut().begin_turn();
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model1_slot(quickfair.source_entity_index)
+        );
+        assert!(session.economy().events().is_empty());
+
+        // The negative life guard precedes the sound latch and all Quickfair
+        // source draws.
+        session.economy_mut().begin_turn();
+        let before = session
+            .economy()
+            .authored_model1()
+            .iter()
+            .find(|source| source.source_entity_index == quickfair.source_entity_index)
+            .copied()
+            .expect("Quickfair remains live for negative branch");
+        session
+            .economy_mut()
+            .authored_model1
+            .iter_mut()
+            .find(|source| source.source_entity_index == quickfair.source_entity_index)
+            .expect("Quickfair negative branch source")
+            .life = -1;
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model1_slot(quickfair.source_entity_index)
+        );
+        let after = session
+            .economy()
+            .authored_model1()
+            .iter()
+            .find(|source| source.source_entity_index == quickfair.source_entity_index)
+            .copied()
+            .expect("Quickfair remains inspectable after negative branch");
+        assert!(session.economy().events().is_empty());
+        assert_eq!(after.entity_rng, before.entity_rng);
+
+        // AUD-L2-056/057: both accepted possession branches carry the house
+        // source as the handler slot and v7/v8 as the exact owner argument.
+        session.reset();
+        let blocked_house = session
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|house| house.parameter.possession_blocked())
+            .expect("pinned BLDGPRM possession negative");
+        let blocked_owner = session.state.entity_index;
+        assert!(
+            session
+                .ordinary_mut()
+                .submit_house_possession(blocked_house.entity_index, blocked_owner, 1)
+                .is_err()
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    event: Level2EconomyEvent::PreparedSound { sound_id: 4, .. },
+                    ..
+                }
+            )
+        }));
+        session.reset();
+        let house = session
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|house| house.parameter.produces_villagers())
+            .expect("qualified Level 2 possession house");
+        let owner = session.state.entity_index;
+        session
+            .ordinary_mut()
+            .submit_house_possession(house.entity_index, owner, 1)
+            .expect("payload-one house possession mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    source_slot,
+                    event: Level2EconomyEvent::PreparedSound {
+                        source_entity_index,
+                        entity_index,
+                        player_index: -1,
+                        sound_id: 4,
+                    },
+                    ..
+                } if *source_slot == house.entity_index
+                    && *source_entity_index == house.entity_index
+                    && *entity_index == owner
+            )
+        }));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    source_slot,
+                    event: Level2EconomyEvent::PreparedSound { sound_id: 4, .. },
+                    ..
+                } if *source_slot == house.entity_index
+            )
+        }));
+        session.reset();
+        session
+            .ordinary_mut()
+            .submit_house_possession(house.entity_index, owner, 0)
+            .expect("payload-zero house possession mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    source_slot,
+                    event: Level2EconomyEvent::PreparedSound {
+                        source_entity_index,
+                        entity_index,
+                        player_index: -1,
+                        sound_id: 4,
+                    },
+                    ..
+                } if *source_slot == house.entity_index
+                    && *source_entity_index == house.entity_index
+                    && *entity_index == owner
+            )
+        }));
+        session.reset();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    event: Level2EconomyEvent::PreparedSound { sound_id: 4, .. },
+                    ..
+                }
+            )
+        }));
+
+        // AUD-L2-080: InitSwitchChainZaxisAndSound resolves the first
+        // overlapping model-0 owner (the local player here), then emits
+        // before the group-10 model-76 allocation is announced.
+        session.reset();
+        let switch = session
+            .level2_group10_switch25
+            .expect("qualified imported model-0 switch 25");
+        session.state.position = switch.position;
+        session
+            .level2_group10_switch25
+            .as_mut()
+            .expect("switch 25 remains live")
+            .phase = 0;
+        let owner = session.state.entity_index;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let sound_index = session
+            .dispatch_events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::Economy {
+                        pass: 0,
+                        source_slot,
+                        event: Level2EconomyEvent::PreparedSound {
+                            source_entity_index,
+                            entity_index,
+                            player_index: -1,
+                            sound_id: 41,
+                        },
+                        ..
+                    } if *source_slot == switch.source_slot
+                        && *source_entity_index == switch.source_slot
+                        && *entity_index == owner
+                )
+            })
+            .expect("source pass emits switch sound 41");
+        let group_index = session
+            .dispatch_events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group: 10,
+                        ..
+                    } if *source_slot == switch.source_slot
+                )
+            })
+            .expect("source pass announces switch group 10");
+        assert!(sound_index < group_index, "sound precedes group activation");
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot,
+                    group: 10,
+                    ..
+                } if *source_slot == switch.source_slot
+            )
+        }));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    source_slot,
+                    event: Level2EconomyEvent::PreparedSound { sound_id: 41, .. },
+                    ..
+                } if *source_slot == switch.source_slot
+            )
+        }));
+
+        // Wrong overlap and source-arena exhaustion consume no forbidden
+        // sound receipt and leave the switch available for a later source
+        // turn.
+        session.reset();
+        let switch = session
+            .level2_group10_switch25
+            .expect("switch 25 after reset");
+        session.state.position = Position {
+            x: switch.position.x.wrapping_add(0x4000),
+            ..switch.position
+        };
+        session
+            .level2_group10_switch25
+            .as_mut()
+            .expect("switch 25 non-overlap state")
+            .phase = 0;
+        session.step_level2_group10_switch25(0);
+        assert!(session.dispatch_events().is_empty());
+        assert!(session.level2_group10_switch25.is_some());
+
+        session.reset();
+        let switch = session
+            .level2_group10_switch25
+            .expect("switch 25 exhaustion state");
+        session.state.position = switch.position;
+        session
+            .level2_group10_switch25
+            .as_mut()
+            .expect("switch 25 exhaustion phase")
+            .phase = 0;
+        session.economy_mut().free_slots.clear();
+        session.step_level2_group10_switch25(0);
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    event: Level2EconomyEvent::PreparedSound { sound_id: 41, .. },
+                    ..
+                }
+            )
+        }));
+    }
 }
