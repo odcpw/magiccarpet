@@ -5,6 +5,7 @@
 //! entry point for later fold leaves.  It introduces no carrier, descriptor,
 //! registry, scheduler, or ABI semantics.
 
+pub mod dispatch;
 pub mod source_facts;
 pub mod spec;
 

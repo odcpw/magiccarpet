@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Extract the pinned remc2 ``str_D4C48ar`` class/action registry.
+"""Extract the pinned remc2 ``str_D4C48ar`` dispatch-site inventory.
 
 The extractor reads the two source files from the nested Git object at the
 pinned commit.  It never reads the mutable remc2 worktree and never emits
 code.  The output is a deterministic JSON measurement of the class rows,
-action/constructor rows, stored callback addresses, and best-effort callback
-identities from the two compatibility dispatch switches.
+action/constructor rows, distinct source selection sites, stored callback
+addresses, and best-effort callback identities from the two compatibility
+dispatch switches.
 """
 
 from __future__ import annotations
@@ -22,7 +23,14 @@ from typing import Any, NoReturn
 PINNED_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 TABLE_SOURCE_PATH = "remc2/engine/EventsFunctions.cpp"
 DISPATCH_SOURCE_PATH = "remc2/engine/Events.cpp"
-SCHEMA = "mc2-str-d4c48ar-registry/v1"
+SCHEMA = "mc2-str-d4c48ar-registry/v2"
+
+DISPATCH_SITES = {
+    "ApplyEvents": 1,
+    "UpdateEntities": 2,
+    "Constructor": 3,
+    "TypeSubtype": 4,
+}
 
 CLASS_TABLE_RE = re.compile(
     r"std::array\s*<\s*type_D4C52ar\s*,\s*17\s*>\s*"
@@ -309,9 +317,116 @@ def source_behavior_keys(classes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "callback_identity": row["callback_identity"],
                 "stored_address_hex": row["stored_address_hex"],
                 "resolution_status": row["resolution_status"],
+                "table_array": row["array_name"],
+                "table_ordinal": row["physical_slot"],
                 "source": row["source"],
             }
     return [keys[key] for key in sorted(keys)]
+
+
+def active_constructor_keys(classes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keys: dict[tuple[int, int], dict[str, Any]] = {}
+    for item in classes:
+        runtime_class = item["class_index"]
+        for row in item["constructor_rows"]:
+            if row["is_null_sentinel"] or not row["enabled"] or not row["stored_address_hex"]:
+                continue
+            selector = row["selector_word_4"]
+            key = (runtime_class, selector)
+            candidate = {
+                "class": runtime_class,
+                "model": selector,
+                "key": f"{runtime_class}:{selector}",
+                "callback_identity": row["callback_identity"],
+                "stored_address_hex": row["stored_address_hex"],
+                "resolution_status": row["resolution_status"],
+                "table_array": row["array_name"],
+                "table_ordinal": row["physical_slot"],
+                "source": row["source"],
+            }
+            previous = keys.get(key)
+            if previous is not None and previous != candidate:
+                fail(f"constructor selector {key} has conflicting active rows")
+            keys[key] = candidate
+    return [keys[key] for key in sorted(keys)]
+
+
+def source_site_keys(
+    action_keys: list[dict[str, Any]], constructor_keys: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    keys: list[dict[str, Any]] = []
+    for site in ("ApplyEvents", "UpdateEntities"):
+        for item in action_keys:
+            keys.append(
+                {
+                    "key": f"{site}:ClassAction:{item['class']}:{item['action']}",
+                    "dispatch_site": site,
+                    "dispatch_site_id": DISPATCH_SITES[site],
+                    "selector": {
+                        "kind": "ClassAction",
+                        "class": item["class"],
+                        "action": item["action"],
+                    },
+                    "table_kind": "action",
+                    "table_array": item["table_array"],
+                    "table_ordinal": item["table_ordinal"],
+                    "callback_identity": item["callback_identity"],
+                    "stored_address_hex": item["stored_address_hex"],
+                    "source": item["source"],
+                }
+            )
+    for site, selector_kind in (
+        ("Constructor", "ClassModel"),
+        ("TypeSubtype", "TypeSubtype"),
+    ):
+        for item in constructor_keys:
+            if selector_kind == "ClassModel":
+                selector = {
+                    "kind": selector_kind,
+                    "class": item["class"],
+                    "model": item["model"],
+                }
+            else:
+                selector = {
+                    "kind": selector_kind,
+                    "type_id": item["class"],
+                    "subtype": item["model"],
+                }
+            keys.append(
+                {
+                    "key": (
+                        f"{site}:{selector_kind}:{item['class']}:{item['model']}"
+                    ),
+                    "dispatch_site": site,
+                    "dispatch_site_id": DISPATCH_SITES[site],
+                    "selector": selector,
+                    "table_kind": "constructor",
+                    "table_array": item["table_array"],
+                    "table_ordinal": item["table_ordinal"],
+                    "callback_identity": item["callback_identity"],
+                    "stored_address_hex": item["stored_address_hex"],
+                    "source": item["source"],
+                }
+            )
+    return keys
+
+
+def selection_site(
+    source: str, path: str, function_name: str, required_expression: str
+) -> dict[str, Any]:
+    offset = source.find(function_name)
+    while offset >= 0:
+        next_function = source.find("//----- (", offset + len(function_name))
+        body = source[offset : next_function if next_function >= 0 else len(source)]
+        if required_expression in body:
+            return {
+                "function": function_name,
+                "path": path,
+                "line": line_number(source, offset),
+                "table_expression": required_expression,
+            }
+        offset = source.find(function_name, offset + len(function_name))
+    fail(f"selection site {function_name} no longer contains {required_expression}")
 
 
 def extract(repo_root: Path | None = None) -> dict[str, Any]:
@@ -378,6 +493,34 @@ def extract(repo_root: Path | None = None) -> dict[str, Any]:
     all_action_rows = [row for item in classes for row in item["action_rows"]]
     all_constructor_rows = [row for item in classes for row in item["constructor_rows"]]
     source_keys = source_behavior_keys(classes)
+    constructor_keys = active_constructor_keys(classes)
+    site_keys = source_site_keys(source_keys, constructor_keys)
+    selection_sites = {
+        "ApplyEvents": selection_site(
+            dispatch_source,
+            DISPATCH_SOURCE_PATH,
+            "void ApplyEvents_498A0()",
+            "str_D4C48ar[D41A0_0.struct_0x6E8E[iy].class_0x3F_63].dword_10",
+        ),
+        "UpdateEntities": selection_site(
+            table_source,
+            TABLE_SOURCE_PATH,
+            "void UpdateEntities_57730()",
+            "str_D4C48ar[mx->class_0x3F_63].dword_10",
+        ),
+        "Constructor": selection_site(
+            dispatch_source,
+            DISPATCH_SOURCE_PATH,
+            "type_entity_0x6E8E* pre_sub_4A190_axis_3d",
+            "switch (adress)",
+        ),
+        "TypeSubtype": selection_site(
+            dispatch_source,
+            DISPATCH_SOURCE_PATH,
+            "type_entity_0x6E8E* IfSubtypeCallCreatingManaSphere_4A190",
+            "str_D4C48ar[type].dword_14[subtype]",
+        ),
+    }
     return {
         "schema": SCHEMA,
         "source": {
@@ -392,10 +535,13 @@ def extract(repo_root: Path | None = None) -> dict[str, Any]:
                 "path": DISPATCH_SOURCE_PATH,
                 "sha256": dispatch_sha256,
             },
+            "selection_sites": selection_sites,
         },
         "class_count": len(classes),
         "classes": classes,
         "source_behavior_keys": source_keys,
+        "source_constructor_keys": constructor_keys,
+        "source_site_keys": site_keys,
         "summary": {
             "class_rows_including_sentinel": len(classes),
             "class_sentinel_rows": sum(item["is_null_sentinel"] for item in classes),
@@ -408,6 +554,12 @@ def extract(repo_root: Path | None = None) -> dict[str, Any]:
             "action_callback_cases": len(action_cases),
             "constructor_callback_cases": len(constructor_cases),
             "source_behavior_key_count": len(source_keys),
+            "source_constructor_key_count": len(constructor_keys),
+            "source_site_key_count": len(site_keys),
+            "source_site_key_counts": {
+                site: sum(item["dispatch_site"] == site for item in site_keys)
+                for site in DISPATCH_SITES
+            },
         },
     }
 
