@@ -5332,9 +5332,9 @@ pub struct Level2AuthoredTreeSource {
 
 /// Authored class-10/model-1/action-1 effect rows created by remc2's
 /// `NewAdd0A01_4E3B0` constructor.  These are short-lived presentation
-/// events, but they still consume the shared source arena and map chain; the
-/// typed row keeps that allocation/reclaim/reset identity observable without
-/// inventing the deferred `AddEvent2_847D0` child chain.
+/// events, but they still consume the shared source arena and map chain. The
+/// typed row keeps the Quickfair callback's first sound and source RNG
+/// observable without inventing a separate child arena.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredModel1Source {
     pub source_entity_index: u16,
@@ -5347,6 +5347,7 @@ pub struct Level2AuthoredModel1Source {
     pub life: i16,
     pub control_flags: u32,
     pub particle_index: u16,
+    pub last_sound_id: u16,
     pub position: Position,
     pub phase: u8,
     pub drawing_enabled: bool,
@@ -5433,11 +5434,12 @@ pub struct Level2Model59SmokeChild {
     pub active: bool,
 }
 
-/// Authored class-10/subtype-58 row constructed by remc2 `sub_504B0`.
-/// The fields include the NewEvent defaults consumed by action 58,
-/// `sub_265A0`'s mutable state, and the `sub_26500` sprite selection. The
-/// water callback records the source's type-10/subtype-5 spawn request without
-/// pretending that the broader subtype constructor family is already modeled.
+/// Authored class-10/model-53/action-58 row constructed by remc2 `sub_504B0`.
+/// The fields include the NewEvent defaults consumed by `sub_38B90`, its
+/// dword/shift transition state, and the source sound latch. The action-58
+/// callback emits class-10/model-0 children through the shared child arena;
+/// the older model-53 water state remains represented for reset compatibility
+/// but is not touched by this source-correct callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredModel53Source {
     pub source_entity_index: u16,
@@ -5451,7 +5453,10 @@ pub struct Level2AuthoredModel53Source {
     pub life: i16,
     pub subspell_index: u16,
     pub actual_speed: i16,
+    pub dword_0x10: i32,
     pub control_flags: u32,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
     pub source_byte_39: i8,
     pub byte_0x43: u8,
     pub byte_0x44: u8,
@@ -5574,11 +5579,13 @@ pub struct Level2AuthoredModel17Source {
     pub active: bool,
 }
 
-/// A class-10/model-0 child emitted by `sub_32880` through the pinned
-/// `NewAdd0A00_4E320` constructor. The stored row is the post-spawn state after
-/// `sub_32880` applies its control/shift overrides; the complete terrain-effect
-/// callback is a separate follow-up. The source arena, parent identity, map
-/// link, life sentinel, and reclaim behavior are live here.
+/// A class-10/model-0 child emitted by Quickfair, action 58, or Meteor through
+/// the pinned `NewAdd0A00_4E320` constructor. The stored row is the
+/// post-spawn state after the producer applies its source-specific
+/// control/shift overrides; the action-0 terrain callback remains a separate
+/// follow-up. Reusing this existing child arena preserves source order,
+/// parent identity, map link, life sentinel, and reclaim behavior without a
+/// new Level 2 twin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2Model17SpawnedChild {
     pub source_entity_index: u16,
@@ -7208,9 +7215,9 @@ impl Level2EconomyState {
     }
 
     /// Allocate the authored class-10/model-1/action-1 effect from the
-    /// pinned `NewAdd0A01_4E3B0` constructor.  The immediate `AddEvent2`
+    /// pinned `NewAdd0A01_4E3B0` constructor. The immediate `AddEvent2`
     /// presentation child is intentionally deferred; the root's source
-    /// arena identity and one-tick lifetime are still source-backed.
+    /// arena identity and Quickfair callback are source-backed here.
     pub fn allocate_authored_model1(
         &mut self,
         authored_index: u16,
@@ -7245,8 +7252,11 @@ impl Level2EconomyState {
             // NewAdd0A01 clears bits 3/17, then sets byte 2 bit 1.
             control_flags: 0x0002_0000,
             particle_index: 41,
+            last_sound_id: 0,
             position,
-            phase: 0,
+            // NewEvent seeds byte 0x3E from the allocated source slot; the
+            // Quickfair constructor does not overwrite that cursor.
+            phase: source_entity_index as u8,
             drawing_enabled: true,
             active: true,
         };
@@ -7988,12 +7998,13 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    /// Allocate the authored class-10/subtype-58 row from remc2 `sub_504B0`.
+    /// Allocate the authored class-10/model-53/action-58 row from remc2
+    /// `sub_504B0`.
     /// The constructor intentionally does not add the row to the render map;
     /// it writes its authored position directly, sets action 58/model 53,
     /// life 6, subspell 3000, and clears NewEvent's default control bit 0x08.
-    /// The remaining NewEvent defaults are retained because action 58 consumes
-    /// `byte_0x43` and the source RNG immediately on its live callback path.
+    /// The remaining NewEvent defaults are retained because `sub_38B90`
+    /// consumes the source RNG immediately on its live callback path.
     pub fn allocate_authored_model53(
         &mut self,
         authored_index: u16,
@@ -8013,7 +8024,10 @@ impl Level2EconomyState {
             life: 6,
             subspell_index: 3000,
             actual_speed: 16,
+            dword_0x10: 0,
             control_flags: 0,
+            shift_rot_x: 0,
+            shift_rot_y: 0,
             source_byte_39: -6,
             byte_0x43: 10,
             byte_0x44: 0,
@@ -8032,11 +8046,14 @@ impl Level2EconomyState {
         Some(source)
     }
 
-    /// Run remc2 action 58 (`sub_265A0`) for one live source turn, followed by
-    /// its `sub_26500` sprite selection. This is the outdoor/day path used by
-    /// the qualified Level 2 package; the original cave ceiling branch is not
-    /// silently approximated here. The type-10/subtype-5 water callback is
-    /// exposed as a typed request for a later constructor slice.
+    /// Run remc2 class-10/action-58 `sub_38B90` for one live source turn.
+    ///
+    /// `sub_504B0` is the only pinned constructor for this action and creates
+    /// model 53. The callback decrements life before its negative terminal
+    /// return, latches sound 30 and shifts, then consumes RNG-L2-0263 before
+    /// the three accepted SEARCH.DAT shape-0 cells (0264..0267). Each accepted
+    /// child is the existing `NewAdd0A00_4E320` model-0 arena row with the
+    /// source's copied identity and action-58 control/shift overrides.
     pub fn step_authored_model53_slot(&mut self, source_slot: u16) -> bool {
         let Some(source_index) = self
             .authored_model53
@@ -8046,137 +8063,58 @@ impl Level2EconomyState {
             return false;
         };
 
-        let terrain = &self.terrain;
-        let source = &mut self.authored_model53[source_index];
-        let mut moves_down = false;
-        let mut set_control_flag = false;
-        let mut callback_sound = None;
-        source.water_spawn_requested = false;
+        let mut source = self.authored_model53[source_index];
+        let life_before = source.life;
+        source.life = source.life.wrapping_sub(1);
+        if life_before >= 0 {
+            if source.control_flags & 0x02 == 0 {
+                source.control_flags |= 0x0001_0002;
+                source.last_sound_id = 30;
+            }
+            let signed_term = 768_i32 * source.dword_0x10;
+            let sign = signed_term.signum();
+            source.shift_rot_x = i16::try_from((signed_term - sign * 5) >> 2)
+                .expect("Level 2 action-58 shift rotation fits i16");
+            source.shift_rot_y = 512;
 
-        match source.byte_0x46 {
-            0 | 1 => {
-                if source.byte_0x44 != 0 {
-                    source.byte_0x44 -= 1;
-                } else {
-                    source.byte_0x46 = 2;
-                }
-                moves_down = true;
-                set_control_flag = true;
-            }
-            2 => {
-                source.byte_0x46 = 3;
-                moves_down = true;
-                set_control_flag = true;
-            }
-            3 => {
-                source.byte_0x46 = 4;
-            }
-            4 => {
+            // `sub_10C80(a2 = 0)` is a no-RNG target-mailbox scan. Its
+            // cross-entity record writes remain outside this economy-owned
+            // carrier; the source transition and RNG-producing child path are
+            // kept exact here.
+            source.entity_rng = level2_next_rng16(source.entity_rng);
+            for (offset_x, offset_y) in [(0_i32, 0_i32), (1, 0), (0, 1)] {
                 source.entity_rng = level2_next_rng16(source.entity_rng);
-                source.byte_0x46 = 5;
-                source.word_0x2c = (source.entity_rng % 0x64) as i16 + 140;
-            }
-            5 => {
-                if source.word_0x2c < 0 {
-                    source.byte_0x46 = 6;
-                }
-            }
-            6 => {
-                let ground = terrain.ground_height(source.position);
-                if i32::from(source.position.z) - i32::from(ground) < 230 {
-                    source.byte_0x46 = 7;
-                }
-            }
-            7 => {
-                source.byte_0x46 = 8;
-                moves_down = true;
-                set_control_flag = true;
-            }
-            8 => {
-                source.byte_0x46 = 9;
-                moves_down = true;
-                set_control_flag = true;
-            }
-            9 => {
+                let child_x = i32::from(source.position.x) - 96
+                    + 160 * offset_x
+                    + i32::from(source.entity_rng % 0x81)
+                    - 64;
                 source.entity_rng = level2_next_rng16(source.entity_rng);
-                if source.entity_rng % 0xB == 0 {
-                    callback_sound = Some(42);
-                }
-                if source.byte_0x43 != 0 {
-                    let divisor = u16::from(source.byte_0x43);
-                    source.entity_rng = level2_next_rng16(source.entity_rng);
-                    let remainder = source.entity_rng % divisor;
-                    source.byte_0x44 = remainder as u8;
-                    source.byte_0x46 = u8::from(remainder & 1 == 0);
-                } else {
-                    source.byte_0x44 = 1;
-                    source.byte_0x46 = 0;
-                }
-                moves_down = true;
-                set_control_flag = true;
+                let child_y = i32::from(source.position.y) - 96
+                    + 160 * offset_y
+                    + i32::from(source.entity_rng % 0x81)
+                    - 64;
+                let child_position = Position {
+                    x: child_x as u16,
+                    y: child_y as u16,
+                    z: source.position.z,
+                };
+                let _ = self.allocate_model0_child(
+                    source_slot,
+                    source.entity_id,
+                    0,
+                    child_position,
+                    0x0003_0080,
+                    512,
+                    512,
+                );
             }
-            10 => {
-                moves_down = true;
-            }
-            _ => {}
+            source.dword_0x10 = (source.dword_0x10 + 2).rem_euclid(7);
         }
-
-        let ground = terrain.ground_height(source.position);
-        if moves_down {
-            source.position.z = source.position.z.saturating_sub(42);
-        } else {
-            source.position.z = source.position.z.saturating_add(source.word_0x2c);
-            source.word_0x2c = source.word_0x2c.saturating_sub(42);
-        }
-        if source.position.z < ground {
-            source.position.z = ground;
-        }
-
-        let water = terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK;
-        if water {
-            if source.byte_0x46 == 10 {
-                if source.position.z > ground {
-                    source.byte_0x46 = 0;
-                }
-            } else if source.position.z == ground {
-                source.byte_0x46 = 10;
-                source.water_spawn_requested = true;
-            }
-            source.actual_speed = if source.action == 170 { 66 } else { 40 };
-        } else {
-            if source.byte_0x46 == 10 {
-                source.byte_0x46 = 0;
-            }
-            source.actual_speed = if source.action == 170 { 96 } else { 60 };
-        }
-
-        if let Some(sound_id) = callback_sound {
-            source.last_sound_id = sound_id;
-        }
-        source.sprite_index = match source.byte_0x46 {
-            0 => 311,
-            1..=3 | 9 => 308,
-            4 => 309,
-            5 => 310,
-            6 => 305,
-            7 => 306,
-            8 => 307,
-            10 => 312,
-            _ => source.sprite_index,
-        };
-        if set_control_flag {
-            source.control_flags |= 0x800;
-        }
-        // `sub_504B0` never calls AddEventToMap, so this source remains absent
-        // from the render map while its live cursor state advances. Keep the
-        // shared source-RNG sidecar and byte-0x3E-equivalent phase in sync
-        // with the typed row for allocation/reclaim and replay consumers.
-        self.source_rng.insert(source_slot, source.entity_rng);
+        // ApplyEvents advances byte 0x3E even when sub_38B90 returns its
+        // terminal positive result, so the typed phase follows every visit.
         source.phase = source.phase.wrapping_add(1);
-        let water_spawn_position = source.water_spawn_requested.then_some(source.position);
-        if let Some(position) = water_spawn_position {
-            let _ = self.allocate_authored_model5_water_splash(position);
-        }
+        self.source_rng.insert(source_slot, source.entity_rng);
+        self.authored_model53[source_index] = source;
         true
     }
 
@@ -9005,25 +8943,68 @@ impl Level2EconomyState {
             .map_err(NativeWorldError::new)
     }
 
-    /// Advance one model-1 root through `AddQuickfair0A_01_30F60`.  The
-    /// source callback decrements life and hides the row only when the
-    /// pre-decrement value is negative; its deferred child chain is not
-    /// synthesized here.  The source allocation remains active after drawing
-    /// is disabled, matching remc2's separate drawing/reclaim flags.
+    /// Advance one model-1 root through `AddQuickfair0A_01_30F60`.
+    ///
+    /// The callback's transition order is life guard, first sound latch,
+    /// SEARCH.DAT shape-0 walk, then the independent ApplyEvents phase
+    /// increment. A negative pre-decrement return hides the root and consumes
+    /// no Quickfair draw. The three accepted shape cells use the existing
+    /// model-0 child arena, which is the pinned `NewAdd0A00_4E320` producer
+    /// used by `IfSubtypeCallCreatingManaSphere_4A190(10, 0)`.
     pub fn step_authored_model1_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source) = self
+        let Some(source_index) = self
             .authored_model1
-            .iter_mut()
-            .find(|source| source.active && source.source_entity_index == source_slot)
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
         else {
             return false;
         };
-        if source.life < 0 {
+        let mut source = self.authored_model1[source_index];
+        let life_before = source.life;
+        source.life = source.life.wrapping_sub(1);
+        if life_before < 0 {
             source.drawing_enabled = false;
         } else {
-            source.life -= 1;
-            source.phase = source.phase.wrapping_add(1);
+            if source.control_flags & 0x02 == 0 {
+                source.control_flags |= 0x02;
+                source.last_sound_id = 3;
+            }
+            for (offset_x, offset_y) in [(0_i32, 0_i32), (1, 0), (0, 1)] {
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                if source.entity_rng % 0x9d < 79 {
+                    continue;
+                }
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                let child_x = i32::from(source.position.x) - 96
+                    + 192 * offset_x
+                    + i32::from(source.entity_rng % 0x81)
+                    - 64;
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                let child_y = i32::from(source.position.y) - 96
+                    + 192 * offset_y
+                    + i32::from(source.entity_rng % 0x81)
+                    - 64;
+                let child_position = Position {
+                    x: child_x as u16,
+                    y: child_y as u16,
+                    z: source.position.z,
+                };
+                let _ = self.allocate_model0_child(
+                    source_slot,
+                    source_slot,
+                    0,
+                    child_position,
+                    // NewAdd0A00 starts at 0x0002_0000; Quickfair's
+                    // producer then applies the source's 0x80 child bit.
+                    0x0002_0080,
+                    128,
+                    128,
+                );
+            }
         }
+        source.phase = source.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, source.entity_rng);
+        self.authored_model1[source_index] = source;
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -9536,11 +9517,14 @@ impl Level2EconomyState {
                 y: child_y as u16,
                 z: source.position.z,
             };
-            let _ = self.allocate_model17_spawned_child(
+            let _ = self.allocate_model0_child(
                 source_slot,
                 source.entity_id,
                 source.yaw,
                 child_position,
+                0x0003_0080,
+                512,
+                512,
             );
         }
         source.dword_0x10 = (source.dword_0x10 + 2).rem_euclid(11);
@@ -9557,12 +9541,15 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    fn allocate_model17_spawned_child(
+    fn allocate_model0_child(
         &mut self,
         parent_entity_index: u16,
         parent_entity_id: u16,
         parent_yaw: i16,
         position: Position,
+        control_flags: u32,
+        shift_rot_x: i16,
+        shift_rot_y: i16,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
@@ -9593,9 +9580,9 @@ impl Level2EconomyState {
                 max_life: 8,
                 life: 8,
                 dword_0x10: 0,
-                control_flags: 0x0003_0080,
-                shift_rot_x: 512,
-                shift_rot_y: 512,
+                control_flags,
+                shift_rot_x,
+                shift_rot_y,
                 yaw: parent_yaw,
                 position,
                 phase: source_entity_index as u8,
@@ -12119,6 +12106,7 @@ impl Level2EconomyState {
             hasher.update(source.life.to_le_bytes());
             hasher.update(source.control_flags.to_le_bytes());
             hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.last_sound_id.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
@@ -12383,7 +12371,10 @@ impl Level2EconomyState {
             hasher.update(source.life.to_le_bytes());
             hasher.update(source.subspell_index.to_le_bytes());
             hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.dword_0x10.to_le_bytes());
             hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.shift_rot_x.to_le_bytes());
+            hasher.update(source.shift_rot_y.to_le_bytes());
             hasher.update([source.source_byte_39 as u8]);
             hasher.update([
                 source.byte_0x43,
@@ -41429,7 +41420,7 @@ mod tests {
                 row439.subspell_index,
                 row439.control_flags,
             ),
-            (10, 53, 58, 6, 6, 3000, 0x800)
+            (10, 53, 58, 6, 5, 3000, 0x0001_0002)
         );
         assert_eq!(
             (
@@ -41442,8 +41433,27 @@ mod tests {
                 row439.last_sound_id,
                 row439.water_spawn_requested,
             ),
-            (60, -6, 10, 0, 2, 308, 0, false)
+            (16, -6, 10, 0, 0, 0, 30, false)
         );
+        assert_eq!(
+            (row439.dword_0x10, row439.shift_rot_x, row439.shift_rot_y),
+            (2, 0, 512)
+        );
+        let row439_children = session
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .filter(|child| child.parent_entity_index == row439.source_entity_index)
+            .collect::<Vec<_>>();
+        assert_eq!(row439_children.len(), 3);
+        assert!(row439_children.iter().all(|child| {
+            (
+                child.parent_entity_id,
+                child.control_flags,
+                child.shift_rot_x,
+                child.shift_rot_y,
+            ) == (row439.entity_id, 0x0003_0080, 512, 512)
+        }));
         let authored_row439 = feature_position(439);
         assert_eq!(
             (row439.position.x, row439.position.y, row439.position.z),
@@ -41544,10 +41554,9 @@ mod tests {
                 .world_position(0)
         };
 
-        // Reach row 439 from the real row-11 -> row-42 -> group-3 switch
-        // route. The test only mutates the typed row after production has
-        // materialized it; all callbacks below still run through the live
-        // dynamic cursor.
+        // Reach row 439 through row 11 -> row 42 -> group 3. The first
+        // action-58 callback is therefore an ordinary production visit, not a
+        // direct callback or fixture setter.
         let local_player = session.state.entity_index;
         level_two_reach_row42(
             &mut session,
@@ -41576,229 +41585,122 @@ mod tests {
                 break;
             }
         }
-        let row439_slot = session
+
+        let row439 = session
             .economy()
             .authored_model53()
             .iter()
             .find(|source| source.authored_index == 439)
-            .map(|source| source.source_entity_index)
+            .copied()
             .expect("production route must materialize row 439");
-
-        // The constructor's first live callback advances state 0 -> 2 and
-        // selects the 308 family. Force the intermediate states so each
-        // source branch remains discriminating and deterministic.
-        {
-            let source = session
-                .economy_mut()
-                .authored_model53
-                .iter_mut()
-                .find(|source| source.source_entity_index == row439_slot)
-                .expect("live row 439");
-            assert_eq!((source.byte_0x46, source.sprite_index), (2, 308));
-            source.byte_0x46 = 3;
-            source.word_0x2c = 0;
-            source.control_flags = 0;
-            source.last_sound_id = 0;
-        }
-        let phase_before_state3 = session
-            .economy()
-            .authored_model53()
-            .iter()
-            .find(|source| source.source_entity_index == row439_slot)
-            .expect("live row 439")
-            .phase;
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        let row439 = session
-            .economy()
-            .authored_model53()
-            .iter()
-            .find(|source| source.source_entity_index == row439_slot)
-            .copied()
-            .expect("live row 439 after state-3 callback");
-        assert_eq!((row439.byte_0x46, row439.sprite_index), (4, 309));
-        assert_eq!(row439.actual_speed, 60);
-        assert_eq!(row439.control_flags, 0);
-        assert_eq!(row439.phase, phase_before_state3.wrapping_add(1));
-
-        let rng_before_random_cycle = row439.entity_rng;
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        let row439 = session
-            .economy()
-            .authored_model53()
-            .iter()
-            .find(|source| source.source_entity_index == row439_slot)
-            .copied()
-            .expect("live row 439 after state-4 callback");
-        assert_eq!(row439.byte_0x46, 5);
-        assert_eq!(row439.sprite_index, 310);
         assert_eq!(
-            row439.entity_rng,
-            level2_next_rng16(rng_before_random_cycle)
-        );
-        assert_eq!(
-            session.economy().source_rng.get(&row439_slot),
-            Some(&row439.entity_rng)
-        );
-        assert_eq!(
-            row439.word_0x2c,
-            i16::try_from(level2_next_rng16(rng_before_random_cycle) % 0x64)
-                .expect("model-53 RNG draw fits")
-                .saturating_add(140)
-                .saturating_sub(42)
-        );
-
-        {
-            let source = session
-                .economy_mut()
-                .authored_model53
-                .iter_mut()
-                .find(|source| source.source_entity_index == row439_slot)
-                .expect("live row 439");
-            source.byte_0x46 = 9;
-            source.word_0x2c = 0;
-            source.control_flags = 0;
-        }
-        let phase_before_state9 = row439.phase;
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        let row439 = session
-            .economy()
-            .authored_model53()
-            .iter()
-            .find(|source| source.source_entity_index == row439_slot)
-            .copied()
-            .expect("live row 439 after state-9 callback");
-        assert_eq!(row439.phase, phase_before_state9.wrapping_add(1));
-        assert_eq!(
-            session.economy().source_rng.get(&row439_slot),
-            Some(&row439.entity_rng)
-        );
-
-        // State 5's negative-height branch reaches state 6 and clamps to the
-        // terrain height. The next turn runs the water-triggered type-10/5
-        // request branch on the same production row.
-        {
-            let position = session
-                .economy()
-                .authored_model53()
-                .iter()
-                .find(|source| source.source_entity_index == row439_slot)
-                .expect("live row 439")
-                .position;
-            let ground = session.terrain.ground_height(position);
-            let source = session
-                .economy_mut()
-                .authored_model53
-                .iter_mut()
-                .find(|source| source.source_entity_index == row439_slot)
-                .expect("live row 439");
-            source.word_0x2c = -1;
-            source.position.z = ground;
-            source.byte_0x46 = 6;
-            source.control_flags = 0;
-        }
-        {
-            let position = session
-                .economy()
-                .authored_model53()
-                .iter()
-                .find(|source| source.source_entity_index == row439_slot)
-                .expect("live row 439")
-                .position;
-            let tile = usize::from(position.x.to_be_bytes()[0])
-                + usize::from(position.y.to_be_bytes()[0]) * 256;
-            session.terrain.planes.terrain_types[tile] = 0;
-        }
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        let row439 = session
-            .economy()
-            .authored_model53()
-            .iter()
-            .find(|source| source.source_entity_index == row439_slot)
-            .copied()
-            .expect("live row 439 after water callback");
-        assert_eq!(
-            row439.position.z,
-            session.terrain.ground_height(row439.position)
+            (
+                row439.source_class,
+                row439.model,
+                row439.action,
+                row439.max_life,
+                row439.life,
+                row439.subspell_index,
+                row439.control_flags,
+                row439.last_sound_id,
+            ),
+            (10, 53, 58, 6, 5, 3000, 0x0001_0002, 30)
         );
         assert_eq!(
             (
+                row439.actual_speed,
+                row439.dword_0x10,
+                row439.shift_rot_x,
+                row439.shift_rot_y,
                 row439.byte_0x46,
                 row439.sprite_index,
-                row439.actual_speed,
-                row439.control_flags,
                 row439.water_spawn_requested,
             ),
-            (10, 312, 40, 0, true)
+            (16, 2, 0, 512, 0, 0, false)
         );
-        let splash = session
+        assert_eq!(
+            session
+                .economy()
+                .source_rng
+                .get(&row439.source_entity_index),
+            Some(&row439.entity_rng)
+        );
+
+        // sub_10130 accepts the first three shape-0 cells; the fourth cell
+        // advances the source iterator to its terminal return and is not
+        // processed by the source loop.
+        let children = session
             .economy()
-            .authored_model5_water_splashes()
-            .last()
-            .copied()
-            .expect("water branch must allocate the source model-5 splash");
-        assert!(splash.source_entity_index > row439_slot);
-        assert_eq!(
+            .model17_spawned_children()
+            .iter()
+            .filter(|child| child.parent_entity_index == row439.source_entity_index)
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 3);
+        assert!(children.iter().all(|child| {
             (
-                splash.source_class,
-                splash.model,
-                splash.action,
-                splash.max_life,
-                splash.life,
-                splash.subspell_index,
-                splash.dword_0x10,
-                splash.control_flags,
-                splash.sprite_index,
-                splash.last_sound_id,
-            ),
-            (10, 5, 5, 8, 7, 0, 0, 0x20_002, 244, 27)
-        );
-        assert_eq!(
-            splash.position,
-            Position {
-                x: row439.position.x,
-                y: row439.position.y,
-                z: session.terrain.ground_height(row439.position),
-            }
-        );
+                child.parent_entity_id,
+                child.model,
+                child.action,
+                child.subspell_index,
+                child.max_life,
+                child.life,
+                child.control_flags,
+                child.shift_rot_x,
+                child.shift_rot_y,
+                child.yaw,
+            ) == (row439.entity_id, 0, 0, 400, 8, 7, 0x0003_0080, 512, 512, 0)
+        }));
         assert!(session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
                 Level2DispatchEvent::DynamicArena {
                     source_slot,
-                    kind: Level2DynamicArenaKind::AuthoredModel5WaterSplash,
+                    kind: Level2DynamicArenaKind::AuthoredModel53,
                     ..
-                } if *source_slot == splash.source_entity_index
+                } if *source_slot == row439.source_entity_index
             )
         }));
-        for _ in 0..8 {
-            session.step_outer_turn(PlayerCommand::default(), 0);
-        }
-        let splash = session
-            .economy()
-            .authored_model5_water_splashes()
-            .iter()
-            .find(|source| source.source_entity_index == splash.source_entity_index)
-            .copied()
-            .expect("water splash remains in the source arena through its life window");
-        assert_eq!(splash.life, -1);
-        assert!(splash.drawing_enabled);
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        assert!(
-            !session
-                .economy()
-                .authored_model5_water_splashes()
-                .iter()
-                .any(|source| source.source_entity_index == splash.source_entity_index)
-        );
 
+        // A negative pre-decrement return consumes no action-58 RNG and emits
+        // no child, while ApplyEvents still advances the source phase.
         session.reset();
-        assert!(session.economy().authored_model53().is_empty());
+        let negative = session
+            .economy_mut()
+            .allocate_authored_model53(439, feature_position(439))
+            .expect("direct negative-branch source allocation");
+        let negative_slot = negative.source_entity_index;
+        let negative_rng = negative.entity_rng;
+        let negative_phase = negative.phase;
+        session
+            .economy_mut()
+            .authored_model53
+            .iter_mut()
+            .find(|source| source.source_entity_index == negative_slot)
+            .expect("negative-branch source")
+            .life = -1;
+        let child_count = session.economy().model17_spawned_children().len();
         assert!(
             session
-                .economy()
-                .authored_model5_water_splashes()
-                .is_empty()
+                .economy_mut()
+                .step_authored_model53_slot(negative_slot)
         );
+        let negative_after = session
+            .economy()
+            .authored_model53()
+            .iter()
+            .find(|source| source.source_entity_index == negative_slot)
+            .copied()
+            .expect("negative-branch source remains live");
+        assert_eq!(negative_after.life, -2);
+        assert_eq!(negative_after.entity_rng, negative_rng);
+        assert_eq!(negative_after.phase, negative_phase.wrapping_add(1));
+        assert_eq!(
+            session.economy().model17_spawned_children().len(),
+            child_count
+        );
+        session.reset();
+        assert!(session.economy().authored_model53().is_empty());
+        assert!(session.economy().model17_spawned_children().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
@@ -42911,9 +42813,25 @@ mod tests {
                 model1.particle_index,
                 model1.control_flags,
             ),
-            (1, 1, 400, 1, 41, 0x0002_0000)
+            (1, 1, 400, 1, 41, 0x0002_0002)
         );
+        assert_eq!(model1.last_sound_id, 3);
         assert!(model1.active);
+        let quickfair_children = session
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .filter(|child| child.parent_entity_index == model1.source_entity_index)
+            .collect::<Vec<_>>();
+        assert!(!quickfair_children.is_empty());
+        assert!(quickfair_children.iter().all(|child| {
+            (
+                child.parent_entity_id,
+                child.control_flags,
+                child.shift_rot_x,
+                child.shift_rot_y,
+            ) == (model1.source_entity_index, 0x0002_0080, 128, 128)
+        }));
 
         let archer = session
             .economy()
@@ -42968,7 +42886,7 @@ mod tests {
             .find(|source| source.authored_index == 216)
             .copied()
             .expect("model-1 root remains source-active after drawing disable");
-        assert_eq!(model1.life, -1);
+        assert_eq!(model1.life, -2);
         assert!(!model1.drawing_enabled);
         assert!(model1.active);
 
@@ -43028,6 +42946,51 @@ mod tests {
             )
         );
         assert!(stepped_archer.active && stepped_archer.drawing_enabled);
+
+        // The Quickfair terminal guard is before its first branch draw. A
+        // negative pre-decrement therefore hides the root without changing
+        // its source RNG or allocating another model-0 child.
+        let model1_before_terminal = session
+            .economy()
+            .authored_model1()
+            .iter()
+            .find(|source| source.authored_index == 216)
+            .copied()
+            .expect("model-1 root for terminal negative branch");
+        let child_count_before_terminal = session.economy().model17_spawned_children().len();
+        session
+            .economy_mut()
+            .authored_model1
+            .iter_mut()
+            .find(|source| source.source_entity_index == model1_before_terminal.source_entity_index)
+            .expect("model-1 root for terminal mutation")
+            .life = -1;
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model1_slot(model1_before_terminal.source_entity_index)
+        );
+        let model1_after_terminal = session
+            .economy()
+            .authored_model1()
+            .iter()
+            .find(|source| source.source_entity_index == model1_before_terminal.source_entity_index)
+            .copied()
+            .expect("model-1 root after terminal negative branch");
+        assert_eq!(model1_after_terminal.life, -2);
+        assert_eq!(
+            model1_after_terminal.entity_rng,
+            model1_before_terminal.entity_rng
+        );
+        assert_eq!(
+            model1_after_terminal.phase,
+            model1_before_terminal.phase.wrapping_add(1)
+        );
+        assert!(!model1_after_terminal.drawing_enabled);
+        assert_eq!(
+            session.economy().model17_spawned_children().len(),
+            child_count_before_terminal
+        );
 
         session.reset();
         assert!(session.economy().authored_model1().is_empty());
