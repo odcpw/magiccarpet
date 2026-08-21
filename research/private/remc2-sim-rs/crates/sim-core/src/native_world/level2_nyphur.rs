@@ -18,6 +18,64 @@ const LEVEL2_NYPHUR_SPELL_SCAN_15790: [u8; 9] =
     [0x10, 0x12, 0x09, 0x07, 0x14, 0x15, 0x13, 0x00, 0xff];
 const LEVEL2_NYPHUR_SPELL_SCAN_15910: [u8; 8] = [0x10, 0x12, 0x07, 0x09, 0x11, 0x14, 0x00, 0xff];
 
+/// Pinned `unk_D3F91x` order consumed by `sub_15FC0`.  These are class-5
+/// model buckets, not spell-family rows; the source maps their selected model
+/// to a spell id on the family-4 holder after the nearest-candidate scan.
+const LEVEL2_NYPHUR_SUB_15FC0_BUCKETS: [u8; 4] = [2, 0x13, 0x19, 0x10];
+const LEVEL2_NYPHUR_MODE14_PRIMARY_MAX_DISTANCE: u32 = 0x1400;
+const LEVEL2_NYPHUR_MODE14_ATTACK_MIN_DISTANCE: u32 = 0x0a00;
+
+#[inline]
+const fn level2_nyphur_mode14_primary_admitted(distance: u32) -> bool {
+    distance <= LEVEL2_NYPHUR_MODE14_PRIMARY_MAX_DISTANCE
+}
+
+#[inline]
+const fn level2_nyphur_mode14_bucket_admitted(distance: u32) -> bool {
+    distance < LEVEL2_NYPHUR_MODE14_PRIMARY_MAX_DISTANCE
+}
+
+#[inline]
+const fn level2_nyphur_mode14_attack_band(distance: u32) -> bool {
+    distance > LEVEL2_NYPHUR_MODE14_ATTACK_MIN_DISTANCE
+        && distance < LEVEL2_NYPHUR_MODE14_PRIMARY_MAX_DISTANCE
+}
+
+/// Source `Spells.cpp` family-4 rows used by `SetSpell_6D5E0` when
+/// `sub_15FC0` selects one of the four bucket models.  The generic Level 2
+/// profile table intentionally does not admit family 4 on the fresh route;
+/// this narrow mode-14 projection is only reachable through a validated
+/// source-owned family-4 holder.
+const fn level2_nyphur_family4_spell_profile(tier: u8) -> Option<Level2SetSpellProfile> {
+    Some(match tier {
+        0 => Level2SetSpellProfile {
+            subspell_index: 100,
+            word_0x30: 201,
+            byte_0x3b: 1,
+            mana_regen: 20_000,
+            max_mana: 5_000,
+            mana: 24,
+        },
+        1 => Level2SetSpellProfile {
+            subspell_index: 100,
+            word_0x30: 301,
+            byte_0x3b: 1,
+            mana_regen: 20_000,
+            max_mana: 7_500,
+            mana: 24,
+        },
+        2 => Level2SetSpellProfile {
+            subspell_index: 100,
+            word_0x30: 455,
+            byte_0x3b: 1,
+            mana_regen: 25_000,
+            max_mana: 15_000,
+            mana: 32,
+        },
+        _ => return None,
+    })
+}
+
 /// Source-owned Level 2 AI participant/holder chain at reset.
 ///
 /// The participant rows remain part of the lossless entity/player arrays. This
@@ -590,6 +648,23 @@ impl Level2NyphurCommonUpkeep {
             .filter(|slot| *slot != 0)
     }
 
+    /// Resolve the source-owned family-4 holder consumed by `sub_15FC0` and
+    /// `sub_161A0`.  `sub_146C0` itself only follows the player relation; the
+    /// mode-14 path additionally rejects a cross-owner, wrong-class, wrong-
+    /// model, or wrong-action carrier instead of treating an unrelated live
+    /// row as the advanced-mode holder.
+    fn source_family4_holder<'a>(
+        &self,
+        entities: &'a [EntitySnapshot],
+    ) -> Option<&'a EntitySnapshot> {
+        self.sub_146c0(4, entities).filter(|holder| {
+            holder.class == 15
+                && holder.model == 4
+                && holder.action == 12
+                && holder.source_spell_parent_entity_index() == self.source_slot
+        })
+    }
+
     /// Pinned `sub_146C0`: resolve one source-slot/list relation against the
     /// live entity pool. The C++ sentinel comparison is represented by the
     /// explicit index, active, and nonnegative-life checks; malformed or
@@ -769,9 +844,36 @@ impl Level2NyphurCommonUpkeep {
         let tier = level2_applied_tier(raw_tier)?;
         let profile = match family {
             0 | 1 | 3 => level2_direct_starting_spell_profile(family, tier),
+            4 => level2_nyphur_family4_spell_profile(tier),
             _ => level2_set_spell_profile(family, tier),
         }?;
         Some((tier, profile))
+    }
+
+    /// Apply the source `SetSpell_6D5E0` write without running the later
+    /// affordability predicate.  `sub_15FC0` calls SetSpell directly after
+    /// selecting a class-5 bucket; the following `sub_161A0` activation owns
+    /// the separate `sub_15170`/mana/cooldown gate.
+    fn step_set_spell_profile(
+        &self,
+        family: u8,
+        raw_tier: i8,
+        entities: &mut [EntitySnapshot],
+    ) -> bool {
+        let Some(holder_slot) = self.source_spell_holder_slot(family) else {
+            return false;
+        };
+        let Some((tier, profile)) = Self::source_spell_profile(family, raw_tier) else {
+            return false;
+        };
+        let Some(holder) = entities.get_mut(usize::from(holder_slot)) else {
+            return false;
+        };
+        if holder.index != holder_slot || !holder.active || holder.life < 0 {
+            return false;
+        }
+        holder.apply_nyphur_spell_profile(profile, tier);
+        true
     }
 
     /// The source `sub_15170` availability predicate for the source-backed
@@ -1104,6 +1206,9 @@ impl Level2NyphurCommonUpkeep {
         source_control_flags: &mut u32,
         entities: &mut [EntitySnapshot],
     ) -> bool {
+        if family == 4 && self.source_family4_holder(entities).is_none() {
+            return false;
+        }
         let Some(holder_slot) = self.source_spell_holder_slot(family) else {
             return false;
         };
@@ -1903,6 +2008,30 @@ fn level2_nyphur_class5_bucket_order(entities: &[EntitySnapshot]) -> Vec<u16> {
     order
 }
 
+/// Rebuild only the four source buckets walked by `sub_15FC0`.  The pinned
+/// `UpdateEntities_57730` pass visits entity slots in ascending order and
+/// appends each live class-5 row to its model bucket, so this preserves both
+/// bucket order and same-bucket ties without substituting a global class-5
+/// sweep.
+fn level2_nyphur_sub_15fc0_class5_source_order(entities: &[EntitySnapshot]) -> Vec<(u16, u8)> {
+    let mut order = Vec::new();
+    for model in LEVEL2_NYPHUR_SUB_15FC0_BUCKETS {
+        order.extend(
+            entities
+                .iter()
+                .filter(|entity| {
+                    entity.active
+                        && entity.life >= 0
+                        && entity.class == 5
+                        && entity.model == model
+                        && !matches!(entity.action, 0xb4 | 0xe8 | 0xea)
+                })
+                .map(|entity| (entity.index, model)),
+        );
+    }
+    order
+}
+
 fn level2_nyphur_class45_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
     level2_nyphur_linked_source_order(entities, |entity| {
         entity.active && entity.life >= 0 && entity.class == 10 && entity.model == 45
@@ -2282,6 +2411,7 @@ impl Level2NyphurDispatcher {
             11 => self.step_sub_133b0(source_slot, entities, terrain)?,
             12 => self.step_sub_13270(source_slot, entities, terrain)?,
             13 => self.step_sub_13850(source_slot, entities, players, terrain, presentation)?,
+            14 => self.step_sub_161a0(source_slot, entities, players, terrain)?,
             _ => {}
         }
         let tail_calls = if selected_state == 0 { 2 } else { 1 };
@@ -2425,6 +2555,250 @@ impl Level2NyphurDispatcher {
             self.common_upkeep.word_0xe_14 = 1;
         }
         Ok(false)
+    }
+
+    /// Pinned `sub_15FC0`: admit advanced mode only through the source-owned
+    /// family-4 holder, preserve the existing target relation when its active
+    /// holder already owns it, otherwise select the nearest class-3/model-0/1
+    /// primary and then the nearest candidate in `unk_D3F91x` bucket order.
+    /// The direct SetSpell write precedes the source slot/identity write just
+    /// as in the C++ helper; every malformed carrier fails closed.
+    fn step_sub_15fc0(&mut self, source_slot: u16, entities: &mut [EntitySnapshot]) -> bool {
+        let Some(source_index) = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+        else {
+            return false;
+        };
+        let source = entities[source_index].clone();
+        if self.common_upkeep.source_family4_holder(entities).is_none() {
+            return false;
+        }
+        let target_matches = entities
+            .get(usize::from(source.source_word_96()))
+            .is_some_and(|target| level2_nyphur_source_identity_matches(&source, target));
+        if self.common_upkeep.sub_156f0(4, entities) && target_matches {
+            return true;
+        }
+
+        let mut nearest_primary = None;
+        let mut nearest_primary_distance = u32::MAX;
+        for candidate_index in level2_nyphur_class3_source_order(entities) {
+            let Some(candidate) = entities.get(usize::from(candidate_index)) else {
+                continue;
+            };
+            if candidate.source_id == source.source_id || !matches!(candidate.model, 0 | 1) {
+                continue;
+            }
+            let distance = level2_nyphur_source_distance_3d(source.position, candidate.position);
+            if distance < nearest_primary_distance {
+                nearest_primary = Some(candidate.index);
+                nearest_primary_distance = distance;
+            }
+        }
+        // The source accepts equality at 0x1400 for the primary class-3
+        // target, but the selected class-5 bucket is strict below 0x1400.
+        if !level2_nyphur_mode14_primary_admitted(nearest_primary_distance) {
+            nearest_primary = None;
+        }
+        let Some(primary_index) = nearest_primary else {
+            return false;
+        };
+        let Some(primary) = entities.get(usize::from(primary_index)) else {
+            return false;
+        };
+
+        let mut nearest_bucket = None;
+        let mut nearest_bucket_distance = u32::MAX;
+        for (candidate_index, bucket_model) in level2_nyphur_sub_15fc0_class5_source_order(entities)
+        {
+            let Some(candidate) = entities.get(usize::from(candidate_index)) else {
+                continue;
+            };
+            if candidate.source_id == source.source_id {
+                continue;
+            }
+            let distance = level2_nyphur_source_distance_3d(primary.position, candidate.position);
+            if distance < nearest_bucket_distance {
+                nearest_bucket = Some((candidate.index, bucket_model));
+                nearest_bucket_distance = distance;
+            }
+        }
+        if !level2_nyphur_mode14_bucket_admitted(nearest_bucket_distance) {
+            return false;
+        }
+        let Some((target_index, bucket_model)) = nearest_bucket else {
+            return false;
+        };
+        let spell_tier = match bucket_model {
+            2 | 0x13 => 0,
+            0x19 => 1,
+            0x10 => 2,
+            _ => return false,
+        };
+        if !self
+            .common_upkeep
+            .step_set_spell_profile(4, spell_tier, entities)
+        {
+            return false;
+        }
+        let Some(target) = entities.get(usize::from(target_index)).cloned() else {
+            return false;
+        };
+        entities[source_index].set_source_relation(&target);
+        true
+    }
+
+    /// Pinned `sub_161A0`: activate the family-4 handoff, perform the two
+    /// source vertical corrections and family-4 random roll perturbation,
+    /// then choose the strict `(0xA00, 0x1400)` class-3 attack band before
+    /// falling through to the nearest-target approach branch and `sub_16580`.
+    fn step_sub_161a0(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
+        terrain: &SessionTerrain,
+    ) -> Result<()> {
+        let source_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_161A0 source row is absent")
+            })?;
+        let source = entities[source_index].clone();
+        if self.common_upkeep.source_family4_holder(entities).is_none() {
+            return self.step_sub_16580(&source, terrain);
+        }
+        let Some(target) = entities.get(usize::from(source.source_word_96())).cloned() else {
+            return self.step_sub_16580(&source, terrain);
+        };
+        if !level2_nyphur_source_identity_matches(&source, &target) {
+            return self.step_sub_16580(&source, terrain);
+        }
+
+        let mut source_control_flags = source.control_flags;
+        let _ =
+            self.common_upkeep
+                .step_sub_14e10(4, source.model, &mut source_control_flags, entities);
+        entities[source_index].set_control_flags(source_control_flags);
+
+        let initial_roll = i16::try_from(heading_for_positions(source.position, target.position))
+            .expect("Nyphur sub_161A0 roll fits the signed source angle carrier");
+        entities[source_index].set_source_roll(initial_roll);
+        for _ in 0..2 {
+            let current = entities[source_index].position;
+            let vertical_delta = i32::from(current.z) - (i32::from(target.position.z) + 512);
+            let direction = vertical_delta.signum() as i16;
+            let mut position = current;
+            position.z = position
+                .z
+                .wrapping_add(direction.wrapping_mul(self.common_upkeep.word_0xe_14));
+            entities[source_index].set_position(position);
+            let roll = i16::try_from(heading_for_positions(position, target.position))
+                .expect("Nyphur sub_161A0 roll fits the signed source angle carrier");
+            entities[source_index].set_source_roll(roll);
+        }
+
+        let family4_holder = self.common_upkeep.source_family4_holder(entities).cloned();
+        if family4_holder
+            .as_ref()
+            .is_some_and(|holder| holder.level_gate == 0)
+        {
+            let next_rng = entities[source_index]
+                .entity_rng
+                .wrapping_mul(9_377)
+                .wrapping_add(9_439);
+            entities[source_index].set_entity_rng(next_rng);
+            let roll_sign = 2 * (i32::from(next_rng % 0x9d) / 79);
+            let next_rng = next_rng.wrapping_mul(9_377).wrapping_add(9_439);
+            entities[source_index].set_entity_rng(next_rng);
+            let current_roll = i32::from(entities[source_index].source_roll());
+            let perturbed_roll =
+                (current_roll + (roll_sign - 1) * i32::from(next_rng % 0x55)) & 0x07ff;
+            entities[source_index].set_source_roll(
+                i16::try_from(perturbed_roll).expect("masked Nyphur roll fits i16"),
+            );
+        }
+
+        let mut nearest_primary = None;
+        let mut nearest_primary_distance = u32::MAX;
+        for candidate_index in level2_nyphur_class3_source_order(entities) {
+            let Some(candidate) = entities.get(usize::from(candidate_index)) else {
+                continue;
+            };
+            if candidate.source_id == source.source_id || !matches!(candidate.model, 0 | 1) {
+                continue;
+            }
+            let distance = level2_nyphur_source_distance_3d(
+                entities[source_index].position,
+                candidate.position,
+            );
+            if distance < nearest_primary_distance {
+                nearest_primary = Some(candidate.index);
+                nearest_primary_distance = distance;
+            }
+        }
+
+        if let Some(candidate_index) =
+            nearest_primary.filter(|_| level2_nyphur_mode14_attack_band(nearest_primary_distance))
+        {
+            let candidate = entities
+                .get(usize::from(candidate_index))
+                .cloned()
+                .ok_or_else(|| {
+                    NativeWorldError::new("Level 2 Nyphur sub_161A0 target row is absent")
+                })?;
+            entities[source_index].set_source_relation(&candidate);
+            let family = self
+                .common_upkeep
+                .step_sub_15790(candidate.index, entities, players);
+            self.common_upkeep.speed = 0;
+            self.common_upkeep.word_0xe_14 = 1;
+            if family >= 0
+                && self.common_upkeep.step_sub_14e10(
+                    family.cast_unsigned(),
+                    source.model,
+                    &mut source_control_flags,
+                    entities,
+                )
+            {
+                entities[source_index].set_control_flags(source_control_flags);
+                return self.step_sub_16580(&entities[source_index], terrain);
+            }
+        } else {
+            let target_position = nearest_primary
+                .and_then(|index| {
+                    entities
+                        .get(usize::from(index))
+                        .map(|entity| entity.position)
+                })
+                .unwrap_or_default();
+            let roll = i16::try_from(heading_for_positions(
+                entities[source_index].position,
+                target_position,
+            ))
+            .expect("Nyphur sub_161A0 roll fits the signed source angle carrier");
+            entities[source_index].set_source_roll(roll);
+            let vertical_delta =
+                i32::from(entities[source_index].position.z) - (i32::from(target_position.z) + 512);
+            let direction = vertical_delta.signum() as i16;
+            let mut position = entities[source_index].position;
+            position.z = position
+                .z
+                .wrapping_add(direction.wrapping_mul(self.common_upkeep.word_0xe_14));
+            entities[source_index].set_position(position);
+        }
+
+        if let Some(holder) = family4_holder {
+            let speed = if holder.level_gate != 0 {
+                entities[source_index].minimum_speed()
+            } else {
+                entities[source_index].minimum_speed().wrapping_mul(3)
+            };
+            entities[source_index].set_actual_speed(speed);
+        }
+        self.step_sub_16580(&entities[source_index], terrain)
     }
 
     /// The bounded Level 2 carrier for the source `sub_15170` predicate.
@@ -3035,6 +3409,13 @@ impl Level2NyphurDispatcher {
                 "Level 2 Nyphur tail reached an unowned selector prerequisite",
             ));
         }
+        // Pinned `sub_15FC0` follows the model-2/model-3 selectors and
+        // precedes `sub_13CE0`. Its family-4 carrier and target bucket are
+        // handled by this lane; absent or malformed carriers fail closed.
+        if self.step_sub_15fc0(source_slot, entities) {
+            self.state_byte = 14;
+            return Ok(());
+        }
         if let Some(target_index) =
             self.common_upkeep
                 .step_sub_13ce0(&entities[source_index], entities, players)
@@ -3238,14 +3619,9 @@ impl Level2NyphurDispatcher {
         // notification carrier, so it must not synthesize that later-mode
         // side effect.
         //
-        // sub_15FC0 needs the AI family-4 holder. The sub_13CE0 target lists
-        // are handled by this packet immediately after this boundary, so
-        // their presence is not a reason to reject the common tail. In
+        // sub_15FC0 is handled immediately after this boundary. In
         // particular, a model-57 row must remain visible here so its
         // sub_148E0 Watcom draw occurs at the source call site.
-        if self.common_upkeep.source_spell_holder_slot(4).is_some() {
-            return false;
-        }
         true
     }
 
@@ -3574,6 +3950,132 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn level_two_nyphur_mode14_distance_boundaries_match_pinned_source() {
+        // These pure threshold checks document the three distinct source
+        // comparisons. They are boundary evidence only; they do not create a
+        // family-4 holder or claim an ordinary mode-14 activation.
+        assert!(level2_nyphur_mode14_primary_admitted(0x1400));
+        assert!(!level2_nyphur_mode14_primary_admitted(0x1401));
+        assert!(level2_nyphur_mode14_bucket_admitted(0x13ff));
+        assert!(!level2_nyphur_mode14_bucket_admitted(0x1400));
+        assert!(!level2_nyphur_mode14_attack_band(0x0a00));
+        assert!(level2_nyphur_mode14_attack_band(0x0a01));
+        assert!(level2_nyphur_mode14_attack_band(0x13ff));
+        assert!(!level2_nyphur_mode14_attack_band(0x1400));
+    }
+
+    #[test]
+    fn level_two_nyphur_mode14_ordinary_route_fails_closed_without_family4_holder() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Nyphur mode-14 negative session");
+        let baseline_hash = session.campaign_state_hash();
+        let baseline_common = session
+            .nyphur_common_upkeep()
+            .expect("qualified Nyphur common carrier");
+        assert_eq!(baseline_common.spell_holder_indices[4], 0);
+
+        // This is the ordinary production cursor, including every qualified
+        // cadence opportunity in the focused window. With no source-owned
+        // family-4 carrier, sub_15FC0 must refuse the transition rather than
+        // borrow the authored family-0/1 holders or write state 14 directly.
+        for _ in 0..282 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(
+            session
+                .nyphur_dispatch_traces()
+                .iter()
+                .all(|trace| trace.state_byte != 14)
+        );
+        assert!(
+            session
+                .nyphur_dispatch_traces()
+                .iter()
+                .flat_map(|trace| trace.calls.iter())
+                .all(|call| {
+                    !matches!(
+                        call,
+                        Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub161a0)
+                    )
+                })
+        );
+        assert_eq!(
+            session
+                .nyphur_common_upkeep()
+                .expect("post-cursor Nyphur common carrier")
+                .spell_holder_indices[4],
+            0
+        );
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert_eq!(
+            session
+                .nyphur_common_upkeep()
+                .expect("reset Nyphur common carrier")
+                .spell_holder_indices[4],
+            0
+        );
+    }
+
+    #[test]
+    fn level_two_nyphur_mode14_rejects_non_family4_holder_carrier() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Nyphur malformed-carrier session");
+        let source_before = session.entities[112].record_bytes().to_vec();
+        let fireball_holder = session
+            .nyphur_common_upkeep()
+            .expect("qualified Nyphur common carrier")
+            .spell_holder_indices[0];
+        assert_ne!(fireball_holder, 0);
+
+        // Reusing the authored family-0 row as a family-4 table entry is a
+        // malformed carrier, not a producer. The source-owned class/model/
+        // action/parent checks must reject it without touching the source.
+        session.nyphur_dispatcher.common_upkeep.spell_holder_indices[4] = fireball_holder;
+        assert!(
+            !session
+                .nyphur_dispatcher
+                .step_sub_15fc0(112, &mut session.entities)
+        );
+        assert_eq!(
+            session.entities[112].record_bytes(),
+            source_before.as_slice()
+        );
+        assert!(
+            session
+                .nyphur_dispatcher
+                .common_upkeep
+                .source_family4_holder(&session.entities)
+                .is_none()
+        );
+
+        // A stale externally latched state is equally fail-closed at the
+        // mode-14 handler boundary; it cannot consume the family-0 holder.
+        session.nyphur_dispatcher.state_byte = 14;
+        let terrain = session.terrain.clone();
+        session
+            .nyphur_dispatcher
+            .step_sub_161a0(112, &mut session.entities, &session.players, &terrain)
+            .expect("malformed mode-14 carrier fails through movement epilogue");
+        assert_eq!(session.entities[112].source_word_96(), 0);
+        assert_eq!(session.entities[112].source_word_98(), 0);
     }
 
     #[test]
