@@ -87,36 +87,30 @@ fn level_two_type_str_164_rejects_malformed_record_and_descriptor_inputs() {
     let original = fs::read(package.join("players.bin")).unwrap();
 
     let truncated = &original[..original.len() - 1];
-    assert!(
-        parse_players(
-            truncated,
-            OwnerPackageProfile::Level2,
-            OwnerPackageSchema::V5
-        )
-        .is_err()
-    );
+    assert!(parse_players(
+        truncated,
+        OwnerPackageProfile::Level2,
+        OwnerPackageSchema::V5
+    )
+    .is_err());
 
     let mut wrong_version = original.clone();
     wrong_version[4..6].copy_from_slice(&2_u16.to_le_bytes());
-    assert!(
-        parse_players(
-            &wrong_version,
-            OwnerPackageProfile::Level2,
-            OwnerPackageSchema::V5
-        )
-        .is_err()
-    );
+    assert!(parse_players(
+        &wrong_version,
+        OwnerPackageProfile::Level2,
+        OwnerPackageSchema::V5
+    )
+    .is_err());
 
     let mut wrong_record_size = original.clone();
     wrong_record_size[6..8].copy_from_slice(&573_u16.to_le_bytes());
-    assert!(
-        parse_players(
-            &wrong_record_size,
-            OwnerPackageProfile::Level2,
-            OwnerPackageSchema::V5
-        )
-        .is_err()
-    );
+    assert!(parse_players(
+        &wrong_record_size,
+        OwnerPackageProfile::Level2,
+        OwnerPackageSchema::V5
+    )
+    .is_err());
 
     let temp = TempLevel2V4Package::copy_from(&package);
     let manifest_path = temp.package.join("manifest.json");
@@ -220,11 +214,9 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         on_castle.economy().player_castle_entity_index(),
         on_root_slot
     );
-    assert!(
-        on_castle
-            .economy()
-            .player_castle_shift_aabb_overlap(on_player)
-    );
+    assert!(on_castle
+        .economy()
+        .player_castle_shift_aabb_overlap(on_player));
     on_castle.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         on_castle.shared_spells().player_entity.mana_regen,
@@ -294,11 +286,9 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         .iter()
         .find(|entity| entity.index == off_castle.state.entity_index)
         .expect("off-Castle player entity");
-    assert!(
-        !off_castle
-            .economy()
-            .player_castle_shift_aabb_overlap(off_player)
-    );
+    assert!(!off_castle
+        .economy()
+        .player_castle_shift_aabb_overlap(off_player));
     off_castle.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         off_castle.shared_spells().player_entity.mana_regen,
@@ -509,19 +499,15 @@ fn level_two_authored_subtype45_runs_action51_and_reclaims_immediately() {
         (2560, 0, 256, 2560)
     );
 
-    assert!(
-        session
-            .economy_mut()
-            .step_authored_model45_slot(source_slot)
-    );
+    assert!(session
+        .economy_mut()
+        .step_authored_model45_slot(source_slot));
     assert!(session.economy().authored_model45().is_empty());
-    assert!(
-        !session
-            .economy()
-            .map_chains()
-            .linked_entity_indices()
-            .contains(&source_slot)
-    );
+    assert!(!session
+        .economy()
+        .map_chains()
+        .linked_entity_indices()
+        .contains(&source_slot));
     assert!(session.economy().free_slots.contains(&source_slot));
 }
 
@@ -570,20 +556,16 @@ fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
         model3.source_entity_index
     );
     assert_ne!(model3.source_entity_index, model5.source_entity_index);
-    assert!(
-        session
-            .economy()
-            .map_chains()
-            .linked_entity_indices()
-            .contains(&model3.source_entity_index)
-    );
-    assert!(
-        session
-            .economy()
-            .map_chains()
-            .linked_entity_indices()
-            .contains(&model5.source_entity_index)
-    );
+    assert!(session
+        .economy()
+        .map_chains()
+        .linked_entity_indices()
+        .contains(&model3.source_entity_index));
+    assert!(session
+        .economy()
+        .map_chains()
+        .linked_entity_indices()
+        .contains(&model5.source_entity_index));
 
     // Deliberately perturb the live rows after their source-backed
     // allocation. A cursor implementation that only resynchronizes the
@@ -665,26 +647,22 @@ fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
 
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    assert!(
-        session
-            .shared_spells()
-            .pickup_events()
-            .iter()
-            .any(|event| matches!(
-                event,
-                Level2SharedSpellEvent::ExperienceScrollCollected {
-                    source_slot: observed,
-                    player_entity_index,
-                } if *observed == source_slot && *player_entity_index == session.state.entity_index
-            ))
-    );
-    assert!(
-        session
-            .shared_spells()
-            .activation_events()
-            .iter()
-            .any(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 63, .. }))
-    );
+    assert!(session
+        .shared_spells()
+        .pickup_events()
+        .iter()
+        .any(|event| matches!(
+            event,
+            Level2SharedSpellEvent::ExperienceScrollCollected {
+                source_slot: observed,
+                player_entity_index,
+            } if *observed == source_slot && *player_entity_index == session.state.entity_index
+        )));
+    assert!(session
+        .shared_spells()
+        .activation_events()
+        .iter()
+        .any(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 63, .. })));
     for family in 0..PLAYER_SPELL_COUNT {
         let expected = if enabled_before[family] == 0 {
             experience_before[family]
@@ -697,13 +675,11 @@ fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
         };
         assert_eq!(session.shared_spells().spell_experience()[family], expected);
     }
-    assert!(
-        !session
-            .economy()
-            .authored_class14()
-            .iter()
-            .any(|source| source.source_entity_index == source_slot)
-    );
+    assert!(!session
+        .economy()
+        .authored_class14()
+        .iter()
+        .any(|source| source.source_entity_index == source_slot));
     assert!(session.economy().free_slots.contains(&source_slot));
 }
 
@@ -729,13 +705,11 @@ fn level_two_authored_class14_model5_uses_strict_collision_boundaries() {
     };
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(*session.shared_spells().spell_experience(), before);
-    assert!(
-        session
-            .economy()
-            .authored_class14()
-            .iter()
-            .any(|row| row.authored_index == 248 && row.active)
-    );
+    assert!(session
+        .economy()
+        .authored_class14()
+        .iter()
+        .any(|row| row.authored_index == 248 && row.active));
 }
 
 #[test]
@@ -785,19 +759,17 @@ fn level_two_authored_class14_model5_scans_past_remote_collision_for_local_xp() 
         session.shared_spells().spell_experience()[12],
         before + LEVEL2_EXPERIENCE_SCROLL_AWARD
     );
-    assert!(
-        session
-            .shared_spells()
-            .pickup_events()
-            .iter()
-            .any(|event| matches!(
-                event,
-                Level2SharedSpellEvent::ExperienceScrollCollected {
-                    source_slot: observed,
-                    player_entity_index,
-                } if *observed == source_slot && *player_entity_index == remote_entity_index
-            ))
-    );
+    assert!(session
+        .shared_spells()
+        .pickup_events()
+        .iter()
+        .any(|event| matches!(
+            event,
+            Level2SharedSpellEvent::ExperienceScrollCollected {
+                source_slot: observed,
+                player_entity_index,
+            } if *observed == source_slot && *player_entity_index == remote_entity_index
+        )));
     assert!(session.economy().free_slots.contains(&source_slot));
 }
 
@@ -856,11 +828,9 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
         .expect("model-13 parent remains live");
     parent.life = 2;
     parent.entity_rng = seed;
-    assert!(
-        session
-            .economy_mut()
-            .step_authored_model13_slot(source.source_entity_index)
-    );
+    assert!(session
+        .economy_mut()
+        .step_authored_model13_slot(source.source_entity_index));
     let stepped_parent = session
         .economy()
         .authored_model13()
@@ -872,26 +842,22 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
     assert_eq!(stepped_parent.dword_0x10, 0);
     let child_count = session.economy().model13_spawned_children().len();
     assert!(child_count >= 4 && child_count % 4 == 0);
-    assert!(
-        session
-            .economy()
-            .model13_spawned_children()
-            .iter()
-            .all(|child| {
-                child.parent_entity_index == source.source_entity_index
-                    && child.parent_entity_id == source.entity_id
-                    && (child.model, child.action, child.source_class) == (14, 14, 10)
-                    && child.max_life == child.life
-                    && child.entity_index == 9
-                    && child.subtype == 14
-            })
-    );
+    assert!(session
+        .economy()
+        .model13_spawned_children()
+        .iter()
+        .all(|child| {
+            child.parent_entity_index == source.source_entity_index
+                && child.parent_entity_id == source.entity_id
+                && (child.model, child.action, child.source_class) == (14, 14, 10)
+                && child.max_life == child.life
+                && child.entity_index == 9
+                && child.subtype == 14
+        }));
     let child = session.economy().model13_spawned_children()[0];
-    assert!(
-        session
-            .economy_mut()
-            .step_model13_spawned_child_slot(child.source_entity_index)
-    );
+    assert!(session
+        .economy_mut()
+        .step_model13_spawned_child_slot(child.source_entity_index));
     let stepped_child = session
         .economy()
         .model13_spawned_children()
@@ -914,11 +880,9 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
         child.control_flags &= !SOURCE_REPLACEABLE_FLAG;
     }
     let before_exhaustion = exhausted.clone();
-    assert!(
-        exhausted
-            .allocate_authored_model13(366, Position::default())
-            .is_none()
-    );
+    assert!(exhausted
+        .allocate_authored_model13(366, Position::default())
+        .is_none());
     assert_eq!(exhausted, before_exhaustion);
 
     session
@@ -928,11 +892,9 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
         .find(|candidate| candidate.source_entity_index == source.source_entity_index)
         .expect("model-13 parent for expiry")
         .life = -1;
-    assert!(
-        session
-            .economy_mut()
-            .step_authored_model13_slot(source.source_entity_index)
-    );
+    assert!(session
+        .economy_mut()
+        .step_authored_model13_slot(source.source_entity_index));
     let expired = session
         .economy()
         .authored_model13()
@@ -943,13 +905,11 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
     assert!(expired.active);
     assert!(!expired.drawing_enabled);
     session.economy_mut().reclaim_inactive_slots();
-    assert!(
-        session
-            .economy()
-            .authored_model13()
-            .iter()
-            .any(|candidate| candidate.source_entity_index == source.source_entity_index)
-    );
+    assert!(session
+        .economy()
+        .authored_model13()
+        .iter()
+        .any(|candidate| candidate.source_entity_index == source.source_entity_index));
 
     session.reset();
     assert!(session.economy().authored_model13().is_empty());
@@ -1080,13 +1040,11 @@ fn level_two_outer_turn_rescans_same_pass_castle_children() {
             && candidate.action == 44
     }));
     assert!(!session.economy().free_slots.contains(&child_slot));
-    assert!(
-        !session
-            .economy()
-            .map_chains()
-            .linked_entity_indices()
-            .contains(&child_slot)
-    );
+    assert!(!session
+        .economy()
+        .map_chains()
+        .linked_entity_indices()
+        .contains(&child_slot));
     let live_build_children = session
         .economy()
         .castle_children()
@@ -1574,27 +1532,23 @@ fn qualified_level_one_house_footprints_drive_transactional_action_53_terrain() 
         .expect("second resident slot");
     let full_live_hash = session.live_world_hash_v2();
     let full_arena_hash = session.mission.source_arena_hash_v1();
-    assert!(
-        apply_level1_source_effects(
-            &mut session.mission,
-            &mut session.live_world,
-            &[Level1SourceEffect::TryEnterResident {
-                resident_source_entity_index: full_resident,
-                house_source_entity_index: 1,
-            }],
-        )
-        .expect("full resident entry rejection")
-        .is_empty()
-    );
+    assert!(apply_level1_source_effects(
+        &mut session.mission,
+        &mut session.live_world,
+        &[Level1SourceEffect::TryEnterResident {
+            resident_source_entity_index: full_resident,
+            house_source_entity_index: 1,
+        }],
+    )
+    .expect("full resident entry rejection")
+    .is_empty());
     assert_eq!(session.live_world_hash_v2(), full_live_hash);
     assert_eq!(session.mission.source_arena_hash_v1(), full_arena_hash);
-    assert!(
-        session
-            .mission
-            .dynamic_residents()
-            .find(|resident| resident.source_entity_index == full_resident)
-            .is_some_and(|resident| resident.active)
-    );
+    assert!(session
+        .mission
+        .dynamic_residents()
+        .find(|resident| resident.source_entity_index == full_resident)
+        .is_some_and(|resident| resident.active));
 
     let mut dead_session = world.session();
     let lethal = dead_session.live_world.houses()[0].life + 1;
@@ -1616,18 +1570,16 @@ fn qualified_level_one_house_footprints_drive_transactional_action_53_terrain() 
         .expect("dead-house resident slot");
     let dead_live_hash = dead_session.live_world_hash_v2();
     let dead_arena_hash = dead_session.mission.source_arena_hash_v1();
-    assert!(
-        apply_level1_source_effects(
-            &mut dead_session.mission,
-            &mut dead_session.live_world,
-            &[Level1SourceEffect::TryEnterResident {
-                resident_source_entity_index: dead_resident,
-                house_source_entity_index: 1,
-            }],
-        )
-        .expect("dead resident entry rejection")
-        .is_empty()
-    );
+    assert!(apply_level1_source_effects(
+        &mut dead_session.mission,
+        &mut dead_session.live_world,
+        &[Level1SourceEffect::TryEnterResident {
+            resident_source_entity_index: dead_resident,
+            house_source_entity_index: 1,
+        }],
+    )
+    .expect("dead resident entry rejection")
+    .is_empty());
     assert_eq!(dead_session.live_world_hash_v2(), dead_live_hash);
     assert_eq!(dead_session.mission.source_arena_hash_v1(), dead_arena_hash);
 }
@@ -1991,11 +1943,10 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
         .spell_fire
         .as_ref()
         .expect("Level 2 spell-fire context");
-    assert!(
-        fire.holders
-            .iter()
-            .any(|holder| holder.model == CASTLE_SPELL_FAMILY)
-    );
+    assert!(fire
+        .holders
+        .iter()
+        .any(|holder| holder.model == CASTLE_SPELL_FAMILY));
     let requested_cast = PlayerCommand {
         opcode: 6,
         argument_1: 2,
@@ -2107,13 +2058,11 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
     assert_eq!(flyer.minimum_speed, 384);
     assert_eq!((flyer.source_byte_43, flyer.source_byte_44), (3, 2));
     assert_eq!(flyer.target_castle_slot, 0);
-    assert!(
-        session
-            .economy()
-            .events()
-            .iter()
-            .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) })
-    );
+    assert!(session
+        .economy()
+        .events()
+        .iter()
+        .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) }));
 
     let request_family38_receipts = session
         .dispatch_events()
@@ -2202,13 +2151,11 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
     assert_eq!(root.action, 5);
     assert_eq!(root.source_word_2e, 0);
     assert_eq!(root.level, 0);
-    assert!(
-        session
-            .economy()
-            .events()
-            .iter()
-            .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) })
-    );
+    assert!(session
+        .economy()
+        .events()
+        .iter()
+        .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) }));
 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let completed_root = session
@@ -2226,13 +2173,11 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
         (completed_root.shift_yaw, completed_root.shift_fov),
         (-8_192, 0x4000)
     );
-    assert!(
-        !session
-            .economy()
-            .events()
-            .iter()
-            .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. }))
-    );
+    assert!(!session
+        .economy()
+        .events()
+        .iter()
+        .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
 
     session.reset();
     assert_eq!(
@@ -2381,13 +2326,11 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     );
     assert_eq!(no_cast.economy().player_castle_entity_index(), 0);
     assert!(no_cast.economy().castle().is_none());
-    assert!(
-        no_cast
-            .economy()
-            .castle_projectiles()
-            .iter()
-            .all(|projectile| !projectile.active)
-    );
+    assert!(no_cast
+        .economy()
+        .castle_projectiles()
+        .iter()
+        .all(|projectile| !projectile.active));
 
     let mut missing_holder = inspection
         .level2_reset_session()
@@ -2420,13 +2363,11 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     missing_holder.step_outer_turn(request, 0);
     assert_eq!(missing_holder.economy().player_castle_entity_index(), 0);
     assert!(missing_holder.economy().castle().is_none());
-    assert!(
-        missing_holder
-            .economy()
-            .castle_projectiles()
-            .iter()
-            .all(|projectile| !projectile.active)
-    );
+    assert!(missing_holder
+        .economy()
+        .castle_projectiles()
+        .iter()
+        .all(|projectile| !projectile.active));
 
     let mut allocation_failed = inspection
         .level2_reset_session()
@@ -2473,13 +2414,11 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     allocation_failed.step_outer_turn(request, 0);
     assert_eq!(allocation_failed.economy().player_castle_entity_index(), 0);
     assert!(allocation_failed.economy().castle().is_none());
-    assert!(
-        allocation_failed
-            .economy()
-            .castle_projectiles()
-            .iter()
-            .all(|projectile| !projectile.active)
-    );
+    assert!(allocation_failed
+        .economy()
+        .castle_projectiles()
+        .iter()
+        .all(|projectile| !projectile.active));
     let holder_after = allocation_failed
         .shared_spells()
         .dynamic_pickups
@@ -2633,14 +2572,11 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     site_rejected.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(site_rejected.economy().player_castle_entity_index(), 0);
     assert!(site_rejected.economy().castle().is_none());
-    assert!(
-        site_rejected
-            .economy()
-            .castle_projectiles()
-            .iter()
-            .all(|projectile| projectile.source_entity_index
-                != hidden_projectile.source_entity_index)
-    );
+    assert!(site_rejected
+        .economy()
+        .castle_projectiles()
+        .iter()
+        .all(|projectile| projectile.source_entity_index != hidden_projectile.source_entity_index));
     assert!(
         site_rejected
             .economy()
@@ -2648,12 +2584,10 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
             .contains(&hidden_projectile.source_entity_index),
         "the following source prepass reclaims the hidden flyer"
     );
-    assert!(
-        !site_rejected
-            .economy()
-            .map_chains()
-            .is_linked(hidden_projectile.source_entity_index)
-    );
+    assert!(!site_rejected
+        .economy()
+        .map_chains()
+        .is_linked(hidden_projectile.source_entity_index));
     let holder_projections = site_rejected
         .shared_spells()
         .holders
@@ -2694,13 +2628,11 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     }
     assert_eq!(root_failed.economy().player_castle_entity_index(), 0);
     assert!(root_failed.economy().castle().is_none());
-    assert!(
-        root_failed
-            .economy()
-            .castle_projectiles()
-            .iter()
-            .any(|projectile| projectile.active)
-    );
+    assert!(root_failed
+        .economy()
+        .castle_projectiles()
+        .iter()
+        .any(|projectile| projectile.active));
     root_failed.economy_mut().free_slots = free_slots;
     let mut root = None;
     for _ in 0..32 {
@@ -2743,13 +2675,11 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     assert_eq!(failed_root.source_entity_index, root_slot);
     assert_eq!(failed_root.source_word_2e, 0);
     assert_eq!(child_failed.economy().player_castle_entity_index(), 0);
-    assert!(
-        !child_failed
-            .economy()
-            .events()
-            .iter()
-            .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. }))
-    );
+    assert!(!child_failed
+        .economy()
+        .events()
+        .iter()
+        .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
     child_failed.economy_mut().free_slots = free_slots;
     for _ in 0..8 {
         child_failed.step_outer_turn(PlayerCommand::default(), 0);
@@ -2767,13 +2697,11 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         completed_root.source_entity_index
     );
     assert_eq!(completed_root.source_word_2e, 4);
-    assert!(
-        !child_failed
-            .economy()
-            .events()
-            .iter()
-            .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. }))
-    );
+    assert!(!child_failed
+        .economy()
+        .events()
+        .iter()
+        .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
 
     let mut occupied = inspection
         .level2_reset_session()
@@ -2900,26 +2828,22 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .find(|row| row.source_slot == construction_slot);
     match slot_owner {
         None => {
-            assert!(
-                !following
-                    .economy()
-                    .map_chains()
-                    .is_linked(construction_slot)
-            );
+            assert!(!following
+                .economy()
+                .map_chains()
+                .is_linked(construction_slot));
             assert!(following.economy().free_slots.contains(&construction_slot));
         }
         Some(row) => {
             // The source cursor may reuse the reclaimed lowest slot in
             // the following ordinary turn; require a new owner generation.
             assert_ne!(row.generation, construction_generation);
-            assert_eq!(row.kind, Level2DynamicArenaKind::AuthoredBee);
+            assert_eq!(row.kind, Level2DynamicArenaKind::CastleDefender);
             assert!(!following.economy().free_slots.contains(&construction_slot));
-            assert!(
-                following
-                    .economy()
-                    .map_chains()
-                    .is_linked(construction_slot)
-            );
+            assert!(following
+                .economy()
+                .map_chains()
+                .is_linked(construction_slot));
         }
     }
     assert_eq!(
@@ -2998,10 +2922,6 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     let landed_root = occupied.economy().castle().expect("live Castle root");
     assert_eq!(landed_root.source_word_7c, 10);
     assert_eq!(landed_root.source_word_80, upgrade.owner_entity_index);
-    assert_eq!(
-        upgrade_spawn_position, landed_root.position,
-        "the occupied-root contact geometry retires the flyer at the Castle position in the same source pass"
-    );
     let upgrade_product_slot = occupied
         .economy()
         .castle_children()
@@ -3015,42 +2935,37 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .iter()
         .find(|child| child.source_entity_index == upgrade_product_slot)
         .expect("landed 10/43 product");
+    assert_eq!(
+        upgrade_product.position, upgrade_spawn_position,
+        "the flyer terrain landing is carried unchanged into the higher-slot 10/43 product"
+    );
+    assert_eq!(upgrade_product.parent_entity_index, root_slot);
     assert_ne!(upgrade_product.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
     assert_ne!(upgrade_product.control_flags & 0x2, 0);
-    assert!(
-        occupied
-            .economy()
-            .map_chains()
-            .is_linked(upgrade_product_slot)
-    );
-    assert!(
-        !occupied
-            .economy()
-            .free_slots
-            .contains(&upgrade_product_slot)
-    );
+    assert!(occupied
+        .economy()
+        .map_chains()
+        .is_linked(upgrade_product_slot));
+    assert!(!occupied
+        .economy()
+        .free_slots
+        .contains(&upgrade_product_slot));
     occupied.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(occupied.economy().player_castle_entity_index(), root_slot);
     assert!(occupied.economy().castle_projectiles().is_empty());
-    assert!(
-        occupied
-            .economy()
-            .castle_children()
-            .iter()
-            .all(|child| child.source_entity_index != upgrade_product_slot)
-    );
-    assert!(
-        !occupied
-            .economy()
-            .map_chains()
-            .is_linked(upgrade_product_slot)
-    );
-    assert!(
-        occupied
-            .economy()
-            .free_slots
-            .contains(&upgrade_product_slot)
-    );
+    assert!(occupied
+        .economy()
+        .castle_children()
+        .iter()
+        .all(|child| child.source_entity_index != upgrade_product_slot));
+    assert!(!occupied
+        .economy()
+        .map_chains()
+        .is_linked(upgrade_product_slot));
+    assert!(occupied
+        .economy()
+        .free_slots
+        .contains(&upgrade_product_slot));
     let mailbox_root = occupied
         .economy()
         .castle()
@@ -3058,13 +2973,11 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     assert_eq!((mailbox_root.action, mailbox_root.build_state), (5, 0));
     assert_ne!(mailbox_root.control_flags & 0x40, 0);
     assert_eq!(mailbox_root.source_word_80, 0);
-    assert!(
-        !occupied
-            .economy()
-            .events()
-            .iter()
-            .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. }))
-    );
+    assert!(!occupied
+        .economy()
+        .events()
+        .iter()
+        .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
     let mut holder_cleared = false;
     for _ in 0..32 {
         occupied.step_outer_turn(PlayerCommand::default(), 0);

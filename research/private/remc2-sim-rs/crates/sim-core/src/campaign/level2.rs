@@ -5239,16 +5239,11 @@ impl Level2ResetSession {
             if live_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
                 continue;
             }
-            // A persistent spell acquisition can retire the source currently
-            // being walked and allocate its replacement into that same arena
-            // slot with a new generation. Preserve that source-local
-            // generation handoff without reopening the ordinary cursor for
-            // arbitrary lower-slot births; all other lower/equal rows defer.
-            let reclaimed_generation_reuse = row.kind == Level2DynamicArenaKind::SpellReplacement
-                && dispatched_dynamic_slots
-                    .iter()
-                    .any(|(dispatched_slot, _)| *dispatched_slot == row.source_slot);
-            if row.source_slot <= source_slot && !reclaimed_generation_reuse {
+            // The source pointer walk cannot revisit the current numeric slot
+            // after its callback returns, even when that slot is reclaimed and
+            // reused with a new generation. Every lower/equal birth therefore
+            // waits for the following UpdateEntities invocation.
+            if row.source_slot <= source_slot {
                 deferred_dynamic_slots.insert(key);
             } else {
                 pending_source_rows.insert(key, row);
@@ -5958,11 +5953,7 @@ impl Level2ResetSession {
                 if live_dynamic_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
                     continue;
                 }
-                let reclaimed_generation_reuse = row.kind == Level2DynamicArenaKind::SpellReplacement
-                    && dispatched_dynamic_slots
-                        .iter()
-                        .any(|(dispatched_slot, _)| *dispatched_slot == row.source_slot);
-                if row.source_slot <= source_slot && !reclaimed_generation_reuse {
+                if row.source_slot <= source_slot {
                     deferred_dynamic_slots.insert(key);
                 } else {
                     pending_source_rows.insert(key, row);

@@ -19340,6 +19340,7 @@ mod tests {
         latest_snapshot: McCampaignStepSnapshotV2,
         player_entity_index: u16,
         new_claimed_group1_sphere_ids: BTreeSet<u32>,
+        merge_lineage: BTreeSet<(u32, u32)>,
     }
 
     /// Shared public route used by the Possession predecessor proof and the
@@ -19393,18 +19394,23 @@ mod tests {
             .expect("public player projection exposes the local Possession caster")
             .entity_index;
         let mut observed_claim_receipt_ids = BTreeSet::new();
-        let capture_public_claim_receipts = |receipts: &mut BTreeSet<u32>| {
-            receipts.extend(
-                campaign_economy_events_public(handle)
-                    .into_iter()
-                    .filter(|event| {
-                        event.code == MC_CAMPAIGN_ECONOMY_MANA_SPHERE_CLAIMED
-                            && event.entity_0 == player_entity_index
-                            && group1_sphere_ids.contains(&event.primary_id)
-                    })
-                    .map(|event| event.primary_id),
-            );
-        };
+        let mut observed_merge_lineage = BTreeSet::new();
+        let capture_public_economy_receipts =
+            |receipts: &mut BTreeSet<u32>, merge_lineage: &mut BTreeSet<(u32, u32)>| {
+                for event in campaign_economy_events_public(handle) {
+                    if event.code == MC_CAMPAIGN_ECONOMY_MANA_SPHERE_CLAIMED
+                        && event.entity_0 == player_entity_index
+                        && group1_sphere_ids.contains(&event.primary_id)
+                    {
+                        receipts.insert(event.primary_id);
+                    } else if event.code == MC_CAMPAIGN_ECONOMY_MANA_SPHERES_MERGED {
+                        // The dispatched a1/primary sphere survives and absorbs
+                        // the a2/secondary sphere. Ownership lineage therefore
+                        // flows from the claimed source into the surviving target.
+                        merge_lineage.insert((event.secondary_id, event.primary_id));
+                    }
+                }
+            };
 
         // Drive one ordinary public flight geometry. In the strict predecessor
         // the model-12 callback fans its mailbox to six overlapping neutral
@@ -19422,7 +19428,10 @@ mod tests {
             ..McCommandV2::default()
         };
         let (approach_snapshot, approach_events) = step_level2_campaign_public(handle, input);
-        capture_public_claim_receipts(&mut observed_claim_receipt_ids);
+        capture_public_economy_receipts(
+            &mut observed_claim_receipt_ids,
+            &mut observed_merge_lineage,
+        );
         if expected_claim_count.is_some() {
             assert!(
                 approach_events
@@ -19479,16 +19488,6 @@ mod tests {
             pitch > 0 && actual_speed > 0,
             "public pitch/forward input arms descent"
         );
-        let projectile_speed = 384_i16.wrapping_add(actual_speed);
-        let launch_distance = u16::try_from(i32::from(projectile_speed) * 2)
-            .expect("two ordinary flyer steps fit the source coordinate range");
-        // Selected/left `sub_68E50` displaces the raw parent 256 units at
-        // yaw-512 before adding parent FOV. Supply the inverse public origin
-        // so the production flyer retains the predecessor's pinned strict
-        // collision geometry after that source carrier was restored.
-        input.player_x = target.x.wrapping_add(256);
-        input.player_y = target.y.wrapping_add(launch_distance);
-        input.player_z = target.z.wrapping_sub(entity_fov);
         input.command = McCommandV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCommandV2>(),
@@ -19497,8 +19496,180 @@ mod tests {
             requested_spell: 1,
             ..McCommandV2::default()
         };
+        let launch_command =
+            player_command(input.command).expect("valid public Possession command");
+        let launch_player_speed = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Possession proof requires a Level 2 campaign session",
+                ));
+            };
+            let mut state = reset.state;
+            let mut context = reset.context.clone();
+            sim_core::step_turn_with_context(
+                &mut state,
+                launch_command,
+                sim_core::FlightProfile::OUTDOOR,
+                &reset.terrain,
+                &mut context,
+            );
+            Ok(state.actual_speed)
+        })
+        .expect("predict source-ordered Possession constructor speed");
+        let projectile_speed = 384_i16.wrapping_add(launch_player_speed);
+        // The existing lower source row advances before the newly allocated
+        // higher Possession flyer on the launch pass. Predict that public
+        // sphere visit, then put the carrier one strict collision radius
+        // short of the flyer's first move. The one-shot acquisition thereby
+        // observes live source-ordered geometry instead of a stale position.
+        let mut contact = Position {
+            x: target.x,
+            y: target.y,
+            z: target.z,
+        };
+        let attraction_step = u16::try_from(target.reserved[1] & 0xffff)
+            .expect("public attraction step occupies the low source word");
+        let attraction_yaw = usize::from(target.yaw.cast_unsigned() & 0x07ff);
+        let attraction_dx = if target.reserved[0] == 0 {
+            0
+        } else {
+            i16::try_from(
+                (i64::from(attraction_step) * i64::from(sim_core::SIN_16_16[attraction_yaw])) >> 16,
+            )
+            .expect("public attraction X displacement fits i16")
+        };
+        let attraction_dy = if target.reserved[0] == 0 {
+            0
+        } else {
+            i16::try_from(
+                (i64::from(attraction_step) * i64::from(sim_core::SIN_16_16[512 + attraction_yaw]))
+                    >> 16,
+            )
+            .expect("public attraction Y displacement fits i16")
+        };
+        let sphere_velocity_x = target.velocity_x.clamp(
+            -sim_core::level1_mission::MANA_SPHERE_MAX_XY_VELOCITY,
+            sim_core::level1_mission::MANA_SPHERE_MAX_XY_VELOCITY,
+        );
+        let sphere_velocity_y = target.velocity_y.clamp(
+            -sim_core::level1_mission::MANA_SPHERE_MAX_XY_VELOCITY,
+            sim_core::level1_mission::MANA_SPHERE_MAX_XY_VELOCITY,
+        );
+        let mut sphere_vertical_velocity = target.vertical_velocity;
+        for _ in 0..1 {
+            contact.x = contact
+                .x
+                .wrapping_add_signed(attraction_dx)
+                .wrapping_add_signed(sphere_velocity_x);
+            contact.y = contact
+                .y
+                .wrapping_sub_signed(attraction_dy)
+                .wrapping_add_signed(sphere_velocity_y);
+            contact.z = contact.z.wrapping_add(sphere_vertical_velocity);
+            sphere_vertical_velocity = sphere_vertical_velocity
+                .wrapping_sub(sim_core::level1_mission::MANA_SPHERE_GRAVITY)
+                .max(sim_core::level1_mission::MANA_SPHERE_TERMINAL_VELOCITY);
+        }
+
+        let target_dimension = sim_core::level1_mission::MANA_SPHERE_COLLISION_DIMENSIONS
+            [usize::from(sim_core::level1_mission::mana_sphere_size_ordinal(
+                target.mana,
+            ))];
+        let strict_collision_reach =
+            sim_core::level1_mission::POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH
+                .wrapping_add(target_dimension)
+                .wrapping_sub(1);
+        let launch_distance = projectile_speed.wrapping_sub(strict_collision_reach);
+        assert!(
+            launch_distance > 0,
+            "the source flyer step must exceed the strict target collision reach"
+        );
+        let launch_yaw = usize::from(yaw.cast_unsigned() & 0x07ff);
+        let launch_dx = i16::try_from(
+            (i64::from(launch_distance) * i64::from(sim_core::SIN_16_16[launch_yaw])) >> 16,
+        )
+        .expect("Possession launch X offset fits i16");
+        let launch_dy = i16::try_from(
+            (i64::from(launch_distance) * i64::from(sim_core::SIN_16_16[512 + launch_yaw])) >> 16,
+        )
+        .expect("Possession launch Y offset fits i16");
+        let launch_position = Position {
+            // `sub_108B0` rounds the flyer cell while map linkage uses the
+            // raw high byte and class-0 searches only current/+X. A one-unit
+            // high-side origin makes the acquired move finish on the target's
+            // searchable low side at this exact 0x80 boundary.
+            x: contact.x.wrapping_sub_signed(launch_dx).wrapping_add(1),
+            y: contact.y.wrapping_add_signed(launch_dy),
+            z: contact.z.wrapping_add(target_dimension),
+        };
+        // Selected/left `sub_68E50` displaces the raw parent 256 units at
+        // yaw-512 before adding parent FOV. Supply the inverse public origin
+        // so the production flyer retains the predecessor's pinned strict
+        // collision geometry after that source carrier was restored.
+        let desired_player_position = Position {
+            x: launch_position.x.wrapping_add(256),
+            y: launch_position.y,
+            z: launch_position.z.wrapping_sub(entity_fov),
+        };
+        let (corrected_player_position, predicted_player_position) =
+            with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                    return Err(AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "Possession proof requires a Level 2 campaign session",
+                    ));
+                };
+                let predict_player_position = |position: Position| {
+                    let mut state = reset.state;
+                    state.position = position;
+                    let mut context = reset.context.clone();
+                    sim_core::step_turn_with_context(
+                        &mut state,
+                        launch_command,
+                        sim_core::FlightProfile::OUTDOOR,
+                        &reset.terrain,
+                        &mut context,
+                    );
+                    state.position
+                };
+                let trial = predict_player_position(desired_player_position);
+                let corrected = Position {
+                    x: desired_player_position
+                        .x
+                        .wrapping_add(desired_player_position.x.wrapping_sub(trial.x)),
+                    y: desired_player_position
+                        .y
+                        .wrapping_add(desired_player_position.y.wrapping_sub(trial.y)),
+                    z: desired_player_position
+                        .z
+                        .wrapping_add(desired_player_position.z.wrapping_sub(trial.z)),
+                };
+                Ok((corrected, predict_player_position(corrected)))
+            })
+            .expect("predict source-ordered Possession launch carrier");
+        input.player_x = corrected_player_position.x;
+        input.player_y = corrected_player_position.y;
+        input.player_z = corrected_player_position.z;
         let (armed_snapshot, arm_events) = step_level2_campaign_public(handle, input);
-        capture_public_claim_receipts(&mut observed_claim_receipt_ids);
+        assert_eq!(
+            with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                    return Err(AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "Possession proof requires a Level 2 campaign session",
+                    ));
+                };
+                Ok(reset.state.position)
+            })
+            .expect("read armed public-input flight state"),
+            predicted_player_position,
+            "the real C-ABI arm pass must match the canonical committed launch carrier"
+        );
+        capture_public_economy_receipts(
+            &mut observed_claim_receipt_ids,
+            &mut observed_merge_lineage,
+        );
         let mut saw_effect = arm_events
             .iter()
             .any(|event| event.kind == 8 && event.family == 40);
@@ -19530,7 +19701,10 @@ mod tests {
 
         input.command = valid_command();
         let (mut latest_snapshot, no_second_events) = step_level2_campaign_public(handle, input);
-        capture_public_claim_receipts(&mut observed_claim_receipt_ids);
+        capture_public_economy_receipts(
+            &mut observed_claim_receipt_ids,
+            &mut observed_merge_lineage,
+        );
         possession_projectile_source_slots.extend(
             no_second_events
                 .iter()
@@ -19554,7 +19728,10 @@ mod tests {
                 break;
             }
             let (snapshot, events) = step_level2_campaign_public(handle, input);
-            capture_public_claim_receipts(&mut observed_claim_receipt_ids);
+            capture_public_economy_receipts(
+                &mut observed_claim_receipt_ids,
+                &mut observed_merge_lineage,
+            );
             possession_projectile_source_slots.extend(
                 events
                     .iter()
@@ -19588,7 +19765,10 @@ mod tests {
                 break;
             }
             let (snapshot, events) = step_level2_campaign_public(handle, input);
-            capture_public_claim_receipts(&mut observed_claim_receipt_ids);
+            capture_public_economy_receipts(
+                &mut observed_claim_receipt_ids,
+                &mut observed_merge_lineage,
+            );
             possession_projectile_source_slots.extend(
                 events
                     .iter()
@@ -19636,6 +19816,7 @@ mod tests {
             latest_snapshot,
             player_entity_index,
             new_claimed_group1_sphere_ids: observed_claim_receipt_ids,
+            merge_lineage: observed_merge_lineage,
         }
     }
 
@@ -23136,6 +23317,9 @@ mod tests {
             .find(|event| event.kind == 8 && event.family == 1)
             .copied();
         for _ in 0..32 {
+            if root_event.is_some() {
+                break;
+            }
             event_count = 0;
             assert_eq!(
                 mc_native_campaign_session_step(
@@ -23172,8 +23356,8 @@ mod tests {
         })
         .expect("read public Castle relation after seed allocation");
         assert_eq!(
-            seed_relation, root_event.source_slot,
-            "the higher-slot root callback runs sub_60480 and binds the Castle relation in the landing pass"
+            seed_relation, 0,
+            "the allocation receipt precedes the root's following ordinary construction callback"
         );
 
         event_count = 0;
@@ -23726,12 +23910,12 @@ mod tests {
         assert_eq!(
             defender_collection.map(|(_, value)| value),
             Some(2_560),
-            "the public Castle defender collects the six claimed model-39 route within the bounded source lifecycle"
+            "the first public Castle collection receipt carries the five-sphere merged payload"
         );
         assert_eq!(
             castle_deposit.map(|(_, value)| value),
-            Some(2_560),
-            "the public Castle arrival receipt deposits the collected mana within the bounded source lifecycle"
+            Some(3_072),
+            "the later public Castle arrival deposits all six claimed 512-mana rows"
         );
         assert!(
             defender_collection.expect("bounded collection receipt").0
@@ -24004,6 +24188,7 @@ mod tests {
         let mut player_entity_index = latest_snapshot.player_entity_index;
         let mut attempted_target_ids = BTreeSet::new();
         let mut claimed_group1_ids = BTreeSet::new();
+        let mut group1_merge_lineage = BTreeSet::new();
         let mut claim_route_deltas = Vec::new();
         // These authored rows are deterministic representatives of productive
         // public overlap clusters. Taking the representatives first
@@ -24045,6 +24230,7 @@ mod tests {
             latest_snapshot = route.latest_snapshot;
             player_entity_index = route.player_entity_index;
             let new_claimed_group1_sphere_ids = route.new_claimed_group1_sphere_ids;
+            group1_merge_lineage.extend(route.merge_lineage);
             claim_route_deltas.push((target.sphere_id, new_claimed_group1_sphere_ids.clone()));
             let claimed = campaign_mana_spheres_public(handle, latest_snapshot.generation)
                 .into_iter()
@@ -24057,9 +24243,21 @@ mod tests {
                 .map(|sphere| sphere.sphere_id)
                 .collect::<BTreeSet<_>>();
             claimed_group1_ids.extend(new_claimed_group1_sphere_ids);
+            let mut covered_by_claim_lineage = claimed_group1_ids.clone();
+            loop {
+                let previous_len = covered_by_claim_lineage.len();
+                for (claimed_source, surviving_target) in &group1_merge_lineage {
+                    if covered_by_claim_lineage.contains(claimed_source) {
+                        covered_by_claim_lineage.insert(*surviving_target);
+                    }
+                }
+                if covered_by_claim_lineage.len() == previous_len {
+                    break;
+                }
+            }
             assert!(
-                claimed.is_subset(&claimed_group1_ids),
-                "every currently live public claim was previously observed as a distinct ownership delta"
+                claimed.is_subset(&covered_by_claim_lineage),
+                "every live owned sphere is covered by a public claim or claimed-source -> surviving-target merge lineage"
             );
         }
         assert!(
@@ -24205,16 +24403,30 @@ mod tests {
             "ordinary Castle-overlap upkeep recovers the public upgrade mana gate"
         );
 
+        let upgrade_root_slot = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Castle read requires a Level 2 campaign session",
+                ));
+            };
+            reset
+                .economy()
+                .castle()
+                .map(|castle| castle.source_entity_index)
+                .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "missing occupied Castle root"))
+        })
+        .expect("read occupied Castle root identity before recast");
+
         // Recast the occupied Castle through the ordinary selected-spell
         // command. At this Castle-overlap geometry the higher-slot flyer
         // reaches the occupied root in the same source pass, retires, and
-        // dispatches the upgrade child and root callbacks. Those public
-        // receipts discriminate the successful recast without relying on a
-        // transient live-projectile callback.
+        // dispatches the higher-slot upgrade child. The already-visited root
+        // consumes that mailbox through its normal Castle route on the next
+        // ascending pass.
         input.command = castle_command;
-        let (upgrade_request_snapshot, upgrade_arm_events) =
+        let (_upgrade_request_snapshot, upgrade_arm_events) =
             step_level2_campaign_public(handle, input);
-        latest_snapshot = upgrade_request_snapshot;
         assert_eq!(
             upgrade_arm_events
                 .iter()
@@ -24223,19 +24435,12 @@ mod tests {
             1,
             "the occupied Castle recast dispatches exactly one upgrade-child callback"
         );
-        assert_eq!(
+        assert!(
             upgrade_arm_events
                 .iter()
-                .filter(|event| event.pass == 0 && event.kind == 8 && event.family == 1)
-                .count(),
-            1,
-            "the occupied Castle recast dispatches exactly one root callback in source order"
+                .all(|event| !(event.kind == 8 && event.family == 1)),
+            "the already-visited lower root cannot run again after its higher-slot upgrade child"
         );
-        let upgrade_root_slot = upgrade_arm_events
-            .iter()
-            .find(|event| event.pass == 0 && event.kind == 8 && event.family == 1)
-            .expect("occupied recast publishes its root callback")
-            .source_slot;
         assert!(
             upgrade_arm_events
                 .iter()
@@ -24243,6 +24448,25 @@ mod tests {
             "the occupied-root hit retires the upgrade flyer before it can publish a live-projectile callback"
         );
         input.command = valid_command();
+        let (upgrade_root_snapshot, upgrade_root_events) =
+            step_level2_campaign_public(handle, input);
+        latest_snapshot = upgrade_root_snapshot;
+        assert!(
+            upgrade_root_events
+                .iter()
+                .all(|event| !(event.kind == 8 && event.family == 38)),
+            "the following pass cannot republish the consumed upgrade flyer"
+        );
+        assert_eq!(
+            upgrade_root_events
+                .iter()
+                .filter(|event| event.pass == 0
+                    && event.kind == 7
+                    && event.source_slot == upgrade_root_slot)
+                .count(),
+            1,
+            "the following ascending pass dispatches the already-live Castle root exactly once"
+        );
         let mut stage_two_ready = false;
         for _ in 0..source_pass_bound {
             stage_two_ready = read_castle()
@@ -25194,8 +25418,8 @@ mod tests {
         }
         assert_eq!(
             first_defender_deposit,
-            Some(2_560),
-            "the single live Castle defender aggregates five ordinary 512-mana group-1 spheres before returning"
+            Some(3_072),
+            "the single live Castle defender aggregates all six ordinary 512-mana group-1 spheres before returning"
         );
         let retained_group1_spheres =
             campaign_mana_spheres_public(handle, castle_snapshot.generation)
@@ -25210,8 +25434,8 @@ mod tests {
                 .collect::<BTreeSet<_>>();
         assert_eq!(
             retained_group1_spheres.len(),
-            1,
-            "the first 2560-mana Castle return leaves one claimed group-1 sphere live"
+            0,
+            "the first 3072-mana Castle return consumes all six claimed group-1 spheres"
         );
         let mana_window_hud =
             campaign_day_hud_public(handle, castle_snapshot.generation, castle_snapshot.revision);

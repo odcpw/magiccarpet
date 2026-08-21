@@ -343,19 +343,17 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
     assert_eq!(allocation_after.owner_entity_index, 0);
     assert_eq!(allocation_after.last_sphere_source_entity_index, 0);
     assert_eq!(allocation_failure.economy().authored_trees().len(), 12);
-    assert!(
-        !allocation_failure
-            .economy()
-            .events()
-            .iter()
-            .any(|event| matches!(
-                event,
-                Level2EconomyEvent::ManaSphereSpawned {
-                    source_entity_index,
-                    ..
-                } if *source_entity_index == allocation_before.source_entity_index
-            ))
-    );
+    assert!(!allocation_failure
+        .economy()
+        .events()
+        .iter()
+        .any(|event| matches!(
+            event,
+            Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                ..
+            } if *source_entity_index == allocation_before.source_entity_index
+        )));
 }
 
 #[test]
@@ -431,13 +429,11 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
             if *source_slot == reclaimed_slot
     )));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(
-        !session
-            .economy()
-            .authored_class14()
-            .iter()
-            .any(|source| source.authored_index == 275)
-    );
+    assert!(!session
+        .economy()
+        .authored_class14()
+        .iter()
+        .any(|source| source.authored_index == 275));
     assert!(session.economy().free_slots.contains(&reclaimed_slot));
 }
 
@@ -538,13 +534,11 @@ fn level_two_authored_bee_death_runs_through_production_cursor() {
         21
     );
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(
-        session
-            .economy()
-            .authored_bees()
-            .iter()
-            .all(|bee| bee.source_entity_index != row229_slot)
-    );
+    assert!(session
+        .economy()
+        .authored_bees()
+        .iter()
+        .all(|bee| bee.source_entity_index != row229_slot));
     assert!(session.economy().events().iter().any(|event| matches!(
         event,
         Level2EconomyEvent::ManaSphereSpawned {
@@ -1004,11 +998,9 @@ fn level_two_model53_action58_runs_through_production_cursor() {
         .expect("negative-branch source")
         .life = -1;
     let child_count = session.economy().model17_spawned_children().len();
-    assert!(
-        session
-            .economy_mut()
-            .step_authored_model53_slot(negative_slot)
-    );
+    assert!(session
+        .economy_mut()
+        .step_authored_model53_slot(negative_slot));
     let negative_after = session
         .economy()
         .authored_model53()
@@ -1334,11 +1326,9 @@ fn level_two_outer_turn_scans_live_dynamic_arena_rows() {
         .map(|(slot, _)| *slot)
         .filter(|slot| seen.insert(*slot))
         .collect::<Vec<_>>();
-    assert!(
-        first_dynamic_slots
-            .windows(2)
-            .all(|window| window[0] < window[1])
-    );
+    assert!(first_dynamic_slots
+        .windows(2)
+        .all(|window| window[0] < window[1]));
     assert!(dynamic.contains(&(carrier_slot, Level2DynamicArenaKind::ManaCarrier)));
     assert!(dynamic.contains(&(
         u16::try_from(sphere_slot).expect("sphere slot"),
@@ -1536,20 +1526,16 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     );
 
     session.economy_mut().begin_turn();
-    assert!(
-        session
-            .economy_mut()
-            .absorb_sphere_into_carrier(sphere_slot, carrier_slot)
-    );
+    assert!(session
+        .economy_mut()
+        .absorb_sphere_into_carrier(sphere_slot, carrier_slot));
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.economy().free_slots.contains(&sphere_slot));
-    assert!(
-        !session
-            .economy()
-            .spheres()
-            .iter()
-            .any(|sphere| sphere.source_entity_index == sphere_slot)
-    );
+    assert!(!session
+        .economy()
+        .spheres()
+        .iter()
+        .any(|sphere| sphere.source_entity_index == sphere_slot));
     assert!(!session.dispatch_events().iter().any(|event| {
         matches!(
             event,
@@ -1746,23 +1732,19 @@ fn level_two_scheduler_global_rng_rejections_are_exact_no_ops() {
 
     let package = level_two_fixture_path();
     let players = fs::read(package.join("players.bin")).expect("Level 2 players member");
-    assert!(
-        parse_players(
-            &players[..players.len() - 1],
-            OwnerPackageProfile::Level2,
-            OwnerPackageSchema::V5
-        )
-        .is_err()
-    );
+    assert!(parse_players(
+        &players[..players.len() - 1],
+        OwnerPackageProfile::Level2,
+        OwnerPackageSchema::V5
+    )
+    .is_err());
 
     let inspection = NativeWorld::inspect_level2(&package)
         .expect("qualified Level 2 negative scheduler package");
-    assert!(
-        inspection
-            .entities()
-            .iter()
-            .all(|entity| { !(entity.active && entity.class == 2 && entity.model == 0) })
-    );
+    assert!(inspection
+        .entities()
+        .iter()
+        .all(|entity| { !(entity.active && entity.class == 2 && entity.model == 0) }));
     let dolmen = inspection
         .entities()
         .iter()
@@ -1786,12 +1768,10 @@ fn level_two_scheduler_global_rng_rejections_are_exact_no_ops() {
         exhausted.economy().source_rng.clone(),
         exhausted.economy().events.clone(),
     );
-    assert!(
-        exhausted
-            .economy_mut()
-            .spawn_mana_carrier(Position::default(), 111, 0)
-            .is_none()
-    );
+    assert!(exhausted
+        .economy_mut()
+        .spawn_mana_carrier(Position::default(), 111, 0)
+        .is_none());
     assert_eq!(exhausted.campaign_state_hash(), exhausted_before.0);
     assert_eq!(exhausted.dispatch_observability_hash(), exhausted_before.1);
     assert_eq!(exhausted.economy().reset_hash(), exhausted_before.2);
@@ -1814,12 +1794,10 @@ fn level_two_scheduler_global_rng_rejections_are_exact_no_ops() {
         rejected.economy().global_rng,
         rejected.economy().events.clone(),
     );
-    assert!(
-        rejected
-            .economy_mut()
-            .allocate_spell_pickup(0, 0, 0, Position::default())
-            .is_none()
-    );
+    assert!(rejected
+        .economy_mut()
+        .allocate_spell_pickup(0, 0, 0, Position::default())
+        .is_none());
     assert!(!rejected.economy_mut().step_mana_sphere_slot(u16::MAX));
     assert_eq!(rejected.campaign_state_hash(), rejected_before.0);
     assert_eq!(rejected.dispatch_observability_hash(), rejected_before.1);
@@ -1852,11 +1830,12 @@ fn level_two_scheduler_global_rng_rejections_are_exact_no_ops() {
 }
 
 #[test]
-fn level_two_runagain_dispatches_reclaimed_slot_reuse_with_new_generation() {
+fn level_two_same_slot_replacement_defers_until_following_ascending_pass() {
     // Two overlapping live spheres make the first source handler retire
     // one arena occupant; the later persistent pickup then reuses that
-    // numeric slot in the same outer turn. This is the source-order case
-    // that a slot-only dispatched set silently drops.
+    // numeric slot in the same outer turn. The ascending source pointer has
+    // already visited that numeric slot, so the new generation must wait for
+    // the following outer turn.
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
     let mut session = inspection
@@ -1964,38 +1943,46 @@ fn level_two_runagain_dispatches_reclaimed_slot_reuse_with_new_generation() {
             ..
         } if *source_slot == persistent.source_entity_index
     )));
-    let first_target_visit = session
-        .dispatch_events()
-        .iter()
-        .position(|event| {
-            matches!(
-                event,
-                Level2DispatchEvent::DynamicArena {
-                    source_slot,
-                    kind: Level2DynamicArenaKind::ManaSphere,
-                    ..
-                } if *source_slot == target_slot
-            )
-        })
-        .expect("target sphere is visited before its slot is reused");
-    let reused_slot_visit = session
-        .dispatch_events()
-        .iter()
-        .position(|event| {
-            matches!(
+    assert_eq!(
+        session
+            .dispatch_events()
+            .iter()
+            .filter(|event| matches!(
                 event,
                 Level2DispatchEvent::DynamicArena {
                     source_slot,
                     kind: Level2DynamicArenaKind::SpellReplacement,
                     ..
                 } if *source_slot == reused_slot
-            )
-        })
-        .expect("reused slot is revisited as a replacement");
-    assert!(
-        first_target_visit < reused_slot_visit,
-        "reused slot must be revisited after its original source visit"
+            ))
+            .count(),
+        0,
+        "the ascending source pointer cannot revisit a same-slot replacement"
     );
+    let deferred_phase = {
+        let deferred_replacement = session
+            .economy()
+            .spell_replacements()
+            .iter()
+            .find(|replacement| replacement.source_entity_index == reused_slot)
+            .expect("replacement reused reclaimed slot");
+        assert_eq!(deferred_replacement.family, 11);
+        assert_eq!(deferred_replacement.action, 35);
+        assert_eq!(deferred_replacement.phase, reused_slot as u8);
+        deferred_replacement.phase
+    };
+    assert_eq!(
+        session
+            .economy()
+            .live_arena_cursor_rows()
+            .into_iter()
+            .find(|row| row.source_slot == reused_slot)
+            .expect("replacement cursor row")
+            .generation,
+        2
+    );
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         session
             .dispatch_events()
@@ -2010,25 +1997,17 @@ fn level_two_runagain_dispatches_reclaimed_slot_reuse_with_new_generation() {
             ))
             .count(),
         1,
-        "runagain must revisit a reclaimed slot after a new allocation reuses it"
+        "the following ascending pass visits the replacement exactly once"
     );
-    let replacement = session
-        .economy()
-        .spell_replacements()
-        .iter()
-        .find(|replacement| replacement.source_entity_index == reused_slot)
-        .expect("replacement reused reclaimed slot");
-    assert_eq!(replacement.family, 11);
-    assert_eq!(replacement.action, 35);
     assert_eq!(
         session
             .economy()
-            .live_arena_cursor_rows()
-            .into_iter()
-            .find(|row| row.source_slot == reused_slot)
-            .expect("replacement cursor row")
-            .generation,
-        2
+            .spell_replacements()
+            .iter()
+            .find(|replacement| replacement.source_entity_index == reused_slot)
+            .expect("replacement remains live after its following-pass visit")
+            .phase,
+        deferred_phase.wrapping_add(1)
     );
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
@@ -2063,11 +2042,9 @@ fn production_speed_sweeps_preserve_the_complete_quiet_reset_rng_schedule() {
                 [0_u16, 113, 114, 115, 116, 117, 118, 119, 120, 121]
             );
             assert_eq!(pass[0].site, GlobalRngSite::UpdateEntities);
-            assert!(
-                pass[1..]
-                    .iter()
-                    .all(|entry| entry.site == GlobalRngSite::Model60Smoke)
-            );
+            assert!(pass[1..]
+                .iter()
+                .all(|entry| entry.site == GlobalRngSite::Model60Smoke));
         }
         assert_eq!(trace[0].before, 0xad6e_67d9);
         assert_eq!(
