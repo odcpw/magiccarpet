@@ -108,3 +108,11 @@ Track P has a complete first milestone when:
 - Wasm/headless feasibility has evidence; and
 - public/private/license decisions remain explicit rather than assumed.
 
+## Related implementation architecture
+
+See
+[`preservation-campaign-seam-geometry.md`](preservation-campaign-seam-geometry.md)
+for the private Rust campaign ownership and source-scheduler hypothesis, and
+[`preservation-program-folding-research.md`](preservation-program-folding-research.md)
+for the constrained-hypergraph, MDL, migration-landscape, and protein-folding
+research behind its post-Level-2 generalization.
