@@ -25,14 +25,17 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
+using canonical_json = nlohmann::json;
 
 void StopProgrammableIntervalTimer();
 
@@ -263,6 +266,7 @@ struct Arguments {
     fs::path owner_root;
     fs::path output;
     mc2_exporter::ExternalLevelSelection level;
+    bool campaign_package_v1 = false;
 };
 
 Arguments parse_arguments(int argc, char** argv) {
@@ -281,10 +285,14 @@ Arguments parse_arguments(int argc, char** argv) {
             level_seen = true;
             result.level = mc2_exporter::parse_external_level(argv[++index]);
         }
+        else if (argument == "--campaign-package-v1") {
+            result.campaign_package_v1 = true;
+        }
         else if (argument == "--help") {
             std::cout << "usage: remc2-level-exporter --owner-root PATH --output PRIVATE_PATH "
-                         "[--level EXTERNAL_LEVEL]\n"
-                         "  --level EXTERNAL_LEVEL  owner-data level 1..25 (default: 1)\n";
+                         "[--level EXTERNAL_LEVEL] [--campaign-package-v1]\n"
+                         "  --level EXTERNAL_LEVEL  owner-data level 1..25 (default: 1)\n"
+                         "  --campaign-package-v1   emit the closed Level 2 campaign envelope\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown argument: " + argument);
@@ -292,6 +300,9 @@ Arguments parse_arguments(int argc, char** argv) {
     }
     if (result.owner_root.empty() || result.output.empty()) {
         throw std::runtime_error("--owner-root and --output are required");
+    }
+    if (result.campaign_package_v1 && result.level.external != 2) {
+        throw std::runtime_error("--campaign-package-v1 currently admits only external Level 2");
     }
     return result;
 }
@@ -1497,6 +1508,473 @@ json make_owner_sources(
     return result;
 }
 
+constexpr std::size_t kAuthoredRecordOffset = 1091;
+constexpr std::size_t kAuthoredRecordBytes = 20;
+constexpr std::size_t kAuthoredStageOffset =
+    kAuthoredRecordOffset + kAuthoredFeatures * kAuthoredRecordBytes + 1 + 8 * 110;
+
+std::uint16_t read_u16_le(const Bytes& bytes, std::size_t offset, const char* label) {
+    if (offset > bytes.data.size() || bytes.data.size() - offset < 2) {
+        throw std::runtime_error(std::string(label) + " is outside its member");
+    }
+    return static_cast<std::uint16_t>(bytes.data[offset]) |
+           static_cast<std::uint16_t>(bytes.data[offset + 1] << 8);
+}
+
+std::int16_t read_i16_le(const Bytes& bytes, std::size_t offset, const char* label) {
+    return static_cast<std::int16_t>(read_u16_le(bytes, offset, label));
+}
+
+canonical_json campaign_member_ref(const json& file_manifest, const std::string& name) {
+    if (!file_manifest.contains(name)) {
+        throw std::runtime_error("campaign descriptor references an absent member " + name);
+    }
+    const auto& entry = file_manifest.at(name);
+    return {
+        {"member", name},
+        {"sha256", entry.at("sha256").get<std::string>()}
+    };
+}
+
+canonical_json typed_campaign_member(
+    const json& file_manifest,
+    const std::string& name,
+    const char* schema) {
+    canonical_json result = campaign_member_ref(file_manifest, name);
+    result["schema"] = schema;
+    return result;
+}
+
+canonical_json campaign_source_artifact(
+    const json& owner_sources,
+    const std::string& logical_path) {
+    for (const auto& source : owner_sources) {
+        if (source.at("logical_path").get<std::string>() == logical_path) {
+            return {
+                {"bytes", source.at("bytes").get<std::uint64_t>()},
+                {"logical_path", logical_path},
+                {"sha256", source.at("sha256").get<std::string>()}
+            };
+        }
+    }
+    throw std::runtime_error(
+        "campaign descriptor source artifact is absent from owner profile: " + logical_path);
+}
+
+canonical_json campaign_source_artifacts(
+    const json& owner_sources,
+    std::initializer_list<const char*> logical_paths) {
+    canonical_json result = canonical_json::array();
+    for (const char* path : logical_paths) {
+        result.push_back(campaign_source_artifact(owner_sources, path));
+    }
+    std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
+        return left.at("logical_path").template get<std::string>() <
+               right.at("logical_path").template get<std::string>();
+    });
+    return result;
+}
+
+struct CampaignBehaviorRow {
+    std::uint16_t authored_record = 0;
+    bool has_initial_source_slot = false;
+    std::uint16_t initial_source_slot = 0;
+    std::uint8_t class_id = 0;
+    std::uint8_t action = 0;
+    std::uint8_t model = 0;
+    std::uint8_t subtype = 0;
+    std::vector<std::uint16_t> initial_dispatch_sites;
+};
+
+struct CampaignBehaviorKey {
+    std::uint16_t dispatch_site = 0;
+    std::uint8_t selector_kind = 0;
+    std::uint8_t first = 0;
+    std::uint8_t second = 0;
+
+    bool operator<(const CampaignBehaviorKey& other) const {
+        return std::tie(dispatch_site, selector_kind, first, second) <
+               std::tie(other.dispatch_site, other.selector_kind, other.first, other.second);
+    }
+};
+
+canonical_json campaign_behavior_selector(const CampaignBehaviorKey& key) {
+    switch (key.selector_kind) {
+        case 1:
+            return {{"action", key.second}, {"class", key.first}, {"kind", "ClassAction"}};
+        case 2:
+            return {{"class", key.first}, {"kind", "ClassModel"}, {"model", key.second}};
+        case 3:
+            return {{"kind", "TypeSubtype"}, {"subtype", key.second}, {"type_id", key.first}};
+        default:
+            throw std::runtime_error("campaign behavior selector kind is not compiled");
+    }
+}
+
+CampaignBehaviorKey campaign_behavior_key(
+    std::uint16_t dispatch_site,
+    const CampaignBehaviorRow& row) {
+    if (dispatch_site == 3) {
+        return {dispatch_site, 2, row.class_id, row.model};
+    }
+    if (dispatch_site == 4) {
+        return {dispatch_site, 3, row.class_id, row.subtype};
+    }
+    if (dispatch_site == 1 || dispatch_site == 2) {
+        return {dispatch_site, 1, row.class_id, row.action};
+    }
+    throw std::runtime_error("campaign behavior dispatch site is not compiled");
+}
+
+canonical_json campaign_row_provenance(const CampaignBehaviorRow& row) {
+    return {
+        {"authored_record", row.authored_record},
+        {"initial_source_slot",
+         row.has_initial_source_slot ? canonical_json(row.initial_source_slot)
+                                     : canonical_json(nullptr)}
+    };
+}
+
+std::vector<CampaignBehaviorRow> decode_campaign_behavior_rows(
+    const Bytes& authored,
+    const Bytes& entities) {
+    if (authored.data.size() != kAuthoredLevelBytes) {
+        throw std::runtime_error("campaign authored-level member extent changed");
+    }
+    std::vector<CampaignBehaviorRow> rows;
+    for (std::size_t index = 0; index < kAuthoredFeatures; ++index) {
+        const std::size_t offset = kAuthoredRecordOffset + index * kAuthoredRecordBytes;
+        if (std::all_of(
+                authored.data.begin() + static_cast<std::ptrdiff_t>(offset),
+                authored.data.begin() + static_cast<std::ptrdiff_t>(offset + kAuthoredRecordBytes),
+                [](std::uint8_t value) { return value == 0; })) {
+            continue;
+        }
+        const std::uint16_t class_id = read_u16_le(authored, offset, "authored class");
+        const std::int16_t subtype = read_i16_le(authored, offset + 2, "authored subtype");
+        const std::int16_t action = read_i16_le(authored, offset + 8, "authored action");
+        const std::uint16_t model = read_u16_le(authored, offset + 14, "authored model");
+        if (class_id > 255 || subtype < 0 || subtype > 255 || model > 255 || action < -1 ||
+            action > 255) {
+            throw std::runtime_error("Level 2 authored behavior row exceeds schema-v1 selector width");
+        }
+        CampaignBehaviorRow row;
+        row.authored_record = static_cast<std::uint16_t>(index);
+        row.class_id = static_cast<std::uint8_t>(class_id);
+        row.action = action == -1 ? 255 : static_cast<std::uint8_t>(action);
+        row.model = static_cast<std::uint8_t>(model);
+        row.subtype = static_cast<std::uint8_t>(subtype);
+        row.initial_dispatch_sites = action == -1
+            ? std::vector<std::uint16_t>{4}
+            : std::vector<std::uint16_t>{1, 2};
+        rows.push_back(row);
+    }
+
+    if (entities.data.size() != 12 + kEntitySlots * 176 ||
+        std::memcmp(entities.data.data(), "MCE1", 4) != 0 ||
+        read_u16_le(entities, 4, "entities version") != 1 ||
+        read_u16_le(entities, 6, "entities record bytes") != 176) {
+        throw std::runtime_error("campaign entities member header/extent changed");
+    }
+    for (std::size_t slot = 0; slot < kEntitySlots; ++slot) {
+        const std::size_t offset = 12 + slot * 176;
+        if (entities.data[offset + 2] == 0) continue;
+        CampaignBehaviorRow row;
+        row.authored_record = read_u16_le(entities, offset + 30, "entity source id");
+        if (row.authored_record >= kAuthoredFeatures) {
+            throw std::runtime_error("Level 2 reset entity source id is out of bounds");
+        }
+        row.has_initial_source_slot = true;
+        row.initial_source_slot = static_cast<std::uint16_t>(slot);
+        row.class_id = entities.data[offset + 67];
+        row.action = entities.data[offset + 73];
+        row.model = entities.data[offset + 68];
+        row.subtype = entities.data[offset + 70];
+        row.initial_dispatch_sites = {1, 2, 3};
+        rows.push_back(row);
+    }
+    std::sort(rows.begin(), rows.end(), [](const auto& left, const auto& right) {
+        return std::tie(
+                   left.authored_record,
+                   left.has_initial_source_slot,
+                   left.initial_source_slot) <
+               std::tie(
+                   right.authored_record,
+                   right.has_initial_source_slot,
+                   right.initial_source_slot);
+    });
+    return rows;
+}
+
+canonical_json campaign_behavior_rows_json(const std::vector<CampaignBehaviorRow>& rows) {
+    canonical_json result = canonical_json::array();
+    for (const auto& row : rows) {
+        result.push_back({
+            {"action", row.action},
+            {"authored_record", row.authored_record},
+            {"class", row.class_id},
+            {"initial_dispatch_sites", row.initial_dispatch_sites},
+            {"initial_source_slot",
+             row.has_initial_source_slot ? canonical_json(row.initial_source_slot)
+                                         : canonical_json(nullptr)},
+            {"model", row.model},
+            {"subtype", row.subtype}
+        });
+    }
+    return result;
+}
+
+canonical_json campaign_required_behaviors(const std::vector<CampaignBehaviorRow>& rows) {
+    std::map<CampaignBehaviorKey, canonical_json> provenance;
+    for (const auto& row : rows) {
+        for (const std::uint16_t site : row.initial_dispatch_sites) {
+            const auto key = campaign_behavior_key(site, row);
+            provenance.try_emplace(key, campaign_row_provenance(row));
+            if (site == 1) {
+                const CampaignBehaviorKey following{2, 1, row.class_id, row.action};
+                provenance.try_emplace(
+                    following,
+                    canonical_json{{"predecessor", {
+                        {"dispatch_site", 1},
+                        {"selector", campaign_behavior_selector(key)}
+                    }}});
+            }
+        }
+    }
+    canonical_json result = canonical_json::array();
+    for (const auto& [key, source] : provenance) {
+        canonical_json sources = canonical_json::array();
+        if (key.dispatch_site == 2 && key.selector_kind == 1) {
+            const CampaignBehaviorKey predecessor{1, 1, key.first, key.second};
+            sources.push_back({
+                {"predecessor", {
+                    {"dispatch_site", predecessor.dispatch_site},
+                    {"selector", campaign_behavior_selector(predecessor)}
+                }}
+            });
+        } else {
+            sources.push_back(source);
+        }
+        result.push_back({
+            {"dispatch_site", key.dispatch_site},
+            {"provenance", sources},
+            {"selector", campaign_behavior_selector(key)}
+        });
+    }
+    return result;
+}
+
+canonical_json campaign_objective_operations(const Bytes& authored) {
+    canonical_json result = canonical_json::array();
+    bool inactive_seen = false;
+    for (std::size_t index = 0; index < 8; ++index) {
+        const std::size_t offset = kAuthoredStageOffset + index * 7;
+        const std::int8_t stage = static_cast<std::int8_t>(authored.data.at(offset));
+        const std::int16_t selector = read_i16_le(authored, offset + 1, "objective selector");
+        const std::int16_t axis_x = read_i16_le(authored, offset + 3, "objective x");
+        const std::int16_t axis_y = read_i16_le(authored, offset + 5, "objective y");
+        if (stage == -1) {
+            inactive_seen = true;
+            if (selector != 0 || axis_x != 0 || axis_y != 0) {
+                throw std::runtime_error("inactive Level 2 objective row contains payload");
+            }
+            continue;
+        }
+        if (inactive_seen || (stage != 3 && stage != 5 && stage != 7 && stage != 9)) {
+            throw std::runtime_error("Level 2 objective rows exceed the proven schema-v1 forms");
+        }
+        result.push_back({
+            {"operands", {
+                {"axis_x", axis_x},
+                {"axis_y", axis_y},
+                {"objective_selector", selector},
+                {"objective_slot", index},
+                {"stage_index", stage}
+            }},
+            {"operation_kind", 1},
+            {"operation_version", 1}
+        });
+    }
+    if (result.size() != 5) {
+        throw std::runtime_error("Level 2 objective operation count differs from accepted evidence");
+    }
+    return result;
+}
+
+canonical_json campaign_source_facts(
+    const json& file_manifest,
+    const json& owner_sources,
+    const std::vector<CampaignBehaviorRow>& behavior_rows) {
+    canonical_json selector_provenance = canonical_json::array();
+    for (const auto& row : behavior_rows) {
+        if (row.has_initial_source_slot || row.class_id != 10 || row.subtype != 45 ||
+            row.action != 255) {
+            continue;
+        }
+        selector_provenance.push_back({
+            {"authored_record", row.authored_record},
+            {"selector_value", row.model},
+            {"source_class", row.class_id},
+            {"source_field", "par1_14"},
+            {"source_model", row.model},
+            {"source_subtype", row.subtype}
+        });
+    }
+    if (selector_provenance.empty()) {
+        throw std::runtime_error("Level 2 source facts require authored collision selectors");
+    }
+
+    canonical_json facts = canonical_json::array();
+    facts.push_back({
+        {"fact_id", "collision-mask-bank"},
+        {"kind", 3},
+        {"lifetime", "immutable-through-session"},
+        {"member", "collision-masks.bin"},
+        {"member_sha256", file_manifest.at("collision-masks.bin").at("sha256")},
+        {"selector_provenance", selector_provenance},
+        {"source_artifacts", campaign_source_artifacts(
+            owner_sources,
+            {"CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"})},
+        {"version", 1}
+    });
+    facts.push_back({
+        {"fact_id", "feature-construction-inputs"},
+        {"kind", 2},
+        {"lifetime", "immutable-through-session"},
+        {"member", "feature-construction-inputs.bin"},
+        {"member_sha256", file_manifest.at("feature-construction-inputs.bin").at("sha256")},
+        {"selector_provenance", selector_provenance},
+        {"source_artifacts", campaign_source_artifacts(
+            owner_sources,
+            {"CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB",
+             "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"})},
+        {"version", 1}
+    });
+    facts.push_back({
+        {"fact_id", "level-records"},
+        {"kind", 1},
+        {"lifetime", "immutable-through-session"},
+        {"member", "authored-level.bin"},
+        {"member_sha256", file_manifest.at("authored-level.bin").at("sha256")},
+        {"selector_provenance", canonical_json::array()},
+        {"source_artifacts", campaign_source_artifacts(
+            owner_sources,
+            {"GAME/NETHERW/CLEVELS/LEVELS.DAT",
+             "GAME/NETHERW/CLEVELS/LEVELS.TAB"})},
+        {"version", 1}
+    });
+    return facts;
+}
+
+canonical_json build_level_two_campaign_definition(
+    const json& legacy_manifest,
+    const json& file_manifest,
+    const Bytes& authored,
+    const Bytes& entities,
+    std::uint16_t entity_record_size,
+    std::uint16_t player_record_size) {
+    const auto behavior_rows = decode_campaign_behavior_rows(authored, entities);
+    const json& owner_sources = legacy_manifest.at("source").at("owner_files");
+
+    canonical_json authored_records = typed_campaign_member(
+        file_manifest, "authored-level.bin", "mc2-authored-level/v1");
+    authored_records["count"] = kAuthoredFeatures;
+    authored_records["record_bytes"] = kAuthoredRecordBytes;
+
+    canonical_json reset_entities = typed_campaign_member(
+        file_manifest, "entities.bin", "mc2-entity-arena/v1");
+    reset_entities["count"] = kEntitySlots;
+    reset_entities["record_bytes"] = entity_record_size;
+    canonical_json reset_players = typed_campaign_member(
+        file_manifest, "players.bin", "mc2-player-arena/v4");
+    reset_players["count"] = 8;
+    reset_players["record_bytes"] = player_record_size;
+
+    canonical_json feature_boundary = canonical_json::array();
+    feature_boundary.push_back(typed_campaign_member(
+        file_manifest, "feature-start.bin", "mc2-feature-boundary/v1"));
+    feature_boundary.push_back(typed_campaign_member(
+        file_manifest, "terrain-pre-features.bin", "mc2-feature-terrain/v1"));
+    feature_boundary.push_back(typed_campaign_member(
+        file_manifest, "feature-allocator.bin", "mc2-feature-allocator/v1"));
+    feature_boundary.push_back(typed_campaign_member(
+        file_manifest, "feature-construction-inputs.bin", "mc2-feature-construction-inputs/v1"));
+    feature_boundary.push_back(typed_campaign_member(
+        file_manifest, "entities-post-features.bin", "mc2-feature-entity-arena/v1"));
+    feature_boundary.push_back(typed_campaign_member(
+        file_manifest, "terrain-post-features.bin", "mc2-feature-terrain/v1"));
+    feature_boundary.push_back(typed_campaign_member(
+        file_manifest, "feature-end.bin", "mc2-feature-boundary/v1"));
+
+    canonical_json initial_rng = {
+        {"global", {
+            {"encoding", "u32_le"},
+            {"member", "feature-end.bin"},
+            {"offset", 12},
+            {"sha256", file_manifest.at("feature-end.bin").at("sha256")}
+        }},
+        {"terrain", {
+            {"encoding", "u16_le"},
+            {"member", "feature-end.bin"},
+            {"offset", 8},
+            {"sha256", file_manifest.at("feature-end.bin").at("sha256")}
+        }}
+    };
+
+    canonical_json presentation_recipe = canonical_json::parse(
+        legacy_manifest.at("presentation_dependencies").dump());
+    presentation_recipe["member"] = typed_campaign_member(
+        file_manifest, "presentation.bin", "mc2-presentation-snapshot/v1");
+    return {
+        {"campaign_spec", {
+            {"authored_behavior_rows", campaign_behavior_rows_json(behavior_rows)},
+            {"authored_records", authored_records},
+            {"initial_activation", canonical_json::array()},
+            {"initial_rng", initial_rng},
+            {"objectives", campaign_objective_operations(authored)},
+            {"presentation_recipe", presentation_recipe},
+            {"reset_sources", {
+                {"entities", reset_entities},
+                {"feature_boundary", feature_boundary},
+                {"players", reset_players},
+                {"runtime", typed_campaign_member(
+                    file_manifest, "runtime.bin", "mc2-runtime-state/v1")},
+                {"terrain", typed_campaign_member(
+                    file_manifest, "terrain.bin", "mc2-terrain/v1")}
+            }}
+        }},
+        {"identity", {
+            {"external_level", 2},
+            {"internal_level", 1},
+            {"map_type_id", 0}
+        }},
+        {"required_behaviors", campaign_required_behaviors(behavior_rows)},
+        {"schema", "mc2-campaign-definition/v1"},
+        {"source", {{"remc2_commit", MC2_UPSTREAM_COMMIT}}},
+        {"source_facts", campaign_source_facts(file_manifest, owner_sources, behavior_rows)}
+    };
+}
+
+std::string campaign_package_identity(const json& file_manifest) {
+    std::vector<std::string> names;
+    names.reserve(file_manifest.size());
+    for (const auto& [name, _entry] : file_manifest.items()) names.push_back(name);
+    std::sort(names.begin(), names.end());
+    std::string identity;
+    for (const auto& name : names) {
+        const auto& entry = file_manifest.at(name);
+        identity += name;
+        identity.push_back('\0');
+        identity += entry.at("sha256").get<std::string>();
+        identity.push_back('\0');
+        identity += std::to_string(entry.at("bytes").get<std::uint64_t>());
+        identity.push_back('\n');
+    }
+    Sha256 package_hash;
+    package_hash.update(identity);
+    return package_hash.finish();
+}
+
 void write_bytes(const fs::path& path, const std::vector<std::uint8_t>& bytes) {
     const fs::path temporary = path.string() + ".tmp";
     std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
@@ -2494,6 +2972,34 @@ int run(const Arguments& arguments) {
     // Night-specific expected state into an open Level 2 package; Level 2 gets
     // its own reset seal only when that corpus is qualified.
     if (!level_one) manifest.erase("reset_projection");
+    if (arguments.campaign_package_v1) {
+        const canonical_json definition = build_level_two_campaign_definition(
+            manifest,
+            file_manifest,
+            authored_bytes,
+            entities,
+            entity_record_size,
+            player_record_size);
+        const std::string definition_text = definition.dump() + "\n";
+        const std::vector<std::uint8_t> definition_bytes(
+            definition_text.begin(), definition_text.end());
+        write_bytes(staging / "campaign-definition.json", definition_bytes);
+        file_manifest["campaign-definition.json"] = {
+            {"bytes", definition_bytes.size()},
+            {"sha256", sha256(definition_bytes)}
+        };
+        manifest = {
+            {"schema", "mc2-owner-campaign-package/v1"},
+            {"byte_order", "little-endian"},
+            {"level", {
+                {"external", arguments.level.external},
+                {"internal", arguments.level.internal},
+                {"map_type", {{"id", map_profile.id}, {"name", map_profile.name}}}
+            }},
+            {"files", file_manifest},
+            {"package_sha256", campaign_package_identity(file_manifest)}
+        };
+    }
     write_text(staging / "manifest.json", manifest.dump(2) + "\n");
 
     fs::rename(staging, output);

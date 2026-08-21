@@ -5,6 +5,9 @@
 //! entry point for later fold leaves.  It introduces no carrier, descriptor,
 //! registry, scheduler, or ABI semantics.
 
+pub mod source_facts;
+pub mod spec;
+
 pub use crate::native_world::Level2ResetSession;
 
 #[cfg(test)]

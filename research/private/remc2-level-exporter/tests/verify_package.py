@@ -16,6 +16,8 @@ SCHEMA_V2 = "mc2-owner-level-export/v2"
 SCHEMA_V3 = "mc2-owner-level-export/v3"
 SCHEMA_V4 = "mc2-owner-level-export/v4"
 SCHEMA_V5 = "mc2-owner-level-export/v5"
+CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v1"
+CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v1"
 SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5}
 STATE_SEQUENCE = (
     "remc2-regression-test/memimages/regressions/level1/"
@@ -51,6 +53,20 @@ V3_FILES = V2_FILES | {
 }
 V4_FILES = V3_FILES | {"collision-masks.bin"}
 V5_FILES = V4_FILES
+CAMPAIGN_FILES = V5_FILES | {"campaign-definition.json"}
+REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+CAMPAIGN_SOURCE_ARTIFACTS = {
+    "CD_Files/DATA/BUILD0-0.DAT": (80064, "3db5d9a763dedafbe3077eeeef47431da0b5d397e311f6ee46719a0fc51e8e5d"),
+    "CD_Files/DATA/BUILD0-0.TAB": (462, "e064a1520e96f65c13fde9a05918d240ee4f708ab6aefc793ec8b391f220c05e"),
+    "CD_Files/DATA/MSPRD0-0.DAT": (49202, "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"),
+    "CD_Files/DATA/MSPRD0-0.TAB": (1572, "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"),
+    "CD_Files/DATA/SPELLS.DAT": (2080, "7b426f0104f282d91bf7da904ed978e809135e12e0dfebd845e4a582d52b51cc"),
+    "CD_Files/DATA/TABLESN.DAT": (83456, "f88974baf68f728fb534a4dab35397b9cb3ca2f424019bbde36858eebbf97495"),
+    "CD_Files/LEVELS/LEVELS.DAT": (3063856, "3b7fae5d7c350486a4f62ad4b2e9fa2e4e52023a216b8a7f043ce02439b50222"),
+    "CD_Files/LEVELS/LEVELS.TAB": (4000, "179a65f04d4aa7bc147cfd56ffb63a0da400dfd85542eb0fbda10265d6bc1bea"),
+    "GAME/NETHERW/CLEVELS/LEVELS.DAT": (3063856, "3b7fae5d7c350486a4f62ad4b2e9fa2e4e52023a216b8a7f043ce02439b50222"),
+    "GAME/NETHERW/CLEVELS/LEVELS.TAB": (4000, "179a65f04d4aa7bc147cfd56ffb63a0da400dfd85542eb0fbda10265d6bc1bea"),
+}
 MSPRD0_0_TAB_SHA256 = "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"
 MSPRD0_0_DAT_SHA256 = "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"
 LEVEL2_COLLISION_MASK_BANK_BYTES = 4638
@@ -1446,16 +1462,578 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
         )
 
 
+def _exact_object(value: object, keys: set[str], label: str) -> dict:
+    require(type(value) is dict, f"{label} is not an object")
+    result = value
+    require(set(result) == keys, f"{label} field set differs: {sorted(set(result) ^ keys)}")
+    return result
+
+
+def _bounded_integer(value: object, maximum: int, label: str) -> int:
+    require(type(value) is int and 0 <= value <= maximum, f"{label} is out of bounds")
+    return value
+
+
+def _strict_equal(left: object, right: object) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return set(left) == set(right) and all(_strict_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_strict_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def _lower_hex(value: object, digits: int, label: str) -> str:
+    require(
+        isinstance(value, str)
+        and len(value) == digits
+        and all(character in "0123456789abcdef" for character in value),
+        f"{label} is not {digits} lowercase hexadecimal digits",
+    )
+    return value
+
+
+def _normalized_member_name(value: object, label: str) -> str:
+    require(isinstance(value, str) and value, f"{label} is empty")
+    require(value.isascii() and "/" not in value and "\\" not in value, f"{label} is not a flat normalized name")
+    require(value not in {".", ".."} and "\0" not in value, f"{label} is reserved")
+    return value
+
+
+def _normalized_source_path(value: object, label: str) -> str:
+    require(isinstance(value, str) and value and value.isascii(), f"{label} is not nonempty ASCII")
+    require("\\" not in value and not value.startswith("/"), f"{label} is absolute or noncanonical")
+    parts = value.split("/")
+    require(all(part not in {"", ".", ".."} for part in parts), f"{label} traverses or is noncanonical")
+    return value
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _campaign_member_ref(value: object, files: dict, label: str, *, schema: str | None = None, count: int | None = None, record_bytes: int | None = None) -> dict:
+    keys = {"member", "sha256"}
+    if schema is not None:
+        keys.add("schema")
+    if count is not None:
+        keys.add("count")
+    if record_bytes is not None:
+        keys.add("record_bytes")
+    result = _exact_object(value, keys, label)
+    member_name = _normalized_member_name(result["member"], f"{label}.member")
+    require(member_name in files, f"{label} references an undeclared member")
+    digest = _lower_hex(result["sha256"], 64, f"{label}.sha256")
+    require(digest == files[member_name]["sha256"], f"{label} hash differs from outer file map")
+    if schema is not None:
+        require(result["schema"] == schema, f"{label} schema differs")
+    if count is not None:
+        require(_bounded_integer(result["count"], (1 << 64) - 1, f"{label}.count") == count, f"{label} count differs")
+    if record_bytes is not None:
+        require(_bounded_integer(result["record_bytes"], (1 << 64) - 1, f"{label}.record_bytes") == record_bytes, f"{label} record width differs")
+    return result
+
+
+def _campaign_decode_behavior_rows(authored: bytes, entities: bytes) -> list[dict]:
+    require(len(authored) == 0x6604 and authored[6] == 0, "campaign authored member identity/layout changed")
+    rows: list[dict] = []
+    for index in range(1200):
+        offset = 1091 + index * 20
+        record = authored[offset : offset + 20]
+        if not any(record):
+            continue
+        class_id, subtype, _x, _y, action, _word10, _stage, model, _par2, _par3 = struct.unpack("<HhHHhHhHHH", record)
+        require(
+            class_id <= 255 and 0 <= subtype <= 255 and model <= 255 and -1 <= action <= 255,
+            f"authored behavior row {index} exceeds schema-v1 width",
+        )
+        rows.append({
+            "action": 255 if action == -1 else action,
+            "authored_record": index,
+            "class": class_id,
+            "initial_dispatch_sites": [4] if action == -1 else [1, 2],
+            "initial_source_slot": None,
+            "model": model,
+            "subtype": subtype,
+        })
+
+    require(len(entities) == 12 + 1000 * 176, "campaign entities extent changed")
+    require(entities[:4] == b"MCE1" and u16(entities, 4) == 1 and u16(entities, 6) == 176 and u32(entities, 8) == 1000, "campaign entities header changed")
+    active_count = 0
+    for slot in range(1000):
+        offset = 12 + slot * 176
+        require(u16(entities, offset) == slot, f"entity slot/index mismatch at {slot}")
+        active = entities[offset + 2]
+        require(active in (0, 1), f"entity {slot} active flag is invalid")
+        if not active:
+            require(entities[offset + 67] == 0, f"inactive entity {slot} carries a live class")
+            continue
+        active_count += 1
+        require(u16(entities, offset + 30) < 1200, f"entity {slot} source relation is out of bounds")
+        require(u32(entities, offset + 4) <= 1000, f"entity {slot} next relation is out of bounds")
+        require(u32(entities, offset + 164) <= 157, f"entity {slot} parameter relation is out of bounds")
+        domain, relation = entities[offset + 168], u32(entities, offset + 172)
+        require(
+            (domain, relation) == (0, 0)
+            or (domain == 1 and 1 <= relation <= 8)
+            or (domain, relation) == (2, 1),
+            f"entity {slot} special relation is invalid",
+        )
+        rows.append({
+            "action": entities[offset + 73],
+            "authored_record": u16(entities, offset + 30),
+            "class": entities[offset + 67],
+            "initial_dispatch_sites": [1, 2, 3],
+            "initial_source_slot": slot,
+            "model": entities[offset + 68],
+            "subtype": entities[offset + 70],
+        })
+    require(active_count == 114, "Level 2 active entity count differs")
+    rows.sort(key=lambda row: (row["authored_record"], row["initial_source_slot"] is not None, row["initial_source_slot"] or 0))
+    return rows
+
+
+def _campaign_selector(key: tuple[int, int, int, int]) -> dict:
+    _site, kind, first, second = key
+    if kind == 1:
+        return {"action": second, "class": first, "kind": "ClassAction"}
+    if kind == 2:
+        return {"class": first, "kind": "ClassModel", "model": second}
+    require(kind == 3, "unknown campaign behavior selector kind")
+    return {"kind": "TypeSubtype", "subtype": second, "type_id": first}
+
+
+def _campaign_behavior_key(site: int, row: dict) -> tuple[int, int, int, int]:
+    if site == 3:
+        return (site, 2, row["class"], row["model"])
+    if site == 4:
+        return (site, 3, row["class"], row["subtype"])
+    require(site in (1, 2), "unknown campaign dispatch site")
+    return (site, 1, row["class"], row["action"])
+
+
+def _campaign_required_behaviors(rows: list[dict]) -> tuple[list[dict], set[tuple[int, int, int, int]]]:
+    provenance: dict[tuple[int, int, int, int], dict] = {}
+    for row in rows:
+        source = {
+            "authored_record": row["authored_record"],
+            "initial_source_slot": row["initial_source_slot"],
+        }
+        for site in row["initial_dispatch_sites"]:
+            key = _campaign_behavior_key(site, row)
+            provenance.setdefault(key, source)
+            if site == 1:
+                following = (2, 1, row["class"], row["action"])
+                provenance.setdefault(following, {
+                    "predecessor": {"dispatch_site": 1, "selector": _campaign_selector(key)}
+                })
+    requirements = []
+    for key in sorted(provenance):
+        if key[0] == 2 and key[1] == 1:
+            predecessor = (1, 1, key[2], key[3])
+            sources = [{"predecessor": {"dispatch_site": 1, "selector": _campaign_selector(predecessor)}}]
+        else:
+            sources = [provenance[key]]
+        requirements.append({
+            "dispatch_site": key[0],
+            "provenance": sources,
+            "selector": _campaign_selector(key),
+        })
+    return requirements, set(provenance)
+
+
+def _campaign_validate_reset_members(package: Path, spec: dict, files: dict) -> tuple[bytes, bytes, bytes]:
+    authored_descriptor = _campaign_member_ref(
+        spec["authored_records"], files, "campaign_spec.authored_records",
+        schema="mc2-authored-level/v1", count=1200, record_bytes=20,
+    )
+    authored = (package / authored_descriptor["member"]).read_bytes()
+    entities_descriptor = _campaign_member_ref(
+        spec["reset_sources"]["entities"], files, "campaign_spec.reset_sources.entities",
+        schema="mc2-entity-arena/v1", count=1000, record_bytes=176,
+    )
+    entities = (package / entities_descriptor["member"]).read_bytes()
+    expected_rows = _campaign_decode_behavior_rows(authored, entities)
+    require(_strict_equal(spec["authored_behavior_rows"], expected_rows), "authored_behavior_rows differ from fresh authored/reset decode")
+
+    players_descriptor = _campaign_member_ref(
+        spec["reset_sources"]["players"], files, "campaign_spec.reset_sources.players",
+        schema="mc2-player-arena/v4", count=8, record_bytes=663,
+    )
+    players = (package / players_descriptor["member"]).read_bytes()
+    require(len(players) == 12 + 8 * 663 and players[:4] == b"MCP1", "campaign players extent/magic changed")
+    require((u16(players, 4), u16(players, 6), u32(players, 8)) == (4, 663, 8), "campaign players header changed")
+    for slot in range(8):
+        offset = 12 + slot * 663
+        require(u16(players, offset) == slot, f"player slot/index mismatch at {slot}")
+        require(players[offset + 2] in (0, 1) and players[offset + 3] == 0, f"player {slot} flags are invalid")
+        require(u16(players, offset + 4) < 1000, f"player {slot} entity relation is out of bounds")
+        if slot < 2:
+            entity = u16(players, offset + 4)
+            require(
+                entities[12 + entity * 176 + 2] == 1,
+                f"Level 2 active player {slot} does not reference an active entity",
+            )
+        require(players[offset + 50 : offset + 54] == bytes(4), f"player {slot} host time is not normalized")
+
+    terrain_descriptor = _campaign_member_ref(
+        spec["reset_sources"]["terrain"], files, "campaign_spec.reset_sources.terrain",
+        schema="mc2-terrain/v1",
+    )
+    terrain = (package / terrain_descriptor["member"]).read_bytes()
+    require(len(terrain) == 0x70000 and terrain[0x40000:0x50000] == bytes(0x10000), "campaign terrain extent/Day normalization changed")
+
+    runtime_descriptor = _campaign_member_ref(
+        spec["reset_sources"]["runtime"], files, "campaign_spec.reset_sources.runtime",
+        schema="mc2-runtime-state/v1",
+    )
+    runtime = (package / runtime_descriptor["member"]).read_bytes()
+    require(len(runtime) == 2754 and runtime[:4] == b"MCR1" and (u16(runtime, 4), u16(runtime, 6)) == (1, 0), "campaign runtime header/extent changed")
+    require((u16(runtime, 16), u16(runtime, 18), u32(runtime, 32)) == (0, 2, 2), "campaign runtime Level 2 scalars changed")
+    accepted_stage_types = {0, 3, 5, 7, 9}
+    for index in range(8):
+        offset = 192 + index * 14
+        stage_type, flags = runtime[offset], runtime[offset + 1]
+        require(stage_type in accepted_stage_types, f"runtime stage {index} has an unproven type")
+        require(runtime[offset + 7 : offset + 10] == bytes(3), f"runtime stage {index} relation padding is nonzero")
+        domain, relation = runtime[offset + 6], u32(runtime, offset + 10)
+        expected_domain = 2 if stage_type == 3 and flags & 1 else 0
+        require(domain == expected_domain, f"runtime stage {index} relation domain differs")
+        require(
+            domain == 0 or 1 <= relation <= 1000,
+            f"runtime stage {index} relation is out of bounds",
+        )
+    for index in range(8):
+        require(runtime[304 + index * 11] == 0, f"runtime objective {index} has an unproven type")
+    for index in range(11):
+        offset = 392 + index * 12
+        variable_type, flags = runtime[offset], runtime[offset + 1]
+        pointer_payload = (3 <= variable_type <= 5 or 8 <= variable_type <= 9) and flags & 2 == 0
+        expected_domain = 1 if pointer_payload else 0
+        require(runtime[offset + 5 : offset + 8] == bytes(3), f"runtime stage variable {index} relation padding is nonzero")
+        domain, relation = runtime[offset + 4], u32(runtime, offset + 8)
+        require(domain == expected_domain, f"runtime stage variable {index} relation domain differs")
+        require(
+            domain == 0 or 1 <= relation <= 1000,
+            f"runtime stage variable {index} relation is out of bounds",
+        )
+    for index in range(50):
+        offset = 524 + index * 43
+        require(runtime[offset + 11 : offset + 14] == bytes(3), f"runtime event {index} relation padding is nonzero")
+        domain, relation = runtime[offset + 10], u32(runtime, offset + 14)
+        require(domain == (1 if runtime[offset] else 0), f"runtime event {index} relation domain differs")
+        require((domain == 1 and 1 <= relation <= 1000) or (domain == 0 and relation == 0), f"runtime event {index} relation is out of bounds")
+
+    expected_boundary = [
+        ("feature-start.bin", "mc2-feature-boundary/v1"),
+        ("terrain-pre-features.bin", "mc2-feature-terrain/v1"),
+        ("feature-allocator.bin", "mc2-feature-allocator/v1"),
+        ("feature-construction-inputs.bin", "mc2-feature-construction-inputs/v1"),
+        ("entities-post-features.bin", "mc2-feature-entity-arena/v1"),
+        ("terrain-post-features.bin", "mc2-feature-terrain/v1"),
+        ("feature-end.bin", "mc2-feature-boundary/v1"),
+    ]
+    boundary = spec["reset_sources"]["feature_boundary"]
+    require(isinstance(boundary, list) and len(boundary) == len(expected_boundary), "feature_boundary sequence differs")
+    for index, (member_name, schema) in enumerate(expected_boundary):
+        descriptor = _campaign_member_ref(boundary[index], files, f"feature_boundary[{index}]", schema=schema)
+        require(descriptor["member"] == member_name, f"feature_boundary[{index}] member order differs")
+    for name in ("feature-start.bin", "feature-end.bin"):
+        content = (package / name).read_bytes()
+        magic = b"MFS3" if name == "feature-start.bin" else b"MFE3"
+        require(len(content) == 16 and content[:4] == magic and (u16(content, 4), u16(content, 6), u16(content, 10)) == (1, 16, 0), f"{name} layout changed")
+    for name in ("terrain-pre-features.bin", "terrain-post-features.bin"):
+        content = (package / name).read_bytes()
+        require(len(content) == 0x70000 and content[0x40000:0x50000] == bytes(0x10000), f"{name} layout/Day normalization changed")
+    post_entities = (package / "entities-post-features.bin").read_bytes()
+    require(len(post_entities) == 12 + 1000 * 176 and post_entities[:4] == b"MCE3" and (u16(post_entities, 4), u16(post_entities, 6), u32(post_entities, 8)) == (1, 176, 1000), "post-feature entity arena changed")
+    allocator = (package / "feature-allocator.bin").read_bytes()
+    require(len(allocator) == 4032 and allocator[:4] == b"MCA3" and (u16(allocator, 4), u16(allocator, 6)) == (1, 32), "feature allocator layout changed")
+    require(u32(allocator, 20) == 0 and u32(allocator, 24) == 0 and (u16(allocator, 28), u16(allocator, 30)) == (2, 8), "feature allocator reserved/trace layout changed")
+    return authored, entities, runtime
+
+
+def _campaign_decode_feature_inputs(content: bytes) -> list[int]:
+    require(len(content) >= 16 and content[:4] == b"MCI3", "feature construction input header is truncated")
+    require((u16(content, 4), u16(content, 6), u16(content, 10), u32(content, 12)) == (1, 16, 1, 0), "feature construction input header changed")
+    count = u16(content, 8)
+    selectors: list[int] = []
+    cursor = 16
+    for _ in range(count):
+        require(cursor + 12 <= len(content), "feature construction input record is truncated")
+        selector, width, height, extent = u16(content, cursor), content[cursor + 6], content[cursor + 7], u32(content, cursor + 8)
+        require(not selectors or selector > selectors[-1], "feature construction selectors are not strictly ordered")
+        require(width > 0 and height > 0 and extent == width * height * 2, "feature construction footprint extent changed")
+        cursor += 12 + extent
+        require(cursor <= len(content), "feature construction footprint is truncated")
+        selectors.append(selector)
+    require(cursor == len(content), "feature construction input member has trailing bytes")
+    return selectors
+
+
+def _campaign_decode_collision(content: bytes, authored_selectors: list[int]) -> list[int]:
+    require(len(content) >= 20 and content[:4] == b"MCM1", "collision fact header is truncated")
+    require((u16(content, 4), u16(content, 6), u16(content, 8), u16(content, 10), u32(content, 16)) == (1, 20, 1, 0, 12), "collision fact header changed")
+    count, cursor, selectors = u32(content, 12), 20, []
+    for _ in range(count):
+        require(cursor + 12 <= len(content), "collision fact record is truncated")
+        selector, width, height = u16(content, cursor), u16(content, cursor + 2), u16(content, cursor + 4)
+        extent = u32(content, cursor + 8)
+        require(u16(content, cursor + 6) == 0 and width > 0 and height > 0 and extent == width * height * 2, "collision fact record extent changed")
+        require(not selectors or selector > selectors[-1], "collision fact selectors are not strictly ordered")
+        cursor += 12 + extent
+        require(cursor <= len(content), "collision fact payload is truncated")
+        selectors.append(selector)
+    require(cursor == len(content), "collision fact member has trailing bytes")
+    expected = sorted(set(authored_selectors))
+    require(selectors == expected, "collision fact selectors differ from authored class-10/subtype-45 rows")
+    require((not expected and count == 0 and len(content) == 20) or (expected and count > 0), "collision fact empty/nonempty invariant differs")
+    return selectors
+
+
+def _campaign_validate_source_facts(package: Path, facts_value: object, files: dict, behavior_rows: list[dict]) -> None:
+    require(isinstance(facts_value, list), "source_facts is not an array")
+    facts = facts_value
+    require(len(facts) == 3, "Level 2 requires exactly three proven SourceFacts")
+    authored_provenance = [
+        {
+            "authored_record": row["authored_record"],
+            "selector_value": row["model"],
+            "source_class": 10,
+            "source_field": "par1_14",
+            "source_model": row["model"],
+            "source_subtype": 45,
+        }
+        for row in behavior_rows
+        if row["initial_source_slot"] is None and row["class"] == 10 and row["subtype"] == 45 and row["action"] == 255
+    ]
+    expected = {
+        "collision-mask-bank": (3, "collision-masks.bin", authored_provenance, {"CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"}),
+        "feature-construction-inputs": (2, "feature-construction-inputs.bin", authored_provenance, {"CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"}),
+        "level-records": (1, "authored-level.bin", [], {"GAME/NETHERW/CLEVELS/LEVELS.DAT", "GAME/NETHERW/CLEVELS/LEVELS.TAB"}),
+    }
+    fact_ids = [fact.get("fact_id") for fact in facts if isinstance(fact, dict)]
+    require(
+        fact_ids == sorted(expected),
+        "source_facts are not the exact sorted Level 2 fact-id set",
+    )
+    member_claims: dict[str, str] = {}
+    for fact_index, raw_fact in enumerate(facts):
+        fact = _exact_object(raw_fact, {"fact_id", "kind", "version", "member", "member_sha256", "selector_provenance", "source_artifacts", "lifetime"}, f"source_facts[{fact_index}]")
+        fact_id = fact["fact_id"]
+        require(isinstance(fact_id, str) and fact_id and fact_id.isascii() and all(character.isalnum() or character in "-_" for character in fact_id), f"source fact {fact_index} id is invalid")
+        require(fact_id in expected, f"unknown SourceFact id {fact_id}")
+        kind, member_name, provenance, artifact_paths = expected[fact_id]
+        fact_kind = _bounded_integer(fact["kind"], 0xFFFF, f"SourceFact {fact_id} kind")
+        fact_version = _bounded_integer(fact["version"], 0xFFFF, f"SourceFact {fact_id} version")
+        require(_strict_equal((fact_kind, fact_version, fact["lifetime"], fact["member"]), (kind, 1, "immutable-through-session", member_name)), f"SourceFact {fact_id} kind/version/lifetime/member differs")
+        digest = _lower_hex(fact["member_sha256"], 64, f"SourceFact {fact_id} member hash")
+        require(digest == files[member_name]["sha256"], f"SourceFact {fact_id} member hash differs from outer map")
+        require(member_claims.setdefault(member_name, digest) == digest, f"SourceFact {fact_id} conflicts with another member claim")
+        require(_strict_equal(fact["selector_provenance"], provenance), f"SourceFact {fact_id} selector provenance differs from authored decode")
+        artifacts = fact["source_artifacts"]
+        require(isinstance(artifacts, list), f"SourceFact {fact_id} artifacts are not an array")
+        normalized_artifact_paths = []
+        for artifact_index, raw_artifact in enumerate(artifacts):
+            artifact = _exact_object(raw_artifact, {"logical_path", "bytes", "sha256"}, f"SourceFact {fact_id} artifact {artifact_index}")
+            path = _normalized_source_path(artifact["logical_path"], f"SourceFact {fact_id} artifact path")
+            normalized_artifact_paths.append(path)
+            require(path in CAMPAIGN_SOURCE_ARTIFACTS, f"SourceFact {fact_id} has an unproven source artifact")
+            expected_bytes, expected_hash = CAMPAIGN_SOURCE_ARTIFACTS[path]
+            artifact_bytes = _bounded_integer(artifact["bytes"], (1 << 64) - 1, f"SourceFact {fact_id} artifact bytes")
+            artifact_hash = _lower_hex(artifact["sha256"], 64, f"SourceFact {fact_id} artifact hash")
+            require(_strict_equal((artifact_bytes, artifact_hash), (expected_bytes, expected_hash)), f"SourceFact {fact_id} artifact identity changed")
+        require(normalized_artifact_paths == sorted(artifact_paths), f"SourceFact {fact_id} source artifacts are not exact/sorted")
+
+    feature_selectors = _campaign_decode_feature_inputs((package / "feature-construction-inputs.bin").read_bytes())
+    authored_selectors = [row["model"] for row in behavior_rows if row["initial_source_slot"] is None and row["class"] == 10 and row["subtype"] == 45 and row["action"] == 255]
+    require(feature_selectors == sorted(set(authored_selectors)), "feature construction selectors differ from authored provenance")
+    collision = (package / "collision-masks.bin").read_bytes()
+    _campaign_decode_collision(collision, authored_selectors)
+    require(len(collision) == LEVEL2_COLLISION_MASK_BANK_BYTES and hashlib.sha256(collision).hexdigest() == LEVEL2_COLLISION_MASK_BANK_SHA256, "Level 2 collision SourceFact differs from qualified bytes")
+
+
+def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, package: Path) -> None:
+    require(spec["initial_activation"] == [], "Level 2 schema-v1 has no proven initial-activation operation")
+    expected_objectives = []
+    inactive_seen = False
+    for index in range(8):
+        offset = 25972 + index * 7
+        stage, selector, axis_x, axis_y = struct.unpack_from("<bhhh", authored, offset)
+        if stage == -1:
+            inactive_seen = True
+            require((selector, axis_x, axis_y) == (0, 0, 0), f"inactive objective row {index} has payload")
+            continue
+        require(not inactive_seen and stage in {3, 5, 7, 9}, f"objective row {index} has an unproven operation form")
+        expected_objectives.append({
+            "operands": {"axis_x": axis_x, "axis_y": axis_y, "objective_selector": selector, "objective_slot": index, "stage_index": stage},
+            "operation_kind": 1,
+            "operation_version": 1,
+        })
+    require(len(expected_objectives) == 5 and _strict_equal(spec["objectives"], expected_objectives), "objective operations differ from authored Level 2 rows")
+    for index, operation in enumerate(spec["objectives"]):
+        _exact_object(operation, {"operation_kind", "operation_version", "operands"}, f"objectives[{index}]")
+        _exact_object(operation["operands"], {"axis_x", "axis_y", "objective_selector", "objective_slot", "stage_index"}, f"objectives[{index}].operands")
+
+    rng = _exact_object(spec["initial_rng"], {"global", "terrain"}, "campaign_spec.initial_rng")
+    for name, encoding, offset in (("global", "u32_le", 12), ("terrain", "u16_le", 8)):
+        field = _exact_object(rng[name], {"encoding", "member", "offset", "sha256"}, f"initial_rng.{name}")
+        field_offset = _bounded_integer(field["offset"], (1 << 64) - 1, f"initial_rng.{name}.offset")
+        require(_strict_equal((field["encoding"], field["member"], field_offset, field["sha256"]), (encoding, "feature-end.bin", offset, files["feature-end.bin"]["sha256"])), f"initial_rng.{name} source field differs")
+    feature_end = (package / "feature-end.bin").read_bytes()
+    require(len(feature_end) == 16, "initial RNG member extent changed")
+
+
+def _campaign_validate_presentation(recipe_value: object, files: dict) -> None:
+    keys = {"block_bank", "cursor", "map_type", "member", "palette", "resolved_files", "sky_bank", "sound_bank", "sprite_bank", "terrain_bank", "terrain_graphics_flag_2", "terrain_graphics_flags", "texture_size", "vga_resolution_selector", "web_bank"}
+    recipe = _exact_object(recipe_value, keys, "campaign_spec.presentation_recipe")
+    _campaign_member_ref(recipe["member"], files, "presentation_recipe.member", schema="mc2-presentation-snapshot/v1")
+    expected = {
+        "block_bank": "BL32N0-0", "cursor": 9, "map_type": "Day", "palette": "PALD-0",
+        "sky_bank": "SKYD0-0", "sound_bank": 1, "sprite_bank": "MSPRD0-0",
+        "terrain_bank": "TMAPS0-0", "texture_size": 32, "vga_resolution_selector": 1,
+        "web_bank": "MWEBD0-0",
+    }
+    for name, value in expected.items():
+        require(_strict_equal(recipe[name], value), f"presentation recipe {name} differs from Level 2")
+    require(
+        type(recipe["terrain_graphics_flags"]) is int
+        and type(recipe["terrain_graphics_flag_2"]) is bool,
+        "presentation terrain flags are malformed",
+    )
+    require(
+        _strict_equal(
+            (recipe["terrain_graphics_flags"], recipe["terrain_graphics_flag_2"]),
+            (0, False),
+        ),
+        "presentation terrain flags differ from proven Level 2",
+    )
+    resolved = _exact_object(recipe["resolved_files"], {"level_records", "terrain_bank", "sprite_bank", "web_bank", "block_bank", "palette", "sky_bank", "building_bank", "spell_table", "font_bank", "language"}, "presentation_recipe.resolved_files")
+    expected_resolved = {
+        "level_records": "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT",
+        "terrain_bank": "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT",
+        "sprite_bank": "owner:CD_Files/DATA/MSPRD0-0.DAT",
+        "web_bank": "owner:CD_Files/DATA/MWEBD0-0.DAT",
+        "block_bank": "owner:CD_Files/DATA/BL32N0-0.DAT",
+        "palette": "owner:CD_Files/DATA/PALD-0.DAT",
+        "sky_bank": "owner:CD_Files/DATA/SKYD0-0.DAT",
+        "building_bank": "owner:CD_Files/DATA/BUILD0-0.DAT",
+        "spell_table": "owner:CD_Files/DATA/SPELLS.DAT",
+        "font_bank": "owner:CD_Files/DATA/FONT1.DAT",
+        "language": "owner:CD_Files/LANGUAGE/L1.TXT",
+    }
+    require(resolved == expected_resolved, "presentation recipe resolved asset identities differ")
+
+
+def verify_campaign_package(
+    package: Path,
+    manifest: dict,
+    *,
+    expected_selection: tuple[int, int, int] = (2, 1, 0),
+    campaign_capabilities: set[tuple[int, int, int, int]] | None = None,
+) -> dict:
+    # Stage 1: closed outer shape and normalized identities.
+    _exact_object(manifest, {"schema", "byte_order", "level", "files", "package_sha256"}, "campaign manifest")
+    require(manifest["schema"] == CAMPAIGN_PACKAGE_SCHEMA and manifest["byte_order"] == "little-endian", "campaign outer schema/byte order differs")
+    level = _exact_object(manifest["level"], {"external", "internal", "map_type"}, "campaign manifest.level")
+    map_type = _exact_object(level["map_type"], {"id", "name"}, "campaign manifest.level.map_type")
+    outer_selection = (
+        _bounded_integer(level["external"], 0xFFFF, "external level"),
+        _bounded_integer(level["internal"], 0xFFFF, "internal level"),
+        _bounded_integer(map_type["id"], 0xFF, "map type id"),
+    )
+    require(outer_selection == expected_selection and map_type["name"] == "Day", "campaign caller/outer Level 2 selection mismatch")
+    files = _exact_object(manifest["files"], CAMPAIGN_FILES, "campaign manifest.files")
+    for name, raw_metadata in files.items():
+        _normalized_member_name(name, "campaign member name")
+        metadata = _exact_object(raw_metadata, {"bytes", "sha256"}, f"campaign file {name}")
+        _bounded_integer(metadata["bytes"], (1 << 64) - 1, f"campaign file {name} size")
+        _lower_hex(metadata["sha256"], 64, f"campaign file {name} hash")
+    _lower_hex(manifest["package_sha256"], 64, "campaign package hash")
+
+    # Stage 2: exact regular directory set (symlinks and nested entries fail).
+    actual_entries = {entry.name: entry for entry in package.iterdir()}
+    require(set(actual_entries) == CAMPAIGN_FILES | {"manifest.json"}, "campaign package directory member set differs")
+    for name, entry in actual_entries.items():
+        require(entry.is_file() and not entry.is_symlink(), f"campaign package member {name} is not a regular file")
+
+    # Stage 3: member and aggregate hashes.
+    identity = bytearray()
+    for name in sorted(files):
+        content = (package / name).read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        require((len(content), digest) == (files[name]["bytes"], files[name]["sha256"]), f"campaign member {name} size/hash mismatch")
+        identity.extend(name.encode("ascii") + b"\0" + digest.encode("ascii") + b"\0" + str(len(content)).encode("ascii") + b"\n")
+    require(hashlib.sha256(identity).hexdigest() == manifest["package_sha256"], "campaign package_sha256 mismatch")
+
+    # Stage 4: canonical closed definition and caller/outer identity equality.
+    definition_bytes = (package / "campaign-definition.json").read_bytes()
+    try:
+        definition = json.loads(definition_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AssertionError(f"campaign definition is not canonical UTF-8 JSON: {error}") from error
+    require(definition_bytes == _canonical_json_bytes(definition), "campaign definition bytes are not canonical")
+    root = _exact_object(definition, {"schema", "source", "identity", "campaign_spec", "source_facts", "required_behaviors"}, "campaign definition")
+    require(root["schema"] == CAMPAIGN_DEFINITION_SCHEMA, "campaign definition schema differs")
+    source = _exact_object(root["source"], {"remc2_commit"}, "campaign definition.source")
+    require(source["remc2_commit"] == REM_C2_COMMIT, "campaign source commit differs from pinned remc2")
+    identity_value = _exact_object(root["identity"], {"external_level", "internal_level", "map_type_id"}, "campaign definition.identity")
+    definition_selection = (
+        _bounded_integer(identity_value["external_level"], 0xFFFF, "campaign definition external level"),
+        _bounded_integer(identity_value["internal_level"], 0xFFFF, "campaign definition internal level"),
+        _bounded_integer(identity_value["map_type_id"], 0xFF, "campaign definition map type id"),
+    )
+    require(definition_selection == outer_selection == expected_selection, "campaign definition/outer/caller selection mismatch")
+    spec = _exact_object(root["campaign_spec"], {"authored_records", "authored_behavior_rows", "reset_sources", "initial_rng", "initial_activation", "objectives", "presentation_recipe"}, "campaign_spec")
+    reset_sources = _exact_object(spec["reset_sources"], {"terrain", "entities", "players", "runtime", "feature_boundary"}, "campaign_spec.reset_sources")
+
+    # Stage 5: all compiled member decoders and cross-member topology.
+    authored, _entities, _runtime = _campaign_validate_reset_members(package, spec, files)
+    presentation = (package / "presentation.bin").read_bytes()
+    require(len(presentation) == 10720 and presentation[:4] == b"MCV1" and (u16(presentation, 4), u16(presentation, 6), u32(presentation, 8)) == (1, 0, 347), "presentation snapshot layout changed")
+
+    # Stage 6: immutable SourceFacts; presentation output is never consulted.
+    behavior_rows = spec["authored_behavior_rows"]
+    _campaign_validate_source_facts(package, root["source_facts"], files, behavior_rows)
+
+    # Stage 7: reviewed Level 2 operations only.
+    _campaign_validate_operations(spec, authored, files, package)
+    _campaign_validate_presentation(spec["presentation_recipe"], files)
+
+    # Stage 8: source-derived transitive closure, then compiled capabilities.
+    expected_requirements, expected_keys = _campaign_required_behaviors(behavior_rows)
+    require(_strict_equal(root["required_behaviors"], expected_requirements), "declared required behavior closure differs from source-derived fixpoint")
+    capabilities = expected_keys if campaign_capabilities is None else campaign_capabilities
+    missing = sorted(expected_keys - capabilities)
+    require(not missing, f"campaign compiled capability is missing required behavior {missing[0] if missing else ''}")
+
+    # Stage 9: a canonical reset receipt over already-validated reset members.
+    reset_names = ["entities.bin", "feature-end.bin", "feature-start.bin", "players.bin", "runtime.bin", "terrain.bin"]
+    reset_receipt = hashlib.sha256("".join(f"{name}\0{files[name]['sha256']}\n" for name in reset_names).encode("ascii")).hexdigest()
+    require(len(reset_receipt) == 64, "campaign reset preflight receipt failed")
+    return manifest
+
+
 def verify(
     package: Path,
     source_root: Path | None = None,
     upstream_root: Path | None = None,
     *,
     enforce_reference_hashes: bool = True,
+    expected_campaign_selection: tuple[int, int, int] = (2, 1, 0),
+    campaign_capabilities: set[tuple[int, int, int, int]] | None = None,
 ) -> dict:
     package = package.resolve(strict=True)
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") == CAMPAIGN_PACKAGE_SCHEMA:
+        return verify_campaign_package(
+            package,
+            manifest,
+            expected_selection=expected_campaign_selection,
+            campaign_capabilities=campaign_capabilities,
+        )
     require(manifest["schema"] in SCHEMAS, "unsupported owner-package schema")
     level = manifest["level"]
     external_level = level.get("external")
