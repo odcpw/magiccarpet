@@ -1960,6 +1960,202 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
 }
 
 #[test]
+fn level_two_bee_damage_mailbox_keeps_payload_and_orders_nonlethal_tail() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 Bee session");
+    let bee = session
+        .allocate_level2_authored_bee(229)
+        .expect("qualified authored Day Bee");
+    let mut source = bee;
+    let initial_rng = source.entity_rng;
+    source.action = 17;
+    source.pending_damage = 250;
+    source.pending_attacker_entity_index = session.state.entity_index;
+
+    assert_eq!(
+        session
+            .economy_mut()
+            .consume_authored_bee_damage_mailbox(&mut source),
+        Some(false)
+    );
+    assert_eq!(source.life, bee.life - 250);
+    assert_eq!(source.pending_damage, 250);
+    assert_eq!(source.pending_attacker_entity_index, 0);
+    assert_eq!(
+        source.damage_attacker_entity_index,
+        session.state.entity_index
+    );
+    assert_eq!(source.action, 18);
+    assert_eq!(source.target_entity_index, Some(session.state.entity_index));
+    assert_eq!(source.entity_rng, level2_next_rng16(initial_rng));
+    assert!(matches!(
+        session.economy().events().last(),
+        Some(Level2EconomyEvent::DamageApplied {
+            target_entity_index,
+            attacker_entity_index,
+            damage: 250,
+            lethal: false,
+        }) if *target_entity_index == source.entity_id
+            && *attacker_entity_index == session.state.entity_index
+    ));
+}
+
+#[test]
+fn level_two_bee_lethal_mailbox_skips_rng_and_enters_action20() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 Bee session");
+    let bee = session
+        .allocate_level2_authored_bee(229)
+        .expect("qualified authored Day Bee");
+    let mut source = bee;
+    source.action = 17;
+    source.pending_damage = i32::from(source.life) + 1;
+    source.pending_attacker_entity_index = session.state.entity_index;
+
+    assert_eq!(
+        session
+            .economy_mut()
+            .consume_authored_bee_damage_mailbox(&mut source),
+        Some(true)
+    );
+    assert_eq!(source.life, -1);
+    assert_eq!(source.action, 20);
+    assert_eq!(source.entity_rng, bee.entity_rng);
+    assert_eq!(source.pending_damage, i32::from(bee.life) + 1);
+    assert_eq!(source.pending_attacker_entity_index, 0);
+    assert!(matches!(
+        session.economy().events().last(),
+        Some(Level2EconomyEvent::DamageApplied { lethal: true, .. })
+    ));
+}
+
+#[test]
+fn level_two_bee_death_tail_is_phase_gated_and_orders_outputs() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 Bee session");
+    let bee = session
+        .allocate_level2_authored_bee(229)
+        .expect("qualified authored Day Bee");
+    let initial_rng = bee.entity_rng;
+    let free_slots = session.economy().free_slot_count();
+    let mut gated = bee;
+    gated.action = 21;
+    gated.source_byte_3e = 1;
+    session
+        .economy_mut()
+        .step_authored_bee_death_tail(&mut gated);
+    assert!(gated.active);
+    assert!(gated.drawing_enabled);
+    assert_eq!(gated.life, bee.life);
+    assert_eq!(gated.entity_rng, initial_rng);
+    assert_eq!(session.economy().free_slot_count(), free_slots);
+    assert!(session.economy().spheres().is_empty());
+    assert!(session.economy().death_bursts().is_empty());
+
+    gated.source_byte_3e = 8;
+    session
+        .economy_mut()
+        .step_authored_bee_death_tail(&mut gated);
+    assert!(!gated.active);
+    assert!(!gated.drawing_enabled);
+    assert_eq!(gated.life, -1);
+    assert_eq!(gated.action, 21);
+    assert_eq!(gated.entity_rng, initial_rng);
+    assert!(session.economy().events().iter().any(|event| matches!(
+        event,
+        Level2EconomyEvent::ManaSphereSpawned {
+            source_entity_index,
+            mana: 1500,
+            ..
+        } if *source_entity_index == gated.source_entity_index
+    )));
+    assert!(session.economy().events().iter().any(|event| matches!(
+        event,
+        Level2EconomyEvent::DeathBurstSpawned {
+            parent_entity_index,
+            id_entity_index,
+            ..
+        } if *parent_entity_index == gated.source_entity_index
+            && *id_entity_index == gated.entity_id
+    )));
+}
+
+#[test]
+fn level_two_bee_death_tail_allocation_failure_still_closes_without_partial_output() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 Bee session");
+    let bee = session
+        .allocate_level2_authored_bee(229)
+        .expect("qualified authored Day Bee");
+    let mut exhausted = session.economy().clone();
+    exhausted.free_slots.clear();
+    for row in &mut exhausted.castle_children {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.spheres {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.death_bursts {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.authored_model1 {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.model59_smoke_children {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.authored_model5_water_splashes {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.authored_model13 {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.authored_model6 {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.model13_spawned_children {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.model17_spawned_children {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.model76_tail_spawns {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    let events_before = exhausted.events.len();
+    let spheres_before = exhausted.spheres.len();
+    let death_bursts_before = exhausted.death_bursts.len();
+    let initial_rng = bee.entity_rng;
+    let source_slot = bee.source_entity_index;
+    let mut gated = bee;
+    gated.action = 21;
+    gated.source_byte_3e = 8;
+    exhausted.step_authored_bee_death_tail(&mut gated);
+
+    assert!(!gated.active);
+    assert!(!gated.drawing_enabled);
+    assert_eq!(gated.life, -1);
+    assert_eq!(gated.entity_rng, initial_rng);
+    assert_eq!(exhausted.events.len(), events_before);
+    assert_eq!(exhausted.spheres.len(), spheres_before);
+    assert_eq!(exhausted.death_bursts.len(), death_bursts_before);
+    assert_eq!(exhausted.source_rng.get(&source_slot), Some(&initial_rng));
+    assert_eq!(exhausted.source_owner.get(&source_slot), Some(&0));
+}
+
+#[test]
 fn level_two_three_reachable_creature_sounds_emit_in_pinned_source_order() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");

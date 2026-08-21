@@ -343,17 +343,19 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
     assert_eq!(allocation_after.owner_entity_index, 0);
     assert_eq!(allocation_after.last_sphere_source_entity_index, 0);
     assert_eq!(allocation_failure.economy().authored_trees().len(), 12);
-    assert!(!allocation_failure
-        .economy()
-        .events()
-        .iter()
-        .any(|event| matches!(
-            event,
-            Level2EconomyEvent::ManaSphereSpawned {
-                source_entity_index,
-                ..
-            } if *source_entity_index == allocation_before.source_entity_index
-        )));
+    assert!(
+        !allocation_failure
+            .economy()
+            .events()
+            .iter()
+            .any(|event| matches!(
+                event,
+                Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index,
+                    ..
+                } if *source_entity_index == allocation_before.source_entity_index
+            ))
+    );
 }
 
 #[test]
@@ -429,11 +431,13 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
             if *source_slot == reclaimed_slot
     )));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(!session
-        .economy()
-        .authored_class14()
-        .iter()
-        .any(|source| source.authored_index == 275));
+    assert!(
+        !session
+            .economy()
+            .authored_class14()
+            .iter()
+            .any(|source| source.authored_index == 275)
+    );
     assert!(session.economy().free_slots.contains(&reclaimed_slot));
 }
 
@@ -534,11 +538,59 @@ fn level_two_authored_bee_death_runs_through_production_cursor() {
         21
     );
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session
+    let phase_after_action21 = session
         .economy()
         .authored_bees()
         .iter()
-        .all(|bee| bee.source_entity_index != row229_slot));
+        .find(|bee| bee.source_entity_index == row229_slot)
+        .expect("phase-gated row remains live after action-21 callback")
+        .source_byte_3e;
+    assert_ne!(phase_after_action21 & 7, 0);
+    assert!(!session.economy().events().iter().any(|event| matches!(
+        event,
+        Level2EconomyEvent::ManaSphereSpawned {
+            source_entity_index,
+            ..
+        } if *source_entity_index == row229_slot
+    )));
+
+    let mut reclaimed = false;
+    let mut phase_zero_callback_seen = false;
+    for _ in 0..10 {
+        let before = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied();
+        let Some(after) = after else {
+            assert!(phase_zero_callback_seen);
+            reclaimed = true;
+            break;
+        };
+        if before
+            .expect("phase-gated row remains until the following boundary")
+            .source_byte_3e
+            & 7
+            == 0
+        {
+            phase_zero_callback_seen = true;
+            assert!(!after.active);
+            assert!(!after.drawing_enabled);
+        } else {
+            assert!(after.active);
+            assert!(after.drawing_enabled);
+        }
+    }
+    assert!(reclaimed, "phase-zero callback reclaims the production row");
+    assert!(phase_zero_callback_seen);
     assert!(session.economy().events().iter().any(|event| matches!(
         event,
         Level2EconomyEvent::ManaSphereSpawned {
@@ -998,9 +1050,11 @@ fn level_two_model53_action58_runs_through_production_cursor() {
         .expect("negative-branch source")
         .life = -1;
     let child_count = session.economy().model17_spawned_children().len();
-    assert!(session
-        .economy_mut()
-        .step_authored_model53_slot(negative_slot));
+    assert!(
+        session
+            .economy_mut()
+            .step_authored_model53_slot(negative_slot)
+    );
     let negative_after = session
         .economy()
         .authored_model53()
@@ -1326,9 +1380,11 @@ fn level_two_outer_turn_scans_live_dynamic_arena_rows() {
         .map(|(slot, _)| *slot)
         .filter(|slot| seen.insert(*slot))
         .collect::<Vec<_>>();
-    assert!(first_dynamic_slots
-        .windows(2)
-        .all(|window| window[0] < window[1]));
+    assert!(
+        first_dynamic_slots
+            .windows(2)
+            .all(|window| window[0] < window[1])
+    );
     assert!(dynamic.contains(&(carrier_slot, Level2DynamicArenaKind::ManaCarrier)));
     assert!(dynamic.contains(&(
         u16::try_from(sphere_slot).expect("sphere slot"),
@@ -1526,16 +1582,20 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     );
 
     session.economy_mut().begin_turn();
-    assert!(session
-        .economy_mut()
-        .absorb_sphere_into_carrier(sphere_slot, carrier_slot));
+    assert!(
+        session
+            .economy_mut()
+            .absorb_sphere_into_carrier(sphere_slot, carrier_slot)
+    );
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.economy().free_slots.contains(&sphere_slot));
-    assert!(!session
-        .economy()
-        .spheres()
-        .iter()
-        .any(|sphere| sphere.source_entity_index == sphere_slot));
+    assert!(
+        !session
+            .economy()
+            .spheres()
+            .iter()
+            .any(|sphere| sphere.source_entity_index == sphere_slot)
+    );
     assert!(!session.dispatch_events().iter().any(|event| {
         matches!(
             event,
@@ -1732,19 +1792,23 @@ fn level_two_scheduler_global_rng_rejections_are_exact_no_ops() {
 
     let package = level_two_fixture_path();
     let players = fs::read(package.join("players.bin")).expect("Level 2 players member");
-    assert!(parse_players(
-        &players[..players.len() - 1],
-        OwnerPackageProfile::Level2,
-        OwnerPackageSchema::V5
-    )
-    .is_err());
+    assert!(
+        parse_players(
+            &players[..players.len() - 1],
+            OwnerPackageProfile::Level2,
+            OwnerPackageSchema::V5
+        )
+        .is_err()
+    );
 
     let inspection = NativeWorld::inspect_level2(&package)
         .expect("qualified Level 2 negative scheduler package");
-    assert!(inspection
-        .entities()
-        .iter()
-        .all(|entity| { !(entity.active && entity.class == 2 && entity.model == 0) }));
+    assert!(
+        inspection
+            .entities()
+            .iter()
+            .all(|entity| { !(entity.active && entity.class == 2 && entity.model == 0) })
+    );
     let dolmen = inspection
         .entities()
         .iter()
@@ -1768,10 +1832,12 @@ fn level_two_scheduler_global_rng_rejections_are_exact_no_ops() {
         exhausted.economy().source_rng.clone(),
         exhausted.economy().events.clone(),
     );
-    assert!(exhausted
-        .economy_mut()
-        .spawn_mana_carrier(Position::default(), 111, 0)
-        .is_none());
+    assert!(
+        exhausted
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .is_none()
+    );
     assert_eq!(exhausted.campaign_state_hash(), exhausted_before.0);
     assert_eq!(exhausted.dispatch_observability_hash(), exhausted_before.1);
     assert_eq!(exhausted.economy().reset_hash(), exhausted_before.2);
@@ -1794,10 +1860,12 @@ fn level_two_scheduler_global_rng_rejections_are_exact_no_ops() {
         rejected.economy().global_rng,
         rejected.economy().events.clone(),
     );
-    assert!(rejected
-        .economy_mut()
-        .allocate_spell_pickup(0, 0, 0, Position::default())
-        .is_none());
+    assert!(
+        rejected
+            .economy_mut()
+            .allocate_spell_pickup(0, 0, 0, Position::default())
+            .is_none()
+    );
     assert!(!rejected.economy_mut().step_mana_sphere_slot(u16::MAX));
     assert_eq!(rejected.campaign_state_hash(), rejected_before.0);
     assert_eq!(rejected.dispatch_observability_hash(), rejected_before.1);
@@ -2042,9 +2110,11 @@ fn production_speed_sweeps_preserve_the_complete_quiet_reset_rng_schedule() {
                 [0_u16, 113, 114, 115, 116, 117, 118, 119, 120, 121]
             );
             assert_eq!(pass[0].site, GlobalRngSite::UpdateEntities);
-            assert!(pass[1..]
-                .iter()
-                .all(|entry| entry.site == GlobalRngSite::Model60Smoke));
+            assert!(
+                pass[1..]
+                    .iter()
+                    .all(|entry| entry.site == GlobalRngSite::Model60Smoke)
+            );
         }
         assert_eq!(trace[0].before, 0xad6e_67d9);
         assert_eq!(

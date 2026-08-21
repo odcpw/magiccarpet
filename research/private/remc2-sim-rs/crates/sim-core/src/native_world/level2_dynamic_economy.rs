@@ -354,8 +354,9 @@ impl Level2EconomyState {
 
     /// Submit one source-shaped Fireball damage mailbox write. The target is
     /// resolved by class/model/action and live map relation at write time, and
-    /// an already occupied mailbox is rejected so a one-shot projectile cannot
-    /// duplicate its hit before the Bee callback consumes it.
+    /// an already occupied attacker word is rejected so a one-shot projectile
+    /// cannot duplicate its hit before the Bee callback consumes it. The
+    /// source-shaped damage dword is intentionally retained after consumption.
     pub(super) fn submit_authored_bee_damage(
         &mut self,
         target_slot: u16,
@@ -375,7 +376,6 @@ impl Level2EconomyState {
                 && bee.model == 2
                 && bee.action == 17
                 && bee.pending_attacker_entity_index == 0
-                && bee.pending_damage == 0
         }) else {
             return false;
         };
@@ -432,7 +432,6 @@ impl Level2EconomyState {
                                     && bee.action == 17
                                     && bee.source_entity_index != projectile.owner_entity_index
                                     && bee.entity_id != projectile.owner_entity_index
-                                    && bee.pending_damage == 0
                                     && bee.pending_attacker_entity_index == 0
                                     && self.map_chains.is_linked(bee.source_entity_index)
                                     && crate::level1_mission::source_entities_overlap(

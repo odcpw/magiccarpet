@@ -1361,14 +1361,36 @@ fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
         1
     );
 
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(
-        session
+    let mut phase_zero_callback_seen = false;
+    for _ in 0..10 {
+        let before = session
             .economy()
             .authored_bees()
             .iter()
-            .all(|bee| bee.authored_index != LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
-    );
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("phase-gated action-21 row remains until its callback");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("phase-gated action-21 row remains until the following boundary");
+        if before.source_byte_3e & 7 == 0 {
+            phase_zero_callback_seen = true;
+            assert!(!after.active);
+            assert!(!after.drawing_enabled);
+        } else {
+            assert!(after.active);
+            assert!(after.drawing_enabled);
+        }
+        if phase_zero_callback_seen {
+            break;
+        }
+    }
+    assert!(phase_zero_callback_seen);
     assert_eq!(
         session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
         2
@@ -1376,6 +1398,14 @@ fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
     assert_eq!(
         session.runtime().bytes()[304 + LEVEL2_BEE_OBJECTIVE_STAGE_INDEX + 3],
         2
+    );
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session
+            .economy()
+            .authored_bees()
+            .iter()
+            .all(|bee| bee.authored_index != LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
     );
 
     // Reset restores the selector and the production activation ledger.

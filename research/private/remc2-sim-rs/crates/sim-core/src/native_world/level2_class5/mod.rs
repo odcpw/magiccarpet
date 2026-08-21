@@ -22,6 +22,115 @@ pub(super) mod trader;
 #[cfg(test)]
 mod tests;
 
+/// Consume the one source-shaped damage mailbox visit for a Day Bee.
+///
+/// The pinned `sub_1F660 -> sub_1BF90` path clears only the attacker word;
+/// the damage dword remains the source's last applied payload.  Returning
+/// `Some(lethal)` tells the enclosing cursor to skip the ordinary action-17
+/// body: the source branches directly to action 18 or action 20 from this
+/// callback, so no target scan or extra RNG draw is permitted on the same
+/// visit.
+impl Level2EconomyState {
+    pub(super) fn consume_authored_bee_damage_mailbox(
+        &mut self,
+        source: &mut Level2AuthoredBeeSource,
+    ) -> Option<bool> {
+        if source.action != 17 || source.pending_attacker_entity_index == 0 {
+            return None;
+        }
+
+        let attacker_entity_index = source.pending_attacker_entity_index;
+        let damage = source.pending_damage;
+        let damage_i16 = i16::from_ne_bytes((damage as u16).to_ne_bytes());
+        source.life = source.life.wrapping_sub(damage_i16);
+        source.damage_attacker_entity_index = attacker_entity_index;
+        // `sub_1BF90` clears word 0x62 but retains dword 0x5E for the
+        // source-visible post-hit payload and later lethal bookkeeping.
+        source.pending_attacker_entity_index = 0;
+
+        let lethal = source.life < 0;
+        if lethal {
+            // The source copies word 0x26 to word 0x24 before entering the
+            // action-20 pre-kill callback.
+            source.kill_credit_entity_index = attacker_entity_index;
+            source.action = 20;
+        } else {
+            // `sub_1BF90` writes the qualifying attacker into word 0x96 and
+            // selects action 18.  `sub_1F660` then consumes exactly one
+            // source-local LCG step for the action-18 sound tail.
+            source.target_entity_index = Some(attacker_entity_index);
+            source.action = 18;
+            source.entity_rng = level2_next_rng16(source.entity_rng);
+            source.last_sound_id = (source.entity_rng & 1) + 12;
+            source.dword_0x10 = 1;
+        }
+        self.events.push(Level2EconomyEvent::DamageApplied {
+            target_entity_index: source.entity_id,
+            attacker_entity_index,
+            damage,
+            lethal,
+        });
+        Some(lethal)
+    }
+
+    /// Record one `PreKillEntity_1C890` creature-credit increment.  The
+    /// source owns this counter on the qualifying class-3/model-0 player
+    /// carrier; the typed Level 2 package does not serialize that unrelated
+    /// Type_str_164 byte, so this reset-scoped map is its lossless projection.
+    pub fn record_authored_bee_kill(&mut self, killer_entity_index: u16) -> bool {
+        if killer_entity_index == 0 {
+            return false;
+        }
+        let count = self
+            .authored_bee_kill_census
+            .entry(killer_entity_index)
+            .or_default();
+        *count = count.wrapping_add(1);
+        true
+    }
+
+    #[must_use]
+    pub fn authored_bee_kill_census(&self, killer_entity_index: u16) -> u32 {
+        self.authored_bee_kill_census
+            .get(&killer_entity_index)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Run the phase-gated `sub_1F850 -> KillEntity_1C930` tail for an
+    /// action-21 Bee.  Phases 1..7 remain live and consume no allocations or
+    /// RNG; the source's byte-0x3E epilogue advances after this helper and
+    /// admits the exact output/reclaim branch only at phase 0 modulo 8.
+    pub(super) fn step_authored_bee_death_tail(&mut self, source: &mut Level2AuthoredBeeSource) {
+        if source.source_byte_3e & 7 != 0 {
+            return;
+        }
+
+        let _ = self.spawn_mana_sphere_from_death(
+            source.source_entity_index,
+            source.position,
+            source.yaw,
+            source.entity_rng,
+            source.mana,
+            source.entity_id,
+        );
+        // The Bee constructor has no suppression bit, so the ordered
+        // class-10/model-1 burst follows the mana sphere allocation.
+        let _ = self.spawn_death_burst_from_death_with_id(
+            source.source_entity_index,
+            source.entity_id,
+            source.position,
+        );
+        source.action = 21;
+        source.drawing_enabled = false;
+        source.active = false;
+        source.life = -1;
+        source.target_entity_index = None;
+        self.deferred_authored_bee_reclaims
+            .insert(source.source_entity_index);
+    }
+}
+
 impl Level2EconomyState {
     /// Allocate an authored class-5/model-3, model-4, or model-9 row through
     /// the pinned `sub_4B6F0`/`AddArchers_4BA10`/`sub_4BBB0` constructors.  The model-3 constructor

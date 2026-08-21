@@ -1434,6 +1434,9 @@ pub struct Level2AuthoredBeeSource {
     pub pending_attacker_entity_index: u16,
     /// Source word-0x26 after mailbox consumption.
     pub damage_attacker_entity_index: u16,
+    /// Source word-0x24 copied from word-0x26 by `PreKillEntity_1C890`.
+    /// This is the identity carried into the qualifying creature census.
+    pub kill_credit_entity_index: u16,
     pub subspell_index: u16,
     pub dword_0x10: i32,
     pub target_entity_index: Option<u16>,
@@ -2647,6 +2650,9 @@ pub struct Level2EconomyState {
     authored_bees: Vec<Level2AuthoredBeeSource>,
     baseline_bee_model2_constructor_phase: u8,
     bee_model2_constructor_phase: u8,
+    baseline_authored_bee_kill_census: BTreeMap<u16, u32>,
+    authored_bee_kill_census: BTreeMap<u16, u32>,
+    deferred_authored_bee_reclaims: BTreeSet<u16>,
     baseline_authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
     authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
     baseline_authored_trees: Vec<Level2AuthoredTreeSource>,

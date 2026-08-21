@@ -1413,6 +1413,9 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
             && *id_entity_index == dying.entity_id
     )));
     session.economy_mut().reclaim_inactive_slots();
+    session
+        .economy_mut()
+        .reclaim_deferred_authored_bees_at_source_boundary();
     assert!(
         session
             .economy()
@@ -4302,16 +4305,334 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
         .copied()
         .expect("target Bee remains addressable after mailbox consumption");
     assert_eq!(consumed.life, pending.life - 250);
-    assert_eq!(consumed.pending_damage, 0);
+    assert_eq!(consumed.pending_damage, 250);
     assert_eq!(consumed.pending_attacker_entity_index, 0);
     assert_eq!(
         consumed.damage_attacker_entity_index,
         session.state.entity_index
     );
+    assert_eq!(consumed.kill_credit_entity_index, 0);
+    assert_eq!(consumed.action, 18);
+    assert_eq!(
+        consumed.target_entity_index,
+        Some(session.state.entity_index)
+    );
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::Economy {
+            source_slot,
+            event: Level2EconomyEvent::DamageApplied {
+                target_entity_index,
+                attacker_entity_index,
+                damage: 250,
+                lethal: false,
+            },
+            ..
+        } if *source_slot == bee_slot
+            && *target_entity_index == bee_slot
+            && *attacker_entity_index == session.state.entity_index
+    )));
 
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
     assert!(session.economy().fireball_projectiles().is_empty());
+}
+
+fn drive_level_two_bee_to_action17_for_fireball(
+    session: &mut Level2ResetSession,
+    bee_slot: u16,
+) -> Level2AuthoredBeeSource {
+    for _ in 0..160 {
+        let bee = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == bee_slot)
+            .copied()
+            .expect("production Bee remains during Fireball qualification");
+        if bee.action == 17 {
+            return bee;
+        }
+        assert!(
+            !matches!(bee.action, 20 | 21),
+            "Bee reached death before hit"
+        );
+        let player_position = if bee.action == 23 {
+            let mut position = bee.position;
+            crate::move_entity(&mut position, bee.yaw, 0, 1_000);
+            position.z = bee.position.z;
+            position
+        } else {
+            // Keep the real player row valid but outside both the action-18
+            // awareness threshold and the next action-17 scan while the
+            // source cursor lets the Bee return to its firing state. This is
+            // public flight positioning, not a mutation of the Bee row.
+            Position {
+                x: bee.position.x.wrapping_add(20_000),
+                y: bee.position.y.wrapping_add(20_000),
+                z: bee.position.z,
+            }
+        };
+        session
+            .set_level2_entity_position(session.state.entity_index, player_position)
+            .expect("local player remains map-linked while qualifying Fireball");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let bee = session
+        .economy()
+        .authored_bees()
+        .iter()
+        .find(|bee| bee.source_entity_index == bee_slot)
+        .copied();
+    panic!("production Bee did not return to action 17 for Fireball: {bee:?}");
+}
+
+fn cast_level_two_family0_fireball_at_bee(
+    session: &mut Level2ResetSession,
+    bee_slot: u16,
+) -> Level2AuthoredBeeSource {
+    let bee = drive_level_two_bee_to_action17_for_fireball(session, bee_slot);
+    let expected_life = bee.life.wrapping_sub(250);
+    // Both source hand directions move the launch carrier 256 units left at
+    // yaw zero. The holder adds no Y displacement; a 120-unit Z line keeps
+    // the first callback inside the strict Bee volume across the authored
+    // terrain heights.
+    let (x_offset, y_offset, z_offset) = (256, 360, 120);
+    let player_position = Position {
+        x: bee.position.x.wrapping_add(x_offset),
+        y: bee.position.y.wrapping_add(y_offset),
+        z: bee
+            .position
+            .z
+            .wrapping_add(z_offset)
+            .wrapping_sub(session.state.entity_fov),
+    };
+    session
+        .set_level2_entity_position(session.state.entity_index, player_position)
+        .expect("Fireball launch position remains map-linked");
+    session.state.yaw = 0;
+    session.state.display_pitch = 0;
+    session.state.effective_pitch = 0;
+    session.state.roll_accumulator = 0;
+    session.state.pitch_accumulator = 0;
+    session.state.roll_delta = 0;
+    session.state.pitch_delta = 0;
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    session.state.strafe_speed = 0;
+    session.state.recoil_speed = 0;
+    session.state.impulse_x = 0;
+    session.state.impulse_y = 0;
+    session.state.impulse_z = 0;
+    let previous_projectile_slots = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .map(|projectile| projectile.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 0,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    let _projectile = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .find(|projectile| {
+            projectile.active
+                && !previous_projectile_slots.contains(&projectile.source_entity_index)
+        })
+        .copied()
+        .expect("ordinary family-0 cast allocates a fresh Fireball row");
+    let player_entity_index = session.state.entity_index;
+    let mut consumed = None;
+    for _pass in 0..=16 {
+        let current = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == bee_slot)
+            .copied()
+            .expect("Fireball leaves the target Bee addressable after collision");
+        if current.life == expected_life
+            && current.pending_damage == 250
+            && current.pending_attacker_entity_index == 0
+            && current.damage_attacker_entity_index == player_entity_index
+            && matches!(current.action, 18 | 20)
+        {
+            consumed = Some(current);
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let consumed = consumed.unwrap_or_else(|| {
+        let bee = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == bee_slot)
+            .copied();
+        panic!("Fireball mailbox missing: expected_life={expected_life}, bee={bee:?}");
+    });
+    assert_eq!(consumed.pending_damage, 250);
+    assert_eq!(consumed.pending_attacker_entity_index, 0);
+    assert_eq!(consumed.damage_attacker_entity_index, player_entity_index);
+    consumed
+}
+
+#[test]
+fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_objective() {
+    let inspection = NativeWorld::inspect_level2_with_owner_cache(
+        &level_two_fixture_path(),
+        &level_two_gameplay_cache_path(),
+    )
+    .expect("qualified Level 2 gameplay component");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 session");
+    let baseline_hash = session.campaign_state_hash();
+    session
+        .runtime
+        .set_level2_objective_text_selector(LEVEL2_BEE_OBJECTIVE_STAGE_INDEX);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let bee_slot = session
+        .economy()
+        .authored_bees()
+        .iter()
+        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .map(|bee| bee.source_entity_index)
+        .expect("ordinary reset group-21 route materializes row 229");
+
+    let mut last_consumed = None;
+    for _ in 0..13 {
+        last_consumed = Some(cast_level_two_family0_fireball_at_bee(
+            &mut session,
+            bee_slot,
+        ));
+    }
+    let lethal = last_consumed.expect("thirteenth Fireball consumption");
+    assert_eq!(lethal.action, 20);
+    assert_eq!(lethal.life, -250);
+    assert_eq!(lethal.pending_damage, 250);
+    assert_eq!(lethal.pending_attacker_entity_index, 0);
+    assert_eq!(
+        lethal.damage_attacker_entity_index,
+        session.state.entity_index
+    );
+    assert_eq!(lethal.kill_credit_entity_index, session.state.entity_index);
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let pre_kill = session
+        .economy()
+        .authored_bees()
+        .iter()
+        .find(|bee| bee.source_entity_index == bee_slot)
+        .copied()
+        .expect("action-21 Bee remains before phase-gated kill");
+    assert_eq!(pre_kill.action, 21);
+    assert!(pre_kill.active);
+    assert!(pre_kill.drawing_enabled);
+    assert_eq!(
+        session
+            .economy()
+            .authored_bee_kill_census(session.state.entity_index),
+        1
+    );
+    assert_ne!(pre_kill.source_byte_3e & 7, 0);
+    let output_counts = |session: &Level2ResetSession| {
+        (
+            session
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Level2EconomyEvent::ManaSphereSpawned { source_entity_index, .. }
+                            if *source_entity_index == bee_slot
+                    )
+                })
+                .count(),
+            session
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. }
+                            if *parent_entity_index == bee_slot
+                    )
+                })
+                .count(),
+        )
+    };
+    assert_eq!(output_counts(&session), (0, 0));
+    let mut phase_zero_callback_seen = false;
+    let mut reached_reclaim = false;
+    for _ in 0..10 {
+        let before = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == bee_slot)
+            .copied();
+        let before_counts = output_counts(&session);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == bee_slot)
+            .copied();
+        let Some(after) = after else {
+            assert!(phase_zero_callback_seen);
+            reached_reclaim = true;
+            break;
+        };
+        let after_counts = output_counts(&session);
+        if before
+            .expect("Bee remains until the following reclaim boundary")
+            .source_byte_3e
+            & 7
+            == 0
+        {
+            phase_zero_callback_seen = true;
+            assert!(!after.active);
+            assert!(!after.drawing_enabled);
+            assert_eq!(after_counts, (1, 1));
+        } else {
+            assert!(after.active);
+            assert!(after.drawing_enabled);
+            assert_eq!(after_counts, before_counts);
+        }
+    }
+    assert!(reached_reclaim, "phase-zero Bee callback reclaims the row");
+    assert!(phase_zero_callback_seen);
+    assert_eq!(
+        session
+            .economy()
+            .authored_bee_kill_census(session.state.entity_index),
+        1
+    );
+    assert_eq!(
+        session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+        2
+    );
+    assert_eq!(output_counts(&session), (1, 1));
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_hash);
+    assert_eq!(
+        session
+            .economy()
+            .authored_bee_kill_census(session.state.entity_index),
+        0
+    );
 }
 
 #[test]

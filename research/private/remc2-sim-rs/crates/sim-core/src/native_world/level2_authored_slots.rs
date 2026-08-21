@@ -159,6 +159,9 @@ impl Level2EconomyState {
             authored_bees: Vec::new(),
             baseline_bee_model2_constructor_phase: 0,
             bee_model2_constructor_phase: 0,
+            baseline_authored_bee_kill_census: BTreeMap::new(),
+            authored_bee_kill_census: BTreeMap::new(),
+            deferred_authored_bee_reclaims: BTreeSet::new(),
             baseline_authored_switch_producers: Vec::new(),
             authored_switch_producers: Vec::new(),
             baseline_authored_trees: Vec::new(),
@@ -1070,6 +1073,7 @@ impl Level2EconomyState {
             pending_damage: 0,
             pending_attacker_entity_index: 0,
             damage_attacker_entity_index: 0,
+            kill_credit_entity_index: 0,
             subspell_index: 200,
             dword_0x10: i32::from(source_entity_index % 100),
             target_entity_index: None,
@@ -2022,15 +2026,27 @@ impl Level2EconomyState {
             return false;
         };
         let mut source = self.authored_bees[source_index];
-        // `sub_1BF90` consumes the class-5/model-2 action-17 damage mailbox
-        // before its ordinary target/steering branch.  The attacker word is
-        // copied exactly once and the mailbox is cleared in the same callback;
-        // later Fireball callbacks therefore cannot duplicate the hit.
-        if source.action == 17 && source.pending_attacker_entity_index != 0 {
-            source.life = source.life.wrapping_sub(source.pending_damage as i16);
-            source.damage_attacker_entity_index = source.pending_attacker_entity_index;
-            source.pending_damage = 0;
-            source.pending_attacker_entity_index = 0;
+        // `sub_1F660` consumes the action-17 mailbox before dispatching the
+        // ordinary callback body.  A consumed mailbox selects action 18 or
+        // action 20 directly, so the target scan and its RNG tail must not
+        // run again on this same source visit.
+        if self
+            .consume_authored_bee_damage_mailbox(&mut source)
+            .is_some()
+        {
+            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+            source.phase = source.phase.wrapping_add(1);
+            self.source_rng.insert(source_slot, source.entity_rng);
+            self.authored_bees[source_index] = source;
+            return self
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: source.active,
+                    x: source.position.x,
+                    y: source.position.y,
+                })
+                .is_ok();
         }
         match source.action {
             16 => {
@@ -2147,33 +2163,15 @@ impl Level2EconomyState {
                 // `sub_1F830` -> `PreKillEntity_1C890(a1, 16)` changes the
                 // root and any linked children to action 21. Authored Day
                 // Bees have no child chain in this bounded arena.
+                source.kill_credit_entity_index = source.damage_attacker_entity_index;
                 source.action = 21;
             }
             21 => {
-                // `sub_1F850` -> `KillEntity_1C930`: convert constructor
-                // mana into one source-owned sphere, then disable drawing
-                // and let the normal arena reclaim the source slot.
-                let _ = self.spawn_mana_sphere_from_death(
-                    source.source_entity_index,
-                    source.position,
-                    source.yaw,
-                    source.entity_rng,
-                    source.mana,
-                    source.entity_id,
-                );
-                // The Bee has no suppression bit in its constructor state,
-                // so `KillEntity_1C930` also allocates the ordered
-                // class-10/model-1/action-1 death burst after the sphere.
-                let _ = self.spawn_death_burst_from_death_with_id(
-                    source.source_entity_index,
-                    source.entity_id,
-                    source.position,
-                );
-                source.action = 21;
-                source.drawing_enabled = false;
-                source.active = false;
-                source.life = -1;
-                source.target_entity_index = None;
+                // `sub_1F850` -> `KillEntity_1C930` is phase-gated by the
+                // source byte-0x3E.  The class-5 helper keeps phases 1..7
+                // live and performs the ordered sphere/burst conversion only
+                // at the admitted phase-0 boundary.
+                self.step_authored_bee_death_tail(&mut source);
             }
             23 => {
                 // `sub_1F8A0 -> sub_1D5D0(16)` dispatches the bounded
@@ -5101,6 +5099,51 @@ impl Level2EconomyState {
     }
 
     pub fn reclaim_inactive_slots(&mut self) {
+        self.reclaim_inactive_slots_with_policy(true);
+    }
+
+    /// Reclaim ordinary inactive rows while retaining a phase-zero Bee marked
+    /// for the next `UpdateEntities_57730` boundary. The production cursor
+    /// uses this boundary-aware form so KillEntity's hidden Bee remains
+    /// reserved for the rest of its landing pass.
+    pub(super) fn reclaim_inactive_slots_after_source_pass(&mut self) {
+        self.reclaim_inactive_slots_with_policy(true);
+    }
+
+    /// Reclaim a phase-zero Bee hidden during the preceding source pass. This
+    /// is deliberately before the next cursor snapshot and after the prior
+    /// pass's event tail, matching the source's following-pass `sub_57F20`.
+    pub(super) fn reclaim_deferred_authored_bees_at_source_boundary(&mut self) {
+        let reclaimed_bees = self
+            .authored_bees
+            .iter()
+            .filter(|source| {
+                !source.active
+                    && self
+                        .deferred_authored_bee_reclaims
+                        .contains(&source.source_entity_index)
+            })
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_bees.retain(|source| {
+            source.active
+                || !self
+                    .deferred_authored_bee_reclaims
+                    .contains(&source.source_entity_index)
+        });
+        for (slot, entity_rng) in reclaimed_bees {
+            self.deferred_authored_bee_reclaims.remove(&slot);
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+    }
+
+    fn reclaim_inactive_slots_with_policy(&mut self, defer_authored_bees: bool) {
         // Castle projectiles are disabled by their source callback and
         // reclaimed only by reclaim_hidden_castle_rows_at_source_boundary at
         // the following UpdateEntities prologue. Same-pass reclamation would
@@ -5231,11 +5274,24 @@ impl Level2EconomyState {
         let reclaimed_bees = self
             .authored_bees
             .iter()
-            .filter(|source| !source.active)
+            .filter(|source| {
+                !source.active
+                    && (!defer_authored_bees
+                        || !self
+                            .deferred_authored_bee_reclaims
+                            .contains(&source.source_entity_index))
+            })
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
-        self.authored_bees.retain(|source| source.active);
+        self.authored_bees.retain(|source| {
+            source.active
+                || (defer_authored_bees
+                    && self
+                        .deferred_authored_bee_reclaims
+                        .contains(&source.source_entity_index))
+        });
         for (slot, entity_rng) in reclaimed_bees {
+            self.deferred_authored_bee_reclaims.remove(&slot);
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
                 active: false,
@@ -5872,6 +5928,7 @@ impl Level2EconomyState {
             hasher.update(source.pending_damage.to_le_bytes());
             hasher.update(source.pending_attacker_entity_index.to_le_bytes());
             hasher.update(source.damage_attacker_entity_index.to_le_bytes());
+            hasher.update(source.kill_credit_entity_index.to_le_bytes());
             hasher.update(source.subspell_index.to_le_bytes());
             hasher.update(source.dword_0x10.to_le_bytes());
             hasher.update(source.target_entity_index.unwrap_or(u16::MAX).to_le_bytes());
@@ -5901,6 +5958,15 @@ impl Level2EconomyState {
         }
         hasher.update(b"level2-bee-model2-constructor-phase-v1");
         hasher.update([self.bee_model2_constructor_phase]);
+        hasher.update(b"level2-authored-bee-kill-census-v1");
+        for (killer_entity_index, count) in &self.authored_bee_kill_census {
+            hasher.update(killer_entity_index.to_le_bytes());
+            hasher.update(count.to_le_bytes());
+        }
+        hasher.update(b"level2-authored-bee-deferred-reclaim-v1");
+        for source_entity_index in &self.deferred_authored_bee_reclaims {
+            hasher.update(source_entity_index.to_le_bytes());
+        }
         hasher.update(b"level2-authored-switch-producer-v1");
         for source in &self.authored_switch_producers {
             hasher.update(source.source_entity_index.to_le_bytes());
@@ -6944,6 +7010,8 @@ impl Level2EconomyState {
         self.authored_model13 = self.baseline_authored_model13.clone();
         self.authored_bees = self.baseline_authored_bees.clone();
         self.bee_model2_constructor_phase = self.baseline_bee_model2_constructor_phase;
+        self.authored_bee_kill_census = self.baseline_authored_bee_kill_census.clone();
+        self.deferred_authored_bee_reclaims.clear();
         self.authored_switch_producers = self.baseline_authored_switch_producers.clone();
         self.authored_trees = self.baseline_authored_trees.clone();
         self.authored_model32 = self.baseline_authored_model32.clone();
