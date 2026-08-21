@@ -1,4 +1,4 @@
-# CF-00 Omega seal
+# CF-00 Omega seal and v1.1 reseal
 
 This directory is the evidence-only input seal for
 `mc-cf00-seal-fold-inputs-omega-iplbq`. It freezes the pre-fold observation
@@ -67,6 +67,50 @@ outputs were byte-identical at SHA-256
 The committed canonical inventory is byte-identical to that pair at SHA-256
 `8aa245f6dd61aef07dc4481a6a4bfef069b6d4d6d243188379681837ad57545f`.
 Generated package/data roots remain ignored and local.
+
+## v1.1 reseal and complete delta
+
+The v1 artifact above remains unchanged as the audit baseline. The v1.1
+reseal was measured at committed evidence revision
+`656416b62fb6c859e842c3cb81cccaa38ac2df7f`, which includes the landed
+`PreparedSound` sim-capi arm (`mc-yawx.2.2`). Fresh M1 runs at that revision
+were byte-identical at JSON SHA-256
+`7986b9a2935d160f40c22fae1250f7bfa9abe9ede81529832ed35ce148470383` and
+Markdown SHA-256
+`91b385359a70c78ab72ad011e0f6f5de827f334e1dcbe50283c1deb8565fc6ce`.
+They contain 54 transitions, 14 route kinds, and 229 open questions. The
+Omega builder was then run twice in fresh ignored roots; both v1.1 outputs
+were byte-identical at SHA-256
+`10d537151083d7fe0d2dae2d7409a3ef0fd5e42f2ddf4756e4d86812922aeef2`.
+The tracked `campaign-fold-omega-v1.1.json` is that receipt; the v1 JSON is
+retained separately for audit.
+
+The denominator change is exactly `224 -> 229`. Every added question has both
+an introducing receipt and the CF-01 path-relocation receipt; no open question
+is absorbed without a row:
+
+| New question | Transition | Delta | Introduced by | Relocated by |
+|---|---|---:|---|---|
+| `nyphur-possession-holder` (`level2.rs:1541`) | `slot-kind-11` | +1 | `mc-1g06.1` / `0eb2628d3c942a1c9844a5311359356e8c074eba` | `mc-cf01-pure-campaign-module-extraction-19t39` / `b0537fdf7491e782ca727896677ff66f90e8cf93` |
+| `nyphur-fireball-holder` (`level2.rs:1380`) | `slot-kind-13` | +1 | `mc-1g06.1` / `0eb2628d3c942a1c9844a5311359356e8c074eba` | `mc-cf01-pure-campaign-module-extraction-19t39` / `b0537fdf7491e782ca727896677ff66f90e8cf93` |
+| `group31-tree-source` (`level2.rs:3905`) | `source-prepass-011-activate_level2_authored_group31` | +1 | `mc-l2-33a6-tree-producer-7pclk` / `d1440cd8e0d05783135525c465f789f8046a4157` | `mc-cf01-pure-campaign-module-extraction-19t39` / `b0537fdf7491e782ca727896677ff66f90e8cf93` |
+| `tree-callback-source` (`level2.rs:6192`) | `same-pass-epilogue-006-step_level2_dynamic_arena` | +1 | `mc-l2-33a6-tree-producer-7pclk` / `d1440cd8e0d05783135525c465f789f8046a4157` | `mc-cf01-pure-campaign-module-extraction-19t39` / `b0537fdf7491e782ca727896677ff66f90e8cf93` |
+| `tree-callback-row` (`level2.rs:6222`) | `same-pass-epilogue-006-step_level2_dynamic_arena` | +1 | `mc-l2-33a6-tree-producer-7pclk` / `d1440cd8e0d05783135525c465f789f8046a4157` | `mc-cf01-pure-campaign-module-extraction-19t39` / `b0537fdf7491e782ca727896677ff66f90e8cf93` |
+
+The intervening landed receipts `mc-yawx.1.6` (`10d0847e`),
+`mc-yawx.1.8` (`f86e1141`, `ca77a1ce`), `mc-yawx.1.5` (`3be52495`),
+`mc-yawx.2.2` (`fc3e1821`, `656416b6`), and `mc-1g06.1`'s later boundary
+receipts (`73e1a09e`, `8968e761`) were measured and introduced no additional
+open-question denominator drift. The `4590279e` and `4a638721` receipts are
+already ancestors of the v1 boundary, so they are not post-v1 additions.
+This is the explicit boundary: future receipts require a new mapped row or
+must be reported as unmapped drift.
+
+The v1.1 receipt is evidence-only. It changes no production Rust, C ABI,
+Unity, exporter, owner package, or original-executable behavior. Its negative
+suite additionally plants and rejects an unmapped open question, alongside
+the v1 missing-state-cell, missing-transition, ordered-effect,
+missing-capability, changed-revision, trace-difference, and stale-M1 cases.
 
 ## Omega alphabet and capability diff
 

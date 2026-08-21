@@ -18,7 +18,118 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "campaign-fold-omega-v1"
+BASELINE_SCHEMA_VERSION = "campaign-fold-omega-v1"
+SCHEMA_VERSION = "campaign-fold-omega-v1.1"
+BASELINE_OMEGA_RELATIVE = (
+    "research/private/remc2-sim-rs/level2-conformance/fold/campaign-fold-omega-v1.json"
+)
+BASELINE_BEAD_ID = "mc-cf00-seal-fold-inputs-omega-iplbq"
+RESEAL_BEAD_ID = "mc-cf00-omega-reseal-3dxle"
+BASELINE_EVIDENCE_REVISION = "462b438d41f1d39ce4b4a1ae24f892dc3e04cafe"
+BASELINE_OMEGA_JSON_SHA256 = "8aa245f6dd61aef07dc4481a6a4bfef069b6d4d6d243188379681837ad57545f"
+BASELINE_M1_JSON_SHA256 = "aad97175330bfdef21b09e3e164f054d2b6df59f66bd7c449f02e3f633514684"
+BASELINE_OPEN_QUESTION_COUNT = 224
+RESEALED_OPEN_QUESTION_COUNT = 229
+OPEN_QUESTION_DELTA_COUNT = RESEALED_OPEN_QUESTION_COUNT - BASELINE_OPEN_QUESTION_COUNT
+CF01_EXTRACTION_COMMIT = "b0537fdf7491e782ca727896677ff66f90e8cf93"
+
+
+# The v1 artifact is retained as an audit object.  These are the only five
+# semantic open-question additions observed when the exact v1 source was
+# advanced to the reseal candidate.  The path/line evidence moved for the
+# CF-01 extraction, so each row also names that landed relocation receipt.
+# A new question must be added here before the denominator can move.
+OPEN_QUESTION_DELTA_SPECS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "nyphur-possession-holder",
+        "transition_ordinal": 38,
+        "transition_id": "slot-kind-11",
+        "question_prefix": "Mutable local or closure alias holder",
+        "evidence_anchor": "campaign/level2.rs:1541",
+        "delta_count": 1,
+        "introduced_by": {
+            "bead_id": "mc-1g06.1",
+            "commit": "0eb2628d3c942a1c9844a5311359356e8c074eba",
+            "title": "Connect Nyphur spell producers",
+            "files": [
+                "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+                "research/private/remc2-sim-rs/crates/sim-core/src/native_world/level2_nyphur.rs",
+            ],
+        },
+    },
+    {
+        "id": "nyphur-fireball-holder",
+        "transition_ordinal": 40,
+        "transition_id": "slot-kind-13",
+        "question_prefix": "Mutable local or closure alias holder",
+        "evidence_anchor": "campaign/level2.rs:1380",
+        "delta_count": 1,
+        "introduced_by": {
+            "bead_id": "mc-1g06.1",
+            "commit": "0eb2628d3c942a1c9844a5311359356e8c074eba",
+            "title": "Connect Nyphur spell producers",
+            "files": [
+                "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+                "research/private/remc2-sim-rs/crates/sim-core/src/native_world/level2_nyphur.rs",
+            ],
+        },
+    },
+    {
+        "id": "group31-tree-source",
+        "transition_ordinal": 18,
+        "transition_id": "source-prepass-011-activate_level2_authored_group31",
+        "question_prefix": "Mutable local or closure alias source",
+        "evidence_anchor": "campaign/level2.rs:3905",
+        "delta_count": 1,
+        "introduced_by": {
+            "bead_id": "mc-l2-33a6-tree-producer-7pclk",
+            "commit": "d1440cd8e0d05783135525c465f789f8046a4157",
+            "title": "Materialize group31 trees",
+            "files": [
+                "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+            ],
+        },
+    },
+    {
+        "id": "tree-callback-source",
+        "transition_ordinal": 49,
+        "transition_id": "same-pass-epilogue-006-step_level2_dynamic_arena",
+        "question_prefix": "Mutable local or closure alias source",
+        "evidence_anchor": "campaign/level2.rs:6192",
+        "delta_count": 1,
+        "introduced_by": {
+            "bead_id": "mc-l2-33a6-tree-producer-7pclk",
+            "commit": "d1440cd8e0d05783135525c465f789f8046a4157",
+            "title": "Materialize group31 trees",
+            "files": [
+                "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+            ],
+        },
+    },
+    {
+        "id": "tree-callback-row",
+        "transition_ordinal": 49,
+        "transition_id": "same-pass-epilogue-006-step_level2_dynamic_arena",
+        "question_prefix": "Mutable local or closure alias row",
+        "evidence_anchor": "campaign/level2.rs:6222",
+        "delta_count": 1,
+        "introduced_by": {
+            "bead_id": "mc-l2-33a6-tree-producer-7pclk",
+            "commit": "d1440cd8e0d05783135525c465f789f8046a4157",
+            "title": "Materialize group31 trees",
+            "files": [
+                "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+            ],
+        },
+    },
+)
+
+EXPECTED_TRANSITION_OPEN_QUESTION_DELTAS = (
+    {"transition_ordinal": 18, "transition_id": "source-prepass-011-activate_level2_authored_group31", "baseline_count": 4, "current_count": 5, "delta_count": 1},
+    {"transition_ordinal": 38, "transition_id": "slot-kind-11", "baseline_count": 3, "current_count": 4, "delta_count": 1},
+    {"transition_ordinal": 40, "transition_id": "slot-kind-13", "baseline_count": 14, "current_count": 15, "delta_count": 1},
+    {"transition_ordinal": 49, "transition_id": "same-pass-epilogue-006-step_level2_dynamic_arena", "baseline_count": 69, "current_count": 71, "delta_count": 2},
+)
 PINNED_REMC2_REVISION = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 DEFAULT_ROOT = Path(__file__).resolve().parents[5]
 STALE_M1_HASHES = {
@@ -130,6 +241,142 @@ def _transition_receipt(
         "ordinary_producer": producer,
         "following_pass_consumer": consumer,
         "scope": scope,
+    }
+
+
+def _build_open_question_delta(
+    *,
+    repo_root: Path,
+    evidence_revision: str,
+    baseline: dict[str, Any],
+    current_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_artifact = baseline["transition_inventory"]["artifact"]
+    baseline_transitions = baseline_artifact["transitions"]
+    current_transitions = current_artifact["transitions"]
+    _require(
+        len(baseline_transitions) == len(current_transitions) == 54,
+        "v1.1 transition inventory shape changed",
+    )
+    _require(
+        [row.get("id") for row in baseline_transitions]
+        == [row.get("id") for row in current_transitions],
+        "v1.1 transition identity or order changed",
+    )
+
+    expected_by_ordinal = {spec["transition_ordinal"]: 0 for spec in OPEN_QUESTION_DELTA_SPECS}
+    delta_rows: list[dict[str, Any]] = []
+    for spec in OPEN_QUESTION_DELTA_SPECS:
+        ordinal = spec["transition_ordinal"]
+        baseline_transition = baseline_transitions[ordinal]
+        current_transition = current_transitions[ordinal]
+        _require(current_transition["id"] == spec["transition_id"], f"delta transition mismatch for {spec['id']}")
+        baseline_questions = baseline_transition.get("open_questions", [])
+        current_questions = current_transition.get("open_questions", [])
+        baseline_count = sum(
+            question.startswith(spec["question_prefix"]) for question in baseline_questions
+        )
+        current_count = sum(
+            question.startswith(spec["question_prefix"]) for question in current_questions
+        )
+        _require(
+            current_count - baseline_count == spec["delta_count"],
+            f"mapped delta count changed for {spec['id']}",
+        )
+        observed = [
+            question
+            for question in current_questions
+            if question.startswith(spec["question_prefix"])
+            and spec["evidence_anchor"] in question
+        ]
+        _require(len(observed) == 1, f"mapped delta evidence changed for {spec['id']}")
+
+        introduced = _source_receipt(
+            repo_root,
+            evidence_revision,
+            spec["introduced_by"]["bead_id"],
+            spec["introduced_by"]["commit"],
+            spec["introduced_by"]["files"],
+        )
+        introduced["title"] = spec["introduced_by"]["title"]
+        relocated = _source_receipt(
+            repo_root,
+            evidence_revision,
+            "mc-cf01-pure-campaign-module-extraction-19t39",
+            CF01_EXTRACTION_COMMIT,
+            [
+                "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+                "research/private/remc2-sim-rs/crates/sim-core/src/lib.rs",
+                "research/private/remc2-sim-rs/crates/sim-core/src/campaign/mod.rs",
+                "research/private/remc2-sim-rs/crates/sim-core/src/campaign/level2.rs",
+            ],
+        )
+        relocated["title"] = "Pure campaign facade extraction; path/line relocation only"
+        delta_rows.append(
+            {
+                "id": spec["id"],
+                "transition_ordinal": ordinal,
+                "transition_id": spec["transition_id"],
+                "question_prefix": spec["question_prefix"],
+                "evidence_anchor": spec["evidence_anchor"],
+                "question": observed[0],
+                "baseline_count": baseline_count,
+                "current_count": current_count,
+                "delta_count": spec["delta_count"],
+                "introduced_by": introduced,
+                "relocated_by": relocated,
+            }
+        )
+        expected_by_ordinal[ordinal] += spec["delta_count"]
+
+    actual_by_ordinal = [
+        len(current.get("open_questions", [])) - len(baseline.get("open_questions", []))
+        for baseline, current in zip(baseline_transitions, current_transitions)
+    ]
+    for ordinal, actual_delta in enumerate(actual_by_ordinal):
+        _require(
+            actual_delta == expected_by_ordinal.get(ordinal, 0),
+            f"unmapped open-question drift at transition ordinal {ordinal}",
+        )
+    _require(
+        sum(actual_by_ordinal) == OPEN_QUESTION_DELTA_COUNT == sum(row["delta_count"] for row in delta_rows),
+        "v1.1 open-question denominator is not explained by the delta table",
+    )
+    transition_deltas = [
+        {
+            "transition_ordinal": ordinal,
+            "transition_id": current_transitions[ordinal]["id"],
+            "baseline_count": len(baseline_transitions[ordinal].get("open_questions", [])),
+            "current_count": len(current_transitions[ordinal].get("open_questions", [])),
+            "delta_count": actual_delta,
+        }
+        for ordinal, actual_delta in enumerate(actual_by_ordinal)
+        if actual_delta
+    ]
+    transition_open_question_counts = [
+        {
+            "transition_ordinal": ordinal,
+            "transition_id": current_transitions[ordinal]["id"],
+            "baseline_count": len(baseline_transitions[ordinal].get("open_questions", [])),
+            "current_count": len(current_transitions[ordinal].get("open_questions", [])),
+            "delta_count": actual_delta,
+        }
+        for ordinal, actual_delta in enumerate(actual_by_ordinal)
+    ]
+    return {
+        "from_schema_version": BASELINE_SCHEMA_VERSION,
+        "to_schema_version": SCHEMA_VERSION,
+        "from_evidence_revision": baseline["evidence"]["superproject_revision"],
+        "to_evidence_revision": evidence_revision,
+        "from_json_sha256": BASELINE_OMEGA_JSON_SHA256,
+        "from_m1_json_sha256": BASELINE_M1_JSON_SHA256,
+        "baseline_open_question_count": BASELINE_OPEN_QUESTION_COUNT,
+        "current_open_question_count": len(current_artifact["open_questions"]),
+        "added_open_question_count": sum(row["delta_count"] for row in delta_rows),
+        "unmapped_open_question_count": 0,
+        "transition_deltas": transition_deltas,
+        "transition_open_question_counts": transition_open_question_counts,
+        "rows": delta_rows,
     }
 
 
@@ -607,6 +854,34 @@ def _build_prerequisites(repo_root: Path, evidence_revision: str) -> dict[str, A
     }
 
 
+def validate_baseline_inventory(
+    inventory: dict[str, Any],
+    *,
+    expected_revision: str | None = None,
+) -> None:
+    """Validate the immutable v1 audit object before calculating v1.1 drift."""
+
+    _require(inventory.get("schema_version") == BASELINE_SCHEMA_VERSION, "wrong Omega v1 schema")
+    _require(inventory.get("bead_id") == BASELINE_BEAD_ID, "wrong Omega v1 bead binding")
+    evidence = inventory.get("evidence", {})
+    revision = evidence.get("superproject_revision")
+    if expected_revision is not None:
+        _require(revision == expected_revision, "Omega v1 evidence revision changed")
+    _require(revision == BASELINE_EVIDENCE_REVISION, "Omega v1 evidence boundary changed")
+    _require(evidence.get("remc2_revision") == PINNED_REMC2_REVISION, "Omega v1 remc2 revision changed")
+
+    regeneration = inventory.get("transition_inventory", {}).get("regeneration", {})
+    _require(regeneration.get("json_byte_identical") is True, "Omega v1 JSON byte identity is not sealed")
+    _require(regeneration.get("markdown_byte_identical") is True, "Omega v1 Markdown byte identity is not sealed")
+    _require(regeneration.get("run_a", {}).get("json_sha256") == BASELINE_M1_JSON_SHA256, "Omega v1 M1 hash changed")
+    _require(regeneration.get("run_b", {}).get("json_sha256") == BASELINE_M1_JSON_SHA256, "Omega v1 M1 twin hash changed")
+
+    artifact = inventory.get("transition_inventory", {}).get("artifact", {})
+    _require(len(artifact.get("transitions", [])) == 54, "Omega v1 transition denominator changed")
+    _require(len(artifact.get("route", {}).get("route_kinds", [])) == 14, "Omega v1 route denominator changed")
+    _require(len(artifact.get("open_questions", [])) == BASELINE_OPEN_QUESTION_COUNT, "Omega v1 open-question denominator changed")
+
+
 def build_inventory(
     *,
     repo_root: Path,
@@ -647,6 +922,18 @@ def build_inventory(
     compact_levels = [_compact_level(level) for level in census["levels"]]
     _require(all(level["byte_identical_twins"] for level in compact_levels), "census has a non-identical realm twin")
 
+    baseline_path = _receipt_path(repo_root, BASELINE_OMEGA_RELATIVE)
+    _require(baseline_path.is_file(), f"missing v1 audit receipt: {baseline_path}")
+    _require(_sha256_file(baseline_path) == BASELINE_OMEGA_JSON_SHA256, "Omega v1 audit receipt bytes changed")
+    baseline = _load_json(baseline_path)
+    validate_baseline_inventory(baseline, expected_revision=BASELINE_EVIDENCE_REVISION)
+    open_question_delta = _build_open_question_delta(
+        repo_root=repo_root,
+        evidence_revision=evidence_revision,
+        baseline=baseline,
+        current_artifact=rw_a,
+    )
+
     transition_receipts = [
         _transition_receipt(repo_root, evidence_revision, *spec) for spec in TRANSITION_RECEIPT_SPECS
     ]
@@ -669,7 +956,8 @@ def build_inventory(
 
     inventory: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "bead_id": "mc-cf00-seal-fold-inputs-omega-iplbq",
+        "bead_id": RESEAL_BEAD_ID,
+        "sealed_from_bead": BASELINE_BEAD_ID,
         "evidence": {
             "superproject_revision": evidence_revision,
             "remc2_revision": PINNED_REMC2_REVISION,
@@ -679,6 +967,7 @@ def build_inventory(
             ],
             "source_boundary": "committed superproject revision only; no uncommitted production source is sealed",
         },
+        "v1_to_v1_1_delta": open_question_delta,
         "prerequisite_receipts": prerequisites,
         "transition_receipts": {
             "definition": "closed source-pinned Level 2 behavior leaves; aggregate beads are represented by their leaves",
@@ -806,7 +1095,8 @@ def validate_inventory(inventory: dict[str, Any], *, expected_revision: str | No
     """Fail closed on omissions, stale inputs, or changed ordered observations."""
 
     _require(inventory.get("schema_version") == SCHEMA_VERSION, "wrong Omega schema")
-    _require(inventory.get("bead_id") == "mc-cf00-seal-fold-inputs-omega-iplbq", "wrong bead binding")
+    _require(inventory.get("bead_id") == RESEAL_BEAD_ID, "wrong bead binding")
+    _require(inventory.get("sealed_from_bead") == BASELINE_BEAD_ID, "wrong v1 source binding")
     evidence = inventory.get("evidence", {})
     revision = evidence.get("superproject_revision")
     if expected_revision is not None:
@@ -845,7 +1135,60 @@ def validate_inventory(inventory: dict[str, Any], *, expected_revision: str | No
         rng_draws = transition.get("rng_draws", [])
         _require([row.get("ordinal") for row in rng_draws] == list(range(len(rng_draws))), f"RNG row missing or reordered in {transition.get('id')}")
     _require(len(artifact.get("route", {}).get("route_kinds", [])) == 14, "M1 route-kind denominator changed")
-    _require(len(artifact.get("open_questions", [])) == 224, "M1 open-question denominator changed")
+    _require(len(artifact.get("open_questions", [])) == RESEALED_OPEN_QUESTION_COUNT, "M1 open-question denominator changed")
+
+    delta = inventory.get("v1_to_v1_1_delta", {})
+    _require(delta.get("from_schema_version") == BASELINE_SCHEMA_VERSION, "v1.1 delta source schema changed")
+    _require(delta.get("to_schema_version") == SCHEMA_VERSION, "v1.1 delta target schema changed")
+    _require(delta.get("from_evidence_revision") == BASELINE_EVIDENCE_REVISION, "v1.1 delta source revision changed")
+    _require(delta.get("to_evidence_revision") == revision, "v1.1 delta target revision changed")
+    _require(delta.get("from_json_sha256") == BASELINE_OMEGA_JSON_SHA256, "v1.1 delta source hash changed")
+    _require(delta.get("from_m1_json_sha256") == BASELINE_M1_JSON_SHA256, "v1.1 delta source M1 hash changed")
+    _require(delta.get("baseline_open_question_count") == BASELINE_OPEN_QUESTION_COUNT, "v1.1 delta baseline count changed")
+    _require(delta.get("current_open_question_count") == RESEALED_OPEN_QUESTION_COUNT, "v1.1 delta current count changed")
+    _require(delta.get("added_open_question_count") == OPEN_QUESTION_DELTA_COUNT, "v1.1 delta count changed")
+    _require(delta.get("unmapped_open_question_count") == 0, "unmapped open-question drift was absorbed")
+
+    expected_specs = {spec["id"]: spec for spec in OPEN_QUESTION_DELTA_SPECS}
+    rows = delta.get("rows", [])
+    _require(set(row.get("id") for row in rows) == set(expected_specs), "v1.1 delta table is incomplete or duplicated")
+    for row in rows:
+        spec = expected_specs[row["id"]]
+        _require(row.get("transition_ordinal") == spec["transition_ordinal"], f"delta ordinal changed for {row['id']}")
+        _require(row.get("transition_id") == spec["transition_id"], f"delta transition changed for {row['id']}")
+        _require(row.get("question_prefix") == spec["question_prefix"], f"delta question family changed for {row['id']}")
+        _require(row.get("evidence_anchor") == spec["evidence_anchor"], f"delta evidence anchor changed for {row['id']}")
+        _require(row.get("delta_count") == spec["delta_count"] == 1, f"delta cardinality changed for {row['id']}")
+        _require(row.get("current_count") == row.get("baseline_count") + row.get("delta_count"), f"delta count arithmetic changed for {row['id']}")
+        current_transition = transitions[row["transition_ordinal"]]
+        _require(current_transition.get("id") == row["transition_id"], f"delta transition lookup changed for {row['id']}")
+        _require(current_transition.get("open_questions", []).count(row.get("question")) == 1, f"delta question evidence missing for {row['id']}")
+        _require(row["evidence_anchor"] in row["question"], f"delta evidence anchor missing for {row['id']}")
+        introduced = row.get("introduced_by", {})
+        _require(introduced.get("bead_id") == spec["introduced_by"]["bead_id"], f"delta receipt bead changed for {row['id']}")
+        _require(introduced.get("commit") == spec["introduced_by"]["commit"], f"delta receipt commit changed for {row['id']}")
+        _require(introduced.get("present_at_evidence_revision") is True, f"delta receipt is not landed for {row['id']}")
+        relocated = row.get("relocated_by", {})
+        _require(relocated.get("bead_id") == "mc-cf01-pure-campaign-module-extraction-19t39", f"delta relocation bead changed for {row['id']}")
+        _require(relocated.get("commit") == CF01_EXTRACTION_COMMIT, f"delta relocation commit changed for {row['id']}")
+        _require(relocated.get("present_at_evidence_revision") is True, f"delta relocation is not landed for {row['id']}")
+
+    _require(
+        delta.get("transition_deltas") == list(EXPECTED_TRANSITION_OPEN_QUESTION_DELTAS),
+        "unmapped transition open-question drift",
+    )
+    transition_counts = delta.get("transition_open_question_counts", [])
+    _require(len(transition_counts) == 54, "complete transition open-question counts are missing")
+    for ordinal, row in enumerate(transition_counts):
+        transition = transitions[ordinal]
+        _require(row.get("transition_ordinal") == ordinal, "transition open-question count reordered")
+        _require(row.get("transition_id") == transition.get("id"), "transition open-question identity changed")
+        current_count = len(transition.get("open_questions", []))
+        _require(
+            row.get("current_count") == current_count
+            and row.get("current_count") == row.get("baseline_count") + row.get("delta_count"),
+            f"unmapped open-question drift at transition ordinal {ordinal}",
+        )
 
     receipt_rows = inventory.get("transition_receipts", {}).get("receipts", [])
     _require(receipt_rows, "no transition receipts were sealed")
