@@ -18734,6 +18734,385 @@ impl Level2ResetSession {
         spawned
     }
 
+    /// Read the two mutable Type_str_164 orientation words needed by the
+    /// Nyphur spell constructors.  The Level 2 player row is the lossless
+    /// owner of these words; the common-upkeep carrier owns the separately
+    /// ticking byte_0x154 value.  A truncated or non-Level-2 carrier is a
+    /// closed producer admission failure.
+    fn level2_nyphur_type_str_orientation(&self) -> Option<(i16, i16)> {
+        let player = self
+            .players
+            .iter()
+            .find(|player| player.entity_index == LEVEL2_NYPHUR_ENTITY_INDEX)?;
+        player.type_str_164_auxiliary.as_ref()?;
+        let carrier_start = PLAYER_LEGACY_RECORD_BYTES;
+        let next_entity = i16::from_le_bytes(
+            player
+                .record
+                .get(carrier_start + 24..carrier_start + 26)?
+                .try_into()
+                .ok()?,
+        );
+        let entity_index2 = i16::from_le_bytes(
+            player
+                .record
+                .get(carrier_start + 26..carrier_start + 28)?
+                .try_into()
+                .ok()?,
+        );
+        Some((next_entity, entity_index2))
+    }
+
+    /// Apply the queued SetSpell write made by the source holder's terminal
+    /// countdown.  Only the canonical fresh Nyphur rows are admitted here;
+    /// a malformed queued tier or neighboring family remains untouched.
+    fn apply_level2_nyphur_holder_cleanup(&mut self, holder_index: u16, family: u8, action: u8) {
+        let Some(queued_spell) = self
+            .entities
+            .get(usize::from(holder_index))
+            .filter(|holder| {
+                holder.active
+                    && holder.class == 15
+                    && holder.index == holder_index
+                    && holder.model == family
+                    && holder.action == action
+            })
+            .map(|holder| u16::from_le_bytes([holder.record[48], holder.record[49]]))
+        else {
+            return;
+        };
+        let Some(tier) = queued_spell
+            .checked_sub(1)
+            .and_then(|tier| u8::try_from(tier).ok())
+            .filter(|tier| *tier <= 2)
+        else {
+            return;
+        };
+        let Some(profile) = level2_direct_starting_spell_profile(family, tier) else {
+            return;
+        };
+        if let Some(holder) = self.entities.get_mut(usize::from(holder_index)) {
+            holder.apply_nyphur_spell_profile(profile, tier);
+            holder.record[48..50].fill(0);
+        }
+    }
+
+    /// Source `sub_693F0` for the canonical Nyphur class-15/model-0/action-0
+    /// holder.  The handler owns only the holder/parent transition and calls
+    /// the shared class-9 arena for allocation; the following callback stays
+    /// on the generic dynamic cursor.
+    fn step_level2_nyphur_fireball_holder_source_slot(&mut self, holder_index: u16) -> Option<u16> {
+        if holder_index != LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX {
+            return None;
+        }
+        let holder = self
+            .entities
+            .get(usize::from(holder_index))
+            .filter(|holder| {
+                holder.active
+                    && holder.index == holder_index
+                    && holder.class == 15
+                    && holder.model == FIREBALL_SPELL_FAMILY
+                    && holder.action == 0
+                    && holder.source_spell_parent_entity_index() == LEVEL2_NYPHUR_ENTITY_INDEX
+                    && holder.old_map_entity() == LEVEL2_NYPHUR_ENTITY_INDEX
+                    && holder.next_entity() == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+            })
+            .cloned()?;
+        let parent = self
+            .entities
+            .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+            .filter(|parent| {
+                parent.active
+                    && parent.index == LEVEL2_NYPHUR_ENTITY_INDEX
+                    && parent.source_id == LEVEL2_NYPHUR_ENTITY_INDEX
+                    && parent.class == 3
+                    && parent.model == 1
+                    && parent.action == 1
+                    && parent.next_entity() == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+            })
+            .cloned()?;
+
+        let mut next_active_value = holder.active_value;
+        let mut spawned = None;
+        if holder.active_value > 0 {
+            let tier = u8::try_from(holder.level_gate).ok();
+            let profile = tier
+                .and_then(|tier| level2_direct_starting_spell_profile(FIREBALL_SPELL_FAMILY, tier));
+            let profile_matches = profile.as_ref().is_some_and(|profile| {
+                profile.subspell_index == holder.subspell_index
+                    && profile.word_0x30 == holder.activation_value
+                    && profile.byte_0x3b == holder.byte_3b
+                    && profile.mana_regen == holder.mana_regen
+                    && profile.max_mana == holder.max_mana
+                    && profile.mana == holder.mana
+            });
+            let activation_value = i16::try_from(holder.activation_value).ok();
+            let fresh =
+                activation_value.is_some_and(|activation| holder.active_value == activation);
+            let admitted = profile_matches
+                && holder.mana_regen == 0
+                && parent.life >= 0
+                && parent.mana >= 0
+                && (!fresh || parent.mana >= holder.max_mana);
+            if !admitted {
+                // `sub_693F0` forces W to one before its unconditional
+                // decrement when `sub_68D50` rejects the parent.
+                next_active_value = 0;
+            } else {
+                let orientation = if fresh {
+                    self.level2_nyphur_type_str_orientation()
+                } else {
+                    Some((0, 0))
+                };
+                let Some((next_entity, entity_index2)) = orientation else {
+                    return None;
+                };
+                let parent_mana_regen = parent.mana_regen;
+                let mana_regen = if fresh {
+                    if parent_mana_regen >= 0 {
+                        -holder.max_mana
+                    } else {
+                        parent_mana_regen.wrapping_sub(holder.max_mana)
+                    }
+                } else if parent_mana_regen > 0 {
+                    0
+                } else {
+                    parent_mana_regen
+                };
+                if let Some(parent) = self
+                    .entities
+                    .get_mut(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+                {
+                    parent.set_mana_regen(mana_regen);
+                }
+
+                if fresh {
+                    let mut launch_position = parent.position;
+                    let direction_bits = parent.control_flags & 0x0300;
+                    let hand_yaw = if direction_bits & 0x0100 != 0 {
+                        Some(parent.yaw.wrapping_sub(512))
+                    } else if direction_bits & 0x0200 != 0 {
+                        Some(parent.yaw.wrapping_add(512))
+                    } else {
+                        None
+                    };
+                    if let Some(hand_yaw) = hand_yaw {
+                        crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                        if self.terrain.ground_height(launch_position) > launch_position.z {
+                            launch_position = parent.position;
+                        }
+                    }
+                    launch_position.z = launch_position.z.wrapping_add(parent.fov);
+                    let launch_yaw = next_entity.wrapping_add(parent.yaw);
+                    let launch_pitch = entity_index2.wrapping_add(parent.pitch);
+                    let mut axis_position = parent.position;
+                    crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 0x4000);
+                    let source_dword_0x10 = i32::from(self.nyphur_dispatcher.source_byte_0x154());
+                    spawned = self.economy.spawn_fireball_projectile_with_payload(
+                        level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                            position: launch_position,
+                            yaw: launch_yaw,
+                            pitch: launch_pitch,
+                            axis_position,
+                            source_id_entity_index: LEVEL2_NYPHUR_ENTITY_INDEX,
+                            holder_entity_index: holder_index,
+                            source_subspell_index: holder.subspell_index,
+                            source_mana: holder.mana,
+                            source_dword_0x10,
+                        },
+                        parent.actual_speed,
+                    );
+                    self.terrain = self.economy.terrain.clone();
+                    self.synchronize_level2_terrain();
+                    if let Some(spawned_slot) = spawned {
+                        self.nyphur_dispatcher.clear_source_byte_0x154();
+                        mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
+                        self.shared_spells.events.push(FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::FireballLaunch,
+                            entity_index: spawned_slot,
+                            player_index: -1,
+                            sound_id: 9,
+                        });
+                    }
+                }
+                next_active_value = holder.active_value.wrapping_sub(1);
+            }
+        }
+
+        if let Some(holder) = self.entities.get_mut(usize::from(holder_index)) {
+            holder.active_value = next_active_value;
+            holder.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
+            let word_36 = u16::from_le_bytes([holder.record[58], holder.record[59]]);
+            if word_36 != 0 {
+                holder.record[58..60].copy_from_slice(&word_36.wrapping_sub(1).to_le_bytes());
+            }
+        }
+        if next_active_value == 0 && holder.active_value > 0 {
+            self.apply_level2_nyphur_holder_cleanup(holder_index, FIREBALL_SPELL_FAMILY, 0);
+        }
+        spawned
+    }
+
+    /// Source `sub_69640`/`sub_69900` for the canonical Nyphur
+    /// class-15/model-1/action-3 holder.  Family 1 deliberately shares the
+    /// existing class-9 Possession arena and only this source-shaped handler
+    /// owns its launch sound/countdown writes.
+    fn step_level2_nyphur_possession_holder_source_slot(
+        &mut self,
+        holder_index: u16,
+    ) -> Option<u16> {
+        if holder_index != LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX {
+            return None;
+        }
+        let holder = self
+            .entities
+            .get(usize::from(holder_index))
+            .filter(|holder| {
+                holder.active
+                    && holder.index == holder_index
+                    && holder.class == 15
+                    && holder.model == POSSESSION_SPELL_FAMILY
+                    && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                    && holder.source_spell_parent_entity_index() == LEVEL2_NYPHUR_ENTITY_INDEX
+                    && holder.old_map_entity() == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+                    && holder.next_entity() == 0
+            })
+            .cloned()?;
+        let parent = self
+            .entities
+            .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+            .filter(|parent| {
+                parent.active
+                    && parent.index == LEVEL2_NYPHUR_ENTITY_INDEX
+                    && parent.source_id == LEVEL2_NYPHUR_ENTITY_INDEX
+                    && parent.class == 3
+                    && parent.model == 1
+                    && parent.action == 1
+                    && parent.next_entity() == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+            })
+            .cloned()?;
+
+        let mut next_active_value = holder.active_value;
+        let mut spawned = None;
+        if holder.active_value > 0 {
+            let tier = u8::try_from(holder.level_gate).ok();
+            let profile = tier.and_then(|tier| {
+                level2_direct_starting_spell_profile(POSSESSION_SPELL_FAMILY, tier)
+            });
+            let profile_matches = profile.is_some_and(|profile| {
+                profile.subspell_index == holder.subspell_index
+                    && profile.word_0x30 == holder.activation_value
+                    && profile.byte_0x3b == holder.byte_3b
+                    && profile.mana_regen == holder.mana_regen
+                    && profile.max_mana == holder.max_mana
+                    && profile.mana == holder.mana
+            });
+            let activation_value = i16::try_from(holder.activation_value).ok();
+            let fresh =
+                activation_value.is_some_and(|activation| holder.active_value == activation);
+            let admitted = profile_matches
+                && holder.mana_regen == 0
+                && parent.life >= 0
+                && parent.mana >= 0
+                && (!fresh || parent.mana >= holder.max_mana);
+            if !admitted {
+                next_active_value = 0;
+            } else {
+                let orientation = if fresh {
+                    self.level2_nyphur_type_str_orientation()
+                } else {
+                    Some((0, 0))
+                };
+                let Some((next_entity, entity_index2)) = orientation else {
+                    return None;
+                };
+                let parent_mana_regen = parent.mana_regen;
+                let mana_regen = if fresh {
+                    if parent_mana_regen >= 0 {
+                        -holder.max_mana
+                    } else {
+                        parent_mana_regen.wrapping_sub(holder.max_mana)
+                    }
+                } else if parent_mana_regen > 0 {
+                    0
+                } else {
+                    parent_mana_regen
+                };
+                if let Some(parent) = self
+                    .entities
+                    .get_mut(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+                {
+                    parent.set_mana_regen(mana_regen);
+                }
+
+                if fresh {
+                    let mut launch_position = parent.position;
+                    let direction_bits = parent.control_flags & 0x0300;
+                    let hand_yaw = if direction_bits & 0x0100 != 0 {
+                        Some(parent.yaw.wrapping_sub(512))
+                    } else if direction_bits & 0x0200 != 0 {
+                        Some(parent.yaw.wrapping_add(512))
+                    } else {
+                        None
+                    };
+                    if let Some(hand_yaw) = hand_yaw {
+                        crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                        if self.terrain.ground_height(launch_position) > launch_position.z {
+                            launch_position = parent.position;
+                        }
+                    }
+                    launch_position.z = launch_position.z.wrapping_add(parent.fov);
+                    let launch_yaw = next_entity.wrapping_add(parent.yaw);
+                    let launch_pitch = entity_index2.wrapping_add(parent.pitch);
+                    let mut axis_position = parent.position;
+                    crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 10_240);
+                    spawned = self.economy.spawn_possession_projectile(
+                        launch_position,
+                        LEVEL2_NYPHUR_ENTITY_INDEX,
+                        holder_index,
+                        launch_yaw,
+                        launch_pitch,
+                        parent.actual_speed,
+                        axis_position,
+                    );
+                    self.terrain = self.economy.terrain.clone();
+                    self.synchronize_level2_terrain();
+                    if let Some(spawned_slot) = spawned {
+                        self.nyphur_dispatcher.clear_source_byte_0x154();
+                        mark_source_audio_call(SourceAudioCallTag::PossessionLaunchBasic);
+                        self.shared_spells.events.push(FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::PossessionLaunch,
+                            entity_index: spawned_slot,
+                            player_index: -1,
+                            sound_id: 40,
+                        });
+                    }
+                }
+                next_active_value = holder.active_value.wrapping_sub(1);
+            }
+        }
+
+        if let Some(holder) = self.entities.get_mut(usize::from(holder_index)) {
+            holder.active_value = next_active_value;
+            holder.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
+            let word_36 = u16::from_le_bytes([holder.record[58], holder.record[59]]);
+            if word_36 != 0 {
+                holder.record[58..60].copy_from_slice(&word_36.wrapping_sub(1).to_le_bytes());
+            }
+        }
+        if next_active_value == 0 && holder.active_value > 0 {
+            self.apply_level2_nyphur_holder_cleanup(
+                holder_index,
+                POSSESSION_SPELL_FAMILY,
+                POSSESSION_SPELL_FAMILY.saturating_mul(3),
+            );
+        }
+        spawned
+    }
+
     /// Dispatch the source class-15/model-2/action-6 Castle holder at slot
     /// 117 through `sub_69AB0`. W==0 enters immediate cleanup; a valid fresh
     /// pulse charges before attempting allocation and only a successful
@@ -22163,6 +22542,7 @@ impl Level2ResetSession {
                             && holder.class == 15
                             && holder.model == POSSESSION_SPELL_FAMILY
                             && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                            && holder.source_spell_parent_entity_index() == self.state.entity_index
                     })
                     .map(|holder| (holder.index, 11_u8)),
             )
@@ -22176,6 +22556,36 @@ impl Level2ResetSession {
                             && holder.model == FIREBALL_SPELL_FAMILY
                             && holder.action == 0
                             && holder.source_spell_parent_entity_index() == self.state.entity_index
+                    })
+                    .map(|holder| (holder.index, 13_u8)),
+            )
+            .chain(
+                self.entities
+                    .iter()
+                    .filter(|holder| {
+                        holder.active
+                            && holder.index == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                            && holder.class == 15
+                            && holder.model == POSSESSION_SPELL_FAMILY
+                            && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                            && holder.source_spell_parent_entity_index()
+                                == LEVEL2_NYPHUR_ENTITY_INDEX
+                            && holder.active_value > 0
+                    })
+                    .map(|holder| (holder.index, 11_u8)),
+            )
+            .chain(
+                self.entities
+                    .iter()
+                    .filter(|holder| {
+                        holder.active
+                            && holder.index == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+                            && holder.class == 15
+                            && holder.model == FIREBALL_SPELL_FAMILY
+                            && holder.action == 0
+                            && holder.source_spell_parent_entity_index()
+                                == LEVEL2_NYPHUR_ENTITY_INDEX
+                            && holder.active_value > 0
                     })
                     .map(|holder| (holder.index, 13_u8)),
             )
@@ -22660,14 +23070,26 @@ impl Level2ResetSession {
                     // newly allocated row is dispatched by the source cursor
                     // below, and emits DynamicArena only if its callback
                     // returns live.
-                    self.step_level2_possession_holder_source_slot(source_slot);
+                    if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX {
+                        self.step_level2_nyphur_possession_holder_source_slot(source_slot);
+                    } else {
+                        self.step_level2_possession_holder_source_slot(source_slot);
+                    }
                     // `UpdateEntities_57730` advances `byte_0x3E_62` only
-                    // after the dispatched callback has returned.  Keep this
-                    // outside `sub_69640`'s typed body: an active holder with
-                    // a zero countdown still receives the callback and the
-                    // dispatcher epilogue, while an inactive row never
-                    // enters this route at all.
-                    if let Some(holder) = self
+                    // after the dispatched callback has returned. Keep this
+                    // outside `sub_69640`'s typed body for generic shared
+                    // holders; the canonical Nyphur route is admitted only
+                    // for a positive source countdown so a cold participant
+                    // row retains its reset census bytes.
+                    if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX {
+                        if let Some(holder) = self
+                            .entities
+                            .iter_mut()
+                            .find(|holder| holder.index == source_slot)
+                        {
+                            holder.set_phase(holder.phase.wrapping_add(1));
+                        }
+                    } else if let Some(holder) = self
                         .shared_spells
                         .dynamic_pickups
                         .iter_mut()
@@ -22697,14 +23119,25 @@ impl Level2ResetSession {
                     // Family-0's class/action keyed handler owns the
                     // producer transition; the higher-slot Fireball callback
                     // receives the ordinary dynamic-arena dispatch below.
-                    self.step_level2_fireball_holder_source_slot(source_slot);
-                    if let Some(holder) = self
-                        .shared_spells
-                        .dynamic_pickups
-                        .iter_mut()
-                        .find(|holder| holder.index == source_slot)
-                    {
-                        holder.set_phase(holder.phase.wrapping_add(1));
+                    if source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX {
+                        self.step_level2_nyphur_fireball_holder_source_slot(source_slot);
+                        if let Some(holder) = self
+                            .entities
+                            .iter_mut()
+                            .find(|holder| holder.index == source_slot)
+                        {
+                            holder.set_phase(holder.phase.wrapping_add(1));
+                        }
+                    } else {
+                        self.step_level2_fireball_holder_source_slot(source_slot);
+                        if let Some(holder) = self
+                            .shared_spells
+                            .dynamic_pickups
+                            .iter_mut()
+                            .find(|holder| holder.index == source_slot)
+                        {
+                            holder.set_phase(holder.phase.wrapping_add(1));
+                        }
                     }
                 }
                 _ => unreachable!("bounded Level 2 source route"),

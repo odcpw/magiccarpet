@@ -4,7 +4,8 @@ use super::{
     MapType, MissionContentSession, NativeWorldError, PLAYER_SPELL_COUNT, PlayerSnapshot, Position,
     PresentationSelectors, Result, RuntimeRelation, RuntimeSnapshot, SessionTerrain, Sha256,
     SourceAudioCallTag, angle_distance, heading_for_positions, level2_applied_tier,
-    level2_nyphur_participant, level2_set_spell_profile, mark_source_audio_call, terrain_index,
+    level2_direct_starting_spell_profile, level2_nyphur_participant, level2_set_spell_profile,
+    mark_source_audio_call, terrain_index,
 };
 #[cfg(test)]
 use super::{Level2DispatchEvent, NativeWorld, PlayerCommand};
@@ -762,13 +763,17 @@ impl Level2NyphurCommonUpkeep {
 
     fn source_spell_profile(family: u8, raw_tier: i8) -> Option<(u8, Level2SetSpellProfile)> {
         let tier = level2_applied_tier(raw_tier)?;
-        level2_set_spell_profile(family, tier).map(|profile| (tier, profile))
+        let profile = match family {
+            0 | 1 => level2_direct_starting_spell_profile(family, tier),
+            _ => level2_set_spell_profile(family, tier),
+        }?;
+        Some((tier, profile))
     }
 
-    /// The source `sub_15170` availability predicate for the families whose
-    /// authored profile is present in the canonical sim-core spell table.
-    /// Families without that qualified table fail closed; they are not
-    /// coerced into a neighboring profile.
+    /// The source `sub_15170` availability predicate for the source-backed
+    /// profiles: direct family 0/1 rows from `Spells.cpp`, plus the generic
+    /// family 6/11/12 table. Families without one of those qualified rows
+    /// fail closed; they are not coerced into a neighboring profile.
     fn source_spell_available(
         &self,
         family: u8,
@@ -1982,6 +1987,18 @@ impl Level2NyphurDispatcher {
         self.state_byte
     }
 
+    /// The source `Type_str_164::byte_0x154_340` carrier is advanced by the
+    /// common callback and consumed by the two ordinary spell producers.
+    pub(super) const fn source_byte_0x154(&self) -> u8 {
+        self.common_upkeep.byte_0x154
+    }
+
+    /// Clear the source byte only after a producer has committed its shared
+    /// class-9 allocation and launch event.
+    pub(super) const fn clear_source_byte_0x154(&mut self) {
+        self.common_upkeep.byte_0x154 = 0;
+    }
+
     /// Apply the class-5 contact feedback written by source `sub_237B0` to
     /// the one player record owned by this dispatcher. Non-player entity
     /// indices are deliberately ignored rather than creating a second
@@ -2559,10 +2576,10 @@ impl Level2NyphurDispatcher {
     /// and `sub_13850` in source order:
     /// `sub_13890 -> sub_14C90/sub_15170 -> sub_16580`, then let
     /// `step_dispatch` enter the shared `sub_12E70` tail. The qualified
-    /// Level 2 package has no family-3 holder/carrier, so the source's
-    /// movement branch is the exact positive path here; a newly live family-3
-    /// carrier fails closed rather than borrowing the unrelated family-6/11/12
-    /// spell profiles.
+    /// Level 2 package has no family-3 holder/carrier, while direct family-0/1
+    /// rows are source-backed by the fresh-start profiles. A newly live
+    /// family-3 carrier still fails closed rather than borrowing the unrelated
+    /// family-6/11/12 spell profiles.
     fn step_sub_13890(
         &mut self,
         source_slot: u16,
@@ -3722,7 +3739,13 @@ mod tests {
             exact_far.nyphur_dispatcher.common_upkeep.speed,
             exact_far.entities[112].minimum_speed()
         );
-        assert_eq!(exact_far.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
+        // The newly admitted source-backed family-0 row is selected by
+        // `sub_15790` at the inclusive 4608 boundary. Its successful
+        // `sub_14E10` activation returns through the source tail before the
+        // minimum-speed movement fallback, so the vertical latch remains
+        // clear and the family-0 holder carries its fresh countdown.
+        assert_eq!(exact_far.nyphur_dispatcher.common_upkeep.word_0xe_14, 0);
+        assert_eq!(exact_far.entities[113].active_value, 5);
 
         let mut direction_carrier = initial.clone();
         direction_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
@@ -4983,6 +5006,41 @@ mod tests {
         assert_eq!(mutation_entities[113].subspell_index, 100);
         assert_eq!(mutation_entities[113].max_mana, 1_000);
 
+        // The qualified Nyphur rows use the authored family-0/1 source
+        // profiles, which are intentionally outside the generic family
+        // 6/11/12 table. SetSpell still commits the selected tier before the
+        // insufficient-mana result, so both producers retain their exact
+        // source payload without borrowing a neighboring family.
+        let mut fireball_profile_entities = session.entities.clone();
+        let mut fireball_profile_probe = session.nyphur_dispatcher.common_upkeep.clone();
+        fireball_profile_probe.spell_enabled[0] = 0;
+        fireball_profile_probe.max_mana = 1_000;
+        fireball_profile_probe.mana = 0;
+        assert_eq!(
+            fireball_profile_probe.step_sub_15f20(0, 1, &mut fireball_profile_entities),
+            -1
+        );
+        assert_eq!(fireball_profile_entities[113].subspell_index, 160);
+        assert_eq!(fireball_profile_entities[113].activation_value, 11);
+        assert_eq!(fireball_profile_entities[113].byte_3b, 0);
+        assert_eq!(fireball_profile_entities[113].max_mana, 250);
+        assert_eq!(fireball_profile_entities[113].mana, 22);
+
+        let mut possession_profile_entities = session.entities.clone();
+        let mut possession_profile_probe = session.nyphur_dispatcher.common_upkeep.clone();
+        possession_profile_probe.spell_enabled[1] = 0;
+        possession_profile_probe.max_mana = 1_000;
+        possession_profile_probe.mana = 0;
+        assert_eq!(
+            possession_profile_probe.step_sub_15f20(1, 1, &mut possession_profile_entities),
+            -1
+        );
+        assert_eq!(possession_profile_entities[114].subspell_index, 15);
+        assert_eq!(possession_profile_entities[114].activation_value, 41);
+        assert_eq!(possession_profile_entities[114].byte_3b, 1);
+        assert_eq!(possession_profile_entities[114].max_mana, 250);
+        assert_eq!(possession_profile_entities[114].mana, 6);
+
         // sub_15790's optional family-8 branch resolves the CURRENT TARGET's
         // own player/wizard carrier by target entity index, not the target's
         // 0x94 relation and not this AI's common-upkeep holder table. A
@@ -5011,7 +5069,8 @@ mod tests {
         let rng_before = rng_15790.watcom_rand_state;
         // Family zero is the pinned zero-terminated row: the source's
         // zero-valued failure result is therefore indistinguishable from a
-        // family-zero match, even when its authored profile is absent.
+        // family-zero match, even when its authored producer profile is not
+        // admitted on this target.
         // Class-5 target 70 has no own player/wizard carrier. Player zero's
         // active family-8 holder and the misleading 0x94 relation are
         // irrelevant, so the target probe must not draw.
