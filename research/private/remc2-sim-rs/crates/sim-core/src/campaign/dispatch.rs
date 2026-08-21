@@ -668,9 +668,11 @@ mod tests {
             .iter_mut()
             .find(|entry| entry.key.dispatch_site == DispatchSite::Constructor.id())
             .expect("compiled constructor entry");
-        let BehaviorSelector::ClassModel { class, model } = constructor.key.selector else {
-            panic!("constructor entry uses ClassModel")
+        let constructor_selector = match constructor.key.selector {
+            BehaviorSelector::ClassModel { class, model } => Some((class, model)),
+            _ => None,
         };
+        let (class, model) = constructor_selector.expect("constructor entry uses ClassModel");
         constructor.key.selector = BehaviorSelector::ClassAction {
             class,
             action: model,
