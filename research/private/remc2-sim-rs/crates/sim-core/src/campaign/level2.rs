@@ -5847,6 +5847,7 @@ impl Level2ResetSession {
                         pass,
                         source_slot,
                         &mut self.entities,
+                        self.economy.spheres(),
                         &self.players,
                         &self.terrain,
                         &self.presentation,

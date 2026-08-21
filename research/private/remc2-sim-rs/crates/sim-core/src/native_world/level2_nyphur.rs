@@ -1,11 +1,11 @@
 use super::{
-    BTreeSet, Digest, EntitySnapshot, FlightWorld, LEVEL2_NYPHUR_ENTITY_INDEX,
+    BTreeSet, Digest, EntityAuthority, EntitySnapshot, FlightWorld, LEVEL2_NYPHUR_ENTITY_INDEX,
     LEVEL2_NYPHUR_SOURCE_SPELL_TIER_COUNT, LEVEL2_NYPHUR_SPELL_COOLDOWNS, Level2SetSpellProfile,
-    MapType, MissionContentSession, NativeWorldError, PLAYER_SPELL_COUNT, PlayerSnapshot, Position,
-    PresentationSelectors, Result, RuntimeRelation, RuntimeSnapshot, SessionTerrain, Sha256,
-    SourceAudioCallTag, angle_distance, heading_for_positions, level2_applied_tier,
-    level2_direct_starting_spell_profile, level2_nyphur_participant, level2_set_spell_profile,
-    mark_source_audio_call, terrain_index,
+    ManaSphere, MapType, MissionContentSession, NativeWorldError, PLAYER_SPELL_COUNT,
+    PlayerSnapshot, Position, PresentationSelectors, Result, RuntimeRelation, RuntimeSnapshot,
+    SessionTerrain, Sha256, SourceAudioCallTag, angle_distance, heading_for_positions,
+    level2_applied_tier, level2_direct_starting_spell_profile, level2_nyphur_participant,
+    level2_set_spell_profile, mark_source_audio_call, terrain_index,
 };
 #[cfg(test)]
 use super::{Level2DispatchEvent, NativeWorld, PlayerCommand};
@@ -1986,6 +1986,98 @@ fn level2_nyphur_class10_target_source_order(entities: &[EntitySnapshot]) -> Vec
     })
 }
 
+/// Project live typed model-39 economy births into the indexed entity carrier
+/// consumed by `sub_148E0`. The typed economy arena remains authoritative; the
+/// projection is a per-dispatch view over an otherwise inactive source slot.
+/// Rebuilding the combined links in source-slot order mirrors
+/// `UpdateEntities_57730`'s class-10 list construction and keeps the dynamic
+/// row's source slot, id, RNG, transform, and player relation unchanged.
+fn level2_nyphur_project_mana_sphere(
+    entity: &mut EntitySnapshot,
+    sphere: ManaSphere,
+    source_id: u16,
+) {
+    entity.index = sphere.source_entity_index;
+    entity.source_id = source_id;
+    entity.authority = EntityAuthority::FrozenObserved;
+    entity.active = true;
+    entity.max_life = 0;
+    entity.life = 0;
+    entity.next_relation = None;
+    entity.class = 10;
+    entity.model = 39;
+    entity.control_flags = sphere.control_flags;
+    entity.entity_rng = sphere.entity_rng;
+    entity.action = 41;
+    entity.action_marker = 0;
+    entity.level_gate = 0;
+    entity.position = sphere.position;
+    entity.yaw = sphere.yaw;
+    entity.pitch = 0;
+    entity.fov = 0;
+    entity.phase = sphere.phase;
+    entity.subspell_index = 0;
+    entity.byte_3b = 0;
+    entity.byte_3c = 0;
+    entity.font_type_index = 0;
+    entity.active_value = 0;
+    entity.activation_value = 0;
+    entity.mana_regen = 0;
+    entity.actual_speed = 0;
+    entity.max_mana = 0;
+    entity.mana_cost = 0;
+    entity.mana = sphere.mana;
+    entity.particle_parameter_index = None;
+    entity.parameter_relation = None;
+
+    entity.record[0..2].copy_from_slice(&sphere.source_entity_index.to_le_bytes());
+    entity.record[2] = 1;
+    entity.record[4..8].fill(0);
+    entity.record[8..12].copy_from_slice(&0_i32.to_le_bytes());
+    entity.record[12..16].copy_from_slice(&0_i32.to_le_bytes());
+    entity.record[16..20].copy_from_slice(&sphere.control_flags.to_le_bytes());
+    entity.record[24..26].copy_from_slice(&sphere.entity_rng.to_le_bytes());
+    entity.record[30..32].copy_from_slice(&source_id.to_le_bytes());
+    entity.record[32..34].copy_from_slice(&sphere.yaw.to_le_bytes());
+    entity.record[34..36].fill(0);
+    entity.record[38..40].fill(0);
+    entity.record[46..48].fill(0);
+    entity.record[50..54].fill(0);
+    entity.record[63..66].fill(0);
+    entity.record[66] = sphere.phase;
+    entity.record[67] = 10;
+    entity.record[68] = 39;
+    entity.record[73] = 41;
+    entity.record[74] = 0;
+    entity.record[80..82].copy_from_slice(&sphere.position.x.to_le_bytes());
+    entity.record[82..84].copy_from_slice(&sphere.position.y.to_le_bytes());
+    entity.record[84..86].copy_from_slice(&sphere.position.z.to_le_bytes());
+    entity.record[132..136].fill(0);
+    entity.record[140..148].fill(0);
+    entity.record[148..152].copy_from_slice(&sphere.mana.to_le_bytes());
+    entity.record[152..154].copy_from_slice(&sphere.player_entity_index.to_le_bytes());
+}
+
+fn level2_nyphur_rebuild_class10_source_order(entities: &mut [EntitySnapshot]) {
+    let mut candidates = entities
+        .iter()
+        .filter(|entity| {
+            entity.active && entity.class == 10 && matches!(entity.model, 39 | 40 | 57)
+        })
+        .map(|entity| entity.index)
+        .collect::<Vec<_>>();
+    candidates.sort_unstable();
+    for (offset, candidate_index) in candidates.iter().copied().enumerate() {
+        let next = candidates.get(offset + 1).copied();
+        let Some(candidate) = entities.get_mut(usize::from(candidate_index)) else {
+            continue;
+        };
+        candidate.next_relation = next;
+        let encoded = next.map_or(0, |index| u32::from(index) + 1);
+        candidate.record[4..8].copy_from_slice(&encoded.to_le_bytes());
+    }
+}
+
 /// Rebuild the source `bytearray_38403x[0..29]` class-5 buckets in the same
 /// pool order as `UpdateEntities_57730`. The source excludes only the three
 /// action sentinels that are being torn down or already consumed.
@@ -2375,6 +2467,99 @@ impl Level2NyphurDispatcher {
     /// tail; their exact source symbol and call position are retained in the
     /// returned trace.
     pub(super) fn step_dispatch(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        mana_spheres: &[ManaSphere],
+        players: &[PlayerSnapshot],
+        terrain: &SessionTerrain,
+        presentation: &PresentationSelectors,
+        move_speed_flag: u8,
+        active_level_color_index: u8,
+    ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
+        let mut seen_spheres = BTreeSet::new();
+        let mut projected_entities = entities.to_vec();
+        let mut projected_dynamic_slots = BTreeSet::new();
+        let mut projected_carrier = false;
+        for sphere in mana_spheres.iter().filter(|sphere| sphere.active) {
+            let source_slot = sphere.source_entity_index;
+            if source_slot == 0 {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur model-39 carrier uses the null source slot",
+                ));
+            }
+            if !seen_spheres.insert(source_slot) {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur model-39 carrier has duplicate source slots",
+                ));
+            }
+            let source_id = u16::try_from(sphere.id).map_err(|_| {
+                NativeWorldError::new(
+                    "Level 2 Nyphur model-39 carrier source identity exceeds source width",
+                )
+            })?;
+            let Some(entity) = projected_entities.get_mut(usize::from(source_slot)) else {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur model-39 carrier source slot is outside the entity arena",
+                ));
+            };
+            if entity.index != source_slot {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur model-39 carrier source index does not match its slot",
+                ));
+            }
+            if entity.active {
+                if entity.class != 10 || entity.model != 39 {
+                    return Err(NativeWorldError::new(
+                        "Level 2 Nyphur model-39 carrier collides with a live entity row",
+                    ));
+                }
+                level2_nyphur_project_mana_sphere(entity, *sphere, source_id);
+                projected_carrier = true;
+                continue;
+            }
+            level2_nyphur_project_mana_sphere(entity, *sphere, source_id);
+            projected_dynamic_slots.insert(usize::from(source_slot));
+            projected_carrier = true;
+        }
+
+        if projected_carrier {
+            level2_nyphur_rebuild_class10_source_order(&mut projected_entities);
+            let result = self.step_dispatch_inner(
+                pass,
+                source_slot,
+                &mut projected_entities,
+                players,
+                terrain,
+                presentation,
+                move_speed_flag,
+                active_level_color_index,
+            );
+            // Dynamic economy rows remain authoritative. Copy back only the
+            // ordinary entity rows mutated by the Nyphur callback, leaving
+            // every projected sphere in its typed arena carrier.
+            for (index, entity) in projected_entities.iter().enumerate() {
+                if !projected_dynamic_slots.contains(&index) {
+                    entities[index] = entity.clone();
+                }
+            }
+            return result;
+        }
+
+        self.step_dispatch_inner(
+            pass,
+            source_slot,
+            entities,
+            players,
+            terrain,
+            presentation,
+            move_speed_flag,
+            active_level_color_index,
+        )
+    }
+
+    fn step_dispatch_inner(
         &mut self,
         pass: u8,
         source_slot: u16,

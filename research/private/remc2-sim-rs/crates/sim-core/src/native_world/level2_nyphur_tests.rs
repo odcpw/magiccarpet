@@ -861,6 +861,91 @@ fn level_two_nyphur_sub_148e0_source_order_and_fail_closed_are_exact() {
 }
 
 #[test]
+fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified ordinary Nyphur model-39 route");
+    let authored_features = session.mission().authored_features().to_vec();
+    let feature_position = |index: u16| {
+        authored_features
+            .iter()
+            .copied()
+            .find(|feature| feature.index == index)
+            .expect("authored group-1 feature")
+            .world_position(0)
+    };
+    let group1_positions = (12_u16..=15)
+        .chain(17..=40)
+        .map(feature_position)
+        .map(|position| (position.x, position.y))
+        .collect::<BTreeSet<_>>();
+    let local_player = session.state.entity_index;
+    let row11_position = feature_position(11);
+
+    // The player input reaches the imported row-11 switch through the public
+    // campaign route. It is not a target setter and does not rewrite any
+    // Nyphur or target position.
+    session
+        .set_level2_entity_position(local_player, row11_position)
+        .expect("public player input for authored row 11");
+    session.step_outer_turn(PlayerCommand::default(), 0);
+
+    let authored_model39_slots = session
+        .economy
+        .spheres()
+        .iter()
+        .filter(|sphere| {
+            sphere.active && group1_positions.contains(&(sphere.position.x, sphere.position.y))
+        })
+        .map(|sphere| sphere.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(authored_model39_slots.len(), 28);
+
+    let mut selected = None;
+    for _ in 0..282 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let target_slot =
+            session.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)].source_word_96();
+        if authored_model39_slots.contains(&target_slot) {
+            selected = Some(target_slot);
+            break;
+        }
+    }
+    let selected_slot = selected.expect("ordinary sub_148E0 selects an authored model-39 row");
+    let selected_sphere = session
+        .economy
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.source_entity_index == selected_slot)
+        .expect("selected authored model-39 remains in typed economy carrier");
+    assert!(selected_sphere.active);
+    assert_eq!(selected_sphere.player_entity_index, 0);
+    // The shared tail latches state 6 after the selector callback. Its
+    // dispatch trace is therefore emitted on the following ordinary pass,
+    // preserving the source's state-byte handoff order.
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session.nyphur_dispatch_traces().iter().any(|trace| {
+            trace.source_slot == LEVEL2_NYPHUR_ENTITY_INDEX && trace.state_byte == 6
+        })
+    );
+    let selected_sphere_after_dispatch = session
+        .economy
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.source_entity_index == selected_slot)
+        .expect("selected authored model-39 remains after the state-6 handoff");
+    assert!(selected_sphere_after_dispatch.active);
+    assert_eq!(selected_sphere_after_dispatch.player_entity_index, 0);
+    assert_eq!(
+        session.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)].source_word_96(),
+        selected_slot
+    );
+}
+
+#[test]
 fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
