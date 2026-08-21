@@ -764,14 +764,14 @@ impl Level2NyphurCommonUpkeep {
     fn source_spell_profile(family: u8, raw_tier: i8) -> Option<(u8, Level2SetSpellProfile)> {
         let tier = level2_applied_tier(raw_tier)?;
         let profile = match family {
-            0 | 1 => level2_direct_starting_spell_profile(family, tier),
+            0 | 1 | 3 => level2_direct_starting_spell_profile(family, tier),
             _ => level2_set_spell_profile(family, tier),
         }?;
         Some((tier, profile))
     }
 
     /// The source `sub_15170` availability predicate for the source-backed
-    /// profiles: direct family 0/1 rows from `Spells.cpp`, plus the generic
+    /// profiles: direct family 0/1/3 rows from `Spells.cpp`, plus the generic
     /// family 6/11/12 table. Families without one of those qualified rows
     /// fail closed; they are not coerced into a neighboring profile.
     fn source_spell_available(
@@ -2577,9 +2577,9 @@ impl Level2NyphurDispatcher {
     /// `sub_13890 -> sub_14C90/sub_15170 -> sub_16580`, then let
     /// `step_dispatch` enter the shared `sub_12E70` tail. The qualified
     /// Level 2 package has no family-3 holder/carrier, while direct family-0/1
-    /// rows are source-backed by the fresh-start profiles. A newly live
-    /// family-3 carrier still fails closed rather than borrowing the unrelated
-    /// family-6/11/12 spell profiles.
+    /// rows and the pinned family-3 Speed Up row are source-backed by the
+    /// fresh-start profiles. A newly live unsupported family still fails
+    /// closed rather than borrowing an unrelated spell profile.
     fn step_sub_13890(
         &mut self,
         source_slot: u16,
@@ -2612,36 +2612,31 @@ impl Level2NyphurDispatcher {
         .expect("Nyphur sub_13890 roll fits the signed source angle carrier");
         entities[source_index].set_source_roll(roll);
 
-        self.common_upkeep.word_0xe_14 = 0;
-        let distance = level2_nyphur_source_distance_3d(source.position, target.position);
-        if distance <= 3_328 {
-            self.common_upkeep.speed = 0;
-            self.common_upkeep.word_0xe_14 = 1;
-        } else {
-            if distance <= 4_608 && self.common_upkeep.word_0x1a2 >= 0 {
-                let family =
-                    self.common_upkeep
-                        .step_sub_15790(source.source_word_96(), entities, players);
-                if family >= 0 && self.source_spell_ready(family.cast_unsigned(), entities) {
-                    let mut source_control_flags = source.control_flags;
-                    if self.common_upkeep.step_sub_14e10(
-                        family.cast_unsigned(),
-                        source.model,
-                        &mut source_control_flags,
-                        entities,
-                    ) {
-                        entities[source_index].set_control_flags(source_control_flags);
-                        return self.step_sub_16580(&entities[source_index], terrain);
-                    }
+        // `sub_14C90` returns one only for distance <= a3.  Its 3328..4608
+        // branch writes minimum speed and returns zero; the >4608 branch
+        // offers family-3 Speed Up before the same zero return.  Only the
+        // returned-one path reaches this caller's family-0/1 selection.
+        let close =
+            self.step_sub_14c90(source_index, Some(&target), None, 3_328, 4_608, entities)?;
+        if !close {
+            return self.step_sub_16580(&entities[source_index], terrain);
+        }
+        if self.common_upkeep.word_0x1a2 >= 0 {
+            let family =
+                self.common_upkeep
+                    .step_sub_15790(source.source_word_96(), entities, players);
+            if family >= 0 && self.source_spell_ready(family.cast_unsigned(), entities) {
+                let mut source_control_flags = source.control_flags;
+                if self.common_upkeep.step_sub_14e10(
+                    family.cast_unsigned(),
+                    source.model,
+                    &mut source_control_flags,
+                    entities,
+                ) {
+                    entities[source_index].set_control_flags(source_control_flags);
+                    return self.step_sub_16580(&entities[source_index], terrain);
                 }
             }
-            if distance > 4_608 && self.common_upkeep.source_spell_holder_slot(3).is_some() {
-                return Err(NativeWorldError::new(
-                    "Level 2 Nyphur sub_13890 sub_15170 family-3 carrier is unsupported",
-                ));
-            }
-            self.common_upkeep.speed = entities[source_index].minimum_speed();
-            self.common_upkeep.word_0xe_14 = 1;
         }
 
         if matches!(target.model, 0 | 1) {
@@ -3576,6 +3571,9 @@ mod tests {
         assert!(level2_nyphur_source_identity_matches(&source, &target));
         assert_eq!(source.source_word_96(), target.index);
         assert!(target.model == 0 || target.model == 1);
+        let mode_common_before = initial
+            .nyphur_common_upkeep()
+            .expect("pre-mode common carrier");
         assert!(
             initial.nyphur_participant().is_ok(),
             "the source-owned live target relation remains a valid participant census row"
@@ -3588,25 +3586,6 @@ mod tests {
         unrelated_census_mutation.entities[112].record[158] ^= 1;
         assert!(unrelated_census_mutation.nyphur_participant().is_err());
 
-        let parameter_index = source
-            .parameter_relation
-            .expect("mode helper source parameter");
-        let parameter = initial
-            .presentation
-            .entity_parameters
-            .get(usize::from(parameter_index))
-            .expect("mode helper parameter row");
-        let vertical_step = i16::from_le_bytes([parameter[14], parameter[15]]);
-        let expected_rng = source.entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
-        let expected_yaw = if expected_rng % 0xFF >= 127 {
-            source.yaw.wrapping_add(512) & 0x07ff
-        } else {
-            source.yaw.wrapping_sub(512) & 0x07ff
-        };
-        let expected_z = source.position.z.wrapping_add(
-            ((i32::from(source.position.z) - (i32::from(target.position.z) + 512)).signum() as i16)
-                .wrapping_mul(vertical_step),
-        );
         let expected_roll = i16::try_from(crate::heading_for_positions(
             source.position,
             target.position,
@@ -3614,9 +3593,10 @@ mod tests {
         .expect("mode helper roll fits signed source carrier");
 
         // All three pinned wrappers enter the same sub_13890 body, but their
-        // wrapper symbols remain observable in the dispatcher trace. The
-        // threshold, signed carriers, RNG draw, and vertical movement are
-        // deliberately checked on the real outer production cursor.
+        // wrapper symbols remain observable in the dispatcher trace. The far
+        // branch's source roll, no movement RNG/position write, and
+        // minimum-speed latch are deliberately checked on the real outer
+        // production cursor.
         let mut mode13_result = None;
         for (state_byte, helper) in [
             (8_i8, Level2NyphurDispatchHelper::Sub13830),
@@ -3651,101 +3631,31 @@ mod tests {
                 }
             )));
             let stepped_source = &candidate.entities[112];
-            assert_eq!(stepped_source.entity_rng, expected_rng);
-            assert_eq!(stepped_source.yaw, expected_yaw);
+            assert_eq!(
+                stepped_source.entity_rng, source.entity_rng,
+                "far state-13 must not consume the movement RNG"
+            );
+            assert_eq!(
+                stepped_source.yaw, source.yaw,
+                "far state-13 must not enter the movement yaw branch"
+            );
+            assert_eq!(
+                stepped_source.position, source.position,
+                "far state-13 must not enter the movement position branch"
+            );
             assert_eq!(stepped_source.source_roll(), expected_roll);
-            assert_eq!(stepped_source.position.z, expected_z);
             let common = candidate
                 .nyphur_common_upkeep()
                 .expect("mode helper common carrier");
             assert_eq!(common.speed, source.minimum_speed());
             assert_eq!(common.word_0xe_14, 1);
-            assert_eq!(common.byte_0x45e, 0);
-            assert_eq!(
-                common.byte_0x45c,
-                if expected_rng % 0xFF >= 127 { 2 } else { 1 }
-            );
-            assert_eq!(common.byte_0x45d, 1);
+            assert_eq!(common.byte_0x45e, mode_common_before.byte_0x45e);
+            assert_eq!(common.byte_0x45c, mode_common_before.byte_0x45c);
+            assert_eq!(common.byte_0x45d, mode_common_before.byte_0x45d);
             if state_byte == 13 {
                 mode13_result = Some(candidate);
             }
         }
-
-        // sub_14C90's exact inclusive 3328 and exclusive 4608 boundaries are
-        // exercised through the three real wrappers. A generic "far means
-        // move" implementation fails the close vector; a >= 4608 comparison
-        // fails the exact far-boundary vector.
-        let mut close = initial.clone();
-        let close_source_position = close.entities[112].position;
-        let mut close_target = close.entities[70].clone();
-        close_target.set_position(Position {
-            x: close_source_position.x,
-            y: close_source_position.y,
-            z: close_source_position.z.wrapping_add(3_328),
-        });
-        close.entities[70] = close_target;
-        close.nyphur_dispatcher.common_upkeep.byte_0x45c = 1;
-        close.nyphur_dispatcher.common_upkeep.byte_0x45d = 3;
-        assert_eq!(
-            level2_nyphur_source_distance_3d(
-                close.entities[112].position,
-                close.entities[70].position
-            ),
-            3_328
-        );
-        close
-            .nyphur_dispatcher
-            .step_sub_13830(
-                112,
-                &mut close.entities,
-                &close.players,
-                &close.terrain,
-                &close.presentation,
-            )
-            .expect("inclusive 3328 mode-8 movement boundary");
-        assert_eq!(close.nyphur_dispatcher.common_upkeep.speed, 0);
-        assert_eq!(close.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
-        assert_eq!(close.nyphur_dispatcher.common_upkeep.byte_0x45d, 4);
-
-        let mut exact_far = initial.clone();
-        let exact_far_source_position = exact_far.entities[112].position;
-        let mut exact_far_target = exact_far.entities[70].clone();
-        exact_far_target.set_position(Position {
-            x: exact_far_source_position.x,
-            y: exact_far_source_position.y,
-            z: exact_far_source_position.z.wrapping_add(4_608),
-        });
-        exact_far.entities[70] = exact_far_target;
-        exact_far.nyphur_dispatcher.common_upkeep.byte_0x45c = 2;
-        exact_far.nyphur_dispatcher.common_upkeep.byte_0x45d = 3;
-        assert_eq!(
-            level2_nyphur_source_distance_3d(
-                exact_far.entities[112].position,
-                exact_far.entities[70].position
-            ),
-            4_608
-        );
-        exact_far
-            .nyphur_dispatcher
-            .step_sub_13870(
-                112,
-                &mut exact_far.entities,
-                &exact_far.players,
-                &exact_far.terrain,
-                &exact_far.presentation,
-            )
-            .expect("exclusive 4608 mode-9 movement boundary");
-        assert_eq!(
-            exact_far.nyphur_dispatcher.common_upkeep.speed,
-            exact_far.entities[112].minimum_speed()
-        );
-        // The newly admitted source-backed family-0 row is selected by
-        // `sub_15790` at the inclusive 4608 boundary. Its successful
-        // `sub_14E10` activation returns through the source tail before the
-        // minimum-speed movement fallback, so the vertical latch remains
-        // clear and the family-0 holder carries its fresh countdown.
-        assert_eq!(exact_far.nyphur_dispatcher.common_upkeep.word_0xe_14, 0);
-        assert_eq!(exact_far.entities[113].active_value, 5);
 
         let mut direction_carrier = initial.clone();
         direction_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
@@ -3867,6 +3777,174 @@ mod tests {
         assert_eq!(replay.entities, stepped_entities);
         assert_eq!(replay.nyphur_common_upkeep().unwrap(), stepped_common);
         assert_eq!(replay.nyphur_dispatch_traces(), stepped_traces.as_slice());
+    }
+
+    #[test]
+    fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let base = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 Nyphur distance-gate session");
+        let source_index = base
+            .entities
+            .iter()
+            .position(|entity| entity.index == 112)
+            .expect("authored Nyphur source row");
+        let source = base.entities[source_index].clone();
+
+        // These are direct gate probes only. They use a detached target value
+        // and never rewrite target 70 or enter the public dispatcher; the
+        // ordinary source route remains covered by the test above.
+        let target_at_distance = |distance: u32| {
+            let mut target = base.entities[70].clone();
+            target.set_position(Position {
+                x: source.position.x,
+                y: source.position.y,
+                z: source.position.z.wrapping_add(
+                    i16::try_from(distance).expect("distance fits source coordinate"),
+                ),
+            });
+            target
+        };
+        let assert_gate = |label: &str,
+                           near_distance: u32,
+                           far_distance: u32,
+                           distance: u32,
+                           expected_close: bool| {
+            let mut candidate = base.clone();
+            let target = target_at_distance(distance);
+            let gate_result = candidate.nyphur_dispatcher.step_sub_14c90(
+                source_index,
+                Some(&target),
+                None,
+                near_distance,
+                far_distance,
+                &mut candidate.entities,
+            );
+            assert!(
+                gate_result.is_ok(),
+                "{label}: distance gate returned an error"
+            );
+            let close = gate_result.unwrap_or(false);
+            assert_eq!(close, expected_close, "{label}: gate result");
+            assert_eq!(
+                candidate.nyphur_dispatcher.common_upkeep.word_0xe_14, 1,
+                "{label}: near and failed-far paths latch movement"
+            );
+            if expected_close {
+                assert_eq!(
+                    candidate.nyphur_dispatcher.common_upkeep.speed, 0,
+                    "{label}"
+                );
+            } else {
+                assert_eq!(
+                    candidate.nyphur_dispatcher.common_upkeep.speed,
+                    source.minimum_speed(),
+                    "{label}"
+                );
+            }
+        };
+
+        // Pinned sub_135C0 (mode 6) calls sub_14C90 with 1024/3072.
+        assert_gate("mode-6 distance == 1024", 1_024, 3_072, 1_024, true);
+        assert_gate("mode-6 distance == 1025", 1_024, 3_072, 1_025, false);
+
+        // Pinned sub_13710 (mode 7) calls sub_14C90 with 2048/3584.
+        assert_gate("mode-7 distance == 2048", 2_048, 3_584, 2_048, true);
+        assert_gate("mode-7 distance == 2049", 2_048, 3_584, 2_049, false);
+
+        // Pinned sub_13890 calls sub_14C90 with 3328/4608. Equality at a3
+        // returns one; every distance in (3328, 4608], including a4, takes
+        // minimum-speed movement and does not reach family-0/1 selection.
+        assert_gate("state-13 distance == 3328", 3_328, 4_608, 3_328, true);
+        assert_gate("state-13 distance == 3329", 3_328, 4_608, 3_329, false);
+        assert_gate("state-13 distance == 4608", 3_328, 4_608, 4_608, false);
+
+        // The >a4 branch offers family-3 Speed Up before returning zero. This
+        // is a controlled carrier vector for the helper's source branch only:
+        // the qualified fresh package has no family-3 holder, so this is not
+        // ordinary producer or activation proof.
+        let mut speed_up = base.clone();
+        let speed_profile =
+            level2_direct_starting_spell_profile(3, 0).expect("bounded family-3 Speed Up profile");
+        let speed_activation = speed_profile.word_0x30;
+        let speed_holder_slot = base
+            .entities
+            .iter()
+            .enumerate()
+            .find_map(|(slot, entity)| {
+                let slot = u16::try_from(slot).ok()?;
+                (slot != 0
+                    && !matches!(slot, 112 | 113 | 114)
+                    && !entity.active
+                    && entity.index == slot)
+                    .then_some(slot)
+            })
+            .expect("controlled unused family-3 holder slot");
+        let speed_holder = speed_up
+            .entities
+            .iter_mut()
+            .find(|entity| entity.index == speed_holder_slot)
+            .expect("controlled family-3 holder row");
+        speed_holder.active_value = 0;
+        speed_holder.record[50..52].fill(0);
+        speed_holder.apply_nyphur_spell_profile(speed_profile, 0);
+        speed_holder.class = 15;
+        speed_holder.record[67] = 15;
+        speed_holder.model = 3;
+        speed_holder.record[68] = 3;
+        speed_holder.active = true;
+        speed_holder.life = 0;
+        speed_up
+            .nyphur_dispatcher
+            .common_upkeep
+            .spell_holder_indices[3] = speed_holder_slot;
+        speed_up.nyphur_dispatcher.common_upkeep.spell_enabled[3] = 0;
+        speed_up.nyphur_dispatcher.common_upkeep.max_mana = 1_000;
+        speed_up.nyphur_dispatcher.common_upkeep.mana = 1_000;
+        speed_up.nyphur_dispatcher.common_upkeep.speed = -1_234;
+        assert!(
+            speed_up
+                .nyphur_dispatcher
+                .source_spell_ready(3, &speed_up.entities),
+            "controlled family-3 carrier satisfies the source availability predicate"
+        );
+        let speed_target = target_at_distance(4_609);
+        let close = speed_up
+            .nyphur_dispatcher
+            .step_sub_14c90(
+                source_index,
+                Some(&speed_target),
+                None,
+                3_328,
+                4_608,
+                &mut speed_up.entities,
+            )
+            .expect("family-3 Speed Up boundary branch");
+        assert!(!close, ">4608 remains a failed distance gate");
+        assert_eq!(
+            speed_up.nyphur_dispatcher.common_upkeep.word_0xe_14, 0,
+            ">4608 successful Speed Up offer does not latch minimum-speed movement"
+        );
+        assert_eq!(
+            speed_up.nyphur_dispatcher.common_upkeep.speed, -1_234,
+            ">4608 successful Speed Up offer preserves the speed carrier"
+        );
+        assert_eq!(
+            speed_up.nyphur_dispatcher.common_upkeep.spell_enabled[3],
+            LEVEL2_NYPHUR_SPELL_COOLDOWNS[3],
+            "family-3 Speed Up installs its source cooldown"
+        );
+        let live_speed_holder = speed_up
+            .entities
+            .iter()
+            .find(|entity| entity.index == speed_holder_slot)
+            .expect("live controlled family-3 holder row");
+        assert_eq!(
+            live_speed_holder.active_value,
+            i16::try_from(speed_activation).expect("Speed Up activation fits source carrier")
+        );
     }
 
     #[test]
@@ -4615,31 +4693,6 @@ mod tests {
             .expect("state-13 transition common carrier");
         assert_eq!(transition_common.byte_0x45d, 0);
         assert_eq!(transition_common.word_0xe_14, 0);
-        let parameter_index = transition_source
-            .parameter_relation
-            .expect("state-13 source parameter");
-        let parameter = session
-            .presentation
-            .entity_parameters
-            .get(usize::from(parameter_index))
-            .expect("state-13 parameter row");
-        let vertical_step = i16::from_le_bytes([parameter[14], parameter[15]]);
-        let expected_rng = transition_source
-            .entity_rng
-            .wrapping_mul(9_377)
-            .wrapping_add(9_439);
-        let expected_yaw = if expected_rng % 0xFF >= 127 {
-            transition_source.yaw.wrapping_add(512) & 0x07ff
-        } else {
-            transition_source.yaw.wrapping_sub(512) & 0x07ff
-        };
-        let vertical_direction = (i32::from(transition_source.position.z)
-            - (i32::from(transition_target.position.z) + 512))
-            .signum() as i16;
-        let expected_z = transition_source
-            .position
-            .z
-            .wrapping_add(vertical_direction.wrapping_mul(vertical_step));
 
         session.step_outer_turn(PlayerCommand::default(), 0);
         let next_trace = session
@@ -4665,9 +4718,18 @@ mod tests {
             }
         )));
         let next_source = &session.entities[112];
-        assert_eq!(next_source.entity_rng, expected_rng);
-        assert_eq!(next_source.yaw, expected_yaw);
-        assert_eq!(next_source.position.z, expected_z);
+        assert_eq!(
+            next_source.entity_rng, transition_source.entity_rng,
+            "the far state-13 branch does not consume movement RNG"
+        );
+        assert_eq!(
+            next_source.yaw, transition_source.yaw,
+            "the far state-13 branch does not enter the yaw branch"
+        );
+        assert_eq!(
+            next_source.position, transition_source.position,
+            "the far state-13 branch does not enter the position branch"
+        );
         assert_eq!(
             next_source.source_roll(),
             i16::try_from(crate::heading_for_positions(
@@ -4676,16 +4738,14 @@ mod tests {
             ))
             .expect("state-13 roll fits")
         );
-        assert_ne!(next_source.position, transition_source.position);
         let next_common = session
             .nyphur_common_upkeep()
             .expect("state-13 ordinary dispatch common carrier");
-        assert_eq!(
-            next_common.byte_0x45c,
-            if expected_rng % 0xFF >= 127 { 2 } else { 1 }
-        );
-        assert_eq!(next_common.byte_0x45d, 1);
+        assert_eq!(next_common.speed, transition_source.minimum_speed());
         assert_eq!(next_common.word_0xe_14, 1);
+        assert_eq!(next_common.byte_0x45c, transition_common.byte_0x45c);
+        assert_eq!(next_common.byte_0x45d, transition_common.byte_0x45d);
+        assert_eq!(next_common.byte_0x45e, transition_common.byte_0x45e);
 
         let stepped_common = session
             .nyphur_common_upkeep()
