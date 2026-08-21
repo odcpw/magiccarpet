@@ -724,23 +724,27 @@ impl Level2NyphurCommonUpkeep {
     }
 
     /// Pinned `sub_13CE0`: family 1 is the first carrier gate, followed by
-    /// the inclusive family-2 maximum-mana comparison. The final
-    /// `sub_148E0` source-list search is owned elsewhere and is therefore a
-    /// hard fail-closed boundary here.
-    fn step_sub_13ce0(&self, source: &EntitySnapshot, entities: &[EntitySnapshot]) -> bool {
+    /// the inclusive family-2 maximum-mana comparison and the source-ordered
+    /// `sub_148E0` target search. The returned slot is the only write carrier
+    /// for the caller's source `word_0x96_150`/`word_0x98_152` pair; this
+    /// helper itself reads the indexed rows, players, and the common Watcom
+    /// stream, and does not mutate the source entity.
+    fn step_sub_13ce0(
+        &mut self,
+        source: &EntitySnapshot,
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+    ) -> Option<u16> {
         if self.sub_146c0(1, entities).is_none() {
-            return false;
+            return None;
         }
         if let Some(family_two_holder) = self.sub_146c0(2, entities)
             && self.max_mana > family_two_holder.max_mana
         {
-            return false;
+            return None;
         }
 
-        // No source relation is written until `sub_148E0` returns a target;
-        // that target search is deliberately not approximated here.
-        let _ = source;
-        false
+        self.sub_148e0_target(source, entities, players)
     }
 
     /// The qualified fall-through of `sub_12E70` reaches `sub_14630`. Keep
@@ -1653,6 +1657,158 @@ impl Level2NyphurCommonUpkeep {
         self.return_value = 1;
         Ok(self.snapshot(entities[entity_index].phase))
     }
+
+    /// Pinned `sub_148E0`: scan the rebuilt class-10 target list in source
+    /// order, preserve its model-57 perception draw and early break, then
+    /// fall back to the class-5 model-22 bucket only when no primary target
+    /// survived. The helper only returns a slot; the caller performs the
+    /// single authoritative source relation write.
+    fn sub_148e0_target(
+        &mut self,
+        source: &EntitySnapshot,
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+    ) -> Option<u16> {
+        const CLASS3_TARGET_PRESSURE: i32 = 50_000;
+        const CLASS3_TARGET_DISTANCE: u32 = 0x0190_0000;
+
+        let mut best = None;
+        let mut best_distance = u32::MAX;
+        for candidate_index in level2_nyphur_class10_target_source_order(entities) {
+            let Some(candidate) = entities.get(usize::from(candidate_index)) else {
+                continue;
+            };
+            let owner_index = candidate.source_player_entity_index();
+            if owner_index == source.index {
+                continue;
+            }
+
+            // The source draws before resolving the model-57 owner row. A
+            // successful perception branch breaks the primary list and then
+            // still permits the model-22 fallback below.
+            if candidate.model == 57 {
+                let perception_roll = self.step_watcomrand() % 255;
+                if i32::from(perception_roll) < i32::from(self.word_0x244) {
+                    break;
+                }
+            }
+
+            let Some(owner) = entities.get(usize::from(owner_index)) else {
+                continue;
+            };
+            let distance = if owner.class == 3 {
+                if owner_index == source.source_id {
+                    continue;
+                }
+                let Some(owner_player) = players
+                    .iter()
+                    .find(|player| player.entity_index == owner_index)
+                else {
+                    continue;
+                };
+                let threshold_index = 4 * usize::from(owner_player.player_color_index()) + 4;
+                if threshold_index > 32 {
+                    continue;
+                }
+                let threshold = self.auxiliary_word(threshold_index);
+                let pressure =
+                    CLASS3_TARGET_PRESSURE - owner.max_mana / 10 * i32::from(self.word_0x242) / 255;
+                if pressure >= i32::from(threshold) {
+                    let Some(nearest_model01) =
+                        level2_nyphur_sub_16fc0_target(candidate, source, entities)
+                    else {
+                        continue;
+                    };
+                    if source.source_id != nearest_model01.source_id
+                        && level2_nyphur_source_distance_xy_euclidean_sq(
+                            candidate.position,
+                            nearest_model01.position,
+                        ) <= CLASS3_TARGET_DISTANCE
+                    {
+                        continue;
+                    }
+                    let nearest_model2 = if self.castle_entity_index == 0 {
+                        level2_nyphur_sub_14b10_or_14bd0_target(
+                            candidate,
+                            &[candidate.source_id],
+                            entities,
+                        )
+                    } else {
+                        let Some(castle) = entities.get(usize::from(self.castle_entity_index))
+                        else {
+                            continue;
+                        };
+                        level2_nyphur_sub_14b10_or_14bd0_target(
+                            candidate,
+                            &[candidate.source_id, castle.source_id],
+                            entities,
+                        )
+                    };
+                    if nearest_model2
+                        .is_some_and(|peer| level2_nyphur_strict_overlap(candidate, peer))
+                    {
+                        continue;
+                    }
+                    level2_nyphur_source_distance_xy_euclidean_sq(
+                        source.position,
+                        candidate.position,
+                    )
+                } else {
+                    let castle_position = if self.castle_entity_index == 0 {
+                        let Some(sentinel) = entities.first() else {
+                            continue;
+                        };
+                        sentinel.position
+                    } else {
+                        let Some(castle) = entities.get(usize::from(self.castle_entity_index))
+                        else {
+                            continue;
+                        };
+                        castle.position
+                    };
+                    level2_nyphur_source_distance_xy_euclidean_sq(
+                        castle_position,
+                        candidate.position,
+                    )
+                }
+            } else {
+                level2_nyphur_source_distance_xy_euclidean_sq(source.position, candidate.position)
+            };
+            if distance < best_distance {
+                best = Some(candidate.index);
+                best_distance = distance;
+            }
+        }
+
+        if best.is_none() {
+            for candidate_index in level2_nyphur_class5_bucket_order(entities)
+                .into_iter()
+                .filter(|index| {
+                    entities
+                        .get(usize::from(*index))
+                        .is_some_and(|candidate| candidate.model == 22)
+                })
+            {
+                let Some(candidate) = entities.get(usize::from(candidate_index)) else {
+                    continue;
+                };
+                if candidate.model == 57
+                    || candidate.source_player_entity_index() == source.source_id
+                {
+                    continue;
+                }
+                let distance = level2_nyphur_source_distance_xy_euclidean_sq(
+                    source.position,
+                    candidate.position,
+                );
+                if distance < best_distance {
+                    best = Some(candidate.index);
+                    best_distance = distance;
+                }
+            }
+        }
+        best
+    }
 }
 
 fn level2_nyphur_strict_overlap(left: &EntitySnapshot, right: &EntitySnapshot) -> bool {
@@ -1714,6 +1870,17 @@ fn level2_nyphur_class3_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
     })
 }
 
+/// Rebuild the source `dword_38523` list used by `sub_148E0`. `UpdateEntities`
+/// appends class-10 models 39/40/57 in source-slot order and links that list
+/// independently from the model-45 building list. Walking the encoded links
+/// is therefore required; a pool-order sweep can change both strict ties and
+/// the position of the model-57 perception draw.
+fn level2_nyphur_class10_target_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
+    level2_nyphur_linked_source_order(entities, |entity| {
+        entity.active && entity.class == 10 && matches!(entity.model, 39 | 40 | 57)
+    })
+}
+
 /// Rebuild the source `bytearray_38403x[0..29]` class-5 buckets in the same
 /// pool order as `UpdateEntities_57730`. The source excludes only the three
 /// action sentinels that are being torn down or already consumed.
@@ -1746,6 +1913,66 @@ fn level2_nyphur_class9_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
     level2_nyphur_linked_source_order(entities, |entity| {
         entity.active && entity.life >= 0 && entity.class == 9
     })
+}
+
+/// Pinned `sub_16FC0`: return the nearest live class-3 model-0/1 row while
+/// excluding the candidate and Nyphur source identities. The strict update
+/// retains the first row in the rebuilt class-3 linked list on ties.
+fn level2_nyphur_sub_16fc0_target<'a>(
+    candidate: &EntitySnapshot,
+    source: &EntitySnapshot,
+    entities: &'a [EntitySnapshot],
+) -> Option<&'a EntitySnapshot> {
+    let mut nearest = None;
+    let mut nearest_distance = u32::MAX;
+    for index in level2_nyphur_class3_source_order(entities) {
+        let Some(peer) = entities.get(usize::from(index)) else {
+            continue;
+        };
+        if peer.source_id == candidate.source_id
+            || peer.source_id == source.source_id
+            || !matches!(peer.model, 0 | 1)
+        {
+            continue;
+        }
+        let distance =
+            level2_nyphur_source_distance_xy_euclidean_sq(candidate.position, peer.position);
+        if distance < nearest_distance {
+            nearest = Some(peer);
+            nearest_distance = distance;
+        }
+    }
+    nearest
+}
+
+/// Pinned `sub_14B10`/`sub_14BD0`: return the nearest live class-3 model-2
+/// row while excluding the candidate and, when present, the Castle identity.
+fn level2_nyphur_sub_14b10_or_14bd0_target<'a>(
+    candidate: &EntitySnapshot,
+    excluded_source_ids: &[u16],
+    entities: &'a [EntitySnapshot],
+) -> Option<&'a EntitySnapshot> {
+    let mut nearest = None;
+    let mut nearest_distance = u32::MAX;
+    for index in level2_nyphur_class3_source_order(entities) {
+        let Some(peer) = entities.get(usize::from(index)) else {
+            continue;
+        };
+        if peer.model != 2
+            || excluded_source_ids
+                .iter()
+                .any(|source_id| *source_id == peer.source_id)
+        {
+            continue;
+        }
+        let distance =
+            level2_nyphur_source_distance_xy_euclidean_sq(candidate.position, peer.position);
+        if distance < nearest_distance {
+            nearest = Some(peer);
+            nearest_distance = distance;
+        }
+    }
+    nearest
 }
 
 fn level2_nyphur_sub_11c80(terrain: &SessionTerrain, x: u8, y: u8) -> bool {
@@ -2808,10 +3035,15 @@ impl Level2NyphurDispatcher {
                 "Level 2 Nyphur tail reached an unowned selector prerequisite",
             ));
         }
-        if self
-            .common_upkeep
-            .step_sub_13ce0(&entities[source_index], entities)
+        if let Some(target_index) =
+            self.common_upkeep
+                .step_sub_13ce0(&entities[source_index], entities, players)
         {
+            let target = entities
+                .get(usize::from(target_index))
+                .cloned()
+                .ok_or_else(|| NativeWorldError::new("Level 2 sub_148E0 target row is absent"))?;
+            entities[source_index].set_source_relation(&target);
             self.state_byte = 6;
             return Ok(());
         }
@@ -3006,20 +3238,12 @@ impl Level2NyphurDispatcher {
         // notification carrier, so it must not synthesize that later-mode
         // side effect.
         //
-        // sub_15FC0 needs the AI family-4 holder. sub_13CE0's sub_148E0
-        // search is limited to the source lists built from class-10 models
-        // 39/40/57 and the class-5 model-22 fallback. None of those indexed
-        // rows is present in the qualified Level 2 package; in particular,
-        // no model-57 row can consume the Watcom RNG on this route.
-        // `sub_14530` itself is the owned live selector here: its pinned
-        // definition at EventsFunctions.cpp:6341-6377 scans the class-5
-        // model buckets and writes the source relation for the nearest row.
-        if self.common_upkeep.source_spell_holder_slot(4).is_some()
-            || entities.iter().any(|entity| {
-                (entity.class == 10 && matches!(entity.model, 39 | 40 | 57))
-                    || (entity.class == 5 && entity.model == 22)
-            })
-        {
+        // sub_15FC0 needs the AI family-4 holder. The sub_13CE0 target lists
+        // are handled by this packet immediately after this boundary, so
+        // their presence is not a reason to reject the common tail. In
+        // particular, a model-57 row must remain visible here so its
+        // sub_148E0 Watcom draw occurs at the source call site.
+        if self.common_upkeep.source_spell_holder_slot(4).is_some() {
             return false;
         }
         true
@@ -3777,6 +4001,80 @@ mod tests {
         assert_eq!(replay.entities, stepped_entities);
         assert_eq!(replay.nyphur_common_upkeep().unwrap(), stepped_common);
         assert_eq!(replay.nyphur_dispatch_traces(), stepped_traces.as_slice());
+    }
+
+    #[test]
+    fn level_two_nyphur_sub_148e0_source_order_and_fail_closed_are_exact() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 Nyphur selector session");
+        let source = session.entities[112].clone();
+
+        // The qualified package intentionally has no sub_148E0 target rows;
+        // the ordinary route must therefore leave both its source relation
+        // and Watcom stream untouched rather than borrow sub_14530's model-1
+        // target.
+        let mut no_target = session.nyphur_dispatcher.common_upkeep.clone();
+        let rng_before = no_target.watcom_rand_state;
+        assert!(
+            no_target
+                .step_sub_13ce0(&source, &session.entities, &session.players)
+                .is_none()
+        );
+        assert_eq!(no_target.watcom_rand_state, rng_before);
+        assert!(level2_nyphur_class10_target_source_order(&session.entities).is_empty());
+        assert!(
+            level2_nyphur_class5_bucket_order(&session.entities)
+                .into_iter()
+                .filter_map(|index| session.entities.get(usize::from(index)))
+                .all(|entity| entity.model != 22)
+        );
+
+        // This source-index vector only represents the rebuilt dword_38523
+        // links. It deliberately does not move a target, write word 0x96/0x98,
+        // or enter the public dispatcher; it is focused order/nearest-helper
+        // coverage, not ordinary activation evidence.
+        let mut indexed_entities = session.entities.clone();
+        indexed_entities[1].model = 39;
+        indexed_entities[1].record[68] = 39;
+        indexed_entities[1].next_relation = Some(2);
+        indexed_entities[1].record[4..8].copy_from_slice(&3_u32.to_le_bytes());
+        indexed_entities[2].model = 40;
+        indexed_entities[2].record[68] = 40;
+        indexed_entities[2].next_relation = None;
+        indexed_entities[2].record[4..8].fill(0);
+        assert_eq!(
+            level2_nyphur_class10_target_source_order(&indexed_entities),
+            vec![1, 2]
+        );
+
+        let mut indexed_selector = session.nyphur_dispatcher.common_upkeep.clone();
+        indexed_selector.word_0x244 = 0;
+        assert_eq!(
+            indexed_selector.step_sub_13ce0(&source, &indexed_entities, &session.players,),
+            Some(2),
+            "strict nearest selection retains source-list order for later ties"
+        );
+
+        // Model 57 draws before its owner-row gates and breaks the primary
+        // list when perception succeeds. With no model-22 fallback this is a
+        // negative result, but the single draw remains observable.
+        indexed_entities[1].model = 57;
+        indexed_entities[1].record[68] = 57;
+        let mut model57_selector = session.nyphur_dispatcher.common_upkeep.clone();
+        model57_selector.word_0x244 = i16::MAX;
+        let mut expected_rng = model57_selector.watcom_rand_state;
+        expected_rng = expected_rng
+            .wrapping_mul(1_103_515_245)
+            .wrapping_add(12_345);
+        assert!(
+            model57_selector
+                .step_sub_13ce0(&source, &indexed_entities, &session.players)
+                .is_none()
+        );
+        assert_eq!(model57_selector.watcom_rand_state, expected_rng);
     }
 
     #[test]
@@ -5263,7 +5561,11 @@ mod tests {
         branch_probe.castle_entity_index = 70;
         branch_probe.max_mana = 1_000;
         assert!(!branch_probe.step_sub_13c50(&source, Some(&castle), &session.entities));
-        assert!(!branch_probe.step_sub_13ce0(&source, &session.entities));
+        assert!(
+            branch_probe
+                .step_sub_13ce0(&source, &session.entities, &session.players)
+                .is_none()
+        );
 
         // The qualified constructor has no Castle, and its ordinary package
         // route currently reaches the existing state-13 selector. No honest
