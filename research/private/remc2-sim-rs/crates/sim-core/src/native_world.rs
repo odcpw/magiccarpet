@@ -5294,6 +5294,42 @@ pub struct Level2AuthoredSwitchProducerSource {
     pub active: bool,
 }
 
+/// Authored class-2/model-0/action-0 trees created by the group-31
+/// `sub_4A310` producer.  The constructor is the pinned `AddTree_4AC40`
+/// path: four entity-local draws seed the lifetime, two signed position
+/// offsets, and the half-speed particle choice.  The owner/damage mailbox is
+/// retained because `AddTree02_00_64E20` consumes it at the later callback
+/// boundary where RNG-L2-0464/0465 become reachable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredTreeSource {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub dword_0x10: i32,
+    pub source_byte_38: u8,
+    pub max_life: i32,
+    pub life: i32,
+    pub control_flags: u32,
+    pub owner_entity_index: u16,
+    pub pending_damage: i32,
+    pub particle_index: u16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub fov: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub last_sphere_source_entity_index: u16,
+    pub last_sphere_word_0x2c: i16,
+    pub last_sphere_position_z: i16,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// Authored class-10/model-1/action-1 effect rows created by remc2's
 /// `NewAdd0A01_4E3B0` constructor.  These are short-lived presentation
 /// events, but they still consume the shared source arena and map chain; the
@@ -6204,6 +6240,8 @@ pub struct Level2EconomyState {
     bee_model2_constructor_phase: u8,
     baseline_authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
     authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
+    baseline_authored_trees: Vec<Level2AuthoredTreeSource>,
+    authored_trees: Vec<Level2AuthoredTreeSource>,
     baseline_authored_model32: Vec<Level2AuthoredModel32Source>,
     authored_model32: Vec<Level2AuthoredModel32Source>,
     baseline_authored_model59: Vec<Level2AuthoredModel59Source>,
@@ -6494,6 +6532,8 @@ impl Level2EconomyState {
             bee_model2_constructor_phase: 0,
             baseline_authored_switch_producers: Vec::new(),
             authored_switch_producers: Vec::new(),
+            baseline_authored_trees: Vec::new(),
+            authored_trees: Vec::new(),
             baseline_authored_model32: Vec::new(),
             authored_model32: Vec::new(),
             baseline_authored_model59: Vec::new(),
@@ -6865,6 +6905,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_switch_producers(&self) -> &[Level2AuthoredSwitchProducerSource] {
         &self.authored_switch_producers
+    }
+
+    #[must_use]
+    pub fn authored_trees(&self) -> &[Level2AuthoredTreeSource] {
+        &self.authored_trees
     }
 
     #[must_use]
@@ -7576,6 +7621,87 @@ impl Level2EconomyState {
         };
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_switch_producers.push(source);
+        Some(source)
+    }
+
+    /// Allocate one authored class-2/model-0/action-0 tree using the exact
+    /// `AddTree_4AC40` constructor sequence.  The authored position is
+    /// already terrain-grounded by `sub_4A310`; only the constructor's two
+    /// signed 0..63-minus-32 offsets alter x/y before the map link is made.
+    pub fn allocate_authored_tree(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+    ) -> Option<Level2AuthoredTreeSource> {
+        let source_entity_index = self.allocate_slot()?;
+        let initial_rng = self.new_event_rng(source_entity_index);
+        let life_rng = level2_next_rng16(initial_rng);
+        let x_rng = level2_next_rng16(life_rng);
+        let y_rng = level2_next_rng16(x_rng);
+        let particle_rng = level2_next_rng16(y_rng);
+        let x_offset = i16::try_from(x_rng & 0x3f)
+            .expect("tree x offset draw fits i16")
+            .wrapping_sub(32);
+        let y_offset = i16::try_from(y_rng & 0x3f)
+            .expect("tree y offset draw fits i16")
+            .wrapping_sub(32);
+        let particle_index = if particle_rng & 1 != 0 { 84 } else { 83 };
+        let position = Position {
+            x: position.x.wrapping_add(x_offset as u16),
+            y: position.y.wrapping_add(y_offset as u16),
+            z: position.z,
+        };
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredTreeSource {
+            source_entity_index,
+            entity_id: source_entity_index,
+            entity_rng: particle_rng,
+            authored_index,
+            source_class: 2,
+            model: 0,
+            action: 0,
+            dword_0x10: i32::from(source_entity_index % 11),
+            source_byte_38: 1,
+            // AddTree writes the random 2,500..7,499 life first, then
+            // CopyMaxLifeToLife restores NewEvent's default max/life of 300.
+            max_life: 300,
+            life: 300,
+            // NewEvent starts at 8 and AddEventToMap sets the map bit 4.
+            // The callback's byte-2 bit is represented by the same source
+            // dword and is added only when the row is dispatched.
+            control_flags: 0x0000_000c,
+            owner_entity_index: 0,
+            pending_damage: 0,
+            particle_index,
+            // Particle rows 83 and 84 both have rotSpeed 800 and speed 0;
+            // SetHalfSpeedEntity therefore writes yaw/fov 400 and pitch/roll
+            // zero after the fourth constructor draw.
+            yaw: 400,
+            pitch: 0,
+            roll: 0,
+            fov: 400,
+            position,
+            phase: source_entity_index as u8,
+            last_sphere_source_entity_index: 0,
+            last_sphere_word_0x2c: 0,
+            last_sphere_position_z: 0,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, particle_rng);
+        self.authored_trees.push(source);
         Some(source)
     }
 
@@ -10790,6 +10916,12 @@ impl Level2EconomyState {
                 Level2DynamicArenaKind::AuthoredSwitchProducer,
             );
         }
+        for source in self.authored_trees.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredTree,
+            );
+        }
         for source in self.authored_model32.iter().filter(|source| source.active) {
             visit(
                 source.source_entity_index,
@@ -11463,6 +11595,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_trees = self
+            .authored_trees
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_trees.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_trees {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_model32 = self
             .authored_model32
             .iter()
@@ -12108,6 +12256,39 @@ impl Level2EconomyState {
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
+        }
+        hasher.update(b"level2-authored-tree-v1");
+        for source in &self.authored_trees {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([
+                source.source_class,
+                source.model,
+                source.action,
+                source.source_byte_38,
+                source.phase,
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+            hasher.update(source.dword_0x10.to_le_bytes());
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.owner_entity_index.to_le_bytes());
+            hasher.update(source.pending_damage.to_le_bytes());
+            hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.yaw.to_le_bytes());
+            hasher.update(source.pitch.to_le_bytes());
+            hasher.update(source.roll.to_le_bytes());
+            hasher.update(source.fov.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update(source.last_sphere_source_entity_index.to_le_bytes());
+            hasher.update(source.last_sphere_word_0x2c.to_le_bytes());
+            hasher.update(source.last_sphere_position_z.to_le_bytes());
         }
         hasher.update(b"level2-authored-model32-v1");
         for source in &self.authored_model32 {
@@ -13094,6 +13275,7 @@ impl Level2EconomyState {
         self.authored_bees = self.baseline_authored_bees.clone();
         self.bee_model2_constructor_phase = self.baseline_bee_model2_constructor_phase;
         self.authored_switch_producers = self.baseline_authored_switch_producers.clone();
+        self.authored_trees = self.baseline_authored_trees.clone();
         self.authored_model32 = self.baseline_authored_model32.clone();
         self.authored_model59 = self.baseline_authored_model59.clone();
         self.model59_smoke_children = self.baseline_model59_smoke_children.clone();
@@ -16925,6 +17107,11 @@ pub struct Level2ResetSession {
     /// source passes.
     baseline_level2_class14_activated: BTreeSet<u16>,
     level2_class14_activated: BTreeSet<u16>,
+    /// Authored class-2/model-0 tree rows already consumed by the group-31
+    /// LevelEnd producer.  Keep this separate from class-14 activation so a
+    /// malformed partial group cannot be mistaken for a complete transition.
+    baseline_level2_tree_activated: BTreeSet<u16>,
+    level2_tree_activated: BTreeSet<u16>,
     /// Authored class-5/model-3/9 rows consumed by the model-45 group-22
     /// callback. Retain authored identity across repeatable source scans.
     baseline_level2_class5_activated: BTreeSet<u16>,
@@ -17042,6 +17229,7 @@ pub enum Level2DynamicArenaKind {
     AuthoredClass5Model3Child,
     HouseResident,
     AuthoredSwitchProducer,
+    AuthoredTree,
     AuthoredModel32,
     AuthoredModel59,
     Model59SmokeChild,
@@ -17191,6 +17379,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::AuthoredClass5Model3Child => 36,
         Level2DynamicArenaKind::HouseResident => 35,
         Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
+        Level2DynamicArenaKind::AuthoredTree => 42,
         Level2DynamicArenaKind::AuthoredModel32 => 29,
         Level2DynamicArenaKind::AuthoredModel59 => 28,
         Level2DynamicArenaKind::Model59SmokeChild => 34,
@@ -19698,6 +19887,8 @@ impl Level2ResetSession {
             level2_group10_switch25: initial_level2_group10_switch25,
             baseline_level2_class14_activated: BTreeSet::new(),
             level2_class14_activated: BTreeSet::new(),
+            baseline_level2_tree_activated: BTreeSet::new(),
+            level2_tree_activated: BTreeSet::new(),
             baseline_level2_class5_activated: BTreeSet::new(),
             level2_class5_activated: BTreeSet::new(),
             baseline_level2_model45_activated: BTreeSet::new(),
@@ -20366,6 +20557,31 @@ impl Level2ResetSession {
         )
     }
 
+    /// Materialize one authored class-2/model-0/action-0 tree through the
+    /// pinned `AddTree_4AC40` constructor.  Group-31 activation owns the
+    /// producer timing; this seam owns the exact authored position lookup and
+    /// shared arena/map allocation.
+    pub fn allocate_level2_authored_tree(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredTreeSource> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index
+                    && feature.activation_group == 31
+                    && feature.kind == 2
+                    && feature.subtype == 0
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy
+            .allocate_authored_tree(authored_index, position)
+    }
+
     /// Materialize one authored class-10/model-6 row through the pinned
     /// `NewAdd0A06_4E5F0` constructor. The Level 2 census contains four such
     /// rows (indices 361..=364); their mission trigger remains owned by the
@@ -21024,10 +21240,12 @@ impl Level2ResetSession {
     /// Pinned `AddSwitch0B_04_6F150` scans the live player list and consumes
     /// the switch when any live model-0 player owns an `IsLevelEnd != 0`
     /// objective. The resulting group contains one class-14/model-3 row and
-    /// the model-0 row-274 switch whose constructors already exist in the
-    /// typed class-14/class-11 seams.
+    /// the twelve class-2/model-0 tree rows and the model-0 row-274 switch.
+    /// Their constructors are kept on the shared typed arena so the source
+    /// order and all-or-nothing allocation boundary remain observable.
     fn activate_level2_authored_group31(&mut self, pass: u8) {
-        if self.level2_class14_activated.contains(&244) {
+        if self.level2_class14_activated.contains(&244) || self.level2_tree_activated.contains(&260)
+        {
             return;
         }
         let any_player_is_level_end_candidate = self.players.iter().any(|player| {
@@ -21075,15 +21293,18 @@ impl Level2ResetSession {
             .filter(|feature| {
                 (feature.kind == 14 && feature.subtype == 3)
                     || (feature.kind == 11 && feature.subtype == 12 && feature.index == 209)
+                    || (feature.kind == 2 && feature.subtype == 0)
                     || (feature.kind == 11 && feature.subtype == 0 && feature.index == 274)
             })
             .collect::<Vec<_>>();
-        if group_rows.len() != 3 {
+        let mut group_rows = group_rows;
+        group_rows.sort_unstable_by_key(|feature| feature.index);
+        if group_rows.len() != 15 {
             self.dispatch_events.push(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
-                    "Level 2 stage-tag group 31 has {} bounded rows, expected 3",
+                    "Level 2 stage-tag group 31 has {} bounded rows, expected 15",
                     group_rows.len()
                 ),
             });
@@ -21114,6 +21335,26 @@ impl Level2ResetSession {
             });
             return;
         };
+        const GROUP31_TREE_ROWS: [u16; 12] =
+            [260, 261, 262, 264, 265, 266, 267, 268, 269, 270, 271, 272];
+        let tree_rows = group_rows
+            .iter()
+            .copied()
+            .filter(|feature| feature.kind == 2 && feature.subtype == 0)
+            .collect::<Vec<_>>();
+        if tree_rows
+            .iter()
+            .map(|feature| feature.index)
+            .ne(GROUP31_TREE_ROWS.into_iter())
+        {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: "Level 2 stage-tag group 31 tree rows are not the qualified source set"
+                    .to_string(),
+            });
+            return;
+        }
         let Some(switch_row) = group_rows
             .iter()
             .copied()
@@ -21145,6 +21386,7 @@ impl Level2ResetSession {
         let economy_before = self.economy.clone();
         let switch_producers_before = self.level2_switch_producers_activated.clone();
         let class14_before = self.level2_class14_activated.clone();
+        let tree_before = self.level2_tree_activated.clone();
         let model12_position =
             model12_row.world_position(self.terrain.ground_height(model12_row.world_position(0)));
         let Some(model12_source) = self.economy.allocate_authored_switch_producer(
@@ -21167,6 +21409,7 @@ impl Level2ResetSession {
             self.economy = economy_before;
             self.level2_switch_producers_activated = switch_producers_before;
             self.level2_class14_activated = class14_before;
+            self.level2_tree_activated = tree_before;
             self.dispatch_events.push(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -21178,6 +21421,26 @@ impl Level2ResetSession {
             return;
         };
         self.level2_class14_activated.insert(feature.index);
+        let mut tree_sources = Vec::with_capacity(tree_rows.len());
+        for tree_row in tree_rows {
+            let Some(tree_source) = self.allocate_level2_authored_tree(tree_row.index) else {
+                self.economy = economy_before;
+                self.level2_switch_producers_activated = switch_producers_before;
+                self.level2_class14_activated = class14_before;
+                self.level2_tree_activated = tree_before;
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: root_slot,
+                    message: format!(
+                        "Level 2 authored tree row {} could not allocate",
+                        tree_row.index
+                    ),
+                });
+                return;
+            };
+            self.level2_tree_activated.insert(tree_row.index);
+            tree_sources.push(tree_source);
+        }
         let switch_position =
             switch_row.world_position(self.terrain.ground_height(switch_row.world_position(0)));
         let Some(_) = self.economy.allocate_authored_switch_producer(
@@ -21190,6 +21453,7 @@ impl Level2ResetSession {
             self.economy = economy_before;
             self.level2_switch_producers_activated = switch_producers_before;
             self.level2_class14_activated = class14_before;
+            self.level2_tree_activated = tree_before;
             self.dispatch_events.push(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -21207,7 +21471,10 @@ impl Level2ResetSession {
                 pass,
                 source_slot: root_slot,
                 group: 31,
-                authored_indices: vec![model12_row.index, feature.index, switch_row.index]
+                authored_indices: group_rows
+                    .iter()
+                    .map(|feature| feature.index)
+                    .collect::<Vec<_>>()
                     .into_boxed_slice(),
             });
         debug_assert!(
@@ -21217,6 +21484,13 @@ impl Level2ResetSession {
                 .any(|row| row.source_entity_index == class14_source.source_entity_index)
         );
         debug_assert_eq!(model12_source.model, 12);
+        debug_assert_eq!(tree_sources.len(), 12);
+        debug_assert!(
+            tree_sources
+                .iter()
+                .zip(GROUP31_TREE_ROWS)
+                .all(|(source, authored_index)| source.authored_index == authored_index)
+        );
     }
 
     fn activate_level2_authored_class14_group(
@@ -23451,6 +23725,85 @@ impl Level2ResetSession {
         }
     }
 
+    /// Run the source `AddTree02_00_64E20` callback.  The owner/life/sphere
+    /// branch is deliberately committed in this order: failed sphere
+    /// allocation clears the owner mailbox but does not advance the tree RNG,
+    /// while a successful sphere allocation is the only path that consumes
+    /// RNG-L2-0464/0465.
+    fn step_level2_authored_tree(&mut self, source_slot: u16) -> bool {
+        let Some(source_index) = self
+            .economy
+            .authored_trees
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let mut source = self.economy.authored_trees[source_index];
+        source.control_flags |= 0x0002_0000;
+        if source.owner_entity_index != 0 {
+            source.life = source.life.wrapping_sub(source.pending_damage);
+            if source.life < 0
+                && let Some(sphere) = self.economy.allocate_authored_model39(
+                    source.authored_index,
+                    source_slot,
+                    source.position,
+                )
+            {
+                let owner_id = self
+                    .entities
+                    .get(usize::from(source.owner_entity_index))
+                    .map_or(source.owner_entity_index, |entity| entity.source_id);
+                let sphere_word_0x2c =
+                    i16::try_from((i32::from(source.fov) * 3) >> 2).expect("tree sphere word fits");
+                let sphere_position_z = if sphere.position.z <= 128 {
+                    0
+                } else {
+                    sphere.position.z - 128
+                };
+                if let Some(sphere_row) = self
+                    .economy
+                    .spheres
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == sphere.source_entity_index)
+                {
+                    sphere_row.id = u32::from(owner_id);
+                    sphere_row.position.z = sphere_position_z;
+                }
+                source.last_sphere_source_entity_index = sphere.source_entity_index;
+                source.last_sphere_word_0x2c = sphere_word_0x2c;
+                source.last_sphere_position_z = sphere_position_z;
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                source.life = i32::from(source.entity_rng % 0x3c) + 130;
+                source.control_flags &= !0x0002_0008;
+                source.action = 1;
+                source.control_flags |= 0x0002_0000;
+            }
+            source.owner_entity_index = 0;
+        }
+        source.position.z = self.terrain.ground_height(source.position);
+        if self.economy.terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK {
+            if let Some(splash) = self
+                .economy
+                .allocate_authored_model5_water_splash(source.position)
+                && let Some(splash) = self
+                    .economy
+                    .authored_model5_water_splashes
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == splash.source_entity_index)
+            {
+                splash.entity_id = source.entity_id;
+            }
+            source.drawing_enabled = false;
+        }
+        source.phase = source.phase.wrapping_add(1);
+        self.economy
+            .source_rng
+            .insert(source_slot, source.entity_rng);
+        self.economy.authored_trees[source_index] = source;
+        true
+    }
+
     fn step_level2_authored_switch_producer(&mut self, pass: u8, source_slot: u16) -> bool {
         let Some((position, model)) = self
             .economy
@@ -24253,6 +24606,7 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredSwitchProducer => {
                 self.step_level2_authored_switch_producer(pass, source_slot)
             }
+            Level2DynamicArenaKind::AuthoredTree => self.step_level2_authored_tree(source_slot),
             Level2DynamicArenaKind::AuthoredModel32 => {
                 self.step_level2_authored_model32(pass, source_slot)
             }
@@ -24515,6 +24869,10 @@ impl Level2ResetSession {
         }
         hasher.update(b"level2-class14-activation-v1");
         for authored_index in &self.level2_class14_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
+        hasher.update(b"level2-tree-activation-v1");
+        for authored_index in &self.level2_tree_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-class5-activation-v1");
@@ -24903,6 +25261,7 @@ impl Level2ResetSession {
         self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
         self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
         self.level2_class14_activated = self.baseline_level2_class14_activated.clone();
+        self.level2_tree_activated = self.baseline_level2_tree_activated.clone();
         self.level2_class5_activated = self.baseline_level2_class5_activated.clone();
         self.level2_model45_activated = self.baseline_level2_model45_activated.clone();
     }
@@ -34960,6 +35319,12 @@ mod tests {
         assert!(session.economy().free_slots.contains(&source_slot));
     }
 
+    const LEVEL2_GROUP31_AUTHORED_INDICES: [u16; 15] = [
+        209, 244, 260, 261, 262, 264, 265, 266, 267, 268, 269, 270, 271, 272, 274,
+    ];
+    const LEVEL2_GROUP31_TREE_INDICES: [u16; 12] =
+        [260, 261, 262, 264, 265, 266, 267, 268, 269, 270, 271, 272];
+
     #[test]
     fn level_two_model4_group31_stays_latent_before_player_level_end() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
@@ -34973,6 +35338,7 @@ mod tests {
 
         assert!(session.economy().authored_class14().is_empty());
         assert!(session.economy().authored_switch_producers().is_empty());
+        assert!(session.economy().authored_trees().is_empty());
         assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::AuthoredGroupActivated {
@@ -35031,7 +35397,7 @@ mod tests {
                 group: 31,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [209, 244, 274]
+            } if authored_indices.as_ref() == LEVEL2_GROUP31_AUTHORED_INDICES
         )));
         assert!(
             session
@@ -35041,6 +35407,18 @@ mod tests {
                 .any(|source| source.authored_index == 244),
             "group 31 must materialize its single class-14/model-3 row"
         );
+        let tree_indices = session
+            .economy()
+            .authored_trees()
+            .iter()
+            .map(|source| source.authored_index)
+            .collect::<Vec<_>>();
+        assert_eq!(tree_indices, LEVEL2_GROUP31_TREE_INDICES);
+        assert!(session.economy().authored_trees().iter().all(|source| {
+            (source.source_class, source.model, source.action) == (2, 0, 0)
+                && source.active
+                && source.drawing_enabled
+        }));
         let switch = session
             .entities()
             .iter()
@@ -35053,6 +35431,318 @@ mod tests {
             })
             .expect("live model-4 group-31 switch");
         assert!(switch.drawing_disabled());
+    }
+
+    #[test]
+    fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 tree producer package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 tree producer session");
+        let initial_global = session.economy().global_rng;
+        session.runtime.set_level2_is_level_end(1);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let pass_global = level2_next_rng32(initial_global);
+        let trees = session.economy().authored_trees().to_vec();
+        assert_eq!(
+            trees
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            LEVEL2_GROUP31_TREE_INDICES
+        );
+        for tree in trees {
+            let feature = session
+                .mission()
+                .authored_features()
+                .iter()
+                .copied()
+                .find(|feature| feature.index == tree.authored_index)
+                .expect("qualified group-31 tree feature");
+            let base_position =
+                feature.world_position(session.terrain.ground_height(feature.world_position(0)));
+            let initial_rng = tree.source_entity_index.wrapping_add(pass_global as u16);
+            let life_rng = level2_next_rng16(initial_rng);
+            let x_rng = level2_next_rng16(life_rng);
+            let y_rng = level2_next_rng16(x_rng);
+            let particle_rng = level2_next_rng16(y_rng);
+            let x_offset = i16::try_from(x_rng & 0x3f)
+                .expect("tree x constructor draw fits")
+                .wrapping_sub(32);
+            let y_offset = i16::try_from(y_rng & 0x3f)
+                .expect("tree y constructor draw fits")
+                .wrapping_sub(32);
+            assert_eq!(
+                (
+                    tree.source_class,
+                    tree.model,
+                    tree.action,
+                    tree.entity_id,
+                    tree.dword_0x10,
+                    tree.source_byte_38,
+                    tree.max_life,
+                    tree.life,
+                ),
+                (
+                    2,
+                    0,
+                    0,
+                    tree.source_entity_index,
+                    i32::from(tree.source_entity_index % 11),
+                    1,
+                    300,
+                    300,
+                )
+            );
+            assert_eq!(
+                (
+                    tree.entity_rng,
+                    tree.particle_index,
+                    tree.yaw,
+                    tree.pitch,
+                    tree.roll,
+                    tree.fov,
+                    tree.phase,
+                    tree.control_flags,
+                ),
+                (
+                    particle_rng,
+                    if particle_rng & 1 != 0 { 84 } else { 83 },
+                    400,
+                    0,
+                    0,
+                    400,
+                    (tree.source_entity_index as u8).wrapping_add(1),
+                    0x0002_000c,
+                )
+            );
+            assert_eq!(
+                tree.position,
+                Position {
+                    x: base_position.x.wrapping_add(x_offset as u16),
+                    y: base_position.y.wrapping_add(y_offset as u16),
+                    z: session.terrain.ground_height(Position {
+                        x: base_position.x.wrapping_add(x_offset as u16),
+                        y: base_position.y.wrapping_add(y_offset as u16),
+                        z: base_position.z,
+                    }),
+                }
+            );
+            assert_eq!(
+                session.economy().source_rng.get(&tree.source_entity_index),
+                Some(&particle_rng)
+            );
+            let map_chain = session
+                .economy()
+                .map_chains()
+                .entity_chain((tree.position.x >> 8) as u8, (tree.position.y >> 8) as u8);
+            assert!(
+                map_chain.contains(&tree.source_entity_index),
+                "tree row {} must be linked at its constructor position",
+                tree.authored_index
+            );
+        }
+    }
+
+    #[test]
+    fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 tree callback package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 tree callback session");
+        session.runtime.set_level2_is_level_end(1);
+
+        // The first pass is the ordinary producer transition and source walk.
+        // All trees are dispatched in that same pass, but their owner mailbox
+        // is empty, so neither forbidden draw is reachable yet.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let tree_before = session
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.authored_index == 260)
+            .copied()
+            .expect("group-31 row 260 tree");
+        assert_eq!(tree_before.owner_entity_index, 0);
+        assert_eq!(tree_before.action, 0);
+        let no_owner_rng = tree_before.entity_rng;
+        assert!(!session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                ..
+            } if *source_entity_index == tree_before.source_entity_index
+        )));
+
+        // The owner/life gate is written between source passes, just as the
+        // ordinary damage mailbox is. The following pass reaches the same
+        // tree callback and is the first pass allowed to allocate its sphere.
+        let owner_entity_index = session.state.entity_index;
+        {
+            let tree = session
+                .economy_mut()
+                .authored_trees
+                .iter_mut()
+                .find(|source| source.source_entity_index == tree_before.source_entity_index)
+                .expect("mutable group-31 row 260 tree");
+            tree.owner_entity_index = owner_entity_index;
+            tree.pending_damage = tree.life + 1;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let tree_after = session
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.source_entity_index == tree_before.source_entity_index)
+            .copied()
+            .expect("group-31 row 260 remains live after callback");
+        let expected_rng = level2_next_rng16(no_owner_rng);
+        assert_eq!(tree_after.entity_rng, expected_rng);
+        assert_eq!(tree_after.life, i32::from(expected_rng % 0x3c) + 130);
+        assert_eq!(tree_after.action, 1);
+        assert_eq!(tree_after.owner_entity_index, 0);
+        assert_ne!(tree_after.last_sphere_source_entity_index, 0);
+        assert_eq!(tree_after.last_sphere_word_0x2c, 300);
+        assert_eq!(
+            tree_after.last_sphere_position_z,
+            if tree_before.position.z <= 128 {
+                0
+            } else {
+                tree_before.position.z - 128
+            }
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                pass: 0,
+                source_slot,
+                kind: Level2DynamicArenaKind::AuthoredTree,
+            } if *source_slot == tree_before.source_entity_index
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Economy {
+                pass: 0,
+                source_slot,
+                event: Level2EconomyEvent::ManaSphereSpawned { .. },
+            } if *source_slot == tree_before.source_entity_index
+        )));
+        let sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == tree_after.last_sphere_source_entity_index)
+            .copied()
+            .expect("tree callback sphere remains in the following pass");
+        let owner_id = session
+            .entities
+            .get(usize::from(owner_entity_index))
+            .map_or(owner_entity_index, |entity| entity.source_id);
+        assert_eq!(sphere.id, u32::from(owner_id));
+        assert_eq!(sphere.mana, 512);
+    }
+
+    #[test]
+    fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_rng() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 tree negative package");
+        let mut nonlethal = inspection
+            .level2_reset_session()
+            .expect("nonlethal tree callback session");
+        nonlethal.runtime.set_level2_is_level_end(1);
+        nonlethal.step_outer_turn(PlayerCommand::default(), 0);
+        let nonlethal_before = nonlethal
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.authored_index == 260)
+            .copied()
+            .expect("nonlethal group-31 tree");
+        let nonlethal_owner = nonlethal.state.entity_index;
+        {
+            let tree = nonlethal
+                .economy_mut()
+                .authored_trees
+                .iter_mut()
+                .find(|source| source.source_entity_index == nonlethal_before.source_entity_index)
+                .expect("mutable nonlethal tree");
+            tree.owner_entity_index = nonlethal_owner;
+            tree.pending_damage = 0;
+        }
+        nonlethal.step_outer_turn(PlayerCommand::default(), 0);
+        let nonlethal_after = nonlethal
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.source_entity_index == nonlethal_before.source_entity_index)
+            .copied()
+            .expect("nonlethal tree remains live");
+        assert_eq!(nonlethal_after.entity_rng, nonlethal_before.entity_rng);
+        assert_eq!(nonlethal_after.action, 0);
+        assert_eq!(nonlethal_after.owner_entity_index, 0);
+        assert_eq!(nonlethal_after.last_sphere_source_entity_index, 0);
+        assert!(!nonlethal.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                ..
+            } if *source_entity_index == nonlethal_before.source_entity_index
+        )));
+
+        let mut allocation_failure = inspection
+            .level2_reset_session()
+            .expect("sphere-allocation failure session");
+        allocation_failure.runtime.set_level2_is_level_end(1);
+        allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
+        let allocation_before = allocation_failure
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.authored_index == 260)
+            .copied()
+            .expect("allocation-failure group-31 tree");
+        allocation_failure.economy_mut().free_slots.clear();
+        let allocation_failure_owner = allocation_failure.state.entity_index;
+        {
+            let tree = allocation_failure
+                .economy_mut()
+                .authored_trees
+                .iter_mut()
+                .find(|source| source.source_entity_index == allocation_before.source_entity_index)
+                .expect("mutable allocation-failure tree");
+            tree.owner_entity_index = allocation_failure_owner;
+            tree.pending_damage = tree.life + 1;
+        }
+        allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
+        let allocation_after = allocation_failure
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.source_entity_index == allocation_before.source_entity_index)
+            .copied()
+            .expect("allocation-failure tree remains live");
+        assert_eq!(allocation_after.entity_rng, allocation_before.entity_rng);
+        assert_eq!(allocation_after.action, 0);
+        assert_eq!(allocation_after.owner_entity_index, 0);
+        assert_eq!(allocation_after.last_sphere_source_entity_index, 0);
+        assert_eq!(allocation_failure.economy().authored_trees().len(), 12);
+        assert!(
+            !allocation_failure
+                .economy()
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2EconomyEvent::ManaSphereSpawned {
+                        source_entity_index,
+                        ..
+                    } if *source_entity_index == allocation_before.source_entity_index
+                ))
+        );
     }
 
     #[test]
@@ -35105,7 +35795,7 @@ mod tests {
                 group: 31,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [209, 244, 274]
+            } if authored_indices.as_ref() == LEVEL2_GROUP31_AUTHORED_INDICES
         )));
         assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
@@ -35120,6 +35810,7 @@ mod tests {
                 .iter()
                 .all(|source| source.authored_index != 209)
         );
+        assert!(session.economy().authored_trees().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
@@ -35149,6 +35840,7 @@ mod tests {
                 .iter()
                 .all(|source| source.authored_index != 244)
         );
+        assert!(session.economy().authored_trees().is_empty());
         assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
@@ -35176,6 +35868,7 @@ mod tests {
         session.step_outer_turn(PlayerCommand::default(), 0);
 
         assert!(session.economy().authored_class14().is_empty());
+        assert!(session.economy().authored_trees().is_empty());
         assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
@@ -35227,7 +35920,7 @@ mod tests {
                 group: 31,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [209, 244, 274]
+            } if authored_indices.as_ref() == LEVEL2_GROUP31_AUTHORED_INDICES
         )));
         assert!(
             session
@@ -35235,6 +35928,15 @@ mod tests {
                 .authored_switch_producers()
                 .iter()
                 .any(|source| source.authored_index == 274)
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_trees()
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            LEVEL2_GROUP31_TREE_INDICES
         );
     }
 
@@ -35258,6 +35960,7 @@ mod tests {
 
         assert!(session.economy().authored_class14().is_empty());
         assert!(session.economy().authored_switch_producers().is_empty());
+        assert!(session.economy().authored_trees().is_empty());
         assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
