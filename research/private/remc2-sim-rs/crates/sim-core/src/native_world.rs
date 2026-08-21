@@ -49404,6 +49404,97 @@ mod tests {
             replacement_slot.wrapping_add(fallback_global as u16)
         );
 
+        // The qualified LevelEnd route is the ordinary producer boundary for
+        // RNG-L2-0464/0465. Reset before entering it so the global scheduler
+        // draw can be compared with the package seed independently of the
+        // carrier/sphere rows above. The first pass materializes and dispatches
+        // the twelve trees, but the empty owner mailbox keeps the forbidden
+        // tree callback branch unreachable in that same pass.
+        session.reset();
+        session.runtime.set_level2_is_level_end(1);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let tree_before = session
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|tree| tree.authored_index == 260)
+            .copied()
+            .expect("qualified group-31 tree source");
+        assert_eq!(
+            session.economy().global_rng,
+            level2_next_rng32(initial_global),
+            "group-31 activation consumes only the scheduler pass draw"
+        );
+        assert_eq!(tree_before.owner_entity_index, 0);
+        assert_eq!(tree_before.action, 0);
+        assert!(!session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                ..
+            } if *source_entity_index == tree_before.source_entity_index
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                pass: 0,
+                group: 31,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == LEVEL2_GROUP31_AUTHORED_INDICES
+        )));
+
+        // The damage mailbox is written between source passes. The following
+        // pass reaches the same tree slot's owner callback, consumes exactly
+        // one source-local LCG step (0464), and derives the new life from that
+        // result (0465); the sphere event is downstream of that same pass.
+        let tree_rng_before = tree_before.entity_rng;
+        let owner_entity_index = session.state.entity_index;
+        {
+            let tree = session
+                .economy_mut()
+                .authored_trees
+                .iter_mut()
+                .find(|tree| tree.source_entity_index == tree_before.source_entity_index)
+                .expect("mutable qualified group-31 tree source");
+            tree.owner_entity_index = owner_entity_index;
+            tree.pending_damage = tree.life + 1;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let tree_after = session
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|tree| tree.source_entity_index == tree_before.source_entity_index)
+            .copied()
+            .expect("qualified group-31 tree after owner callback");
+        let tree_rng_after = level2_next_rng16(tree_rng_before);
+        assert_eq!(
+            session.economy().global_rng,
+            level2_next_rng32(level2_next_rng32(initial_global)),
+            "following tree callback consumes only its scheduler pass draw"
+        );
+        assert_eq!(tree_after.entity_rng, tree_rng_after);
+        assert_eq!(tree_after.life, i32::from(tree_rng_after % 0x3c) + 130);
+        assert_eq!(tree_after.action, 1);
+        assert_eq!(tree_after.owner_entity_index, 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                pass: 0,
+                source_slot,
+                kind: Level2DynamicArenaKind::AuthoredTree,
+            } if *source_slot == tree_before.source_entity_index
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Economy {
+                pass: 0,
+                source_slot,
+                event: Level2EconomyEvent::ManaSphereSpawned { .. },
+            } if *source_slot == tree_before.source_entity_index
+        )));
+
         // The three sound-46 events are downstream of the same source pass.
         // PrepareEventSound computes `9377 * global + 9439` for its play-rate
         // variation (RNG-L2-0493) but does not write D41A0.rand_0x8 back; the
