@@ -849,7 +849,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::native_world::NativeWorld;
+    use crate::{
+        level1_mission::CastleBuildFootprint,
+        native_world::{NativeWorld, NativeWorldInspection, SessionTerrain},
+    };
 
     fn load_world() -> NativeWorld {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
@@ -858,6 +861,17 @@ mod tests {
             root.join("level1-asset-closure.json"),
         )
         .expect("qualified owner package")
+    }
+
+    fn load_level_two_world() -> NativeWorldInspection {
+        let package = std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/l2-debug3.fJ3PaM/level2")
+            },
+            PathBuf::from,
+        );
+        NativeWorld::inspect_level2(package).expect("qualified Level 2 owner package")
     }
 
     #[test]
@@ -1042,6 +1056,261 @@ mod tests {
         rejected.houses[0].rng = 0;
         assert!(rejected.step_source_slot(1, &world).is_empty());
         assert_eq!(rejected.houses[0].rng, next_rng(0));
+    }
+
+    #[test]
+    fn qualified_level_two_house_lifecycle_emits_0255_0256_in_source_order() {
+        // Pinned remc2 6806c72: the class-10 table dispatches action 52 to
+        // AddHouse0A_2D_38330 and action 53 to RemoveCastleStage_385C0
+        // (EventsFunctions.cpp:1601-1655). Both call sites enter
+        // GetRandManaSphere_38270 only under BLDGPRM.byte_2 & 1
+        // (EventsFunctions.cpp:28043-28059 and :28112-28124).
+        //
+        // The qualified reset has 22 live rows in slots 1..22. The entity's
+        // source byte-0x46 BUILD selectors vary, while the raw entity
+        // parameter relation is 60 (normalized to Some(59) by the typed
+        // parser); the selected BLDGPRM rows include both producer-bit and
+        // non-producer-bit houses. The ordinary action-52 and following
+        // action-53 routes must therefore cover both positive draws and
+        // no-forbidden-draw negatives.
+        let world = load_level_two_world();
+        let mut family = HouseFamily::from_level_two_entities(world.entities())
+            .expect("qualified Level 2 ordinary house family");
+        assert_eq!(family.houses().len(), 22);
+
+        const EXPECTED_BUILDING_SELECTORS: [u8; 22] = [
+            55, 59, 59, 59, 59, 60, 60, 60, 60, 50, 44, 26, 26, 30, 29, 50, 50, 29, 50, 26, 50, 64,
+        ];
+        let sphere_selection = |rng: u16| match rng % 12 {
+            0 | 1 => (4, 33),
+            2 | 3 => (14, 113),
+            4..=8 => (13, 105),
+            9..=11 => (12, 97),
+            _ => unreachable!("modulo twelve"),
+        };
+        let house_snapshots = family.houses().to_vec();
+        for (ordinal, house) in house_snapshots.into_iter().enumerate() {
+            let snapshot = &world.entities()[usize::from(house.entity_index)];
+            assert_eq!(
+                (
+                    snapshot.active,
+                    snapshot.class,
+                    snapshot.model,
+                    snapshot.action,
+                    house.entity_index,
+                    house.building_index,
+                    snapshot.parameter_relation,
+                    snapshot.record_bytes()[164],
+                    snapshot.level_gate,
+                    house.parameter.flags,
+                ),
+                (
+                    true,
+                    HOUSE_CLASS,
+                    HOUSE_MODEL,
+                    HOUSE_LIVE_ACTION,
+                    (ordinal + 1) as u16,
+                    EXPECTED_BUILDING_SELECTORS[ordinal],
+                    Some(59),
+                    60,
+                    EXPECTED_BUILDING_SELECTORS[ordinal].cast_signed(),
+                    if house.parameter.produces_villagers() {
+                        0x03
+                    } else {
+                        0x08
+                    },
+                )
+            );
+
+            // Exercise the real action-52 source visit at the exact periodic
+            // gate with a full house and a fixed source-local seed. Producer
+            // rows consume the eligibility draw first, then the
+            // GetRandManaSphere draw; non-producer rows consume neither.
+            let seed = if house.parameter.produces_villagers() {
+                (0..=u16::MAX)
+                    .find(|seed| {
+                        let after_eligibility = next_rng(*seed);
+                        i32::from(after_eligibility % house.capacity.cast_unsigned())
+                            > i32::from(house.capacity) - (i32::from(house.capacity) >> 4) - 2
+                    })
+                    .expect("a qualified producer has an eligible RNG seed")
+            } else {
+                0x1200_u16.wrapping_add(house.entity_index)
+            };
+            family.houses[ordinal].phase = 0;
+            family.houses[ordinal].occupants = i32::from(house.capacity);
+            family.houses[ordinal].rng = seed;
+            let events = family.step_source_slot(house.entity_index, world.terrain());
+            if house.parameter.produces_villagers() {
+                let expected = sphere_selection(next_rng(next_rng(seed)));
+                assert!(matches!(
+                    events.as_slice(),
+                    [HouseStepEvent::ResidentRequested {
+                        attacker_entity_index: 0,
+                        model,
+                        action,
+                        ..
+                    }]
+                    if (*model, *action) == expected
+                ));
+                assert_eq!(
+                    family.houses()[ordinal].rng,
+                    next_rng(next_rng(seed)),
+                    "0257 then 0255/0256 source order"
+                );
+            } else {
+                assert!(events.is_empty(), "non-producing house emitted an event");
+                assert_eq!(family.houses()[ordinal].rng, seed);
+            }
+            assert_eq!(family.houses()[ordinal].phase, 1);
+        }
+
+        // A producer row with a rejected 0258 comparison consumes only 0257.
+        let rejected_ordinal = 9;
+        let rejected_house = family.houses()[rejected_ordinal];
+        let rejected_seed = (0..=u16::MAX)
+            .find(|seed| {
+                let after_eligibility = next_rng(*seed);
+                i32::from(after_eligibility % rejected_house.capacity.cast_unsigned())
+                    <= i32::from(rejected_house.capacity)
+                        - (i32::from(rejected_house.capacity) >> 4)
+                        - 2
+            })
+            .expect("a qualified producer has a rejected RNG seed");
+        family.houses[rejected_ordinal].phase = 0;
+        family.houses[rejected_ordinal].occupants = i32::from(rejected_house.capacity);
+        family.houses[rejected_ordinal].rng = rejected_seed;
+        assert!(
+            family
+                .step_source_slot(rejected_house.entity_index, world.terrain())
+                .is_empty()
+        );
+        assert_eq!(
+            family.houses()[rejected_ordinal].rng,
+            next_rng(rejected_seed),
+            "rejected 0258 branch consumes no 0255/0256 draw"
+        );
+
+        // Follow a qualified producer through the ordinary lethal action-52
+        // transition and action-53 event. The Level 2 terrain consumer uses
+        // the event fields below to execute RemoveCastleStage's row-major
+        // removal loop. Two non-empty, height-sentinel cells force exactly
+        // the two source GetRandManaSphere calls while avoiding unrelated
+        // height-reduction draws. The qualified owner-footprint route is
+        // covered separately by the Level 2 ordinary-session tests; this
+        // narrow production receipt isolates the resident RNG branch.
+        let mut removal = HouseFamily::from_level_two_entities(world.entities())
+            .expect("qualified Level 2 removal family");
+        let source_slot = 10;
+        let removal_house = removal.houses()[usize::from(source_slot - 1)];
+        assert!(removal_house.parameter.produces_villagers());
+        let seed = 0x4a31;
+        removal.houses[usize::from(source_slot - 1)].occupants = 6;
+        removal.houses[usize::from(source_slot - 1)].rng = seed;
+        removal
+            .inject_damage(source_slot, removal_house.life + 1, 111)
+            .expect("qualified Level 2 lethal house damage");
+        let destruction = removal.step_source_slot(source_slot, world.terrain());
+        assert!(matches!(
+            destruction.as_slice(),
+            [HouseStepEvent::DestructionStarted {
+                entity_index: 10,
+                ..
+            }]
+        ));
+        assert_eq!(
+            removal.houses()[usize::from(source_slot - 1)].action,
+            HOUSE_REMOVE_ACTION
+        );
+        let footprint_removal = removal.step_source_slot(source_slot, world.terrain());
+        let (position, building_index, occupants, event_rng) = match footprint_removal.as_slice() {
+            [
+                HouseStepEvent::RemoveFootprint {
+                    position,
+                    building_index,
+                    occupants,
+                    rng,
+                    entity_index: 10,
+                    ..
+                },
+            ] => (*position, *building_index, *occupants, *rng),
+            other => {
+                assert!(false, "unexpected action-53 receipt: {other:?}");
+                return;
+            }
+        };
+        assert_eq!((occupants, event_rng), (6, seed));
+        assert!(!removal.houses()[usize::from(source_slot - 1)].active);
+
+        let footprint =
+            CastleBuildFootprint::from_owner_cells(building_index, 2, 1, &[0, 0xff, 0, 0xff])
+                .expect("source-shaped action-53 receipt footprint");
+        let mut terrain = SessionTerrain::from_inspection(&world);
+        let outcome = terrain
+            .apply_house_removal(position, event_rng, occupants, true, &footprint)
+            .expect("qualified producer action-53 terrain consumer");
+        let first_draw = next_rng(seed);
+        let second_draw = next_rng(first_draw);
+        assert_eq!(outcome.final_rng, second_draw, "0255/0256 action-53 order");
+        assert_eq!(outcome.final_occupants, 4);
+        assert_eq!(outcome.residents.len(), 2);
+        assert_eq!(
+            outcome
+                .residents
+                .iter()
+                .map(|resident| (resident.model, resident.action))
+                .collect::<Vec<_>>(),
+            vec![sphere_selection(first_draw), sphere_selection(second_draw)]
+        );
+
+        // The same action-53 consumer is a no-op for the forbidden RNG draw
+        // when the qualified BLDGPRM row lacks bit 0, even with six occupants.
+        let mut nonproducing = HouseFamily::from_level_two_entities(world.entities())
+            .expect("qualified Level 2 non-producing removal family");
+        let nonproducing_house = nonproducing.houses()[0];
+        let produces_residents = nonproducing_house.parameter.produces_villagers();
+        assert!(!produces_residents);
+        nonproducing.houses[0].occupants = 6;
+        nonproducing.houses[0].rng = seed;
+        nonproducing
+            .inject_damage(1, nonproducing_house.life + 1, 111)
+            .expect("qualified Level 2 non-producing lethal damage");
+        let _ = nonproducing.step_source_slot(1, world.terrain());
+        let nonproducing_event = nonproducing.step_source_slot(1, world.terrain());
+        let (position, building_index, occupants, event_rng) = match nonproducing_event.as_slice() {
+            [
+                HouseStepEvent::RemoveFootprint {
+                    position,
+                    building_index,
+                    occupants,
+                    rng,
+                    entity_index: 1,
+                    ..
+                },
+            ] => (*position, *building_index, *occupants, *rng),
+            other => {
+                assert!(
+                    false,
+                    "unexpected non-producing action-53 receipt: {other:?}"
+                );
+                return;
+            }
+        };
+        let footprint =
+            CastleBuildFootprint::from_owner_cells(building_index, 2, 1, &[0, 0xff, 0, 0xff])
+                .expect("non-producing action-53 receipt footprint");
+        let outcome = SessionTerrain::from_inspection(&world)
+            .apply_house_removal(
+                position,
+                event_rng,
+                occupants,
+                produces_residents,
+                &footprint,
+            )
+            .expect("qualified non-producing action-53 terrain consumer");
+        assert_eq!(outcome.final_rng, seed);
+        assert_eq!(outcome.final_occupants, 4);
+        assert!(outcome.residents.is_empty());
     }
 
     #[test]
