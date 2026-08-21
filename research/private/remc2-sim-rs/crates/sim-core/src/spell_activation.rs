@@ -1368,6 +1368,16 @@ mod tests {
         }
     }
 
+    fn assert_source_audio_binding(tag: SourceAudioCallTag, expected_hash: &str) {
+        assert_eq!(
+            crate::SOURCE_AUDIO_CALL_BINDINGS
+                .iter()
+                .find(|(candidate, _)| *candidate == tag)
+                .map(|(_, hash)| *hash),
+            Some(expected_hash)
+        );
+    }
+
     #[test]
     fn invalid_holder_is_the_source_sentinel_no_op() {
         let mut caster = caster();
@@ -1429,8 +1439,13 @@ mod tests {
         let mut caster = caster();
         let mut holder = holder(2);
         holder.active_value = 1;
+        let caster_before = caster;
+        let holder_before = holder;
         let mut events = Vec::new();
 
+        // AUD-L2-113: EventsFunctions.cpp:60952, the active model-2
+        // sub_5F660 branch prepares local-player sound 29 and returns before
+        // the shared mana/help tail.
         assert!(!activate_spell(
             &mut caster,
             Some(&mut holder),
@@ -1446,6 +1461,12 @@ mod tests {
                 player_index: 3,
                 sound_id: 29,
             }]
+        );
+        assert_eq!(caster, caster_before);
+        assert_eq!(holder, holder_before);
+        assert_source_audio_binding(
+            SourceAudioCallTag::NotEnoughManaImmediate,
+            "467e5c361e5973cedc57a380dbcf17ea8f8be70f4ee3a5890529e88176a3c58c",
         );
     }
 
@@ -1529,8 +1550,13 @@ mod tests {
         let mut caster = caster();
         caster.mana = 49;
         let mut holder = holder(3);
+        let caster_before = caster;
+        let holder_before = holder;
         let mut events = Vec::new();
 
+        // AUD-L2-114: EventsFunctions.cpp:61007, the shared insufficient-mana
+        // tail prepares the same local-player sound only after sub_88B60's
+        // optional help notification.
         assert!(!activate_spell(
             &mut caster,
             Some(&mut holder),
@@ -1553,6 +1579,12 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(caster, caster_before);
+        assert_eq!(holder, holder_before);
+        assert_source_audio_binding(
+            SourceAudioCallTag::NotEnoughManaFallback,
+            "d82a33b9eb1aeff3b62a746b4e8b2e1baf614d561f4b3037ac82d5117bef3e36",
+        );
 
         caster.model = 1;
         events.clear();
@@ -1564,6 +1596,70 @@ mod tests {
             &mut events
         ));
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn level2_mana_audio_negatives_reject_without_forbidden_emission() {
+        let mut missing_holder_caster = caster();
+        let missing_holder_before = missing_holder_caster;
+        let mut missing_holder_events = Vec::new();
+        assert!(!activate_spell(
+            &mut missing_holder_caster,
+            None,
+            256,
+            true,
+            &mut missing_holder_events
+        ));
+        assert!(missing_holder_events.is_empty());
+        assert_eq!(missing_holder_caster, missing_holder_before);
+
+        // A cold holder with enough mana succeeds through the normal
+        // activation transition; neither 113 nor 114 is admitted.
+        let mut enough_mana_caster = caster();
+        let mut cold_holder = holder(3);
+        let cold_holder_before = cold_holder;
+        let mut enough_mana_events = Vec::new();
+        assert!(activate_spell(
+            &mut enough_mana_caster,
+            Some(&mut cold_holder),
+            256,
+            true,
+            &mut enough_mana_events
+        ));
+        assert!(enough_mana_events.is_empty());
+        assert_ne!(cold_holder, cold_holder_before);
+
+        // The active model-1 retrigger is a direct-success branch and never
+        // falls through to either forbidden mana sound.
+        let mut active_model_one_caster = caster();
+        active_model_one_caster.mana = 0;
+        let mut active_model_one = holder(1);
+        active_model_one.active_value = 4;
+        let mut active_model_one_events = Vec::new();
+        assert!(activate_spell(
+            &mut active_model_one_caster,
+            Some(&mut active_model_one),
+            512,
+            true,
+            &mut active_model_one_events
+        ));
+        assert!(active_model_one_events.is_empty());
+
+        // A model-2 immediate branch on the special caster is source-silent,
+        // just as the fallback branch is; it must not consume AUD-L2-113.
+        let mut special_caster = caster();
+        special_caster.model = 1;
+        let mut active_model_two = holder(2);
+        active_model_two.active_value = 1;
+        let mut special_events = Vec::new();
+        assert!(!activate_spell(
+            &mut special_caster,
+            Some(&mut active_model_two),
+            256,
+            true,
+            &mut special_events
+        ));
+        assert!(special_events.is_empty());
     }
 
     #[test]
