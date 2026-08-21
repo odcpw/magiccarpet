@@ -306,12 +306,14 @@ class Level1MatrixValidatorTests(unittest.TestCase):
             )
             return source.replace(test_module, duplicate + test_module, 1)
 
-        with mock.patch.object(Path, "read_text", read_text_with_duplicate):
-            with self.assertRaisesRegex(
+        with (
+            mock.patch.object(Path, "read_text", read_text_with_duplicate),
+            self.assertRaisesRegex(
                 validator.ValidationError,
                 "NotEnoughManaImmediate.*2 production bindings",
-            ):
-                validator.validate_audio_call_ledger(self.canonical)
+            ),
+        ):
+            validator.validate_audio_call_ledger(self.canonical)
 
     def test_correction_contract_rejects_invented_scheduler_and_incomplete_rng_census(self) -> None:
         invented = copy.deepcopy(self.canonical)
