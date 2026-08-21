@@ -13424,6 +13424,24 @@ fn campaign_economy_event_snapshot(
             0,
             0,
         ),
+        // Keep the generic prepared-sound payload on the existing typed
+        // source-audio code; family 8 distinguishes it without allocating a
+        // new ABI code.
+        Level2EconomyEvent::PreparedSound {
+            source_entity_index,
+            entity_index,
+            player_index,
+            sound_id,
+        } => (
+            MC_CAMPAIGN_ECONOMY_AUTHORED_CLASS5_MODEL3_SOUND,
+            u32::from(source_entity_index),
+            u32::from(entity_index),
+            sound_id,
+            0,
+            i32::from(player_index),
+            0,
+            0,
+        ),
         Level2EconomyEvent::CastleStageDestroyed {
             source_entity_index,
             previous_level,
