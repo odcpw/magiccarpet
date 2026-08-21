@@ -1418,8 +1418,18 @@ impl Level2ResetSession {
             let activation_value = i16::try_from(holder.activation_value).ok();
             let fresh =
                 activation_value.is_some_and(|activation| holder.active_value == activation);
+            let common_upkeep = self.nyphur_dispatcher.common_upkeep(parent.phase);
+            let castle_mana = (common_upkeep.castle_entity_index != 0)
+                .then(|| {
+                    self.entities
+                        .get(usize::from(common_upkeep.castle_entity_index))
+                })
+                .flatten()
+                .filter(|castle| castle.active && castle.life >= 0)
+                .map(|castle| castle.mana);
             let admitted = profile_matches
-                && holder.mana_regen == 0
+                && (holder.mana_regen == 0
+                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
                 && parent.life >= 0
                 && parent.mana >= 0
                 && (!fresh || parent.mana >= holder.max_mana);
@@ -1524,9 +1534,11 @@ impl Level2ResetSession {
     }
 
     /// Source `sub_69640`/`sub_69900` for the canonical Nyphur
-    /// class-15/model-1/action-3 holder.  Family 1 deliberately shares the
-    /// existing class-9 Possession arena and only this source-shaped handler
-    /// owns its launch sound/countdown writes.
+    /// class-15/model-1/action-3 holder. Family 1 shares the existing
+    /// Possession arena, but the physical tier selects the source's distinct
+    /// class-9/model-17 tiered constructor versus the class-9/model-1 basic
+    /// constructor. This source-shaped handler owns the launch sound and
+    /// countdown writes.
     pub(super) fn step_level2_nyphur_possession_holder_source_slot(
         &mut self,
         holder_index: u16,
@@ -1565,8 +1577,8 @@ impl Level2ResetSession {
         let mut next_active_value = holder.active_value;
         let mut spawned = None;
         if holder.active_value > 0 {
-            let tier = u8::try_from(holder.level_gate).ok();
-            let profile = tier.and_then(|tier| {
+            let physical_tier = u8::try_from(holder.level_gate).ok().map(|tier| tier.min(2));
+            let profile = physical_tier.and_then(|tier| {
                 level2_direct_starting_spell_profile(POSSESSION_SPELL_FAMILY, tier)
             });
             let profile_matches = profile.is_some_and(|profile| {
@@ -1634,9 +1646,15 @@ impl Level2ResetSession {
                     launch_position.z = launch_position.z.wrapping_add(parent.fov);
                     let launch_yaw = next_entity.wrapping_add(parent.yaw);
                     let launch_pitch = entity_index2.wrapping_add(parent.pitch);
+                    let axis_distance =
+                        if physical_tier.expect("profile admission has a physical tier") == 0 {
+                            10_240
+                        } else {
+                            0x4000
+                        };
                     let mut axis_position = parent.position;
-                    crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 10_240);
-                    spawned = self.economy.spawn_possession_projectile(
+                    crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, axis_distance);
+                    spawned = self.economy.spawn_possession_projectile_with_physical_tier(
                         launch_position,
                         LEVEL2_NYPHUR_ENTITY_INDEX,
                         holder_index,
@@ -1644,12 +1662,19 @@ impl Level2ResetSession {
                         launch_pitch,
                         parent.actual_speed,
                         axis_position,
+                        physical_tier.expect("profile admission has a physical tier"),
                     );
                     self.terrain = self.economy.terrain.clone();
                     self.synchronize_level2_terrain();
                     if let Some(spawned_slot) = spawned {
                         self.nyphur_dispatcher.clear_source_byte_0x154();
-                        mark_source_audio_call(SourceAudioCallTag::PossessionLaunchBasic);
+                        mark_source_audio_call(
+                            if physical_tier.expect("profile admission has a physical tier") == 0 {
+                                SourceAudioCallTag::PossessionLaunchBasic
+                            } else {
+                                SourceAudioCallTag::PossessionLaunchTiered
+                            },
+                        );
                         self.shared_spells.events.push(FlightEvent::PrepareSound {
                             #[cfg(test)]
                             audio_site: crate::MissionAudioSite::PossessionLaunch,
@@ -7741,5 +7766,257 @@ impl Level2ResetSession {
         self.level2_tree_activated = self.baseline_level2_tree_activated.clone();
         self.level2_class5_activated = self.baseline_level2_class5_activated.clone();
         self.level2_model45_activated = self.baseline_level2_model45_activated.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn level_two_nyphur_possession_session() -> Level2ResetSession {
+        let package = super::super::tests::level_two_fixture_path();
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+            .expect("qualified Level 2 gameplay component")
+            .level2_reset_session()
+            .expect("qualified Level 2 Nyphur Possession session")
+    }
+
+    fn install_nyphur_possession_profile(session: &mut Level2ResetSession, tier: u8) {
+        let profile = level2_direct_starting_spell_profile(POSSESSION_SPELL_FAMILY, tier)
+            .expect("family-1 profile exists for the physical tier");
+        let holder = session
+            .entities
+            .get_mut(usize::from(LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX))
+            .expect("qualified Nyphur Possession holder row");
+        holder.level_gate = tier.cast_signed();
+        holder.subspell_index = profile.subspell_index;
+        holder.activation_value = profile.word_0x30;
+        holder.byte_3b = profile.byte_0x3b;
+        holder.mana_regen = profile.mana_regen;
+        holder.max_mana = profile.max_mana;
+        holder.mana = profile.mana;
+        holder.active_value = profile.word_0x30.cast_signed();
+        holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+        holder.record[63] = profile.byte_0x3b;
+        holder.record[74] = tier;
+        holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+        holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+        holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+    }
+
+    #[test]
+    fn level_two_nyphur_possession_distinguishes_tiered_and_basic_launches() {
+        for (tier, expected_model, expected_action, expected_byte_0x44) in
+            [(0, 1, 1, 12), (1, 17, 18, 54)]
+        {
+            let mut session = level_two_nyphur_possession_session();
+            session.select_level2_campaign_entry_stage();
+            install_nyphur_possession_profile(&mut session, tier);
+            let baseline_hash = session.campaign_state_hash();
+
+            session.step_outer_turn(PlayerCommand::default(), 0);
+
+            let projectile = session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .find(|projectile| {
+                    projectile.holder_entity_index == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                })
+                .copied()
+                .expect("ordinary Nyphur holder callback allocates one live projectile");
+            assert_eq!(
+                (
+                    projectile.source_class,
+                    projectile.source_model,
+                    projectile.action,
+                    projectile.output_model,
+                ),
+                (9, expected_model, expected_action, expected_byte_0x44),
+                "physical tier {tier} preserves the pinned constructor identity"
+            );
+            assert_eq!(
+                session
+                    .shared_spells()
+                    .activation_events()
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        FlightEvent::PrepareSound {
+                            entity_index,
+                            player_index: -1,
+                            sound_id: 40,
+                            ..
+                        } if *entity_index == projectile.source_entity_index
+                    ))
+                    .count(),
+                1,
+                "physical tier {tier} emits the source sound only after allocation"
+            );
+            assert_ne!(session.campaign_state_hash(), baseline_hash);
+        }
+    }
+
+    #[test]
+    fn level_two_nyphur_possession_tiered_callback_eases_speed() {
+        let mut session = level_two_nyphur_possession_session();
+        session.select_level2_campaign_entry_stage();
+        install_nyphur_possession_profile(&mut session, 1);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let projectile_slot = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| {
+                projectile.holder_entity_index == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+            })
+            .map(|projectile| projectile.source_entity_index)
+            .expect("ordinary tiered launch remains in the dynamic arena");
+        session
+            .economy_mut()
+            .possession_projectiles
+            .iter_mut()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .expect("ordinary tiered projectile remains addressable")
+            .actual_speed = 400;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let projectile = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .expect("following-pass tiered callback preserves the source row");
+        assert_eq!(projectile.source_model, 17);
+        assert_eq!(projectile.action, 18);
+        assert_eq!(projectile.actual_speed, 398);
+    }
+
+    #[test]
+    fn level_two_nyphur_possession_tiered_launch_replays_stably() {
+        let mut session = level_two_nyphur_possession_session();
+        let mut first_receipt = None;
+        for _ in 0..2 {
+            session.select_level2_campaign_entry_stage();
+            install_nyphur_possession_profile(&mut session, 1);
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let projectile = session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .find(|projectile| {
+                    projectile.holder_entity_index == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                })
+                .copied()
+                .expect("ordinary tiered launch remains in the source arena");
+            let sound_entities = session
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .filter_map(|event| match event {
+                    FlightEvent::PrepareSound {
+                        entity_index,
+                        player_index: -1,
+                        sound_id: 40,
+                        ..
+                    } => Some(*entity_index),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(sound_entities, vec![projectile.source_entity_index]);
+            let receipt = (
+                projectile.source_entity_index,
+                projectile.source_model,
+                projectile.action,
+                projectile.output_model,
+                projectile.position,
+                projectile.axis_position,
+                projectile.yaw,
+                projectile.pitch,
+                projectile.actual_speed,
+                session.campaign_state_hash(),
+            );
+            if let Some(expected) = first_receipt {
+                assert_eq!(
+                    receipt, expected,
+                    "tiered launch resets and replays identically"
+                );
+            } else {
+                first_receipt = Some(receipt);
+            }
+            session.reset();
+        }
+    }
+
+    #[test]
+    fn level_two_nyphur_possession_tiered_negatives_emit_no_sound_or_projectile() {
+        let mut invalid = level_two_nyphur_possession_session();
+        invalid.select_level2_campaign_entry_stage();
+        install_nyphur_possession_profile(&mut invalid, 0);
+        let holder = invalid
+            .entities
+            .get_mut(usize::from(LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX))
+            .expect("qualified Nyphur Possession holder row");
+        holder.level_gate = 1;
+        holder.record[74] = 1;
+        invalid.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            invalid
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .all(|event| !matches!(event, FlightEvent::PrepareSound { sound_id: 40, .. }))
+        );
+        assert!(
+            invalid
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .all(|projectile| !projectile.active)
+        );
+
+        let mut allocation_failure = level_two_nyphur_possession_session();
+        allocation_failure.select_level2_campaign_entry_stage();
+        install_nyphur_possession_profile(&mut allocation_failure, 1);
+        allocation_failure.economy.free_slots.clear();
+        allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            allocation_failure
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .all(|event| !matches!(event, FlightEvent::PrepareSound { sound_id: 40, .. }))
+        );
+        assert!(
+            allocation_failure
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .all(|projectile| !projectile.active)
+        );
+
+        let mut tier_two_without_castle = level_two_nyphur_possession_session();
+        tier_two_without_castle.select_level2_campaign_entry_stage();
+        install_nyphur_possession_profile(&mut tier_two_without_castle, 2);
+        tier_two_without_castle.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            tier_two_without_castle
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .all(|event| !matches!(event, FlightEvent::PrepareSound { sound_id: 40, .. }))
+        );
+        assert!(
+            tier_two_without_castle
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .all(|projectile| !projectile.active)
+        );
     }
 }

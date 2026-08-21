@@ -17,6 +17,19 @@ const LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT: u32 = 0x2;
 /// `sub_65580` adds the model-39 source yaw (28 in the pinned Level 2
 /// package) while a Possession flyer copies its collision contact.
 const POSSESSION_TARGET_Z_SHIFT: i16 = 28;
+/// Source `sub_69640`'s tiered Possession constructor values. The direct
+/// source profile supplies the physical tier; this arena helper only carries
+/// the constructor identity and its `byte_0x44` selector into the live row.
+const POSSESSION_TIERED_PROJECTILE_MODEL: u8 = 17;
+const POSSESSION_TIERED_PROJECTILE_ACTION: u8 = 18;
+
+const fn possession_source_byte_0x44(physical_tier: u8) -> u8 {
+    match physical_tier {
+        0 => 12,
+        1 => 54,
+        _ => 69,
+    }
+}
 /// `sub_112D0` scans the source effect's complete five-by-five map-cell
 /// square when model 12 has pitch 512: Y is the outer source loop and X the
 /// inner loop.
@@ -193,6 +206,36 @@ impl Level2EconomyState {
         player_speed: i16,
         axis_position: Position,
     ) -> Option<u16> {
+        self.spawn_possession_projectile_with_physical_tier(
+            launch_position,
+            source_id_entity_index,
+            holder_entity_index,
+            yaw,
+            pitch,
+            player_speed,
+            axis_position,
+            0,
+        )
+    }
+
+    /// Source `sub_69640`'s constructor split: physical tier zero follows
+    /// `sub_69900`, while tiers one and two allocate class-9/model-17,
+    /// action-18 rows and carry the pinned byte-0x44 selector (54/69).
+    /// Allocation remains transactional with the existing map-link and RNG
+    /// setup, so a failed row cannot publish an audio receipt upstream.
+    pub fn spawn_possession_projectile_with_physical_tier(
+        &mut self,
+        launch_position: Position,
+        source_id_entity_index: u16,
+        holder_entity_index: u16,
+        yaw: i16,
+        pitch: i16,
+        player_speed: i16,
+        axis_position: Position,
+        physical_tier: u8,
+    ) -> Option<u16> {
+        let physical_tier = physical_tier.min(2);
+        let tiered = physical_tier != 0;
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let projectile = Level2PossessionProjectile {
@@ -201,10 +244,22 @@ impl Level2EconomyState {
             source_id_entity_index,
             holder_entity_index,
             source_class: POSSESSION_PROJECTILE_CLASS,
-            source_model: POSSESSION_PROJECTILE_MODEL,
-            action: POSSESSION_PROJECTILE_ACTION,
+            source_model: if tiered {
+                POSSESSION_TIERED_PROJECTILE_MODEL
+            } else {
+                POSSESSION_PROJECTILE_MODEL
+            },
+            action: if tiered {
+                POSSESSION_TIERED_PROJECTILE_ACTION
+            } else {
+                POSSESSION_PROJECTILE_ACTION
+            },
             output_class: POSSESSION_IMPACT_CLASS,
-            output_model: POSSESSION_IMPACT_MODEL,
+            // The source's byte-0x44 selector is the constructor's second
+            // subtype argument. The existing Level2 row exposes that field
+            // as `output_model`; tier zero therefore retains the old model-12
+            // value while tiered rows retain 54/69 for downstream dispatch.
+            output_model: possession_source_byte_0x44(physical_tier),
             target_source_entity_index: 0,
             acquisition_attempted: false,
             position: launch_position,
@@ -535,6 +590,18 @@ impl Level2EconomyState {
                 moved.fov,
                 PROJECTILE_ACQUISITION_ANGLE,
             )) & 0x07ff;
+        }
+        if moved.source_model == POSSESSION_TIERED_PROJECTILE_MODEL {
+            // Source `sub_662E0` (model 17/action 18) eases actual speed by
+            // two units toward minSpeed before movement. Basic model 1 keeps
+            // the producer's inherited player-speed value unchanged.
+            let speed_delta = moved.minimum_speed.wrapping_sub(moved.actual_speed);
+            if speed_delta != 0 {
+                moved.actual_speed =
+                    moved
+                        .actual_speed
+                        .wrapping_add(if speed_delta <= 0 { -2 } else { 2 });
+            }
         }
         crate::move_entity(
             &mut moved.position,
