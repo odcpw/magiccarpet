@@ -27,8 +27,12 @@ enum Model9MoveResult {
 
 impl Level2EconomyState {
     #[inline]
-    pub(super) fn step_authored_class5_model9(&self, source: &mut Level2AuthoredClass5Source) {
-        let _ = model9_step(source, &self.terrain);
+    pub(super) fn step_authored_class5_model9(
+        &self,
+        source: &mut Level2AuthoredClass5Source,
+        terrain: &SessionTerrain,
+    ) {
+        let _ = model9_step(source, terrain);
     }
 }
 

@@ -662,8 +662,8 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     let target_heading = i16::try_from(heading_for_positions(off_cadence.position, local_target))
         .expect("class-3 target heading fits");
     {
-        let source = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let source = economy_view
             .authored_bees
             .iter_mut()
             .find(|source| source.source_entity_index == source_slot)
@@ -687,8 +687,8 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     session.entities[local_index].control_flags |= 0x20;
     let hidden = configure(&mut session, stage_target, 0, 1);
     {
-        let source = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let source = economy_view
             .authored_bees
             .iter_mut()
             .find(|source| source.source_entity_index == source_slot)
@@ -710,8 +710,8 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     session.entities[local_index].control_flags &= !0x20;
     let visible = configure(&mut session, stage_target, 0, 1);
     {
-        let source = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let source = economy_view
             .authored_bees
             .iter_mut()
             .find(|source| source.source_entity_index == source_slot)
@@ -737,8 +737,8 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     // selector-defined handoff; no action or StageVar was seeded above.
     session.entities[local_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
     {
-        let source = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let source = economy_view
             .authored_bees
             .iter_mut()
             .find(|source| source.source_entity_index == source_slot)
@@ -812,13 +812,13 @@ fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callbac
     // without using a fabricated Bee or a direct terminal action.
     for y in 0..=u8::MAX {
         for x in 0..=u8::MAX {
-            session.terrain.planes.ground_heights[terrain_index(x, y)] =
+            session.canonical_terrain_mut().planes.ground_heights[terrain_index(x, y)] =
                 if x & 1 == 0 { 0 } else { u8::MAX };
         }
     }
     for heading in level2_bee_retry_headings(configured.yaw) {
         let mut candidate = configured.position;
-        let ground = session.terrain.ground_height(candidate);
+        let ground = session.canonical_terrain().ground_height(candidate);
         if candidate.z > ground {
             candidate = Position {
                 z: candidate.z.wrapping_add(LEVEL2_BEE_GROUND_RELAXATION),
@@ -838,7 +838,7 @@ fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callbac
             "each forced retry crosses into a source-slope tile"
         );
         assert!(
-            level2_bee_slope_measure(&session.terrain, candidate) >= LEVEL2_BEE_TERRAIN_THRESHOLD,
+            level2_bee_slope_measure(session.canonical_terrain(), candidate) >= LEVEL2_BEE_TERRAIN_THRESHOLD,
             "each retry candidate is source-blocked"
         );
     }
@@ -929,7 +929,7 @@ fn level_two_bee_action17_moves_before_acquisition_rng() {
     configured.entity_rng = 0x1234;
     assert!(session.economy.replace_authored_bee_for_test(configured));
 
-    let ground = session.economy.terrain.ground_height(configured.position);
+    let ground = session.canonical_terrain().ground_height(configured.position);
     let mut expected_position = configured.position;
     if expected_position.z > ground {
         expected_position.z = expected_position
@@ -957,10 +957,11 @@ fn level_two_bee_action17_moves_before_acquisition_rng() {
     // The cadence is active, but byte_0x39 suppresses only the target
     // scan. The source must still move first and consume both wander
     // draws after that movement.
+    let terrain = session.canonical_terrain().clone();
     assert!(
         session
             .economy
-            .acquire_authored_bee_target(configured.source_entity_index, &[])
+            .acquire_authored_bee_target(configured.source_entity_index, &[], &terrain)
             .is_none()
     );
     let moved = session
@@ -1025,7 +1026,7 @@ fn level_two_bee_action17_blocked_heading_retries_source_order() {
         (second_x.wrapping_add(1), second_y.wrapping_add(1)),
         (second_x, second_y.wrapping_add(1)),
     ] {
-        session.economy.terrain.planes.ground_heights[terrain_index(x, y)] = 255;
+        session.canonical_terrain_mut().planes.ground_heights[terrain_index(x, y)] = 255;
     }
     for (x, y, height) in [
         (first_x, first_y, 0),
@@ -1033,11 +1034,11 @@ fn level_two_bee_action17_blocked_heading_retries_source_order() {
         (first_x.wrapping_add(1), first_y.wrapping_add(1), 255),
         (first_x, first_y.wrapping_add(1), 0),
     ] {
-        session.economy.terrain.planes.ground_heights[terrain_index(x, y)] = height;
+        session.canonical_terrain_mut().planes.ground_heights[terrain_index(x, y)] = height;
     }
 
     let mut expected_position = configured.position;
-    let ground = session.economy.terrain.ground_height(expected_position);
+    let ground = session.canonical_terrain().ground_height(expected_position);
     if expected_position.z > ground {
         expected_position.z = expected_position
             .z
@@ -1057,10 +1058,11 @@ fn level_two_bee_action17_blocked_heading_retries_source_order() {
 
     // Non-cadence still exercises the movement prelude but consumes no
     // wander RNG, isolating retry order from acquisition bookkeeping.
+    let terrain = session.canonical_terrain().clone();
     assert!(
         session
             .economy
-            .acquire_authored_bee_target(configured.source_entity_index, &[])
+            .acquire_authored_bee_target(configured.source_entity_index, &[], &terrain)
             .is_none()
     );
     let retried = session
@@ -1193,8 +1195,8 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
 
     let target = session.state.position;
     {
-        let bee = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let bee = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == second.source_entity_index)
@@ -1222,8 +1224,8 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
         .allocate_level2_authored_bee(212)
         .expect("third authored Day Bee row");
     {
-        let bee = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let bee = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == third.source_entity_index)
@@ -1280,8 +1282,8 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
         18
     );
     {
-        let bee = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let bee = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == source.source_entity_index)
@@ -1306,8 +1308,8 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     assert_eq!(transitioned.dword_0x10, 1);
     assert!(matches!(transitioned.last_sound_id, 12 | 13));
     {
-        let bee = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let bee = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == source.source_entity_index)
@@ -1364,6 +1366,16 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .find(|bee| bee.source_entity_index == dying.source_entity_index)
         .expect("dying Bee remains in source arena")
         .action = 20;
+    // The action-21 kill tail admits the next byte-0x3E phase-zero callback.
+    // Seed the direct callback test immediately before that boundary so the
+    // two calls cover pre-kill followed by the admitted death callback.
+    session
+        .economy_mut()
+        .authored_bees
+        .iter_mut()
+        .find(|bee| bee.source_entity_index == dying.source_entity_index)
+        .expect("dying Bee remains in source arena")
+        .source_byte_3e = 7;
     assert!(
         session
             .economy_mut()
@@ -1428,8 +1440,8 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .allocate_level2_authored_bee(230)
         .expect("second objective-linked Bee");
     {
-        let bee = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let bee = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == no_call.source_entity_index)
@@ -1468,8 +1480,8 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .allocate_level2_authored_bee(231)
         .expect("third objective-linked Bee");
     let (expected_rng, expected_roll) = {
-        let bee = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let bee = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == scripted.source_entity_index)
@@ -1533,8 +1545,8 @@ fn level_two_authored_bee_action23_invalid_selector_is_production_noop() {
             .find(|bee| bee.source_entity_index == source_slot)
             .copied()
             .expect("live scripted Bee before invalid-selector step");
-        let bee = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let bee = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == source_slot)
@@ -2468,8 +2480,8 @@ fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
             child = Some(found);
             break;
         }
-        let source = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let source = economy_view
             .authored_model6
             .iter_mut()
             .find(|source| source.source_entity_index == first.source_entity_index)
@@ -2535,7 +2547,7 @@ fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
         second.position.x.to_be_bytes()[0],
         second.position.y.to_be_bytes()[0],
     );
-    session.economy_mut().terrain.planes.terrain_types[water_tile] = 0;
+    session.canonical_terrain_mut().planes.terrain_types[water_tile] = 0;
     assert!(
         session
             .economy_mut()
@@ -2566,9 +2578,10 @@ fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
         source.control_flags &= !SOURCE_REPLACEABLE_FLAG;
     }
     let before_exhaustion = exhausted.clone();
+    let terrain = session.canonical_terrain().clone();
     assert!(
         exhausted
-            .allocate_authored_model6(363, Position::default())
+            .allocate_authored_model6(363, Position::default(), &terrain)
             .is_none()
     );
     assert_eq!(exhausted, before_exhaustion);
@@ -2985,7 +2998,7 @@ fn level_two_whirlwind_action82_player_handoff_is_exact() {
     // callback, so the complete spell projection must remain byte-for-byte
     // unchanged.
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.players[0].enabled_spell_holders[10] = 999;
         shared.players[0].left_spell_slot_raw = 4;
         shared.players[0].right_spell_slot_raw = 5;
@@ -3382,7 +3395,7 @@ fn level_two_goat_action11_nonlethal_hit_reaches_partner_and_terrain_settle() {
         .cloned()
         .expect("authored action-9 partner Goat slot 66");
     let original_xy = (primary.position.x, primary.position.y);
-    let ground = session.terrain.ground_height(primary.position);
+    let ground = session.canonical_terrain().ground_height(primary.position);
     primary.action = 11;
     primary.phase = 0;
     primary.partner_entity_index = Some(66);
@@ -4705,8 +4718,8 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
     session.reset();
 
     {
-        let holder = session
-            .shared_spells_mut()
+        let mut shared_view = session.shared_spells_mut();
+        let holder = shared_view
             .dynamic_pickups
             .iter_mut()
             .find(|holder| holder.index == 115)
@@ -4725,8 +4738,8 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
     session.reset();
 
     {
-        let holder = session
-            .shared_spells_mut()
+        let mut shared_view = session.shared_spells_mut();
+        let holder = shared_view
             .dynamic_pickups
             .iter_mut()
             .find(|holder| holder.index == 115)
@@ -4748,17 +4761,21 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
     // failure consumes only the source holder countdown, never an arena
     // slot, NewEvent RNG draw, or launch sound.
     {
-        let shared = session.shared_spells_mut();
-        let holder = shared
-            .dynamic_pickups
-            .iter_mut()
-            .find(|holder| holder.index == 115)
-            .expect("materialized family-0 holder");
-        holder.active_value = holder.activation_value.cast_signed();
-        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
-        shared.player_entity.mana = holder.max_mana - 1;
+        let mut shared = session.shared_spells_mut();
+        let max_mana = {
+            let holder = shared
+                .dynamic_pickups
+                .iter_mut()
+                .find(|holder| holder.index == 115)
+                .expect("materialized family-0 holder");
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            holder.max_mana
+        };
+        shared.player_entity.mana = max_mana - 1;
+        let mana = shared.player_entity.mana;
         shared.player_entity.record[148..152]
-            .copy_from_slice(&shared.player_entity.mana.to_le_bytes());
+            .copy_from_slice(&mana.to_le_bytes());
     }
     assert!(
         session
@@ -4894,6 +4911,7 @@ fn level_two_fireball_collision_rejects_invalid_targets_and_duplicate_mailbox() 
         .expect("action-17 production Bee");
     assert_eq!(bee.action, 17);
     let qualified_economy = session.economy().clone();
+    let terrain = session.canonical_terrain().clone();
     let edge_x = u16::try_from(
         i32::from(LEVEL2_FIREBALL_COLLISION_HALF_WIDTH)
             + i32::from(LEVEL2_BEE_COLLISION_HALF_EXTENT),
@@ -5001,7 +5019,7 @@ fn level_two_fireball_collision_rejects_invalid_targets_and_duplicate_mailbox() 
             .get(&source_slot)
             .copied()
             .expect("NewEvent source RNG");
-        let _ = economy.step_fireball_projectile_slot(source_slot);
+        let _ = economy.step_fireball_projectile_slot(source_slot, &terrain);
         let pending_damage = economy
             .authored_bees
             .iter()
@@ -5024,7 +5042,7 @@ fn level_two_fireball_collision_rejects_invalid_targets_and_duplicate_mailbox() 
         .get(&source_slot)
         .copied()
         .expect("NewEvent source RNG");
-    let first_step = economy.step_fireball_projectile_slot(source_slot);
+    let first_step = economy.step_fireball_projectile_slot(source_slot, &terrain);
     assert!(first_step.impact_sound);
     let pending_after_first = economy
         .authored_bees
@@ -5041,7 +5059,7 @@ fn level_two_fireball_collision_rejects_invalid_targets_and_duplicate_mailbox() 
     assert_eq!(hit_rng, first_rng.wrapping_mul(9_377).wrapping_add(9_439));
     assert!(
         !economy
-            .step_fireball_projectile_slot(source_slot)
+            .step_fireball_projectile_slot(source_slot, &terrain)
             .impact_sound
     );
     let pending_after_duplicate = economy

@@ -387,7 +387,11 @@ impl Level2EconomyState {
     /// Source `sub_30D50` callback. Collision is attempted once on the first
     /// non-delayed callback, before the callback RNG/audio tail; the hidden row
     /// remains map-linked until the following source boundary reclaims it.
-    pub(super) fn step_fireball_projectile_slot(&mut self, source_slot: u16) -> Level2FireballStep {
+    pub(super) fn step_fireball_projectile_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> Level2FireballStep {
         let Some(projectile_index) = self.fireball_projectiles.iter().position(|projectile| {
             projectile.active && projectile.source_entity_index == source_slot
         }) else {
@@ -464,7 +468,7 @@ impl Level2EconomyState {
                 // `sub_580E0(position, ground, 0, 0, word_0x2c)` runs on
                 // every non-delayed live callback, including callbacks after
                 // the one-shot collision/audio gate has closed.
-                let ground = self.terrain.ground_height(projectile.position);
+                let ground = terrain.ground_height(projectile.position);
                 if projectile.position.z > ground {
                     projectile.position.z = projectile
                         .position
@@ -542,7 +546,11 @@ impl Level2EconomyState {
     /// allocation failure preserves that shifted flyer and its unchanged life
     /// for the next callback. On a miss, only a boundary still violated after
     /// the scan or signed lifetime expiry attempts model 12.
-    pub fn step_possession_projectile_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_possession_projectile_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(projectile_index) = self.possession_projectiles.iter().position(|projectile| {
             projectile.active && projectile.source_entity_index == source_slot
         }) else {
@@ -613,12 +621,11 @@ impl Level2EconomyState {
         // `CastPosses_65F60` strictly clamps the flyer before its `sub_108B0`
         // scan. These constraints only choose the scan position: an ordinary
         // initial clamp is not a model-12 impact and equality is not contact.
-        let ground_height = self.terrain.ground_height(moved.position);
+        let ground_height = terrain.ground_height(moved.position);
         if ground_height > moved.position.z {
             moved.position.z = ground_height;
         }
-        let cave_limit = self
-            .terrain
+        let cave_limit = terrain
             .ceiling_height(moved.position)
             .map(|ceiling_height| {
                 ceiling_height.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT)
@@ -824,6 +831,7 @@ impl Level2EconomyState {
         source_rng_after_death: u16,
         mana: i32,
         owner_entity_index: u16,
+        terrain: &SessionTerrain,
     ) -> Option<u32> {
         self.spawn_mana_spheres_from_death(
             source_entity_index,
@@ -833,6 +841,7 @@ impl Level2EconomyState {
             mana,
             owner_entity_index,
             false,
+            terrain,
         )
         .into_iter()
         .next()
@@ -852,6 +861,7 @@ impl Level2EconomyState {
         mana: i32,
         owner_entity_index: u16,
         use_mana_fraction: bool,
+        terrain: &SessionTerrain,
     ) -> Vec<u32> {
         if mana <= 0 {
             return Vec::new();
@@ -881,7 +891,7 @@ impl Level2EconomyState {
             let speed = i16::try_from(speed_rng % 0x30 + 16).expect("mana sphere speed fits i16");
             let mut velocity = Position::default();
             crate::move_entity(&mut velocity, yaw, 0, speed);
-            let ground = self.terrain.ground_height(position);
+            let ground = terrain.ground_height(position);
             let height_above_ground = i32::from(position.z) - i32::from(ground);
             let vertical_velocity = level2_mana_sphere_vertical_velocity(height_above_ground);
             let sphere_mana = if sphere_index + 1 == fraction {
@@ -1051,7 +1061,11 @@ impl Level2EconomyState {
     /// BUILD-backed 37BC0 callback; model 41/action 43 remains the separate
     /// MSPRD-backed 377F0 callback. Other terminal rows retain source
     /// disable/reclaim.
-    pub fn step_castle_child_terminal_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_castle_child_terminal_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &mut SessionTerrain,
+    ) -> bool {
         let Some(child_index) = self.castle_children.iter().position(|child| {
             child.active
                 && child.source_entity_index == source_slot
@@ -1068,13 +1082,13 @@ impl Level2EconomyState {
             return true;
         }
         if child.source_class == 10 && child.model == 79 && child.action == 0x56 {
-            return self.step_castle_controller_slot(child_index);
+            return self.step_castle_controller_slot(child_index, terrain);
         }
         if child.source_class == 10 && child.model == 43 && child.action == 45 {
             return self.step_castle_upgrade_product(child_index);
         }
         if child.source_class == 10 && child.model == 42 && child.action == 44 {
-            let live = self.step_castle_build_child(child_index);
+            let live = self.step_castle_build_child(child_index, terrain);
             // `UpdateEntities_57730` performs the ordinary callback epilogue
             // after 37BC0 returns, including the byte_0x3E_62 increment.
             if let Some(child) = self.castle_children.get_mut(child_index) {
@@ -1084,7 +1098,7 @@ impl Level2EconomyState {
         }
         if child.source_class == 10 && child.model == 41 && child.action == 43 {
             if level2_castle_model41_msprd_rect(child.cave_collision_cooldown).is_some() {
-                let live = self.step_castle_msprd_child(child_index);
+                let live = self.step_castle_msprd_child(child_index, terrain);
                 // MSPRD uses the same ordinary source callback epilogue as
                 // BUILD; hidden-row reclaim is a later source boundary and
                 // must not advance this byte a second time.
@@ -1162,7 +1176,11 @@ impl Level2EconomyState {
     /// advances the source RNG once and arms the source dword-10 timer. The
     /// later defense-spell/chain branches remain outside this slice, but the
     /// live row stays map-linked and source-owned throughout.
-    fn step_castle_controller_slot(&mut self, child_index: usize) -> bool {
+    fn step_castle_controller_slot(
+        &mut self,
+        child_index: usize,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let child = self.castle_children[child_index];
         if child.life < 0 || child.id_entity_index == 0 {
             let child = {
@@ -1212,7 +1230,7 @@ impl Level2EconomyState {
                 _ => {}
             }
 
-            let ground = self.terrain.ground_height(child.position);
+            let ground = terrain.ground_height(child.position);
             let clearance = if child.source_word_4a <= 1 { 384 } else { 224 };
             let target = ground.saturating_add(clearance);
             if child.position.z < target {
@@ -1360,7 +1378,11 @@ impl Level2EconomyState {
         .ok()
     }
 
-    fn step_castle_build_child(&mut self, child_index: usize) -> bool {
+    fn step_castle_build_child(
+        &mut self,
+        child_index: usize,
+        terrain: &mut SessionTerrain,
+    ) -> bool {
         let child = self.castle_children[child_index];
         let Some(parent) = self.castle.filter(|castle| {
             castle.active && castle.source_entity_index == child.parent_entity_index
@@ -1384,7 +1406,7 @@ impl Level2EconomyState {
             clock = clock.wrapping_add(1);
             self.castle_children[child_index].source_dword_10 = clock;
             if clock == 0 {
-                return self.complete_castle_construction(parent.source_entity_index);
+                return self.complete_castle_construction(parent.source_entity_index, terrain);
             }
             return true;
         }
@@ -1394,7 +1416,7 @@ impl Level2EconomyState {
             clock = if child.source_byte_3b != 0 { -25 } else { -1 };
         } else if parent.source_word_30 == 0 {
             let remaining = i16::try_from(clock).expect("37BC0 BUILD timer fits i16");
-            self.terrain
+            terrain
                 .apply_castle_update(
                     CastleTerrainUpdate::ConstructionPass {
                         position: child.position,
@@ -1410,7 +1432,11 @@ impl Level2EconomyState {
 
     /// Source `sub_377F0` for model 41/action 43.  This is intentionally kept
     /// separate from 37BC0: its timer and MSPRD geometry are not BUILD data.
-    fn step_castle_msprd_child(&mut self, child_index: usize) -> bool {
+    fn step_castle_msprd_child(
+        &mut self,
+        child_index: usize,
+        terrain: &mut SessionTerrain,
+    ) -> bool {
         let child = self.castle_children[child_index];
         let Some(parent) = self.castle.filter(|castle| {
             castle.active && castle.source_entity_index == child.parent_entity_index
@@ -1429,7 +1455,7 @@ impl Level2EconomyState {
         if child.control_flags & LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT == 0 {
             let initial_height = child.position.z >> 5;
             let target_height = level2_castle_construction_height_from_square(
-                &self.terrain.planes,
+                &terrain.planes,
                 start_x.wrapping_sub(1),
                 start_y.wrapping_sub(1),
                 width.wrapping_add(2),
@@ -1462,26 +1488,26 @@ impl Level2EconomyState {
                     for column in 0..width {
                         let index =
                             terrain_index(start_x.wrapping_add(column), start_y.wrapping_add(row));
-                        self.terrain.planes.ground_heights[index] =
-                            self.terrain.planes.ground_heights[index].wrapping_add(step as u8);
+                        terrain.planes.ground_heights[index] =
+                            terrain.planes.ground_heights[index].wrapping_add(step as u8);
                         if clock == 1 {
-                            let mut angle = self.terrain.planes.angles[index];
+                            let mut angle = terrain.planes.angles[index];
                             if angle & 0x80 != 0 {
                                 angle &= !0x80;
-                                if self.terrain.map_type == MapType::Day {
+                                if terrain.map_type == MapType::Day {
                                     angle |= 0x08;
                                 }
-                                self.terrain.planes.angles[index] = angle;
+                                terrain.planes.angles[index] = angle;
                             }
                         }
                     }
                 }
-            } else if clock == -1 && self.terrain.map_type == MapType::Day {
+            } else if clock == -1 && terrain.map_type == MapType::Day {
                 for row in 0..height {
                     for column in 0..width {
                         let index =
                             terrain_index(start_x.wrapping_add(column), start_y.wrapping_add(row));
-                        let angle = &mut self.terrain.planes.angles[index];
+                        let angle = &mut terrain.planes.angles[index];
                         if *angle & 0x08 != 0 {
                             *angle = (*angle | 0x80) & !0x08;
                             terrain_touched = true;
@@ -1502,12 +1528,12 @@ impl Level2EconomyState {
             child.source_word_2e = next_height;
             child.source_dword_10 = next_clock;
             if terrain_touched {
-                self.terrain.mutation_sequence = self.terrain.mutation_sequence.wrapping_add(1);
+                terrain.mutation_sequence = terrain.mutation_sequence.wrapping_add(1);
             }
             return true;
         }
 
-        self.complete_castle_msprd_child(parent.source_entity_index, child, width, height);
+        self.complete_castle_msprd_child(parent.source_entity_index, child, width, height, terrain);
         true
     }
 
@@ -1517,6 +1543,7 @@ impl Level2EconomyState {
         child: Level2CastleChild,
         width: u8,
         height: u8,
+        terrain: &mut SessionTerrain,
     ) {
         if let Some(parent) = self
             .castle
@@ -1533,33 +1560,33 @@ impl Level2EconomyState {
         for row in 0..height.saturating_sub(1) {
             for offset in 0..4 {
                 smooth_building_height(
-                    &mut self.terrain.planes,
+                    &mut terrain.planes,
                     left.wrapping_add(offset),
                     top.wrapping_add(row),
-                    self.terrain.map_type,
+                    terrain.map_type,
                 );
                 smooth_building_height(
-                    &mut self.terrain.planes,
+                    &mut terrain.planes,
                     center_x.wrapping_add(width / 2).wrapping_add(offset),
                     top.wrapping_add(row),
-                    self.terrain.map_type,
+                    terrain.map_type,
                 );
             }
         }
         for column in 0..width.saturating_add(6) {
             for offset in 0..4 {
                 smooth_building_height(
-                    &mut self.terrain.planes,
+                    &mut terrain.planes,
                     left.wrapping_add(column),
                     top.wrapping_sub(3).wrapping_add(offset),
-                    self.terrain.map_type,
+                    terrain.map_type,
                 );
                 smooth_building_height(
-                    &mut self.terrain.planes,
+                    &mut terrain.planes,
                     left.wrapping_add(column),
                     top.wrapping_add(height.saturating_sub(1))
                         .wrapping_add(offset),
-                    self.terrain.map_type,
+                    terrain.map_type,
                 );
             }
         }
@@ -1598,7 +1625,7 @@ impl Level2EconomyState {
     /// production handler: carrier attraction and possession mailbox input
     /// remain separate source actions, while this method makes the dynamic
     /// arena row itself stateful and reclaimable by the outer dispatcher.
-    pub fn step_mana_sphere_slot(&mut self, sphere_slot: u16) -> bool {
+    pub fn step_mana_sphere_slot(&mut self, sphere_slot: u16, terrain: &SessionTerrain) -> bool {
         let Some(sphere_index) = self
             .spheres
             .iter()
@@ -1700,7 +1727,7 @@ impl Level2EconomyState {
             if sphere.vertical_velocity < MANA_SPHERE_TERMINAL_VELOCITY {
                 sphere.vertical_velocity = MANA_SPHERE_TERMINAL_VELOCITY;
             }
-            let ground = self.terrain.ground_height(sphere.position);
+            let ground = terrain.ground_height(sphere.position);
             if sphere.position.z < ground {
                 sphere.position.z = ground;
                 sphere.vertical_velocity = -(sphere.vertical_velocity / 4);
@@ -1713,7 +1740,7 @@ impl Level2EconomyState {
                 let [_, tile_x] = sphere.position.x.to_le_bytes();
                 let [_, tile_y] = sphere.position.y.to_le_bytes();
                 let sample = |x: u8, y: u8| {
-                    i32::from(self.terrain.ground_height(Position {
+                    i32::from(terrain.ground_height(Position {
                         x: u16::from(x) << 8,
                         y: u16::from(y) << 8,
                         z: 0,
@@ -1770,7 +1797,11 @@ impl Level2EconomyState {
     /// target `dword_0x10_16` range multiplier.  Sphere/class-10 targets and
     /// the deeper combat/spell callbacks remain deliberately outside this
     /// typed handler.
-    pub fn step_castle_defender_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_castle_defender_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(child_index) = self.castle_children.iter().position(|child| {
             child.active
                 && child.source_entity_index == source_slot
@@ -1806,7 +1837,7 @@ impl Level2EconomyState {
                 // NewEvent_4A050 binds the holder's str_160 word_0xc to zero
                 // for the default event profile.  This is the exact source
                 // altitude gate before the class-3 mana transfer.
-                let ground = self.terrain.ground_height(predicted);
+                let ground = terrain.ground_height(predicted);
                 // `sub_4ABA0` binds `str_D7BD6[68].word_160_0xc_12` to 512;
                 // the source compares the holder's predicted Z against that
                 // terrain-relative upper bound, not against the ground
@@ -1839,7 +1870,7 @@ impl Level2EconomyState {
             yaw = i16::try_from(heading_for_positions(predicted, sphere.position))
                 .expect("mana-sphere defender heading fits");
             let distance = level2_wrapping_target_distance(predicted, sphere.position);
-            let attraction_limit = if self.terrain.map_type == MapType::Cave {
+            let attraction_limit = if terrain.map_type == MapType::Cave {
                 2_048
             } else {
                 1_024
@@ -1894,8 +1925,8 @@ impl Level2EconomyState {
         let mut cave_speed = child_snapshot.speed;
         let mut cave_collision_cooldown = child_snapshot.cave_collision_cooldown;
         let mut cave_sound = false;
-        let ground = self.terrain.ground_height(predicted);
-        if self.terrain.map_type == MapType::Cave {
+        let ground = terrain.ground_height(predicted);
+        if terrain.map_type == MapType::Cave {
             // Pinned remc2 `sub_60D50` (EventsFunctions.cpp:61920-61976):
             // a Cave holder is blocked by the map angle bit 8 or by the
             // strict `sub_11E70` ceiling test.  The latter is
@@ -1904,14 +1935,11 @@ impl Level2EconomyState {
                 x: predicted.x.to_be_bytes()[0],
                 y: predicted.y.to_be_bytes()[0],
             };
-            let angle_blocked = self.terrain.angle_flags(tile) & 8 != 0;
-            let ceiling_blocked = self
-                .terrain
-                .ceiling_height(predicted)
-                .is_some_and(|ceiling| {
-                    i32::from(LEVEL2_CASTLE_DEFENDER_CAVE_FOV) + i32::from(ground) + 512
-                        > i32::from(ceiling)
-                });
+            let angle_blocked = terrain.angle_flags(tile) & 8 != 0;
+            let ceiling_blocked = terrain.ceiling_height(predicted).is_some_and(|ceiling| {
+                i32::from(LEVEL2_CASTLE_DEFENDER_CAVE_FOV) + i32::from(ground) + 512
+                    > i32::from(ceiling)
+            });
             let blocked = angle_blocked || ceiling_blocked;
             let was_blocked = cave_control_flags & 1 != 0;
             cave_collision_cooldown = cave_collision_cooldown.saturating_sub(1);
@@ -1940,7 +1968,7 @@ impl Level2EconomyState {
                 predicted.z = ground.saturating_add(LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE);
             }
             if !blocked {
-                if let Some(ceiling) = self.terrain.ceiling_height(predicted) {
+                if let Some(ceiling) = terrain.ceiling_height(predicted) {
                     let cap = ceiling.saturating_sub(LEVEL2_CASTLE_DEFENDER_CAVE_FOV);
                     if predicted.z > cap {
                         predicted.z = cap;
@@ -2022,7 +2050,7 @@ impl Level2EconomyState {
     /// action.  The handler deliberately uses the imported Day terrain and
     /// economy-owned sphere list, so collection and Castle deposit mutate the
     /// same production state that the dispatcher hashes and exports.
-    pub fn step_mana_carrier_slot(&mut self, carrier_slot: u16) -> bool {
+    pub fn step_mana_carrier_slot(&mut self, carrier_slot: u16, terrain: &SessionTerrain) -> bool {
         let Some(original) = self
             .carriers
             .iter()
@@ -2054,7 +2082,7 @@ impl Level2EconomyState {
                 if level2_wrapping_xy_distance(position, castle.position)
                     <= arrival.saturating_mul(arrival)
                 {
-                    let ground = self.terrain.ground_height(position);
+                    let ground = terrain.ground_height(position);
                     if position.z <= ground.wrapping_add(MANA_CARRIER_GROUND_CLEARANCE)
                         && castle.level > 0
                     {
@@ -2131,7 +2159,7 @@ impl Level2EconomyState {
         }
 
         if valid_target {
-            let ground = self.terrain.ground_height(position);
+            let ground = terrain.ground_height(position);
             if position.z > ground {
                 position.z = position.z.wrapping_add(MANA_CARRIER_DESCENT);
             }
@@ -2357,9 +2385,14 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
-    pub fn build_castle(&mut self, position: Position, owner_entity_index: u16) -> Option<u16> {
+    pub fn build_castle(
+        &mut self,
+        position: Position,
+        owner_entity_index: u16,
+        terrain: &SessionTerrain,
+    ) -> Option<u16> {
         let mut root_position = position;
-        root_position.z = self.terrain.ground_height(root_position);
+        root_position.z = terrain.ground_height(root_position);
         self.build_castle_at(
             root_position,
             root_position,
@@ -2378,12 +2411,14 @@ impl Level2EconomyState {
         projectile_position: Position,
         owner_entity_index: u16,
         footprint: &CastleBuildFootprint,
+        terrain: &SessionTerrain,
     ) -> Option<u16> {
         self.build_castle_with_footprint_mode(
             projectile_position,
             owner_entity_index,
             footprint,
             true,
+            terrain,
         )
     }
 
@@ -2393,12 +2428,13 @@ impl Level2EconomyState {
         owner_entity_index: u16,
         footprint: &CastleBuildFootprint,
         emit_built_event: bool,
+        terrain: &SessionTerrain,
     ) -> Option<u16> {
         if footprint.index != 1 {
             return None;
         }
         let (root_position, construction_anchor) =
-            level2_castle_root_positions(&self.terrain, footprint, projectile_position);
+            level2_castle_root_positions(terrain, footprint, projectile_position);
         let castle_slot = self.build_castle_at(
             root_position,
             construction_anchor,
@@ -2424,10 +2460,11 @@ impl Level2EconomyState {
         payload: Level2CastleProjectileLaunchPayload,
         holder_entity_index: u16,
         player_actual_speed: i16,
+        terrain: &SessionTerrain,
     ) -> Option<u16> {
         let footprint = self.castle_stage_footprints.get(&1)?.clone();
         let (target_position, target_anchor) =
-            level2_castle_root_positions(&self.terrain, &footprint, payload.position);
+            level2_castle_root_positions(terrain, &footprint, payload.position);
         let target_castle_slot = self
             .castle
             .filter(|castle| {
@@ -2444,7 +2481,7 @@ impl Level2EconomyState {
         let initial_yaw = payload.yaw;
         if target_castle_slot == 0 {
             crate::move_entity(&mut axis_position, initial_yaw, 0, 4_096);
-            axis_position.z = self.terrain.ground_height(axis_position);
+            axis_position.z = terrain.ground_height(axis_position);
         }
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
@@ -2513,6 +2550,7 @@ impl Level2EconomyState {
         player_yaw: i16,
         player_next_entity: i16,
         player_actual_speed: i16,
+        terrain: &SessionTerrain,
     ) -> Option<u16> {
         self.spawn_castle_projectile_with_payload(
             Level2CastleProjectileLaunchPayload {
@@ -2526,6 +2564,7 @@ impl Level2EconomyState {
             },
             holder_entity_index,
             player_actual_speed,
+            terrain,
         )
     }
 
@@ -2539,6 +2578,7 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         entities: &[EntitySnapshot],
+        terrain: &SessionTerrain,
     ) -> bool {
         let Some(projectile) = self
             .castle_projectiles
@@ -2551,7 +2591,7 @@ impl Level2EconomyState {
         if projectile.source_word_96 == 0
             && projectile.control_flags & LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT == 0
         {
-            if self.castle_projectile_site_blocked(projectile, entities) {
+            if self.castle_projectile_site_blocked(projectile, entities, terrain) {
                 self.disable_castle_projectile(source_slot, true);
                 return false;
             }
@@ -2604,15 +2644,15 @@ impl Level2EconomyState {
             }
             let mut terrain_hit = false;
             if castle_hit.is_none() {
-                let ground = self.terrain.ground_height(moved.position);
+                let ground = terrain.ground_height(moved.position);
                 let moved_z = moved.position.z;
                 if ground > moved_z {
                     moved.position.z = ground;
                     terrain_hit = true;
                 }
                 let moved_z = moved.position.z;
-                if self.terrain.map_type == MapType::Cave
-                    && let Some(ceiling) = self.terrain.ceiling_height(moved.position)
+                if terrain.map_type == MapType::Cave
+                    && let Some(ceiling) = terrain.ceiling_height(moved.position)
                     && moved_z > ceiling
                 {
                     moved.position.z = ceiling;
@@ -2629,7 +2669,7 @@ impl Level2EconomyState {
             // same-speed bounce before allocation.
             let gate_blocked = !collision_landed
                 && projectile.source_word_96 == 0
-                && self.castle_projectile_site_blocked(moved, entities);
+                && self.castle_projectile_site_blocked(moved, entities, terrain);
             let landed = collision_landed || gate_blocked;
             if gate_blocked {
                 moved.yaw = (moved.yaw.wrapping_add(0x400)) & 0x07ff;
@@ -2664,7 +2704,7 @@ impl Level2EconomyState {
                 return true;
             };
             let (root_position, construction_anchor) =
-                level2_castle_root_positions(&self.terrain, &footprint, landing_position);
+                level2_castle_root_positions(terrain, &footprint, landing_position);
             if self
                 .allocate_castle_root_seed(
                     root_position,
@@ -2755,6 +2795,7 @@ impl Level2EconomyState {
         &self,
         projectile: Level2CastleProjectile,
         entities: &[EntitySnapshot],
+        terrain: &SessionTerrain,
     ) -> bool {
         let start_x = (projectile.position.x >> 8) as u8;
         let start_y = (projectile.position.y >> 8) as u8;
@@ -2781,7 +2822,7 @@ impl Level2EconomyState {
         }
         for row in 0..8_u8 {
             for column in 0..8_u8 {
-                let flags = self.terrain.angle_flags(crate::Tile {
+                let flags = terrain.angle_flags(crate::Tile {
                     x: start_x.wrapping_sub(8).wrapping_add(column),
                     y: start_y.wrapping_sub(8).wrapping_add(row),
                 });
@@ -3121,7 +3162,11 @@ impl Level2EconomyState {
     /// The BUILD terrain completion is applied by the canonical terrain
     /// authority.  The source keeps the child allocated, disables only its
     /// drawing, and lets the following root tick consume state 2.
-    pub fn complete_castle_construction(&mut self, castle_slot: u16) -> bool {
+    pub fn complete_castle_construction(
+        &mut self,
+        castle_slot: u16,
+        terrain: &mut SessionTerrain,
+    ) -> bool {
         let Some(castle) = self.castle.filter(|castle| {
             castle.active
                 && castle.source_entity_index == castle_slot
@@ -3156,7 +3201,7 @@ impl Level2EconomyState {
             castle.build_state = 2;
             castle.source_word_2e = 2;
         }
-        self.terrain
+        terrain
             .apply_castle_update(
                 CastleTerrainUpdate::ConstructionCompleted {
                     position: child.position,
@@ -3340,7 +3385,7 @@ impl Level2EconomyState {
     /// The source's subsequent `sub_5FF50` controller walk is represented by
     /// the existing ordered sphere/child vectors; no synthetic child is
     /// allocated here.
-    fn release_castle_excess_mana(&mut self, castle_slot: u16) {
+    fn release_castle_excess_mana(&mut self, castle_slot: u16, terrain: &SessionTerrain) {
         let Some(castle) = self
             .castle
             .filter(|castle| castle.source_entity_index == castle_slot)
@@ -3397,7 +3442,7 @@ impl Level2EconomyState {
             let yaw = i16::try_from(source_rng & 0x07ff).expect("Castle sphere yaw fits i16");
             let mut sphere_position = castle.position;
             crate::move_entity(&mut sphere_position, yaw, 0, radius);
-            let ground = self.terrain.ground_height(castle.position);
+            let ground = terrain.ground_height(castle.position);
             let height_above_ground = i32::from(castle.position.z) - i32::from(ground);
             let vertical_velocity = level2_mana_sphere_vertical_velocity(height_above_ground);
             let sphere_mana = share;
@@ -3468,7 +3513,7 @@ impl Level2EconomyState {
     /// overflow, then restoring the old capacity for the following stage
     /// table. No-free arenas still complete this state transition; only the
     /// optional mana-sphere allocations are allowed to fail.
-    fn prepare_castle_stage_destruction(&mut self, castle_slot: u16) {
+    fn prepare_castle_stage_destruction(&mut self, castle_slot: u16, terrain: &SessionTerrain) {
         let Some(snapshot) = self
             .castle
             .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
@@ -3484,7 +3529,7 @@ impl Level2EconomyState {
         if let Some(castle) = self.castle.as_mut() {
             castle.mana_capacity = reduced_capacity;
         }
-        self.release_castle_excess_mana(castle_slot);
+        self.release_castle_excess_mana(castle_slot, terrain);
         if let Some(castle) = self.castle.as_mut() {
             castle.mana_capacity = snapshot.mana_capacity;
         }
@@ -3499,7 +3544,12 @@ impl Level2EconomyState {
     /// after `sub_605E0` removes a stage. This is independent of model-42
     /// construction and therefore remains observable even when the source
     /// arena could not allocate every optional child.
-    fn spawn_castle_controller_chain(&mut self, snapshot: Level2CastleState, level: u8) {
+    fn spawn_castle_controller_chain(
+        &mut self,
+        snapshot: Level2CastleState,
+        level: u8,
+        terrain: &SessionTerrain,
+    ) {
         let Some((selected_level, source_byte_43)) =
             level2_castle_controller_selection(level, &self.castle_controller_coefficients)
         else {
@@ -3524,7 +3574,7 @@ impl Level2EconomyState {
                 y: u16::from(start_y.wrapping_add_signed(offset_y)) << 8,
                 z: 0,
             };
-            let ground = self.terrain.ground_height(stage_position);
+            let ground = terrain.ground_height(stage_position);
             let stage_child = Level2CastleChild {
                 source_entity_index: stage_slot,
                 entity_rng: self.new_event_rng(stage_slot),
@@ -3593,7 +3643,11 @@ impl Level2EconomyState {
     /// player relation only on that positive-mana path. A zero-mana holder
     /// retains the raw relation while hidden, and leaves the disabled source
     /// row for the next `UpdateEntities_57730` reclaim boundary.
-    fn retire_castle_defender_to_mana(&mut self, source_slot: u16) -> bool {
+    fn retire_castle_defender_to_mana(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(child) = self
             .castle_children
             .iter()
@@ -3623,6 +3677,7 @@ impl Level2EconomyState {
                 child.mana,
                 child.player_entity_index,
                 false,
+                terrain,
             );
         }
         for sphere in &mut self.spheres {
@@ -3652,7 +3707,7 @@ impl Level2EconomyState {
     /// count is met. This keeps allocator fallback deterministic without
     /// importing the full combat targeting arbitration; model-15 auxiliary
     /// relation creation and fixed tail bounds are represented below.
-    pub(super) fn maintain_castle_defenders(&mut self, castle_slot: u16) {
+    pub(super) fn maintain_castle_defenders(&mut self, castle_slot: u16, terrain: &SessionTerrain) {
         let Some(snapshot) = self
             .castle
             .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
@@ -3689,7 +3744,7 @@ impl Level2EconomyState {
                     // `sub_5FF50` transforms a valid dead holder and clears
                     // this relation, but does not allocate a replacement in
                     // the same indexed visit.
-                    self.retire_castle_defender_to_mana(related_slot);
+                    self.retire_castle_defender_to_mana(related_slot, terrain);
                     defender_slots[index] = 0;
                     continue;
                 }
@@ -3756,7 +3811,7 @@ impl Level2EconomyState {
                     && child.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
             });
             if valid {
-                self.retire_castle_defender_to_mana(slot);
+                self.retire_castle_defender_to_mana(slot, terrain);
             }
             defender_slots[index] = 0;
         }
@@ -3887,7 +3942,7 @@ impl Level2EconomyState {
                         z: 0,
                     };
                     let child_position = Position {
-                        z: self.terrain.ground_height(child_position),
+                        z: terrain.ground_height(child_position),
                         ..child_position
                     };
                     if let Some(slot) = self.allocate_slot() {
@@ -3987,7 +4042,7 @@ impl Level2EconomyState {
     /// model-41 child. The model-42 allocation is atomic; the bounded
     /// model-79 stage-controller loop may commit a partial chain when the
     /// source arena exhausts.
-    pub fn step_castle_action(&mut self, castle_slot: u16) -> bool {
+    pub fn step_castle_action(&mut self, castle_slot: u16, terrain: &mut SessionTerrain) -> bool {
         let Some(snapshot) = self
             .castle
             .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
@@ -4085,7 +4140,7 @@ impl Level2EconomyState {
                             y: u16::from(start_y.wrapping_add_signed(offset_y)) << 8,
                             z: 0,
                         };
-                        let ground = self.terrain.ground_height(stage_position);
+                        let ground = terrain.ground_height(stage_position);
                         let stage_child = Level2CastleChild {
                             source_entity_index: stage_slot,
                             entity_rng: self.new_event_rng(stage_slot),
@@ -4203,7 +4258,7 @@ impl Level2EconomyState {
             }
             5 if snapshot.build_state == 1 => {
                 let castle = self.castle.as_mut().expect("Castle remains installed");
-                castle.position.z = self.terrain.ground_height(castle.position);
+                castle.position.z = terrain.ground_height(castle.position);
                 self.advance_castle_phase(castle_slot);
                 true
             }
@@ -4286,7 +4341,7 @@ impl Level2EconomyState {
                     .as_mut()
                     .expect("Castle remains installed")
                     .position
-                    .z = self.terrain.ground_height(snapshot.position);
+                    .z = terrain.ground_height(snapshot.position);
                 self.advance_castle_phase(castle_slot);
                 true
             }
@@ -4318,7 +4373,7 @@ impl Level2EconomyState {
                 } else {
                     castle.timer = castle.timer.wrapping_sub(1);
                 }
-                castle.position.z = self.terrain.ground_height(castle.position);
+                castle.position.z = terrain.ground_height(castle.position);
                 self.advance_castle_phase(castle_slot);
                 true
             }
@@ -4357,7 +4412,7 @@ impl Level2EconomyState {
                         let castle = self.castle.as_mut().expect("Castle remains installed");
                         castle.action = 5;
                         castle.build_state = 0;
-                        castle.position.z = self.terrain.ground_height(castle.position);
+                        castle.position.z = terrain.ground_height(castle.position);
                         self.advance_castle_phase(castle_slot);
                         return true;
                     }
@@ -4367,10 +4422,10 @@ impl Level2EconomyState {
                     return true;
                 }
                 if let Some(castle) = self.castle.as_mut() {
-                    castle.position.z = self.terrain.ground_height(castle.position);
+                    castle.position.z = terrain.ground_height(castle.position);
                 }
-                self.release_castle_excess_mana(castle_slot);
-                self.maintain_castle_defenders(castle_slot);
+                self.release_castle_excess_mana(castle_slot, terrain);
+                self.maintain_castle_defenders(castle_slot, terrain);
                 let Some(castle) = self.castle else {
                     self.advance_castle_phase(castle_slot);
                     return false;
@@ -4421,7 +4476,7 @@ impl Level2EconomyState {
                 // Keep the source order: reduce capacity and release
                 // overflow before the destruction sound and stage terrain
                 // removal (`sub_605E0` -> `sub_5FD00` -> `RemoveCastleStage`).
-                self.prepare_castle_stage_destruction(castle_slot);
+                self.prepare_castle_stage_destruction(castle_slot, terrain);
                 if snapshot.level > 0 {
                     // The source sentinel carries the *old* Castle level in
                     // byte 0x46; index that DATA_BUILD record rather than
@@ -4444,12 +4499,12 @@ impl Level2EconomyState {
                         // row's rand_0x14; the Castle root RNG was consumed
                         // only by the preceding `sub_5FD00` overflow path.
                         self.sentinel_rng = remove_castle_stage(
-                            &mut self.terrain.planes,
+                            &mut terrain.planes,
                             start_x,
                             start_y,
                             &footprint,
-                            self.terrain.map_type,
-                            &mut self.terrain.terrain_rng,
+                            terrain.map_type,
+                            &mut terrain.terrain_rng,
                             self.sentinel_rng,
                         );
                     }
@@ -4568,14 +4623,14 @@ impl Level2EconomyState {
                 }
                 if next_level > 0 {
                     let downgraded = self.castle.expect("Castle remains installed");
-                    self.spawn_castle_controller_chain(downgraded, next_level);
+                    self.spawn_castle_controller_chain(downgraded, next_level, terrain);
                 }
                 // `sub_5FCA0` performs a second overflow release and then
                 // runs `sub_5FF50` after `sub_605E0` has rebuilt the lower
                 // stage. Allocation failure here must not roll back the
                 // already-committed stage transition.
-                self.release_castle_excess_mana(castle_slot);
-                self.maintain_castle_defenders(castle_slot);
+                self.release_castle_excess_mana(castle_slot, terrain);
+                self.maintain_castle_defenders(castle_slot, terrain);
                 if let Some(castle) = self
                     .castle
                     .as_mut()
@@ -4632,12 +4687,17 @@ impl Level2EconomyState {
     /// stage, and terrain upper-bound gates pass. The carrier remains active
     /// with its life restored; its mana payload is transferred and cleared at
     /// arrival, not when the return is scheduled.
-    pub fn step_carrier_to_castle(&mut self, carrier_slot: u16, position: Position) -> bool {
+    pub fn step_carrier_to_castle(
+        &mut self,
+        carrier_slot: u16,
+        position: Position,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(castle) = self.castle.filter(|castle| castle.active) else {
             return false;
         };
         let raw_position = position;
-        let ground = self.terrain.ground_height(raw_position);
+        let ground = terrain.ground_height(raw_position);
         let Some(carrier) = self
             .carriers
             .iter_mut()

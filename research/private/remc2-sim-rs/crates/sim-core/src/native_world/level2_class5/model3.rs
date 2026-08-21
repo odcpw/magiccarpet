@@ -296,15 +296,16 @@ impl Level2EconomyState {
         &mut self,
         source: &mut Level2AuthoredClass5Source,
         target: Option<EntitySnapshot>,
+        terrain: &SessionTerrain,
     ) {
         let Some(state_index) = self.model3_state_index(source.source_entity_index) else {
             return;
         };
         let mut model3 = self.authored_class5_model3[state_index];
         match source.action {
-            25 => self.step_model3_action25(source, &mut model3, target),
-            26 => self.step_model3_action26(source, &mut model3, target),
-            27 => self.step_model3_action27(source, &mut model3),
+            25 => self.step_model3_action25(source, &mut model3, target, terrain),
+            26 => self.step_model3_action26(source, &mut model3, target, terrain),
+            27 => self.step_model3_action27(source, &mut model3, terrain),
             28 => self.step_model3_action28(source, &model3),
             30 => self.step_model3_action30(source, &mut model3),
             // 216..220 are model-27 actions owned by sub_4D000. A malformed
@@ -362,6 +363,7 @@ impl Level2EconomyState {
         source: &mut Level2AuthoredClass5Source,
         model3: &mut Level2AuthoredClass5Model3State,
         target: Option<EntitySnapshot>,
+        terrain: &SessionTerrain,
     ) {
         let state = self.model3_source_prepass(source, model3);
         if state == 2 {
@@ -375,12 +377,12 @@ impl Level2EconomyState {
             } else {
                 26
             };
-            self.model3_source_terrain_settle(source);
+            self.model3_source_terrain_settle(source, terrain);
             return;
         }
 
         // sub_1B8C0 runs before the descriptor cadence gate.
-        let _ = self.model3_step_source_movement(source, model3);
+        let _ = self.model3_step_source_movement(source, model3, terrain);
         if source.source_byte_3e % MODEL3_DESCRIPTOR_CADENCE != 0 {
             return;
         }
@@ -432,6 +434,7 @@ impl Level2EconomyState {
         source: &mut Level2AuthoredClass5Source,
         model3: &mut Level2AuthoredClass5Model3State,
         target: Option<EntitySnapshot>,
+        terrain: &SessionTerrain,
     ) {
         match self.model3_source_prepass(source, model3) {
             2 => {
@@ -445,13 +448,13 @@ impl Level2EconomyState {
                 } else {
                     26
                 };
-                self.model3_source_terrain_settle(source);
+                self.model3_source_terrain_settle(source, terrain);
                 return;
             }
             _ => {}
         }
 
-        let _ = self.model3_step_source_movement(source, model3);
+        let _ = self.model3_step_source_movement(source, model3, terrain);
         let Some(target) = target.filter(|target| {
             target.active
                 && target.life >= 0
@@ -488,7 +491,7 @@ impl Level2EconomyState {
                 });
         }
         source.word_0x96_150 = source.word_0x26;
-        self.model3_source_terrain_settle(source);
+        self.model3_source_terrain_settle(source, terrain);
     }
 
     /// Port `sub_1F9E0 -> sub_1C560`, using the model-3 root sidecar for the
@@ -497,6 +500,7 @@ impl Level2EconomyState {
         &mut self,
         source: &mut Level2AuthoredClass5Source,
         model3: &mut Level2AuthoredClass5Model3State,
+        terrain: &SessionTerrain,
     ) {
         let peer = self.model3_peer_info(model3.word_0x32);
         let peer_valid = peer.is_some_and(|peer| {
@@ -524,12 +528,12 @@ impl Level2EconomyState {
                 } else {
                     26
                 };
-                self.model3_source_terrain_settle(source);
+                self.model3_source_terrain_settle(source, terrain);
                 return;
             }
             _ => {}
         }
-        let _ = self.model3_step_source_movement(source, model3);
+        let _ = self.model3_step_source_movement(source, model3, terrain);
         let Some(peer) = peer.filter(|_| peer_valid) else {
             model3.word_0x32 = 0;
             source.action = 25;
@@ -614,6 +618,7 @@ impl Level2EconomyState {
         &self,
         source: &mut Level2AuthoredClass5Source,
         model3: &mut Level2AuthoredClass5Model3State,
+        terrain: &SessionTerrain,
     ) -> u8 {
         if model3.control_flags & 8 != 0 {
             model3.control_flags &= !8;
@@ -621,7 +626,7 @@ impl Level2EconomyState {
         }
         let before = source.position;
         let mut predicted = before;
-        model3_source_settle_position(&mut predicted, &self.terrain);
+        model3_source_settle_position(&mut predicted, terrain);
         crate::move_entity(&mut predicted, source.yaw, 0, source.actual_speed);
         let crossed_tile = before.x >> 8 != predicted.x >> 8 || before.y >> 8 != predicted.y >> 8;
         if !crossed_tile {
@@ -631,7 +636,7 @@ impl Level2EconomyState {
             return 1;
         }
 
-        if !model3_candidate_blocked(source, predicted, source.yaw, &self.terrain) {
+        if !model3_candidate_blocked(source, predicted, source.yaw, terrain) {
             source.position = predicted;
             model3.control_flags &= !MODEL3_RAW_MOTION_COLLISION_BIT;
             source.yaw = model3_heading_after_turn(source.yaw, source.roll);
@@ -643,9 +648,9 @@ impl Level2EconomyState {
         for heading in model3_source_retry_headings(original_yaw) {
             source.yaw = heading;
             let mut candidate = before;
-            model3_source_settle_position(&mut candidate, &self.terrain);
+            model3_source_settle_position(&mut candidate, terrain);
             crate::move_entity(&mut candidate, heading, 0, source.actual_speed);
-            if !model3_candidate_blocked(source, candidate, heading, &self.terrain) {
+            if !model3_candidate_blocked(source, candidate, heading, terrain) {
                 source.position = candidate;
                 source.yaw = model3_heading_after_turn(heading, source.roll);
                 return 3;
@@ -658,8 +663,12 @@ impl Level2EconomyState {
         4
     }
 
-    fn model3_source_terrain_settle(&self, source: &mut Level2AuthoredClass5Source) {
-        model3_source_settle_position(&mut source.position, &self.terrain);
+    fn model3_source_terrain_settle(
+        &self,
+        source: &mut Level2AuthoredClass5Source,
+        terrain: &SessionTerrain,
+    ) {
+        model3_source_settle_position(&mut source.position, terrain);
     }
 
     fn model3_position_for_slot(&self, source_slot: u16) -> Option<Position> {
@@ -801,6 +810,7 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         target: Option<EntitySnapshot>,
+        terrain: &SessionTerrain,
     ) -> bool {
         let Some(source_index) = self
             .authored_class5
@@ -813,7 +823,7 @@ impl Level2EconomyState {
         if source.model != 3 {
             return false;
         }
-        self.step_authored_class5_model3(&mut source, target);
+        self.step_authored_class5_model3(&mut source, target, terrain);
         source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
         self.authored_class5[source_index] = source;

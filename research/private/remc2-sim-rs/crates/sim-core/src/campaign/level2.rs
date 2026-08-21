@@ -1,6 +1,8 @@
 // Moved mechanically from native_world.rs for CF-01. This file is included as a child of native_world so its internal visibility and parent state access remain unchanged.
 use super::*;
 
+use crate::campaign::state::CampaignState;
+
 impl Level2ResetSession {
     pub(super) fn level2_bee_class3_targets(&self) -> Vec<(u16, Position, u32)> {
         // `UpdateEntities_57730` rebuilds `dword_38519` from every live
@@ -968,7 +970,7 @@ impl Level2ResetSession {
             };
             if let Some(hand_yaw) = hand_yaw {
                 crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                if self.terrain.ground_height(launch_position) > launch_position.z {
+                if self.canonical_terrain().ground_height(launch_position) > launch_position.z {
                     launch_position = self.state.position;
                 }
             }
@@ -1201,7 +1203,9 @@ impl Level2ResetSession {
                     };
                     if let Some(hand_yaw) = hand_yaw {
                         crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                        if self.terrain.ground_height(launch_position) > launch_position.z {
+                        if self.canonical_terrain().ground_height(launch_position)
+                            > launch_position.z
+                        {
                             launch_position = self.state.position;
                         }
                     }
@@ -1234,8 +1238,6 @@ impl Level2ResetSession {
                         },
                         self.state.actual_speed,
                     );
-                    self.terrain = self.economy.terrain.clone();
-                    self.synchronize_level2_terrain();
                     if let Some(spawned_slot) = spawned {
                         if let Some(player) = self
                             .shared_spells
@@ -1477,7 +1479,9 @@ impl Level2ResetSession {
                     };
                     if let Some(hand_yaw) = hand_yaw {
                         crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                        if self.terrain.ground_height(launch_position) > launch_position.z {
+                        if self.canonical_terrain().ground_height(launch_position)
+                            > launch_position.z
+                        {
                             launch_position = parent.position;
                         }
                     }
@@ -1501,8 +1505,6 @@ impl Level2ResetSession {
                         },
                         parent.actual_speed,
                     );
-                    self.terrain = self.economy.terrain.clone();
-                    self.synchronize_level2_terrain();
                     if let Some(spawned_slot) = spawned {
                         self.nyphur_dispatcher.clear_source_byte_0x154();
                         mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
@@ -1639,7 +1641,9 @@ impl Level2ResetSession {
                     };
                     if let Some(hand_yaw) = hand_yaw {
                         crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                        if self.terrain.ground_height(launch_position) > launch_position.z {
+                        if self.canonical_terrain().ground_height(launch_position)
+                            > launch_position.z
+                        {
                             launch_position = parent.position;
                         }
                     }
@@ -1664,8 +1668,6 @@ impl Level2ResetSession {
                         axis_position,
                         physical_tier.expect("profile admission has a physical tier"),
                     );
-                    self.terrain = self.economy.terrain.clone();
-                    self.synchronize_level2_terrain();
                     if let Some(spawned_slot) = spawned {
                         self.nyphur_dispatcher.clear_source_byte_0x154();
                         mark_source_audio_call(
@@ -1814,7 +1816,12 @@ impl Level2ResetSession {
                 };
                 if let Some(hand_yaw) = hand_yaw {
                     crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                    if self.terrain.ground_height(launch_position) > launch_position.z {
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state is initialized")
+                        .terrain();
+                    if terrain.ground_height(launch_position) > launch_position.z {
                         launch_position = self.state.position;
                     }
                 }
@@ -1842,9 +1849,11 @@ impl Level2ResetSession {
                     },
                     holder_index,
                     self.state.actual_speed,
+                    self.campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state is initialized")
+                        .terrain(),
                 );
-                self.terrain = self.economy.terrain.clone();
-                self.synchronize_level2_terrain();
                 if let Some(spawned_slot) = spawned {
                     // The A4 byte transfer and sound are success-only source
                     // epilogue writes; predicate or allocator failure leaves
@@ -2205,14 +2214,14 @@ impl Level2ResetSession {
             initial_day_hud_hit_frame_time_pre_draw,
             initial_day_hud_color_phase_1,
         );
-        Self {
+        let mut session = Self {
             profile,
             package_sha256,
             collision_masks,
             baseline_state: state,
             state,
             baseline_terrain: terrain.clone(),
-            terrain,
+            campaign_state: None,
             baseline_context: context.clone(),
             context,
             baseline_entities: entities.clone(),
@@ -2300,7 +2309,35 @@ impl Level2ResetSession {
             level2_class5_activated: BTreeSet::new(),
             baseline_level2_model45_activated: BTreeSet::new(),
             level2_model45_activated: BTreeSet::new(),
-        }
+        };
+        session.campaign_state = Some(CampaignState::from_level2_with_terrain(&session, &terrain));
+        session
+    }
+
+    /// Borrow the canonical campaign carrier. `None` exists only during the
+    /// constructor bootstrap, before the fully assembled reset session can
+    /// be projected into its own carrier.
+    pub(crate) fn campaign_state(&self) -> &CampaignState {
+        self.campaign_state
+            .as_ref()
+            .expect("Level 2 campaign state installed after construction")
+    }
+
+    /// Mutably borrow the canonical campaign carrier after construction.
+    pub(crate) fn campaign_state_mut(&mut self) -> &mut CampaignState {
+        self.campaign_state
+            .as_mut()
+            .expect("Level 2 campaign state installed after construction")
+    }
+
+    /// Borrow the one terrain owner used by all Level 2 production handlers.
+    pub fn canonical_terrain(&self) -> &SessionTerrain {
+        self.campaign_state().terrain()
+    }
+
+    /// Mutably borrow the one terrain owner used by terrain-changing handlers.
+    pub(crate) fn canonical_terrain_mut(&mut self) -> &mut SessionTerrain {
+        self.campaign_state_mut().terrain_mut()
     }
 
     #[must_use]
@@ -2894,9 +2931,16 @@ impl Level2ResetSession {
         &self.shared_spells
     }
 
+    #[cfg(not(test))]
     #[must_use]
     pub fn shared_spells_mut(&mut self) -> &mut Level2SharedSpellResetSession {
         &mut self.shared_spells
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn shared_spells_mut(&mut self) -> Level2SharedSpellTestView<'_> {
+        Level2SharedSpellTestView { session: self }
     }
 
     #[must_use]
@@ -2904,9 +2948,16 @@ impl Level2ResetSession {
         &self.economy
     }
 
+    #[cfg(not(test))]
     #[must_use]
     pub fn economy_mut(&mut self) -> &mut Level2EconomyState {
         &mut self.economy
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn economy_mut(&mut self) -> Level2EconomyTestView<'_> {
+        Level2EconomyTestView { session: self }
     }
 
     /// Production seam for a rooted `sub_69250` replacement constructor. The
@@ -2952,8 +3003,10 @@ impl Level2ResetSession {
                     && feature.kind == u16::from(MANA_ATTRACTION_CLASS)
                     && feature.subtype == i16::from(MANA_ATTRACTION_MODEL)
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
         self.economy.allocate_mana_attraction_field(
             authored_index,
             position,
@@ -2981,8 +3034,10 @@ impl Level2ResetSession {
                     && feature.kind == 14
                     && matches!(feature.subtype, 3 | 5)
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
         self.economy.allocate_authored_class14(
             authored_index,
             u8::try_from(feature.subtype).ok()?,
@@ -3011,8 +3066,10 @@ impl Level2ResetSession {
                     && feature.kind == 2
                     && feature.subtype == 0
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
         self.economy
             .allocate_authored_tree(authored_index, position)
     }
@@ -3034,10 +3091,21 @@ impl Level2ResetSession {
             .find(|feature| {
                 feature.index == authored_index && feature.kind == 10 && feature.subtype == 6
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-        self.economy
-            .allocate_authored_model6(authored_index, position)
+        let position = feature.world_position(
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain()
+                .ground_height(feature.world_position(0)),
+        );
+        self.economy.allocate_authored_model6(
+            authored_index,
+            position,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
+        )
     }
 
     /// Materialize one authored class-10/model-59 checkpoint row through the
@@ -3054,8 +3122,10 @@ impl Level2ResetSession {
             .find(|feature| {
                 feature.index == authored_index && feature.kind == 10 && feature.subtype == 59
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
         self.economy
             .allocate_authored_model59(authored_index, position)
     }
@@ -3075,8 +3145,10 @@ impl Level2ResetSession {
             .find(|feature| {
                 feature.index == authored_index && feature.kind == 10 && feature.subtype == 58
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
         let source = self
             .economy
             .allocate_authored_model53(authored_index, position)?;
@@ -3102,13 +3174,19 @@ impl Level2ResetSession {
             })?;
         let stage_tag = u16::try_from(feature.stage_tag).ok()?;
         let objective_stage_index = u8::try_from(feature.parameter_1).ok()?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
         self.economy.allocate_authored_model32(
             authored_index,
             stage_tag,
             objective_stage_index,
             position,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
         )
     }
 
@@ -3128,10 +3206,18 @@ impl Level2ResetSession {
             .find(|feature| {
                 feature.index == authored_index && feature.kind == 10 && feature.subtype == 17
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-        self.economy
-            .allocate_authored_model17(authored_index, position)
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
+        self.economy.allocate_authored_model17(
+            authored_index,
+            position,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
+        )
     }
 
     /// Materialize one authored class-10/model-22 Wind row through the
@@ -3150,15 +3236,24 @@ impl Level2ResetSession {
             .find(|feature| {
                 feature.index == authored_index && feature.kind == 10 && feature.subtype == 22
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
         let axis_position = Position {
             x: feature.parameter_2.wrapping_shl(8).wrapping_add(128),
             y: feature.parameter_1.wrapping_shl(8).wrapping_add(128),
             z: position.z,
         };
-        self.economy
-            .allocate_authored_model22(authored_index, axis_position, position)
+        self.economy.allocate_authored_model22(
+            authored_index,
+            axis_position,
+            position,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
+        )
     }
 
     /// Materialize one authored class-10/model-76 Fire Spheres row through
@@ -3175,11 +3270,18 @@ impl Level2ResetSession {
             .find(|feature| {
                 feature.index == authored_index && feature.kind == 10 && feature.subtype == 76
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-        let source = self
-            .economy
-            .allocate_authored_model76(authored_index, position)?;
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
+        let source = self.economy.allocate_authored_model76(
+            authored_index,
+            position,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
+        )?;
         // `AddFireSpheres_4F2A0` calls `SetEntityIndexAndRot_49CD0` with
         // particle 340 for every linked child. The presentation table is the
         // authoritative owner of that selector row, so bind its four axes
@@ -3217,10 +3319,18 @@ impl Level2ResetSession {
             .find(|feature| {
                 feature.index == authored_index && feature.kind == 10 && feature.subtype == 13
             })?;
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-        self.economy
-            .allocate_authored_model13(authored_index, position)
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
+        self.economy.allocate_authored_model13(
+            authored_index,
+            position,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
+        )
     }
 
     pub(super) fn level2_bee_stage_route(
@@ -3266,11 +3376,19 @@ impl Level2ResetSession {
         feature: AuthoredFeature,
     ) -> Option<Level2AuthoredBeeSource> {
         let stage_route = self.level2_bee_stage_route(feature);
-        let position =
-            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-        let source = self
-            .economy
-            .allocate_authored_bee(feature.index, position, stage_route)?;
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
+        let source = self.economy.allocate_authored_bee(
+            feature.index,
+            position,
+            stage_route,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
+        )?;
         if let Some(route) = stage_route {
             // This was checked above against the same bounded runtime table.
             // A failed increment would mean an internal carrier corruption,
@@ -3310,11 +3428,275 @@ impl Level2ResetSession {
         &self.ordinary
     }
 
+    #[cfg(not(test))]
     #[must_use]
     pub fn ordinary_mut(&mut self) -> &mut Level2OrdinaryResetSession {
         &mut self.ordinary
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub fn ordinary_mut(&mut self) -> Level2OrdinaryTestView<'_> {
+        Level2OrdinaryTestView { session: self }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct Level2EconomyTestView<'a> {
+    session: &'a mut Level2ResetSession,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for Level2EconomyTestView<'_> {
+    type Target = Level2EconomyState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session.economy
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for Level2EconomyTestView<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session.economy
+    }
+}
+
+#[cfg(test)]
+macro_rules! terrain_method {
+    ($name:ident, ($($arg:ident : $ty:ty),* $(,)?) -> $ret:ty) => {
+        pub(crate) fn $name(&mut self, $($arg: $ty),*) -> $ret {
+            self.with_terrain(|economy, terrain| economy.$name($($arg),*, terrain))
+        }
+    };
+}
+
+#[cfg(test)]
+impl Level2EconomyTestView<'_> {
+    fn with_terrain<R>(
+        &mut self,
+        callback: impl FnOnce(&mut Level2EconomyState, &mut SessionTerrain) -> R,
+    ) -> R {
+        let session = &mut *self.session;
+        let campaign_state = session
+            .campaign_state
+            .as_mut()
+            .expect("Level 2 campaign state installed before test borrow");
+        callback(&mut session.economy, campaign_state.terrain_mut())
+    }
+
+    terrain_method!(allocate_authored_archer,
+        (authored_index: u16, position: Position) -> Option<Level2AuthoredClass5Source>);
+    terrain_method!(allocate_authored_class5,
+        (authored_index: u16, model: u8, position: Position) -> Option<Level2AuthoredClass5Source>);
+    terrain_method!(allocate_authored_model6,
+        (authored_index: u16, position: Position) -> Option<Level2AuthoredModel6Source>);
+    terrain_method!(allocate_authored_model13,
+        (authored_index: u16, position: Position) -> Option<Level2AuthoredModel13Source>);
+    terrain_method!(allocate_authored_model22,
+        (authored_index: u16, axis_position: Position, position: Position) -> Option<Level2AuthoredModel22Source>);
+    terrain_method!(allocate_authored_model45,
+        (authored_index: u16, target_group: u16, parameter_1: u16, position: Position) -> Option<Level2AuthoredModel45Source>);
+    terrain_method!(allocate_authored_trader,
+        (authored_index: u16, position: Position) -> Option<Level2AuthoredClass5Source>);
+    terrain_method!(acquire_authored_bee_target,
+        (source_slot: u16, candidates: &[(u16, Position, u32)]) -> Option<u16>);
+    terrain_method!(build_castle,
+        (position: Position, owner_entity_index: u16) -> Option<u16>);
+    terrain_method!(build_castle_with_footprint,
+        (projectile_position: Position, owner_entity_index: u16, footprint: &CastleBuildFootprint) -> Option<u16>);
+    terrain_method!(complete_castle_construction,
+        (castle_slot: u16) -> bool);
+    terrain_method!(maintain_castle_defenders,
+        (castle_slot: u16) -> ());
+    terrain_method!(spawn_castle_projectile,
+        (projectile_position: Position, owner_entity_index: u16, holder_entity_index: u16, player_yaw: i16, player_next_entity: i16, player_actual_speed: i16) -> Option<u16>);
+    terrain_method!(spawn_castle_projectile_with_payload,
+        (payload: level2_dynamic_economy::Level2CastleProjectileLaunchPayload, holder_entity_index: u16, player_actual_speed: i16) -> Option<u16>);
+    terrain_method!(spawn_mana_sphere_from_death,
+        (source_entity_index: u16, position: Position, source_yaw: i16, source_rng_after_death: u16, mana: i32, owner_entity_index: u16) -> Option<u32>);
+    terrain_method!(spawn_mana_spheres_from_death,
+        (source_entity_index: u16, position: Position, source_yaw: i16, source_rng_after_death: u16, mana: i32, owner_entity_index: u16, use_mana_fraction: bool) -> Vec<u32>);
+    terrain_method!(step_authored_bee_death_tail,
+        (source: &mut Level2AuthoredBeeSource) -> ());
+    terrain_method!(step_authored_bee_slot,
+        (source_slot: u16, target_position: Option<Position>) -> bool);
+    terrain_method!(step_authored_class5_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_authored_model6_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_authored_model76_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_authored_model13_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_castle_action,
+        (castle_slot: u16) -> bool);
+    terrain_method!(step_castle_child_terminal_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_castle_defender_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_castle_projectile_slot,
+        (source_slot: u16, entities: &[EntitySnapshot]) -> bool);
+    terrain_method!(step_carrier_to_castle,
+        (carrier_slot: u16, position: Position) -> bool);
+    terrain_method!(step_fireball_projectile_slot,
+        (source_slot: u16) -> level2_dynamic_economy::Level2FireballStep);
+    terrain_method!(step_model13_spawned_child_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_model59_smoke_child_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_model6_spawned_child_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_possession_projectile_slot,
+        (source_slot: u16) -> bool);
+    terrain_method!(step_mana_sphere_slot,
+        (sphere_slot: u16) -> bool);
+    terrain_method!(step_mana_carrier_slot,
+        (carrier_slot: u16) -> bool);
+}
+
+#[cfg(test)]
+pub(crate) struct Level2SharedSpellTestView<'a> {
+    session: &'a mut Level2ResetSession,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for Level2SharedSpellTestView<'_> {
+    type Target = Level2SharedSpellResetSession;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session.shared_spells
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for Level2SharedSpellTestView<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session.shared_spells
+    }
+}
+
+#[cfg(test)]
+impl Level2SharedSpellTestView<'_> {
+    fn with_terrain<R>(
+        &mut self,
+        callback: impl FnOnce(&mut Level2SharedSpellResetSession, &SessionTerrain) -> R,
+    ) -> R {
+        let session = &mut *self.session;
+        let campaign_state = session
+            .campaign_state
+            .as_ref()
+            .expect("Level 2 campaign state installed before test borrow");
+        callback(&mut session.shared_spells, campaign_state.terrain())
+    }
+
+    pub(crate) fn step_speed_pickup(
+        &mut self,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Level2SpeedPickupStep> {
+        self.with_terrain(|shared, terrain| {
+            shared.step_speed_pickup(player_entity_index, player_position, terrain)
+        })
+    }
+
+    pub(crate) fn step_shared_pickup(
+        &mut self,
+        source_slot: u16,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Option<Level2SpeedPickupStep>> {
+        self.with_terrain(|shared, terrain| {
+            shared.step_shared_pickup(source_slot, player_entity_index, player_position, terrain)
+        })
+    }
+
+    pub(crate) fn step_level2_spell_acquisition(
+        &mut self,
+        family: u8,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        self.with_terrain(|shared, terrain| {
+            shared.step_level2_spell_acquisition(
+                family,
+                player_entity_index,
+                player_position,
+                terrain,
+            )
+        })
+    }
+
+    pub(crate) fn step_level2_spell_acquisition_with_economy(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        family: u8,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        self.with_terrain(|shared, terrain| {
+            shared.step_level2_spell_acquisition_with_economy(
+                economy,
+                family,
+                player_entity_index,
+                player_position,
+                terrain,
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct Level2OrdinaryTestView<'a> {
+    session: &'a mut Level2ResetSession,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for Level2OrdinaryTestView<'_> {
+    type Target = Level2OrdinaryResetSession;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session.ordinary
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for Level2OrdinaryTestView<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session.ordinary
+    }
+}
+
+#[cfg(test)]
+impl Level2OrdinaryTestView<'_> {
+    fn with_terrain<R>(
+        &mut self,
+        callback: impl FnOnce(&mut Level2OrdinaryResetSession, &SessionTerrain) -> R,
+    ) -> R {
+        let session = &mut *self.session;
+        let campaign_state = session
+            .campaign_state
+            .as_ref()
+            .expect("Level 2 campaign state installed before test borrow");
+        callback(&mut session.ordinary, campaign_state.terrain())
+    }
+
+    pub(crate) fn step_house_action_52(&mut self, source_slot: u16) -> Vec<HouseStepEvent> {
+        self.with_terrain(|ordinary, terrain| ordinary.step_house_action_52(source_slot, terrain))
+    }
+
+    pub(crate) fn step_villager_action_105(&mut self, source_slot: u16) -> Vec<VillagerStepEffect> {
+        self.with_terrain(|ordinary, terrain| {
+            ordinary.step_villager_action_105(source_slot, terrain)
+        })
+    }
+
+    pub(crate) fn step_dolmen_action_6(&mut self, source_slot: u16) -> Result<Level2DolmenStep> {
+        self.with_terrain(|ordinary, terrain| ordinary.step_dolmen_action_6(source_slot, terrain))
+    }
+}
+
+impl Level2ResetSession {
     #[must_use]
     pub fn goats(&self) -> &[GoatState] {
         self.goats.goats()
@@ -3471,17 +3853,12 @@ impl Level2ResetSession {
                 "Level 2 bad stone source slot {source_slot} is not active"
             )));
         };
-        Ok(stone.step_action_9(&self.terrain))
-    }
-
-    /// Keep typed Level 2 projections on the single production terrain
-    /// authority. Child projections retain fields for direct unit tests, but
-    /// the outer dispatcher refreshes them before each handler and adopts
-    /// economy topology writes back into this session.
-    pub(super) fn synchronize_level2_terrain(&mut self) {
-        self.shared_spells.terrain = self.terrain.clone();
-        self.ordinary.terrain = self.terrain.clone();
-        self.economy.terrain = self.terrain.clone();
+        let terrain = self
+            .campaign_state
+            .as_ref()
+            .expect("Level 2 campaign state owns canonical terrain")
+            .terrain();
+        Ok(stone.step_action_9(terrain))
     }
 
     pub(super) fn sync_level2_model76_targets_from_entities(&mut self) {
@@ -3612,11 +3989,16 @@ impl Level2ResetSession {
         }
         let economy_before = self.economy.clone();
         let shared_before = self.shared_spells.clone();
+        let terrain = self
+            .campaign_state
+            .as_ref()
+            .expect("Level 2 campaign state is initialized")
+            .terrain();
         let mut constructed = Vec::with_capacity(group_rows.len());
         let result = (|| -> Result<()> {
             for feature in group_rows.iter().copied() {
                 let position =
-                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                    feature.world_position(terrain.ground_height(feature.world_position(0)));
                 if (feature.kind, feature.subtype) != (10, 45) {
                     return Err(NativeWorldError::new(format!(
                         "unsupported Level 2 group-8 authored row {} ({}/{})",
@@ -3630,6 +4012,7 @@ impl Level2ResetSession {
                         feature.parameter_2,
                         feature.parameter_1,
                         position,
+                        terrain,
                     )
                     .ok_or_else(|| {
                         NativeWorldError::new(format!(
@@ -3825,14 +4208,20 @@ impl Level2ResetSession {
         let switch_producers_before = self.level2_switch_producers_activated.clone();
         let class14_before = self.level2_class14_activated.clone();
         let tree_before = self.level2_tree_activated.clone();
-        let model12_position =
-            model12_row.world_position(self.terrain.ground_height(model12_row.world_position(0)));
+        let model12_position = model12_row.world_position(
+            self.canonical_terrain()
+                .ground_height(model12_row.world_position(0)),
+        );
         let Some(model12_source) = self.economy.allocate_authored_switch_producer(
             model12_row.index,
             12,
             u16::try_from(model12_row.stage_tag).unwrap_or_default(),
             i16::try_from(model12_row.word_10).unwrap_or(i16::MAX),
             model12_position,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
         ) else {
             self.dispatch_events.push(Level2DispatchEvent::Error {
                 pass,
@@ -3879,14 +4268,20 @@ impl Level2ResetSession {
             self.level2_tree_activated.insert(tree_row.index);
             tree_sources.push(tree_source);
         }
-        let switch_position =
-            switch_row.world_position(self.terrain.ground_height(switch_row.world_position(0)));
+        let switch_position = switch_row.world_position(
+            self.canonical_terrain()
+                .ground_height(switch_row.world_position(0)),
+        );
         let Some(_) = self.economy.allocate_authored_switch_producer(
             switch_row.index,
             0,
             switch_stage_tag,
             switch_word_10,
             switch_position,
+            self.campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state is initialized")
+                .terrain(),
         ) else {
             self.economy = economy_before;
             self.level2_switch_producers_activated = switch_producers_before;
@@ -4209,11 +4604,15 @@ impl Level2ResetSession {
         let activated_before = self.level2_class5_activated.clone();
         let mut activated = Vec::with_capacity(rows.len());
         for feature in rows {
-            let position =
-                feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-            let Some(source) = self
-                .economy
-                .allocate_authored_class5(feature.index, 14, position)
+            let terrain = self
+                .campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state owns canonical terrain")
+                .terrain();
+            let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+            let Some(source) =
+                self.economy
+                    .allocate_authored_class5(feature.index, 14, position, terrain)
             else {
                 self.economy = economy_before;
                 self.level2_class5_activated = activated_before;
@@ -4320,11 +4719,16 @@ impl Level2ResetSession {
                 if self.level2_model1_activated.contains(&feature.index) {
                     continue;
                 }
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
                 let position =
-                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-                let Some(source) = self
-                    .economy
-                    .allocate_authored_model1(feature.index, position)
+                    feature.world_position(terrain.ground_height(feature.world_position(0)));
+                let Some(source) =
+                    self.economy
+                        .allocate_authored_model1(feature.index, position, terrain)
                 else {
                     self.dispatch_events.push(Level2DispatchEvent::Error {
                         pass,
@@ -4344,11 +4748,16 @@ impl Level2ResetSession {
                 if self.level2_class5_activated.contains(&feature.index) {
                     continue;
                 }
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
                 let position =
-                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                    feature.world_position(terrain.ground_height(feature.world_position(0)));
                 let Some(source) =
                     self.economy
-                        .allocate_authored_class5(feature.index, 4, position)
+                        .allocate_authored_class5(feature.index, 4, position, terrain)
                 else {
                     self.dispatch_events.push(Level2DispatchEvent::Error {
                         pass,
@@ -4368,11 +4777,16 @@ impl Level2ResetSession {
                 if self.level2_class5_activated.contains(&feature.index) {
                     continue;
                 }
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
                 let position =
-                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                    feature.world_position(terrain.ground_height(feature.world_position(0)));
                 let Some(source) =
                     self.economy
-                        .allocate_authored_class5(feature.index, 3, position)
+                        .allocate_authored_class5(feature.index, 3, position, terrain)
                 else {
                     self.dispatch_events.push(Level2DispatchEvent::Error {
                         pass,
@@ -4433,8 +4847,10 @@ impl Level2ResetSession {
                 if self.level2_model39_activated.contains(&feature.index) {
                     continue;
                 }
-                let position =
-                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                let position = feature.world_position(
+                    self.canonical_terrain()
+                        .ground_height(feature.world_position(0)),
+                );
                 let Some(source) =
                     self.economy
                         .allocate_authored_model39(feature.index, producer_slot, position)
@@ -4550,14 +4966,20 @@ impl Level2ResetSession {
                 continue;
             }
             let model = u8::try_from(feature.subtype).unwrap_or(u8::MAX);
-            let position =
-                feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+            let position = feature.world_position(
+                self.canonical_terrain()
+                    .ground_height(feature.world_position(0)),
+            );
             let Some(source) = self.economy.allocate_authored_switch_producer(
                 feature.index,
                 model,
                 u16::try_from(feature.stage_tag).unwrap_or_default(),
                 i16::try_from(feature.word_10).unwrap_or(i16::MAX),
                 position,
+                self.campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state is initialized")
+                    .terrain(),
             ) else {
                 self.dispatch_events.push(Level2DispatchEvent::Error {
                     pass,
@@ -4928,7 +5350,7 @@ impl Level2ResetSession {
                 self.level2_group10_switch25 = None;
                 return;
             }
-            switch.position.z = self.terrain.ground_height(switch.position);
+            switch.position.z = self.canonical_terrain().ground_height(switch.position);
         }
         switch.phase = switch.phase.wrapping_add(1);
         self.level2_group10_switch25 = Some(switch);
@@ -5002,12 +5424,17 @@ impl Level2ResetSession {
         let activated_before = self.level2_class5_activated.clone();
         let mut activated = Vec::with_capacity(rows.len());
         for feature in rows {
-            let position =
-                feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+            let terrain = self
+                .campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state owns canonical terrain")
+                .terrain();
+            let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
             let Some(source) = self.economy.allocate_authored_class5(
                 feature.index,
                 u8::try_from(feature.subtype).unwrap_or(u8::MAX),
                 position,
+                terrain,
             ) else {
                 self.economy = economy_before;
                 self.level2_class5_activated = activated_before;
@@ -5082,10 +5509,15 @@ impl Level2ResetSession {
         }
         let economy_before = self.economy.clone();
         let shared_before = self.shared_spells.clone();
+        let terrain = self
+            .campaign_state
+            .as_ref()
+            .expect("Level 2 campaign state owns canonical terrain")
+            .terrain();
         let source_slot = match self.shared_spells.materialize_authored_spell_pickup(
             &mut self.economy,
             feature,
-            &self.terrain,
+            terrain,
         ) {
             Ok(source_slot) => source_slot,
             Err(error) => {
@@ -5270,6 +5702,8 @@ impl Level2ResetSession {
         self.shared_spells.pickup_events.clear();
         let goat_players = self.level2_goat_player_targets();
         self.economy.advance_global_rng();
+        self.economy
+            .reclaim_deferred_authored_bees_at_source_boundary();
         self.economy.reclaim_possession_rows_at_source_boundary();
         self.economy.reclaim_fireball_rows_at_source_boundary();
         // `UpdateEntities_57730` scans every hidden active entity and calls
@@ -5287,7 +5721,6 @@ impl Level2ResetSession {
         self.economy
             .rebuild_owner_mana_projection_at_source_boundary();
         self.economy.rebuild_owner_max_mana_projection();
-        self.synchronize_level2_terrain();
         self.step_level2_imported_switch_roots(pass);
         self.activate_level2_authored_group8(pass);
         self.activate_level2_authored_group31(pass);
@@ -5542,11 +5975,16 @@ impl Level2ResetSession {
                         // movement, and upkeep writes are visible to those
                         // later source handlers in this same pass.
                         self.refresh_level2_spell_fire_holder_projection();
+                        let terrain = self
+                            .campaign_state
+                            .as_ref()
+                            .expect("Level 2 campaign state owns canonical terrain")
+                            .terrain();
                         evidence.push(crate::step_entity_pass_with_context(
                             &mut self.state,
                             latched_command,
                             self.profile,
-                            &self.terrain,
+                            terrain,
                             &mut self.context,
                         ));
                         self.sync_level2_spell_fire_authority(latched_command.flags);
@@ -5569,10 +6007,16 @@ impl Level2ResetSession {
                     }
                 }
                 0 => {
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
                     let result = self.shared_spells.step_shared_pickup(
                         source_slot,
                         player_entity_index,
                         player_position,
+                        terrain,
                     );
                     match result {
                         Ok(result) => {
@@ -5589,8 +6033,6 @@ impl Level2ResetSession {
                             message: error.to_string(),
                         }),
                     }
-                    self.terrain = self.shared_spells.terrain.clone();
-                    self.synchronize_level2_terrain();
                 }
                 8 => {
                     let family = LEVEL2_GENERIC_SPELL_PICKUPS
@@ -5598,6 +6040,11 @@ impl Level2ResetSession {
                         .find(|(_, slot, _)| *slot == source_slot)
                         .map(|(family, _, _)| *family)
                         .expect("generic Level 2 spell route has a family");
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
                     match self
                         .shared_spells
                         .step_level2_spell_acquisition_with_economy_in_source_order(
@@ -5605,6 +6052,7 @@ impl Level2ResetSession {
                             family,
                             player_entity_index,
                             player_position,
+                            terrain,
                             &source_player_order,
                         ) {
                         Ok(result) => {
@@ -5649,12 +6097,26 @@ impl Level2ResetSession {
                 2 => {
                     let ordinary_before = self.ordinary.clone();
                     let economy_before = self.economy.clone();
-                    let terrain_before = self.terrain.clone();
-                    let events = self.ordinary.step_house_action_52(source_slot);
-                    match self
-                        .ordinary
-                        .apply_house_terrain_events(&mut self.economy, &events)
-                    {
+                    let terrain_before = self.canonical_terrain().clone();
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
+                    let events = self.ordinary.step_house_action_52(source_slot, terrain);
+                    let result = {
+                        let terrain = self
+                            .campaign_state
+                            .as_mut()
+                            .expect("Level 2 campaign state owns canonical terrain")
+                            .terrain_mut();
+                        self.ordinary.apply_house_terrain_events(
+                            &mut self.economy,
+                            &events,
+                            terrain,
+                        )
+                    };
+                    match result {
                         Ok(()) => {
                             self.append_new_economy_events(pass, source_slot);
                             self.dispatch_events.push(Level2DispatchEvent::House {
@@ -5662,13 +6124,15 @@ impl Level2ResetSession {
                                 source_slot,
                                 events: events.into_boxed_slice(),
                             });
-                            self.terrain = self.ordinary.terrain.clone();
-                            self.synchronize_level2_terrain();
                         }
                         Err(error) => {
                             self.ordinary = ordinary_before;
                             self.economy = economy_before;
-                            self.terrain = terrain_before;
+                            *self
+                                .campaign_state
+                                .as_mut()
+                                .expect("Level 2 campaign state owns canonical terrain")
+                                .terrain_mut() = terrain_before;
                             self.dispatch_events.push(Level2DispatchEvent::Error {
                                 pass,
                                 source_slot,
@@ -5678,7 +6142,12 @@ impl Level2ResetSession {
                     }
                 }
                 3 => {
-                    let effects = self.ordinary.step_villager_action_105(source_slot);
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
+                    let effects = self.ordinary.step_villager_action_105(source_slot, terrain);
                     self.ordinary.apply_villager_effects(&effects);
                     // `KillEntity_1C930` allocates the class-10/model-1
                     // death burst before disabling the dying villager's
@@ -5711,11 +6180,14 @@ impl Level2ResetSession {
                         source_slot,
                         effects: effects.into_boxed_slice(),
                     });
-                    self.terrain = self.ordinary.terrain.clone();
-                    self.synchronize_level2_terrain();
                 }
                 4 => {
-                    match self.ordinary.step_dolmen_action_6(source_slot) {
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
+                    match self.ordinary.step_dolmen_action_6(source_slot, terrain) {
                         Ok(step) => self
                             .dispatch_events
                             .push(Level2DispatchEvent::Dolmen { pass, step }),
@@ -5725,16 +6197,17 @@ impl Level2ResetSession {
                             message: error.to_string(),
                         }),
                     }
-                    self.terrain = self.ordinary.terrain.clone();
-                    self.synchronize_level2_terrain();
                 }
                 5 => {
                     let construction_completion = self.economy.castle().is_some_and(|castle| {
                         castle.active && castle.action == 5 && castle.build_state == 2
                     });
-                    let advanced = self.economy.step_castle_action(source_slot);
-                    self.terrain = self.economy.terrain.clone();
-                    self.synchronize_level2_terrain();
+                    let terrain = self
+                        .campaign_state
+                        .as_mut()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain_mut();
+                    let advanced = self.economy.step_castle_action(source_slot, terrain);
                     // Publish the source handler's economy sidecars before
                     // the coarse Castle wrapper, matching the handler-first
                     // ApplyEvents cursor order used by dynamic rows.
@@ -5822,11 +6295,15 @@ impl Level2ResetSession {
                 }
                 7 => {
                     let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
-                    events.extend(self.goats.step_source_slot(
-                        source_slot,
-                        &self.terrain,
-                        &goat_players,
-                    ));
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
+                    events.extend(
+                        self.goats
+                            .step_source_slot(source_slot, terrain, &goat_players),
+                    );
                     self.apply_level2_goat_economy_events(&events);
                     self.append_new_economy_events(pass, source_slot);
                     self.dispatch_events.push(Level2DispatchEvent::Goat {
@@ -5843,13 +6320,18 @@ impl Level2ResetSession {
                         .map_or(0, |effects| effects.move_speed_flag);
                     let active_level_color_index =
                         self.shared_spells.local_player.player_color_index();
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
                     match self.nyphur_dispatcher.step_dispatch(
                         pass,
                         source_slot,
                         &mut self.entities,
                         self.economy.spheres(),
                         &self.players,
-                        &self.terrain,
+                        terrain,
                         &self.presentation,
                         move_speed_flag,
                         active_level_color_index,
@@ -5994,7 +6476,7 @@ impl Level2ResetSession {
                 &mut pending_source_rows,
             );
         }
-        self.economy.reclaim_inactive_slots();
+        self.economy.reclaim_inactive_slots_after_source_pass();
         self.goats.finish_source_turn();
     }
 
@@ -6015,6 +6497,11 @@ impl Level2ResetSession {
         else {
             return false;
         };
+        let terrain = self
+            .campaign_state
+            .as_ref()
+            .expect("Level 2 campaign state owns canonical terrain")
+            .terrain();
         match self
             .shared_spells
             .step_level2_spell_acquisition_with_economy_in_source_order(
@@ -6022,6 +6509,7 @@ impl Level2ResetSession {
                 family,
                 player_entity_index,
                 player_position,
+                terrain,
                 source_player_order,
             ) {
             Ok(result) => self
@@ -6068,6 +6556,11 @@ impl Level2ResetSession {
         let persistent_action =
             physical_spell_action(family, PhysicalSpellActionRole::PersistentPickup);
         if persistent_action == Some(action) {
+            let terrain = self
+                .campaign_state
+                .as_ref()
+                .expect("Level 2 campaign state owns canonical terrain")
+                .terrain();
             match self
                 .shared_spells
                 .step_level2_spell_replacement_acquisition_with_economy_in_source_order(
@@ -6076,6 +6569,7 @@ impl Level2ResetSession {
                     family,
                     player_entity_index,
                     player_position,
+                    terrain,
                     source_player_order,
                 ) {
                 Ok(result) => self
@@ -6110,7 +6604,7 @@ impl Level2ResetSession {
         else {
             return false;
         };
-        let ground_height = self.terrain.ground_height(position);
+        let ground_height = self.canonical_terrain().ground_height(position);
         if !self
             .economy
             .step_authored_class14_slot(source_slot, ground_height)
@@ -6203,11 +6697,16 @@ impl Level2ResetSession {
             }
             source.owner_entity_index = 0;
         }
-        source.position.z = self.terrain.ground_height(source.position);
-        if self.economy.terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK {
+        let terrain = self
+            .campaign_state
+            .as_ref()
+            .expect("Level 2 campaign state owns canonical terrain")
+            .terrain();
+        source.position.z = terrain.ground_height(source.position);
+        if terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK {
             if let Some(splash) = self
                 .economy
-                .allocate_authored_model5_water_splash(source.position)
+                .allocate_authored_model5_water_splash(source.position, terrain)
                 && let Some(splash) = self
                     .economy
                     .authored_model5_water_splashes
@@ -6600,7 +7099,7 @@ impl Level2ResetSession {
                         yaw
                     } else {
                         let control_flags = snapshot.control_flags | 0x0000_0800;
-                        let ground = self.terrain.ground_height(parent.axis_position);
+                        let ground = self.canonical_terrain().ground_height(parent.axis_position);
                         let relative_z =
                             i32::from(target_position.z) - i32::from(parent.word_0x30) + 57;
                         predicted = parent.axis_position;
@@ -6633,7 +7132,7 @@ impl Level2ResetSession {
                     move_speed,
                 );
             }
-            let ground = self.terrain.ground_height(predicted);
+            let ground = self.canonical_terrain().ground_height(predicted);
             let ground_clearance = snapshot
                 .parameter_relation
                 .and_then(|index| self.presentation.entity_parameters.get(usize::from(index)))
@@ -6648,7 +7147,7 @@ impl Level2ResetSession {
                 predicted.z = settle_floor;
             }
             if self.profile == FlightProfile::CAVE {
-                if let Some(ceiling) = self.terrain.ceiling_height(predicted) {
+                if let Some(ceiling) = self.canonical_terrain().ceiling_height(predicted) {
                     let ceiling_limit = ceiling.wrapping_sub(snapshot.array_fov());
                     if predicted.z > ceiling_limit {
                         predicted.z = ceiling_limit;
@@ -6744,11 +7243,24 @@ impl Level2ResetSession {
         sphere_membership: Option<&BTreeSet<u16>>,
     ) -> bool {
         let live = match kind {
-            Level2DynamicArenaKind::CastleProjectile => self
-                .economy
-                .step_castle_projectile_slot(source_slot, &self.entities),
+            Level2DynamicArenaKind::CastleProjectile => {
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy
+                    .step_castle_projectile_slot(source_slot, &self.entities, terrain)
+            }
             Level2DynamicArenaKind::FireballProjectile => {
-                let step = self.economy.step_fireball_projectile_slot(source_slot);
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                let step = self
+                    .economy
+                    .step_fireball_projectile_slot(source_slot, terrain);
                 if step.impact_sound {
                     mark_source_audio_call(SourceAudioCallTag::Class10Action00FirstEligibleSound);
                     self.shared_spells.events.push(FlightEvent::PrepareSound {
@@ -6762,16 +7274,41 @@ impl Level2ResetSession {
                 step.live
             }
             Level2DynamicArenaKind::PossessionProjectile => {
-                self.economy.step_possession_projectile_slot(source_slot)
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy
+                    .step_possession_projectile_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::PossessionEffect => {
                 self.economy.step_possession_effect_slot(source_slot)
             }
             Level2DynamicArenaKind::CastleDefender => {
-                self.economy.step_castle_defender_slot(source_slot)
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy.step_castle_defender_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::ManaSphere => self.economy.step_mana_sphere_slot(source_slot),
-            Level2DynamicArenaKind::ManaCarrier => self.economy.step_mana_carrier_slot(source_slot),
+            Level2DynamicArenaKind::ManaSphere => {
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy.step_mana_sphere_slot(source_slot, terrain)
+            }
+            Level2DynamicArenaKind::ManaCarrier => {
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy.step_mana_carrier_slot(source_slot, terrain)
+            }
             Level2DynamicArenaKind::DeathBurst => self.economy.step_death_burst_slot(source_slot),
             Level2DynamicArenaKind::SpellReplacement => {
                 self.economy.step_spell_replacement_slot(source_slot)
@@ -6784,7 +7321,13 @@ impl Level2ResetSession {
                 self.economy.step_authored_model45_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredModel13 => {
-                self.economy.step_authored_model13_slot(source_slot)
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy
+                    .step_authored_model13_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::AuthoredBee => {
                 let source_before = self
@@ -6796,6 +7339,9 @@ impl Level2ResetSession {
                 let Some(source_before) = source_before else {
                     return false;
                 };
+                let pre_kill_credit = (source_before.action == 20)
+                    .then_some(source_before.kill_credit_entity_index)
+                    .filter(|killer| *killer != 0);
                 let class3_candidates = if source_before.action == 17
                     || (source_before.action == 23 && source_before.stage_var2 == 2)
                 {
@@ -6804,8 +7350,16 @@ impl Level2ResetSession {
                     Vec::new()
                 };
                 let acquired_target = if source_before.action == 17 {
-                    self.economy
-                        .acquire_authored_bee_target(source_slot, &class3_candidates)
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
+                    self.economy.acquire_authored_bee_target(
+                        source_slot,
+                        &class3_candidates,
+                        terrain,
+                    )
                 } else {
                     None
                 };
@@ -6835,12 +7389,36 @@ impl Level2ResetSession {
                             .expect("positive Bee action window")
                         == 0;
                 let peers = self.level2_bee_peer_rows(source_before.model);
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
                 let live = self.economy.step_authored_bee_slot_with_target_and_peers(
                     source_slot,
                     target,
                     &peers,
                     &class3_candidates,
+                    terrain,
                 );
+                if let Some(killer_entity_index) = pre_kill_credit {
+                    // `PreKillEntity_1C890` credits only a live, drawn
+                    // class-3/model-0 owner distinct from the killed root.
+                    // Keep stale, disabled, wrong-class/model, and self-owned
+                    // identities fail-closed before changing the reset census.
+                    let qualifying_killer = killer_entity_index != source_before.entity_id
+                        && self.entities.iter().any(|entity| {
+                            entity.index == killer_entity_index
+                                && entity.active
+                                && entity.life >= 0
+                                && entity.class == 3
+                                && entity.model == 0
+                                && !entity.drawing_disabled()
+                        });
+                    if qualifying_killer {
+                        let _ = self.economy.record_authored_bee_kill(killer_entity_index);
+                    }
+                }
                 if contact_candidate {
                     if let (Some((target_position, _, true)), Some(after)) = (
                         target,
@@ -6871,13 +7449,30 @@ impl Level2ResetSession {
                 live
             }
             Level2DynamicArenaKind::Model13SpawnedChild => {
-                self.economy.step_model13_spawned_child_slot(source_slot)
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy
+                    .step_model13_spawned_child_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::AuthoredModel6 => {
-                self.economy.step_authored_model6_slot(source_slot)
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy.step_authored_model6_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::Model6SpawnedChild => {
-                self.economy.step_model6_spawned_child_slot(source_slot)
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy
+                    .step_model6_spawned_child_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::AuthoredModel17 => {
                 self.economy.step_authored_model17_slot(source_slot)
@@ -6886,7 +7481,14 @@ impl Level2ResetSession {
                 self.economy.step_model17_spawned_child_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredModel22 => {
-                let live = self.economy.step_authored_model22_slot(source_slot);
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                let live = self
+                    .economy
+                    .step_authored_model22_slot(source_slot, terrain);
                 if live {
                     self.step_level2_authored_model22_sub33340_eligible_targets(source_slot);
                     self.step_level2_authored_model22_wind_pulse(source_slot);
@@ -6907,7 +7509,14 @@ impl Level2ResetSession {
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
                     .is_some_and(|source| source.state != 2);
-                let live = self.economy.step_authored_model76_slot(source_slot);
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                let live = self
+                    .economy
+                    .step_authored_model76_slot(source_slot, terrain);
                 if live && probe_collision {
                     self.step_level2_authored_model76_collision_effect(source_slot);
                 }
@@ -6953,7 +7562,14 @@ impl Level2ResetSession {
                         fallback_entities: &rows,
                         peers: &rows,
                     };
-                    let Some(step) = self.economy.step_authored_archer_slot(source_slot, context)
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
+                    let Some(step) =
+                        self.economy
+                            .step_authored_archer_slot(source_slot, context, terrain)
                     else {
                         return false;
                     };
@@ -6987,6 +7603,11 @@ impl Level2ResetSession {
                     let target = self.level2_trader_target(target_index);
                     let linked = self.level2_trader_linked_rows(runtime.linked_head);
                     let buildings = self.level2_trader_building_candidates();
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
                     let Some(step) = self.economy.step_authored_trader_slot(
                         source_slot,
                         target,
@@ -6994,6 +7615,7 @@ impl Level2ResetSession {
                         runtime.linked_head,
                         &linked,
                         &buildings,
+                        terrain,
                     ) else {
                         return false;
                     };
@@ -7026,9 +7648,16 @@ impl Level2ResetSession {
                     let hit_target = source
                         .filter(|source| source.action == 26)
                         .and_then(|_| target.as_ref().map(|target| target.index));
-                    let live = self
-                        .economy
-                        .step_authored_class5_model3_slot_with_target(source_slot, target);
+                    let terrain = self
+                        .campaign_state
+                        .as_ref()
+                        .expect("Level 2 campaign state owns canonical terrain")
+                        .terrain();
+                    let live = self.economy.step_authored_class5_model3_slot_with_target(
+                        source_slot,
+                        target,
+                        terrain,
+                    );
                     let hit = self.economy.events[event_start..].iter().any(|event| {
                         matches!(
                             event,
@@ -7046,15 +7675,26 @@ impl Level2ResetSession {
                     }
                     return live;
                 }
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
                 self.economy
-                    .step_authored_class5_slot_with_target(source_slot, target)
+                    .step_authored_class5_slot_with_target(source_slot, target, terrain)
             }
             Level2DynamicArenaKind::AuthoredClass5Model3Child => self
                 .economy
                 .step_authored_class5_model3_child_slot(source_slot),
-            Level2DynamicArenaKind::AuthoredClass5ArcherChild => self
-                .economy
-                .step_authored_class5_archer_child_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy
+                    .step_authored_class5_archer_child_slot(source_slot, terrain)
+            }
             Level2DynamicArenaKind::HouseResident => {
                 self.economy.step_house_resident_slot(source_slot)
             }
@@ -7069,7 +7709,13 @@ impl Level2ResetSession {
                 self.economy.step_authored_model59_slot(source_slot)
             }
             Level2DynamicArenaKind::Model59SmokeChild => {
-                self.economy.step_model59_smoke_child_slot(source_slot)
+                let terrain = self
+                    .campaign_state
+                    .as_ref()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain();
+                self.economy
+                    .step_model59_smoke_child_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::AuthoredModel53 => {
                 self.economy.step_authored_model53_slot(source_slot)
@@ -7089,7 +7735,13 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::CastleAuxiliary
             | Level2DynamicArenaKind::CastleChild
             | Level2DynamicArenaKind::CastleController => {
-                self.economy.step_castle_child_terminal_slot(source_slot)
+                let terrain = self
+                    .campaign_state
+                    .as_mut()
+                    .expect("Level 2 campaign state owns canonical terrain")
+                    .terrain_mut();
+                self.economy
+                    .step_castle_child_terminal_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::CastleRoot => true,
         };
@@ -7138,6 +7790,11 @@ impl Level2ResetSession {
                         .map(|goat| (goat.position, goat.yaw, goat.rng))
                     {
                         let owner_entity_index = self.economy.source_owner(entity_index);
+                        let terrain = self
+                            .campaign_state
+                            .as_ref()
+                            .expect("Level 2 campaign state owns canonical terrain")
+                            .terrain();
                         let _ = self.economy.spawn_mana_sphere_from_death(
                             entity_index,
                             position,
@@ -7145,6 +7802,7 @@ impl Level2ResetSession {
                             rng,
                             mana,
                             owner_entity_index,
+                            terrain,
                         );
                     }
                 }
@@ -7223,14 +7881,19 @@ impl Level2ResetSession {
     /// subsystem and the exported player/entity/runtime records.
     #[must_use]
     pub fn campaign_state_hash(&self) -> u64 {
+        self.campaign_state_hash_with_terrain(self.canonical_terrain())
+    }
+
+    #[must_use]
+    pub(crate) fn campaign_state_hash_with_terrain(&self, terrain: &SessionTerrain) -> u64 {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(b"level2-campaign-state-v1");
         hasher.update(state_hash(&self.state).to_le_bytes());
-        hasher.update(self.terrain_hash().to_le_bytes());
+        hasher.update(terrain.deterministic_hash().to_le_bytes());
         for component in [
-            self.shared_spells.reset_hash(),
-            self.economy.reset_hash(),
+            self.shared_spells.reset_hash_with_terrain(terrain),
+            self.economy.reset_hash_with_terrain(terrain),
             self.ordinary.reset_hash(),
             self.goat_hash(),
             self.bad_stone_hash(),
@@ -7418,7 +8081,7 @@ impl Level2ResetSession {
 
     #[must_use]
     pub fn terrain_hash(&self) -> u64 {
-        self.terrain.deterministic_hash()
+        self.canonical_terrain().deterministic_hash()
     }
 
     pub(super) fn sync_level2_day_hud_player_projection(&mut self) {
@@ -7671,7 +8334,7 @@ impl Level2ResetSession {
     /// Restore every mutable session projection to the decoded frame zero.
     pub fn reset(&mut self) {
         self.state = self.baseline_state;
-        self.terrain = self.baseline_terrain.clone();
+        *self.canonical_terrain_mut() = self.baseline_terrain.clone();
         self.context = self.baseline_context.clone();
         self.entities = self.baseline_entities.clone();
         self.players.clone_from(&self.baseline_players);

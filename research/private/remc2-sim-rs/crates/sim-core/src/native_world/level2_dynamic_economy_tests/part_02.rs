@@ -159,8 +159,8 @@
                 .build_castle(root_position, 111)
                 .expect("controller vector Castle");
             {
-                let castle = session
-                    .economy_mut()
+                let mut economy_view = session.economy_mut();
+                let castle = economy_view
                     .castle
                     .as_mut()
                     .expect("controller vector Castle");
@@ -229,7 +229,7 @@
             .build_castle(Position::default(), 111)
             .expect("controller fallback Castle");
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             assert!(economy.set_castle_controller_coefficient(2, 0x2a));
             assert!(economy.set_castle_controller_coefficient(3, 0));
             let castle = economy.castle.as_mut().expect("controller fallback Castle");
@@ -267,7 +267,7 @@
             .build_castle(Position::default(), 111)
             .expect("controller coefficient Castle");
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             assert!(economy.set_castle_controller_coefficient(1, 0x2a));
             assert!(economy.set_castle_controller_coefficient(2, 0));
             economy.free_slots.truncate(1);
@@ -297,7 +297,7 @@
             .build_castle(Position::default(), 111)
             .expect("zero coefficient Castle");
         {
-            let economy = no_controller.economy_mut();
+            let mut economy = no_controller.economy_mut();
             for stage in 1..=7 {
                 assert!(economy.set_castle_controller_coefficient(stage, 0));
             }
@@ -346,8 +346,8 @@
             .expect("live Castle source RNG");
         let sentinel_seed = session.economy().sentinel_rng;
         {
-            session.terrain.planes.ground_heights[terrain_index(246, 246)] = 100;
-            let economy = session.economy_mut();
+            session.canonical_terrain_mut().planes.ground_heights[terrain_index(246, 246)] = 100;
+            let mut economy = session.economy_mut();
             let castle = economy.castle.as_mut().expect("stage removal Castle");
             castle.action = 6;
             castle.level = 2;
@@ -424,8 +424,7 @@
         assert!(session.economy_mut().set_castle_anchor(castle_slot, anchor));
         assert!(session.economy_mut().start_castle_construction(castle_slot));
         let expected_terrain = {
-            let economy = session.economy();
-            let mut expected = economy.terrain.clone();
+            let mut expected = session.canonical_terrain().clone();
             expected
                 .apply_castle_update(
                     CastleTerrainUpdate::ConstructionPass {
@@ -470,7 +469,7 @@
         );
         assert_ne!(initialized.control_flags & 1, 0);
         assert_eq!(
-            session.economy().terrain.planes,
+            session.canonical_terrain().planes,
             expected_terrain.planes,
             "37BC0 applies the canonical BUILD payload on its first callback"
         );
@@ -665,7 +664,8 @@
             .expect("Castle source RNG");
         let before_spheres = session.economy().spheres().len();
         {
-            let castle = session.economy_mut().castle.as_mut().expect("Castle");
+            let mut economy_view = session.economy_mut();
+            let castle = economy_view.castle.as_mut().expect("Castle");
             castle.level = 1;
             castle.phase = 0;
             castle.mana = 7_500;
@@ -735,8 +735,8 @@
             .expect("no-overflow Castle");
         let no_overflow_before = no_overflow.economy().spheres().len();
         {
-            let castle = no_overflow
-                .economy_mut()
+            let mut economy_view = no_overflow.economy_mut();
+            let castle = economy_view
                 .castle
                 .as_mut()
                 .expect("no-overflow Castle");
@@ -841,8 +841,8 @@
         };
         assert!(session.economy_mut().set_castle_anchor(castle_slot, anchor));
         {
-            let castle = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let castle = economy_view
                 .castle
                 .as_mut()
                 .expect("stage-two Castle");
@@ -872,7 +872,7 @@
             payload
         })
         .expect("expected composite stage-two BUILD");
-        let mut expected_terrain = session.economy().terrain.clone();
+        let mut expected_terrain = session.canonical_terrain().clone();
         expected_terrain
             .apply_castle_update(
                 CastleTerrainUpdate::ConstructionPass {
@@ -889,7 +889,7 @@
                 .step_castle_child_terminal_slot(child_slot)
         );
         assert_eq!(
-            session.economy().terrain.planes,
+            session.canonical_terrain().planes,
             expected_terrain.planes,
             "37BC0 must preserve BUILD1 data inside the stage-two ff hole"
         );
@@ -898,11 +898,11 @@
         let inner_index = terrain_index(center_x, center_y);
         let outer_index = terrain_index(center_x.wrapping_sub(10), center_y.wrapping_sub(10));
         assert_eq!(
-            session.economy().terrain.planes.ground_heights[inner_index],
+            session.canonical_terrain().planes.ground_heights[inner_index],
             expected_terrain.planes.ground_heights[inner_index]
         );
         assert_eq!(
-            session.economy().terrain.planes.terrain_types[outer_index],
+            session.canonical_terrain().planes.terrain_types[outer_index],
             expected_terrain.planes.terrain_types[outer_index]
         );
 
@@ -937,7 +937,7 @@
         let x = position.x.wrapping_add(128).to_be_bytes()[0];
         let y = position.y.wrapping_add(128).to_be_bytes()[0];
         let index = terrain_index(x, y);
-        let before = session.economy().terrain.clone();
+        let before = session.canonical_terrain().clone();
         let corner = classify_castle_corner(&before.planes, x, y, 7);
         let table_offset = 0x40 + 2 * corner;
         let footprint = CastleBuildFootprint::from_owner_cells(3, 1, 1, &[0x11, 0xff])
@@ -945,8 +945,7 @@
 
         assert!(
             session
-                .economy_mut()
-                .terrain
+                .canonical_terrain_mut()
                 .apply_castle_update(
                     CastleTerrainUpdate::ConstructionPass {
                         position,
@@ -957,7 +956,7 @@
                 .is_ok()
         );
 
-        let after = &session.economy().terrain.planes;
+        let after = &session.canonical_terrain().planes;
         assert_eq!(
             after.terrain_types[index], TERRAIN_GENERATION_TABLE_PREFIX[table_offset],
             "material 0x11 must select the source 0x40 corner table"
@@ -1020,7 +1019,7 @@
         assert!(session.economy_mut().set_castle_anchor(castle_slot, anchor));
         assert!(session.economy_mut().start_castle_construction(castle_slot));
         assert!(session.economy_mut().step_castle_action(castle_slot));
-        session.economy_mut().terrain.planes.ground_heights.fill(20);
+        session.canonical_terrain_mut().planes.ground_heights.fill(20);
         assert!(
             session
                 .economy_mut()
@@ -1032,7 +1031,7 @@
             .castle()
             .expect("defense root")
             .defense_slot;
-        let before = session.economy().terrain.planes.clone();
+        let before = session.canonical_terrain().planes.clone();
         assert!(
             session
                 .economy_mut()
@@ -1055,7 +1054,7 @@
             (defense_slot as u8).wrapping_add(1),
             "MSPRD callback epilogue advances byte_0x3E exactly once"
         );
-        assert_eq!(session.economy().terrain.planes, before);
+        assert_eq!(session.canonical_terrain().planes, before);
     }
 
     #[test]
@@ -1074,7 +1073,7 @@
         let models = [15_u8, 41, 42, 43, 79];
         let expected_count = models.len();
         let (slots, free_before) = {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let mut slots = Vec::with_capacity(expected_count);
             for (ordinal, model) in models.iter().copied().enumerate() {
                 let source_entity_index = economy
@@ -1322,7 +1321,7 @@
             Position {
                 x: root_position.x.wrapping_add(128),
                 y: root_position.y.wrapping_add(640),
-                z: session.economy().terrain.ground_height(Position {
+                z: session.canonical_terrain().ground_height(Position {
                     x: root_position.x.wrapping_add(128),
                     y: root_position.y.wrapping_add(640),
                     z: 0,
@@ -1345,7 +1344,7 @@
             .expect("auxiliary invalidation Castle");
         let invalid_slot;
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             economy
                 .castle
                 .as_mut()
@@ -1410,7 +1409,7 @@
             .build_castle(Position::default(), 111)
             .expect("auxiliary tail-bound Castle");
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let castle = economy
                 .castle
                 .as_mut()
@@ -1863,7 +1862,8 @@
         let mut session = inspection
             .level2_reset_session()
             .expect("sub5F810 target session");
-        let economy = session.economy_mut();
+        let terrain = session.canonical_terrain().clone();
+        let mut economy = session.economy_mut();
         let holder_position = Position {
             x: 100,
             y: 200,
@@ -1871,11 +1871,11 @@
         };
         let spawn = |economy: &mut Level2EconomyState, position: Position, owner: u16| {
             economy
-                .spawn_mana_sphere_from_death(901, position, 0, 0x1234, 1, owner)
+                .spawn_mana_sphere_from_death(901, position, 0, 0x1234, 1, owner, &terrain)
                 .expect("target sphere") as u16
         };
         let suppressed = spawn(
-            economy,
+            &mut *economy,
             Position {
                 x: 100,
                 y: 200,
@@ -1884,7 +1884,7 @@
             111,
         );
         let tied_first = spawn(
-            economy,
+            &mut *economy,
             Position {
                 x: 110,
                 y: 200,
@@ -1893,7 +1893,7 @@
             111,
         );
         let tied_second = spawn(
-            economy,
+            &mut *economy,
             Position {
                 x: 90,
                 y: 200,
@@ -1902,7 +1902,7 @@
             111,
         );
         let wrong_player = spawn(
-            economy,
+            &mut *economy,
             Position {
                 x: 101,
                 y: 200,
@@ -1911,7 +1911,7 @@
             112,
         );
         let excluded = spawn(
-            economy,
+            &mut *economy,
             Position {
                 x: 100,
                 y: 200,
@@ -2049,7 +2049,7 @@
             .build_castle(Position::default(), 111)
             .expect("defender arbitration Castle");
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let castle = economy
                 .castle
                 .as_mut()
@@ -2066,7 +2066,7 @@
             .expect("defender arbitration Castle")
             .defender_slots[0];
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let defender = economy
                 .castle_children
                 .iter_mut()
@@ -2105,7 +2105,7 @@
         );
         let sphere_slot = u16::try_from(sphere_id).unwrap();
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             economy
                 .castle
                 .as_mut()

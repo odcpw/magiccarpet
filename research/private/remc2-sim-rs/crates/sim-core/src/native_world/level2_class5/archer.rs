@@ -197,6 +197,7 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
         if !is_authored_archer_row(authored_index) {
             return None;
@@ -208,7 +209,7 @@ impl Level2EconomyState {
         self.class5_model4_constructor_phase = source_byte_3e.wrapping_add(1);
 
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         let payload = archer_constructor_payload(
             source_entity_index,
             initial_rng,
@@ -1045,6 +1046,7 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         mut context: ArcherActionContext<'_>,
+        terrain: &SessionTerrain,
     ) -> Option<ArcherStepResult> {
         let source_index = self
             .authored_class5
@@ -1091,7 +1093,7 @@ impl Level2EconomyState {
             archer_state.word_0x34 = self.authored_class5_archer[archer_index].word_0x34;
         }
         if effects.moved {
-            source.position.z = self.terrain.ground_height(source.position);
+            source.position.z = terrain.ground_height(source.position);
         }
         source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
@@ -1145,7 +1147,11 @@ impl Level2EconomyState {
     /// cursor. Its source movement uses the constructor's signed pitch and
     /// the shared terrain/map projection; action 37 is terminal drawing kill
     /// while reclaim remains an explicit arena pass.
-    pub(crate) fn step_authored_class5_archer_child_slot(&mut self, source_slot: u16) -> bool {
+    pub(crate) fn step_authored_class5_archer_child_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(child_index) = self
             .authored_class5_archer_children
             .iter()
@@ -1162,7 +1168,7 @@ impl Level2EconomyState {
                 child.pitch,
                 child.actual_speed,
             );
-            child.position.z = self.terrain.ground_height(child.position);
+            child.position.z = terrain.ground_height(child.position);
         } else if child.action == ARCHER_ACTION_KILL {
             child.drawing_enabled = false;
         }

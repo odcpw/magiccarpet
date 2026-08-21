@@ -628,8 +628,6 @@ pub struct Level2DayHudSnapshot {
 /// source family-6/11/12 pickup transition without claiming active lifecycles.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2SharedSpellResetSession {
-    baseline_terrain: SessionTerrain,
-    terrain: SessionTerrain,
     baseline_pickups: Box<[EntitySnapshot]>,
     pickups: Box<[EntitySnapshot]>,
     baseline_dynamic_pickups: Vec<EntitySnapshot>,
@@ -2604,8 +2602,6 @@ pub enum Level2EconomyEvent {
 /// RNG and owner writes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2EconomyState {
-    baseline_terrain: SessionTerrain,
-    terrain: SessionTerrain,
     baseline_free_slots: Box<[u16]>,
     free_slots: Vec<u16>,
     baseline_slot_generations: BTreeMap<u16, u32>,
@@ -2924,8 +2920,6 @@ const fn level2_direct_starting_spell_profile(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2OrdinaryResetSession {
-    baseline_terrain: SessionTerrain,
-    pub terrain: SessionTerrain,
     house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
     baseline_houses: HouseFamily,
     houses: HouseFamily,
@@ -2974,7 +2968,7 @@ pub struct Level2ResetSession {
     baseline_state: FlightState,
     pub state: FlightState,
     baseline_terrain: SessionTerrain,
-    pub terrain: SessionTerrain,
+    campaign_state: Option<crate::campaign::state::CampaignState>,
     baseline_context: FlightContext,
     pub context: FlightContext,
     baseline_entities: Box<[EntitySnapshot]>,

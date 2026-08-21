@@ -115,8 +115,6 @@ impl Level2EconomyState {
                 (0, 0)
             };
         let mut state = Self {
-            baseline_terrain: terrain.clone(),
-            terrain,
             baseline_free_slots: free_slots.clone().into_boxed_slice(),
             free_slots,
             baseline_slot_generations: BTreeMap::new(),
@@ -847,11 +845,12 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel1Source> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -900,6 +899,7 @@ impl Level2EconomyState {
         target_group: u16,
         parameter_1: u16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel45Source> {
         if parameter_1 != 21 {
             return None;
@@ -931,7 +931,7 @@ impl Level2EconomyState {
         }
         let corner_height = |x: u16, y: u16| {
             i16::from(
-                self.terrain.planes.ground_heights
+                terrain.planes.ground_heights
                     [terrain_index(x.to_le_bytes()[0], y.to_le_bytes()[0])],
             )
         };
@@ -1014,11 +1014,12 @@ impl Level2EconomyState {
         authored_index: u16,
         position: Position,
         stage_route: Option<Level2BeeStageRoute>,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredBeeSource> {
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -1143,6 +1144,7 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         candidates: &[(u16, Position, u32)],
+        terrain: &SessionTerrain,
     ) -> Option<u16> {
         let Some(source_index) = self
             .authored_bees
@@ -1160,7 +1162,7 @@ impl Level2EconomyState {
         // callback is intentionally before the cadence guard: even a
         // non-cadence action-17 turn changes position/yaw and only then
         // decides whether to consume the two wander draws and scan targets.
-        move_level2_bee_source(&mut source, &self.terrain);
+        move_level2_bee_source(&mut source, terrain);
         if source.action_window <= 0 {
             self.source_rng.insert(source_slot, source.entity_rng);
             self.authored_bees[source_index] = source;
@@ -1215,6 +1217,7 @@ impl Level2EconomyState {
         stage_tag: u16,
         word_10: i16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredSwitchProducerSource> {
         if !matches!(model, 0 | 1 | 12) || stage_tag == 0 {
             return None;
@@ -1222,7 +1225,7 @@ impl Level2EconomyState {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -1352,6 +1355,7 @@ impl Level2EconomyState {
         stage_tag: u16,
         objective_stage_index: u8,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel32Source> {
         if stage_tag == 0 || objective_stage_index >= 8 {
             return None;
@@ -1359,7 +1363,7 @@ impl Level2EconomyState {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -1570,7 +1574,11 @@ impl Level2EconomyState {
     /// Advance one model-59 smoke child through the pinned `sub_32160`
     /// callback. Its particle ramp differs from the rooted model-13 family:
     /// it rises toward selector 74 and falls back toward selector 67.
-    pub fn step_model59_smoke_child_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_model59_smoke_child_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(child_index) = self
             .model59_smoke_children
             .iter()
@@ -1601,7 +1609,7 @@ impl Level2EconomyState {
         predicted.z = predicted
             .z
             .wrapping_add(child.actual_speed)
-            .max(self.terrain.ground_height(predicted));
+            .max(terrain.ground_height(predicted));
         child.dword_0x10 += 1;
         if child.dword_0x10 < 16 {
             crate::move_entity(&mut predicted, child.yaw, 0, child.max_speed);
@@ -1753,11 +1761,12 @@ impl Level2EconomyState {
     pub fn allocate_authored_model5_water_splash(
         &mut self,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel5WaterSplashSource> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut grounded_position = position;
-        grounded_position.z = self.terrain.ground_height(position);
+        grounded_position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -1996,10 +2005,12 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         target_position: Option<Position>,
+        terrain: &SessionTerrain,
     ) -> bool {
         self.step_authored_bee_slot_with_target(
             source_slot,
             target_position.map(|position| (position, 0, true)),
+            terrain,
         )
     }
 
@@ -2007,8 +2018,9 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         target: Option<(Position, i16, bool)>,
+        terrain: &SessionTerrain,
     ) -> bool {
-        self.step_authored_bee_slot_with_target_and_peers(source_slot, target, &[], &[])
+        self.step_authored_bee_slot_with_target_and_peers(source_slot, target, &[], &[], terrain)
     }
 
     pub(super) fn step_authored_bee_slot_with_target_and_peers(
@@ -2017,6 +2029,7 @@ impl Level2EconomyState {
         target: Option<(Position, i16, bool)>,
         peers: &[(u16, Position)],
         class3_candidates: &[(u16, Position, u32)],
+        terrain: &SessionTerrain,
     ) -> bool {
         let Some(source_index) = self
             .authored_bees
@@ -2099,7 +2112,7 @@ impl Level2EconomyState {
                     // `sub_1C310`; that helper performs movement even when
                     // its subsequent target validity check rejects the
                     // relation, but skips steering/cadence in that case.
-                    move_level2_bee_source(&mut source, &self.terrain);
+                    move_level2_bee_source(&mut source, terrain);
                     if !target_valid {
                         source.action = 17;
                     } else {
@@ -2171,7 +2184,7 @@ impl Level2EconomyState {
                 // source byte-0x3E.  The class-5 helper keeps phases 1..7
                 // live and performs the ordered sphere/burst conversion only
                 // at the admitted phase-0 boundary.
-                self.step_authored_bee_death_tail(&mut source);
+                self.step_authored_bee_death_tail(&mut source, terrain);
             }
             23 => {
                 // `sub_1F8A0 -> sub_1D5D0(16)` dispatches the bounded
@@ -2193,7 +2206,7 @@ impl Level2EconomyState {
                                 - i32::from(source.position.y as i16))
                             .abs()
                                 > 3_072;
-                        move_level2_bee_source(&mut source, &self.terrain);
+                        move_level2_bee_source(&mut source, terrain);
                         if outside_point_band {
                             if source.source_byte_3e & 7 == 0 {
                                 if source.control_flags & LEVEL2_BEE_OBSTRUCTION_BIT == 0 {
@@ -2316,11 +2329,12 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel13Source> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -2370,11 +2384,12 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel6Source> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -2707,7 +2722,11 @@ impl Level2EconomyState {
     /// order, and allocates subtype-14 children only on the source's odd-life
     /// branch.  Cross-entity presentation (`sub_10C80`) is intentionally
     /// outside this typed state seam.
-    pub fn step_authored_model13_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_authored_model13_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(source_index) = self
             .authored_model13
             .iter()
@@ -2773,7 +2792,7 @@ impl Level2EconomyState {
                 }
             }
         }
-        source.position.z = self.terrain.ground_height(source.position);
+        source.position.z = terrain.ground_height(source.position);
         self.source_rng.insert(source_slot, source.entity_rng);
         source.phase = source.phase.wrapping_add(1);
         self.authored_model13[source_index] = source;
@@ -2848,7 +2867,11 @@ impl Level2EconomyState {
     /// Advance one model-14 child through the bounded source `sub_322A0`
     /// callback: signed life sentinel, upward movement, terrain clamp, and
     /// sprite index cadence. The callback has no cross-entity relations.
-    pub fn step_model13_spawned_child_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_model13_spawned_child_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(child_index) = self
             .model13_spawned_children
             .iter()
@@ -2880,7 +2903,7 @@ impl Level2EconomyState {
         predicted.z = predicted
             .z
             .saturating_add(child.actual_speed)
-            .max(self.terrain.ground_height(predicted));
+            .max(terrain.ground_height(predicted));
         child.dword_0x10 += 1;
         if child.dword_0x10 < 16 {
             crate::move_entity(&mut predicted, child.yaw, 0, child.max_speed);
@@ -2911,7 +2934,11 @@ impl Level2EconomyState {
     /// projection, water disable, and map-link state. The source's
     /// `sub_5C870` player-distance mailbox and `sub_11400` attraction scan are
     /// intentionally separate cross-entity follow-up surfaces.
-    pub fn step_authored_model6_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_authored_model6_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(source_index) = self
             .authored_model6
             .iter()
@@ -2966,8 +2993,8 @@ impl Level2EconomyState {
         }
         source.position.z = source
             .height_offset
-            .wrapping_add(self.terrain.ground_height(source.position));
-        if self.terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK {
+            .wrapping_add(terrain.ground_height(source.position));
+        if terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK {
             source.active = false;
             self.map_chains
                 .sync_entity(RenderableMapSeed {
@@ -3048,11 +3075,12 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel17Source> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -3272,6 +3300,7 @@ impl Level2EconomyState {
         authored_index: u16,
         axis_position: Position,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel22Source> {
         // `AddWind_4F040` refuses to start unless the source free-list has
         // room for the parent plus all eleven cloned chain rows.
@@ -3281,7 +3310,7 @@ impl Level2EconomyState {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = level2_next_rng16(self.new_event_rng(source_entity_index));
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         let yaw = i16::try_from((i32::from(entity_rng & 0x07ff) - 1) & 0x07ff)
             .expect("Level 2 wind yaw fits");
         let parent = Level2AuthoredModel22Source {
@@ -3404,7 +3433,11 @@ impl Level2EconomyState {
     /// of `sub_33110`: source life, parent heading/translation, and linked
     /// chain spacing. The source's cross-entity pulse helpers (`sub_33340`
     /// and `sub_33710`) remain a separate relation-heavy follow-up.
-    pub fn step_authored_model22_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_authored_model22_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(parent_index) = self
             .authored_model22
             .iter()
@@ -3467,7 +3500,7 @@ impl Level2EconomyState {
         parent.axis_position = predicted;
         parent.yaw = (parent.yaw + 341) & 0x07ff;
         crate::move_entity(&mut predicted, parent.yaw, 0, 120);
-        predicted.z = self.terrain.ground_height(predicted);
+        predicted.z = terrain.ground_height(predicted);
         parent.position = predicted;
 
         let mut previous = parent.position;
@@ -3562,6 +3595,7 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel76Source> {
         if self.free_slots.len() < 1 + LEVEL2_MODEL76_CHILD_COUNT {
             return None;
@@ -3570,7 +3604,7 @@ impl Level2EconomyState {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut root_position = position;
-        root_position.z = self.terrain.ground_height(root_position);
+        root_position.z = terrain.ground_height(root_position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -3800,7 +3834,11 @@ impl Level2EconomyState {
     /// callback: target-follow/clamp, expanding orbit, child movement order,
     /// terminal `word_0x2c` countdown, model-0 tail spawn, and whole-cluster
     /// disable semantics.
-    pub fn step_authored_model76_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_authored_model76_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(source_index) = self
             .authored_model76
             .iter()
@@ -3879,12 +3917,12 @@ impl Level2EconomyState {
             return true;
         }
 
-        let ground = self.terrain.ground_height(source.position);
+        let ground = terrain.ground_height(source.position);
         let minimum_z = i32::from(ground) + i32::from(source.word_0x2c);
         if i32::from(source.position.z) < minimum_z {
             source.position.z = minimum_z.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         }
-        if let Some(ceiling) = self.terrain.ceiling_height(source.position) {
+        if let Some(ceiling) = terrain.ceiling_height(source.position) {
             let maximum_z = i32::from(ceiling) - i32::from(source.word_0x2c);
             if i32::from(source.position.z) > maximum_z {
                 source.position.z =
@@ -4012,7 +4050,11 @@ impl Level2EconomyState {
     }
 
     /// Advance the generated class-9/model-14 child through `sub_322A0`.
-    pub fn step_model6_spawned_child_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_model6_spawned_child_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(child_index) = self
             .model6_spawned_children
             .iter()
@@ -4038,7 +4080,7 @@ impl Level2EconomyState {
         }
         child.actual_speed = (child.actual_speed - 4).clamp(64, 128);
         child.position.z = child.position.z.wrapping_add(child.actual_speed);
-        let ground = self.terrain.ground_height(child.position);
+        let ground = terrain.ground_height(child.position);
         if child.position.z < ground {
             child.position.z = ground;
         }
@@ -5719,9 +5761,20 @@ impl Level2EconomyState {
 
     #[must_use]
     pub fn reset_hash(&self) -> String {
+        self.reset_hash_inner(None)
+    }
+
+    #[must_use]
+    pub(crate) fn reset_hash_with_terrain(&self, terrain: &SessionTerrain) -> String {
+        self.reset_hash_inner(Some(terrain))
+    }
+
+    fn reset_hash_inner(&self, terrain: Option<&SessionTerrain>) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
-        hasher.update(self.terrain.deterministic_hash().to_le_bytes());
+        if let Some(terrain) = terrain {
+            hasher.update(terrain.deterministic_hash().to_le_bytes());
+        }
         hasher.update(self.global_rng.to_le_bytes());
         hasher.update(self.sentinel_rng.to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
@@ -6988,7 +7041,6 @@ impl Level2EconomyState {
     }
 
     pub fn reset(&mut self) {
-        self.terrain = self.baseline_terrain.clone();
         self.free_slots = self.baseline_free_slots.to_vec();
         self.slot_generations = self.baseline_slot_generations.clone();
         self.slot_rng = self.baseline_slot_rng.clone();

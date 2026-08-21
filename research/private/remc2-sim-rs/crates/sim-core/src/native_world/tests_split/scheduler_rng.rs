@@ -75,7 +75,7 @@ fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
             .find(|feature| feature.index == tree.authored_index)
             .expect("qualified group-31 tree feature");
         let base_position =
-            feature.world_position(session.terrain.ground_height(feature.world_position(0)));
+            feature.world_position(session.canonical_terrain().ground_height(feature.world_position(0)));
         let initial_rng = tree.source_entity_index.wrapping_add(pass_global as u16);
         let life_rng = level2_next_rng16(initial_rng);
         let x_rng = level2_next_rng16(life_rng);
@@ -136,7 +136,7 @@ fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
             Position {
                 x: base_position.x.wrapping_add(x_offset as u16),
                 y: base_position.y.wrapping_add(y_offset as u16),
-                z: session.terrain.ground_height(Position {
+                z: session.canonical_terrain().ground_height(Position {
                     x: base_position.x.wrapping_add(x_offset as u16),
                     y: base_position.y.wrapping_add(y_offset as u16),
                     z: base_position.z,
@@ -195,8 +195,8 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     // tree callback and is the first pass allowed to allocate its sphere.
     let owner_entity_index = session.state.entity_index;
     {
-        let tree = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let tree = economy_view
             .authored_trees
             .iter_mut()
             .find(|source| source.source_entity_index == tree_before.source_entity_index)
@@ -277,8 +277,8 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
         .expect("nonlethal group-31 tree");
     let nonlethal_owner = nonlethal.state.entity_index;
     {
-        let tree = nonlethal
-            .economy_mut()
+        let mut economy_view = nonlethal.economy_mut();
+        let tree = economy_view
             .authored_trees
             .iter_mut()
             .find(|source| source.source_entity_index == nonlethal_before.source_entity_index)
@@ -321,8 +321,8 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
     allocation_failure.economy_mut().free_slots.clear();
     let allocation_failure_owner = allocation_failure.state.entity_index;
     {
-        let tree = allocation_failure
-            .economy_mut()
+        let mut economy_view = allocation_failure.economy_mut();
+        let tree = economy_view
             .authored_trees
             .iter_mut()
             .find(|source| source.source_entity_index == allocation_before.source_entity_index)
@@ -465,8 +465,8 @@ fn level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash()
         .copied()
         .expect("row-229 Bee before action-17 turn");
     {
-        let source = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let source = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == row229_slot)
@@ -628,8 +628,8 @@ fn level_two_authored_bee_action23_selector10_rearms_through_production_cursor()
         .find(|bee| bee.source_entity_index == source_slot)
         .copied()
         .expect("live scripted Bee before selector-10 step");
-    let bee = session
-        .economy_mut()
+    let mut economy_view = session.economy_mut();
+    let bee = economy_view
         .authored_bees
         .iter_mut()
         .find(|bee| bee.source_entity_index == source_slot)
@@ -695,8 +695,8 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
     crate::move_entity(&mut target_after_move, initial.yaw, 0, initial.actual_speed);
     session.state.position = target_after_move;
     {
-        let source = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let source = economy_view
             .authored_bees
             .iter_mut()
             .find(|bee| bee.source_entity_index == row229_slot)
@@ -1161,7 +1161,7 @@ fn level_two_outer_turn_family12_honors_remote_owner_and_return_hand_override() 
         remote_entity.record[80..82].copy_from_slice(&source_position.x.to_le_bytes());
         remote_entity.record[82..84].copy_from_slice(&source_position.y.to_le_bytes());
         remote_entity.record[84..86].copy_from_slice(&source_position.z.to_le_bytes());
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let remote = &mut shared.player_entities[1];
         remote.active = true;
         remote.model = 0;
@@ -1254,13 +1254,10 @@ fn level_two_outer_turn_dispatches_each_source_pass_in_order() {
             .level2_reset_session()
             .expect("Level 2 source-pass session");
         let authority_index = terrain_index(4, 4);
-        session.terrain.planes.ground_heights[authority_index] = 77;
+        session.canonical_terrain_mut().planes.ground_heights[authority_index] = 77;
         let authority_hash = session.terrain_hash();
         session.step_outer_turn(PlayerCommand::default(), speed_index);
         assert_eq!(session.terrain_hash(), authority_hash);
-        assert_eq!(session.terrain, session.shared_spells().terrain);
-        assert_eq!(session.terrain, session.ordinary().terrain);
-        assert_eq!(session.terrain, session.economy().terrain);
         let passes = session
             .dispatch_events()
             .iter()
@@ -1289,9 +1286,9 @@ fn level_two_outer_turn_dispatches_each_source_pass_in_order() {
         }
         assert_eq!(passes.iter().max().copied(), Some(expected_passes - 1));
         session.reset();
-        assert_eq!(session.terrain, session.shared_spells().terrain);
-        assert_eq!(session.terrain, session.ordinary().terrain);
-        assert_eq!(session.terrain, session.economy().terrain);
+        assert_eq!(session.canonical_terrain(), session.canonical_terrain());
+        assert_eq!(session.canonical_terrain(), session.canonical_terrain());
+        assert_eq!(session.canonical_terrain(), session.canonical_terrain());
     }
 }
 
@@ -1680,8 +1677,8 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     let tree_rng_before = tree_before.entity_rng;
     let owner_entity_index = session.state.entity_index;
     {
-        let tree = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let tree = economy_view
             .authored_trees
             .iter_mut()
             .find(|tree| tree.source_entity_index == tree_before.source_entity_index)
@@ -1960,8 +1957,8 @@ fn level_two_same_slot_replacement_defers_until_following_ascending_pass() {
         free_slots.len() - prefix_allocations - 3
     );
     for slot in [target_slot, second_sphere_slot] {
-        let sphere = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let sphere = economy_view
             .spheres
             .iter_mut()
             .find(|sphere| sphere.source_entity_index == slot)

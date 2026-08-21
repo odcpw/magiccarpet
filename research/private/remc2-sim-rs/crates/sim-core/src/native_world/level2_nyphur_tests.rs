@@ -350,7 +350,7 @@ fn level_two_nyphur_mode14_rejects_non_family4_holder_carrier() {
     // A stale externally latched state is equally fail-closed at the
     // mode-14 handler boundary; it cannot consume the family-0 holder.
     session.nyphur_dispatcher.state_byte = 14;
-    let terrain = session.terrain.clone();
+    let terrain = session.canonical_terrain().clone();
     session
         .nyphur_dispatcher
         .step_sub_161a0(112, &mut session.entities, &session.players, &terrain)
@@ -453,7 +453,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
         x: source_position.x + 512,
         ..source_position
     });
-    let inclusive_terrain = inclusive.terrain.clone();
+    let inclusive_terrain = inclusive.canonical_terrain().clone();
     inclusive
         .nyphur_dispatcher
         .step_sub_12ff0(112, &mut inclusive.entities, &inclusive_terrain)
@@ -468,7 +468,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
         z: source_position.z - 512,
         ..source_position
     });
-    let exact_height_terrain = exact_height.terrain.clone();
+    let exact_height_terrain = exact_height.canonical_terrain().clone();
     exact_height
         .nyphur_dispatcher
         .step_sub_12ff0(112, &mut exact_height.entities, &exact_height_terrain)
@@ -481,7 +481,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
         x: source_position.x + 513,
         ..source_position
     });
-    let exclusive_terrain = exclusive.terrain.clone();
+    let exclusive_terrain = exclusive.canonical_terrain().clone();
     exclusive
         .nyphur_dispatcher
         .step_sub_12ff0(112, &mut exclusive.entities, &exclusive_terrain)
@@ -496,7 +496,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
     let preserved_roll = stale.entities[112].source_roll();
     let stale_identity = level2_nyphur_source_identity(&stale.entities[70]).wrapping_add(1);
     stale.entities[112].record[156..158].copy_from_slice(&stale_identity.to_le_bytes());
-    let stale_terrain = stale.terrain.clone();
+    let stale_terrain = stale.canonical_terrain().clone();
     stale
         .nyphur_dispatcher
         .step_sub_12ff0(112, &mut stale.entities, &stale_terrain)
@@ -666,13 +666,14 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
 
     let mut direction_carrier = initial.clone();
     direction_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
+    let direction_terrain = direction_carrier.canonical_terrain().clone();
     direction_carrier
         .nyphur_dispatcher
         .step_sub_13850(
             112,
             &mut direction_carrier.entities,
             &direction_carrier.players,
-            &direction_carrier.terrain,
+            &direction_terrain,
             &direction_carrier.presentation,
         )
         .expect("sub_16580 direction carrier increment");
@@ -683,13 +684,14 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
 
     let mut reset_carrier = initial.clone();
     reset_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e = 8;
+    let reset_terrain = reset_carrier.canonical_terrain().clone();
     reset_carrier
         .nyphur_dispatcher
         .step_sub_13850(
             112,
             &mut reset_carrier.entities,
             &reset_carrier.players,
-            &reset_carrier.terrain,
+            &reset_terrain,
             &reset_carrier.presentation,
         )
         .expect("sub_16580 terrain carrier reset");
@@ -702,6 +704,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     let source_before_negative = wrong_identity.entities[112].record_bytes().to_vec();
     wrong_identity.entities[70].model = wrong_identity.entities[70].model.wrapping_add(1);
     wrong_identity.entities[70].record[68] = wrong_identity.entities[70].model;
+    let wrong_identity_terrain = wrong_identity.canonical_terrain().clone();
     assert!(
         wrong_identity
             .nyphur_dispatcher
@@ -709,7 +712,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
                 112,
                 &mut wrong_identity.entities,
                 &wrong_identity.players,
-                &wrong_identity.terrain,
+                &wrong_identity_terrain,
                 &wrong_identity.presentation,
             )
             .is_err()
@@ -1475,7 +1478,8 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     let order_source = mode11_order.entities[112].clone();
     let blocked_x = order_source.position.x.to_be_bytes()[0];
     let blocked_y = order_source.position.y.to_be_bytes()[0].wrapping_sub(1);
-    mode11_order.terrain.planes.terrain_types[terrain_index(blocked_x, blocked_y)] = 8;
+    mode11_order.canonical_terrain_mut().planes.terrain_types
+        [terrain_index(blocked_x, blocked_y)] = 8;
     mode11_order.nyphur_dispatcher.state_byte = 11;
     mode11_order.step_outer_turn(PlayerCommand::default(), 0);
     assert!(mode11_order.dispatch_events().iter().any(|event| matches!(

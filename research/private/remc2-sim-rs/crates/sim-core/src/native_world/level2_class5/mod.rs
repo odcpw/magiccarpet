@@ -101,7 +101,11 @@ impl Level2EconomyState {
     /// action-21 Bee.  Phases 1..7 remain live and consume no allocations or
     /// RNG; the source's byte-0x3E epilogue advances after this helper and
     /// admits the exact output/reclaim branch only at phase 0 modulo 8.
-    pub(super) fn step_authored_bee_death_tail(&mut self, source: &mut Level2AuthoredBeeSource) {
+    pub(super) fn step_authored_bee_death_tail(
+        &mut self,
+        source: &mut Level2AuthoredBeeSource,
+        terrain: &SessionTerrain,
+    ) {
         if source.source_byte_3e & 7 != 0 {
             return;
         }
@@ -113,6 +117,7 @@ impl Level2EconomyState {
             source.entity_rng,
             source.mana,
             source.entity_id,
+            terrain,
         );
         // The Bee constructor has no suppression bit, so the ordered
         // class-10/model-1 burst follows the mana sphere allocation.
@@ -142,12 +147,13 @@ impl Level2EconomyState {
         authored_index: u16,
         model: u8,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
         if model == trader::TRADER_MODEL {
-            return self.allocate_authored_trader(authored_index, position);
+            return self.allocate_authored_trader(authored_index, position, terrain);
         }
         if model == archer::ARCHER_MODEL {
-            return self.allocate_authored_archer(authored_index, position);
+            return self.allocate_authored_archer(authored_index, position, terrain);
         }
         let (
             action,
@@ -201,7 +207,7 @@ impl Level2EconomyState {
             (0, 0, 0, 0)
         };
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -292,8 +298,12 @@ impl Level2EconomyState {
     /// Advance one authored class-5 root through the live source cursor.
     /// Creature action tables are intentionally separate; this preserves the
     /// constructor's live row and map relation without inventing combat AI.
-    pub fn step_authored_class5_slot(&mut self, source_slot: u16) -> bool {
-        self.step_authored_class5_slot_with_target(source_slot, None)
+    pub fn step_authored_class5_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
+        self.step_authored_class5_slot_with_target(source_slot, None, terrain)
     }
 
     /// Advance one authored class-5 root with the imported target snapshot
@@ -305,6 +315,7 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         target: Option<EntitySnapshot>,
+        terrain: &SessionTerrain,
     ) -> bool {
         let Some(source_index) = self
             .authored_class5
@@ -315,9 +326,9 @@ impl Level2EconomyState {
         };
         let mut source = self.authored_class5[source_index];
         if source.model == 3 && matches!(source.action, 25 | 216..=220) {
-            self.step_authored_class5_model3(&mut source, target);
+            self.step_authored_class5_model3(&mut source, target, terrain);
         } else if source.model == 9 && matches!(source.action, 72 | 73) {
-            self.step_authored_class5_model9(&mut source);
+            self.step_authored_class5_model9(&mut source, terrain);
         }
         // `ApplyEvents_498A0` advances the live class-5 cursor after every
         // callback; `sub_29710` consumes this pre-increment value for its

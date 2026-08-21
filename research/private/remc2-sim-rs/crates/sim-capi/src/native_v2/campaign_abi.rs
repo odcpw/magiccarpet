@@ -1970,7 +1970,7 @@ pub extern "C" fn mc_native_campaign_terrain_state(
                 struct_size: struct_size::<McCampaignTerrainStateV2>(),
                 generation,
                 tick: reset.state.tick,
-                mutation_sequence: reset.terrain.mutation_sequence(),
+                mutation_sequence: reset.canonical_terrain().mutation_sequence(),
                 terrain_hash: reset.terrain_hash(),
                 width: 256,
                 height: 256,
@@ -1993,7 +1993,7 @@ pub extern "C" fn mc_native_campaign_terrain_plane_length(
 ) -> i32 {
     boundary_value(out_count, struct_size::<u32>(), || {
         with_level2_campaign_terrain(handle, generation, |reset| {
-            validate_plane_kind(reset.terrain.planes(), kind)?;
+            validate_plane_kind(reset.canonical_terrain().planes(), kind)?;
             Ok(u32::try_from(TERRAIN_CELLS).expect("terrain count fits u32"))
         })
     })
@@ -2011,7 +2011,7 @@ pub extern "C" fn mc_native_campaign_terrain_plane_copy_u8(
     boundary(|| {
         require_output(out_written, "out_written")?;
         with_level2_campaign_terrain(handle, generation, |reset| {
-            let values = terrain_u8_plane(reset.terrain.planes(), kind)?;
+            let values = terrain_u8_plane(reset.canonical_terrain().planes(), kind)?;
             copy_slice(values, buffer, capacity, out_written)
         })
     })
@@ -2029,7 +2029,7 @@ pub extern "C" fn mc_native_campaign_terrain_entity_indices_copy(
         require_output(out_written, "out_written")?;
         with_level2_campaign_terrain(handle, generation, |reset| {
             copy_slice(
-                &reset.terrain.planes().entity_indices,
+                &reset.canonical_terrain().planes().entity_indices,
                 buffer,
                 capacity,
                 out_written,

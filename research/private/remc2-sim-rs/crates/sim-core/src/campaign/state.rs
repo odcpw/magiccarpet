@@ -1,9 +1,8 @@
-//! Read-only CampaignState carrier for the CF-04 fold seam.
+//! CampaignState carrier for the campaign fold seam.
 //!
-//! `Level2ResetSession` remains the only production authority.  This module
-//! deliberately projects that authority into the carrier shape described by
-//! the campaign seam contract; it does not provide a scheduler or a writer
-//! for any of the projected fields.
+//! CF-04 introduced this carrier as a read-only projection. CF-05 adds the
+//! narrow terrain owner/borrow boundary; the remaining domains still project
+//! the old Level 2 authority until their sequential cutover leaves land.
 
 use std::sync::Arc;
 
@@ -187,6 +186,35 @@ pub struct CampaignState {
     pub scratch: ScratchState,
 }
 
+impl CampaignState {
+    /// Construct the live carrier while the caller is still assembling the
+    /// owning Level 2 session. The explicit terrain argument is intentional:
+    /// it lets the caller install terrain exactly once without first creating
+    /// a second session field that would need copy-back reconciliation.
+    #[must_use]
+    pub(crate) fn from_level2_with_terrain(
+        session: &Level2ResetSession,
+        terrain: &SessionTerrain,
+    ) -> Self {
+        Self {
+            persistent: PersistentState,
+            live: ResetState::from_level2_with_terrain(session, terrain),
+            scratch: ScratchState::from_level2(session, 0),
+        }
+    }
+
+    /// Borrow the one mutable terrain carrier used by the production route.
+    #[must_use]
+    pub(crate) fn terrain(&self) -> &SessionTerrain {
+        &self.live.terrain
+    }
+
+    /// Mutably borrow the one terrain carrier used by the production route.
+    pub(crate) fn terrain_mut(&mut self) -> &mut SessionTerrain {
+        &mut self.live.terrain
+    }
+}
+
 /// Versioned bytes and digest for a reset receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResetReceipt {
@@ -320,6 +348,14 @@ impl CampaignDefinition {
 impl ResetState {
     #[must_use]
     pub fn from_level2(session: &Level2ResetSession) -> Self {
+        Self::from_level2_with_terrain(session, session.canonical_terrain())
+    }
+
+    #[must_use]
+    pub(crate) fn from_level2_with_terrain(
+        session: &Level2ResetSession,
+        terrain: &SessionTerrain,
+    ) -> Self {
         let entities = session.entities().to_vec().into_boxed_slice();
         let links = entities
             .iter()
@@ -349,7 +385,7 @@ impl ResetState {
                 traces: session.nyphur_dispatch_traces().to_vec().into_boxed_slice(),
                 state_hash: session.nyphur_state_hash().ok(),
             },
-            legacy_campaign_state_hash: session.campaign_state_hash(),
+            legacy_campaign_state_hash: session.campaign_state_hash_with_terrain(terrain),
         };
         let effect_journal = EffectJournalState {
             receipt: digest_effect_journal(session),
@@ -357,7 +393,7 @@ impl ResetState {
         Self {
             flight: session.state,
             source_arena: SourceArenaState { entities, topology },
-            terrain: session.terrain.clone(),
+            terrain: terrain.clone(),
             players_and_runtime: PlayersAndRuntimeState {
                 players,
                 runtime: runtime.clone(),
@@ -365,7 +401,7 @@ impl ResetState {
             },
             source_rng: SourceRngState {
                 global_state: runtime.random_state,
-                terrain_rng: session.terrain.terrain_rng(),
+                terrain_rng: terrain.terrain_rng(),
                 entity_streams: session
                     .entities()
                     .iter()
@@ -446,7 +482,7 @@ fn reset_component_digests(
         digest_source_arena(&state.source_arena),
         digest_terrain(&state.terrain),
         digest_players_and_runtime(&state.players_and_runtime),
-        digest_source_sidecars(&state.source_sidecars),
+        digest_source_sidecars(&state.source_sidecars, &state.terrain),
         digest_source_rng(&state.source_rng),
         digest_objectives(&state.objectives),
         state.effect_journal.receipt,
@@ -680,10 +716,16 @@ fn append_position(hasher: &mut Sha256, position: crate::Position) {
 }
 
 #[must_use]
-fn digest_source_sidecars(sidecars: &SourceSidecarsState) -> CanonicalDigest {
+fn digest_source_sidecars(
+    sidecars: &SourceSidecarsState,
+    terrain: &SessionTerrain,
+) -> CanonicalDigest {
     digest_with(|hasher| {
-        append_string(hasher, &sidecars.shared_spells.reset_hash());
-        append_string(hasher, &sidecars.economy.reset_hash());
+        append_string(
+            hasher,
+            &sidecars.shared_spells.reset_hash_with_terrain(terrain),
+        );
+        append_string(hasher, &sidecars.economy.reset_hash_with_terrain(terrain));
         append_string(hasher, &sidecars.ordinary.reset_hash());
         append_string(hasher, &sidecars.mission.state_hash());
         hasher.update(sidecars.legacy_campaign_state_hash.to_le_bytes());
@@ -786,7 +828,7 @@ fn digest_bytes(bytes: &[u8]) -> CanonicalDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PlayerCommand;
+    use crate::{PlayerCommand, Position, level1_mission::CastleTerrainUpdate};
     use std::path::PathBuf;
 
     fn level_two_fixture_path() -> PathBuf {
@@ -902,5 +944,122 @@ mod tests {
         assert_eq!(session.campaign_state_hash(), before.campaign_state_hash);
         assert_eq!(session.terrain_hash(), before.terrain_hash);
         assert_dual_observer_equal(&session);
+    }
+
+    #[test]
+    fn cf05_terrain_single_owner_preserves_source_order_and_omega() {
+        let mut session = level_two_session();
+        let mut replay = level_two_session();
+
+        // Choose a real, unmarked source cell with headroom so the collision
+        // write is observable. The following material write overlaps it and
+        // therefore makes the two source orders distinguishable.
+        let (x, y, in_type) = {
+            let terrain = session.canonical_terrain();
+            let mut candidate = None;
+            for y in 0..=u8::MAX {
+                for x in 0..=u8::MAX {
+                    let index = usize::from(x) + usize::from(y) * 256;
+                    if terrain.planes().angles[index] & 0x80 == 0
+                        && terrain.planes().ground_heights[index] < 200
+                    {
+                        candidate = Some((x, y, terrain.planes().terrain_types[index]));
+                        break;
+                    }
+                }
+                if candidate.is_some() {
+                    break;
+                }
+            }
+            candidate.expect("qualified terrain contains an unmarked cell with headroom")
+        };
+        let position = Position {
+            x: u16::from(x) << 8,
+            y: u16::from(y) << 8,
+            z: 0,
+        };
+        let collision = CastleTerrainUpdate::AmbientCollision {
+            position,
+            height_delta: 1,
+        };
+        let material = CastleTerrainUpdate::AmbientMaterial {
+            position,
+            in_type,
+            target_type: 20,
+        };
+        let apply = |session: &mut Level2ResetSession, update: CastleTerrainUpdate| {
+            session
+                .canonical_terrain_mut()
+                .apply_ambient_update(update)
+                .expect("qualified ambient terrain update");
+        };
+
+        apply(&mut session, collision);
+        apply(&mut session, material);
+        apply(&mut replay, collision);
+        apply(&mut replay, material);
+        assert_eq!(session.canonical_terrain(), replay.canonical_terrain());
+        assert_eq!(session.terrain_hash(), replay.terrain_hash());
+        assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+        assert_dual_observer_equal(&session);
+
+        // Reversing overlapping writes is not an equivalent terrain fold:
+        // material marks the cell immutable, so a later collision write is
+        // rejected by the same source-order guard.
+        let mut reordered = level_two_session();
+        apply(&mut reordered, material);
+        apply(&mut reordered, collision);
+        assert_ne!(reordered.canonical_terrain(), session.canonical_terrain());
+        assert_ne!(
+            reordered.campaign_state_hash(),
+            session.campaign_state_hash()
+        );
+
+        let frame_zero = level_two_session();
+        let frame_zero_hash = frame_zero.campaign_state_hash();
+        let frame_zero_terrain_hash = frame_zero.terrain_hash();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        replay.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+        assert_eq!(session.terrain_hash(), replay.terrain_hash());
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), frame_zero_hash);
+        assert_eq!(session.terrain_hash(), frame_zero_terrain_hash);
+        assert_eq!(session.canonical_terrain(), frame_zero.canonical_terrain());
+    }
+
+    #[test]
+    fn cf05_stale_terrain_projection_cannot_feed_simulation() {
+        let mut session = level_two_session();
+        let mut control = session.clone();
+        let baseline_hash = session.campaign_state_hash();
+        let baseline_terrain_hash = session.terrain_hash();
+        let mut stale_projection = session.canonical_terrain().clone();
+
+        stale_projection
+            .apply_ambient_update(CastleTerrainUpdate::AmbientCollision {
+                position: Position { x: 0, y: 0, z: 0 },
+                height_delta: 127,
+            })
+            .expect("stale projection mutation is locally valid");
+        assert_ne!(stale_projection.deterministic_hash(), baseline_terrain_hash);
+        assert_eq!(session.terrain_hash(), baseline_terrain_hash);
+
+        // The stale copy is deliberately mutated but never passed back. The
+        // real outer-turn route must read the canonical CampaignState field,
+        // so it remains identical to a session that never created the copy.
+        let session_evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+        let control_evidence = control.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session_evidence, control_evidence);
+        assert_eq!(session.campaign_state_hash(), control.campaign_state_hash());
+        assert_eq!(session.terrain_hash(), control.terrain_hash());
+        assert_ne!(session.campaign_state_hash(), baseline_hash);
+        assert_dual_observer_equal(&session);
+
+        session.reset();
+        control.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert_eq!(session.terrain_hash(), baseline_terrain_hash);
+        assert_eq!(session.canonical_terrain(), control.canonical_terrain());
     }
 }

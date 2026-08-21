@@ -58,7 +58,7 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
     );
     assert_eq!(
         meteor.position.z,
-        session.terrain.ground_height(meteor_position)
+        session.canonical_terrain().ground_height(meteor_position)
     );
     assert_eq!(meteor.life, 9);
     assert_eq!(session.economy().model17_spawned_children().len(), 3);
@@ -811,7 +811,7 @@ fn level_two_model12_group31_materializes_row209_without_empty_group32_work() {
         (
             row209.world_position(0).x,
             row209.world_position(0).y,
-            session.terrain.ground_height(row209.world_position(0))
+            session.canonical_terrain().ground_height(row209.world_position(0))
         )
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
@@ -1506,8 +1506,7 @@ fn level_two_group2_row42_materializes_from_row41_production_route() {
         (
             authored_row42.world_position(0).x,
             authored_row42.world_position(0).y,
-            session
-                .terrain
+            session.canonical_terrain()
                 .ground_height(authored_row42.world_position(0))
         )
     );
@@ -2196,8 +2195,7 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
         (
             authored_row41.world_position(0).x,
             authored_row41.world_position(0).y,
-            session
-                .terrain
+            session.canonical_terrain()
                 .ground_height(authored_row41.world_position(0))
         )
     );
@@ -2230,8 +2228,7 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
         (
             authored_row16.world_position(0).x,
             authored_row16.world_position(0).y,
-            session
-                .terrain
+            session.canonical_terrain()
                 .ground_height(authored_row16.world_position(0))
         )
     );
@@ -2406,8 +2403,7 @@ fn level_two_group6_row84_materializes_from_row83_production_route() {
         (
             authored_row84.world_position(0).x,
             authored_row84.world_position(0).y,
-            session
-                .terrain
+            session.canonical_terrain()
                 .ground_height(authored_row84.world_position(0))
         )
     );
@@ -2596,7 +2592,7 @@ fn level_two_group3_model39_rows_materialize_from_row42_production_route() {
         (
             authored_row439.x,
             authored_row439.y,
-            session.terrain.ground_height(authored_row439)
+            session.canonical_terrain().ground_height(authored_row439)
         )
     );
     assert!(row439.active);
@@ -3278,7 +3274,7 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
         (
             authored_row105.x,
             authored_row105.y,
-            session.terrain.ground_height(authored_row105)
+            session.canonical_terrain().ground_height(authored_row105)
         )
     );
     assert!(row105.active);
@@ -3553,8 +3549,7 @@ fn level_two_group18_row213_materializes_from_model32_production_route() {
         (
             authored_row213.world_position(0).x,
             authored_row213.world_position(0).y,
-            session
-                .terrain
+            session.canonical_terrain()
                 .ground_height(authored_row213.world_position(0))
         )
     );
@@ -3679,7 +3674,7 @@ fn level_two_authored_model32_chain_continues_through_group18_and_group19() {
         );
         assert_eq!(
             checkpoint.position.z,
-            session.terrain.ground_height(position)
+            session.canonical_terrain().ground_height(position)
         );
         // The live source cursor revisits newly allocated model-59 rows
         // in the same runagain sweep, consuming the first action-64 life
@@ -3899,7 +3894,7 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
         archer_before_cursor.pitch,
         archer_before_cursor.actual_speed,
     );
-    expected_archer_position.z = session.terrain.ground_height(expected_archer_position);
+    expected_archer_position.z = session.canonical_terrain().ground_height(expected_archer_position);
     assert_eq!(
         (
             stepped_archer.position.x,
@@ -4166,7 +4161,7 @@ fn level_two_group23_model59_materializes_from_rooted_production_turns() {
     );
     assert_eq!(
         checkpoint.position.z,
-        session.terrain.ground_height(checkpoint_position)
+        session.canonical_terrain().ground_height(checkpoint_position)
     );
     // The newly allocated row is visited by the same source runagain
     // sweep, so its action-64 callback consumes one life tick.
@@ -4445,7 +4440,7 @@ fn level_two_group26_model39_materializes_from_production_switch_chain() {
             (
                 position.x,
                 position.y,
-                session.terrain.ground_height(position)
+                session.canonical_terrain().ground_height(position)
             )
         );
         assert!(source.active && source.drawing_enabled);
@@ -4789,8 +4784,7 @@ fn level_two_group25_row356_materializes_from_row355_production_route() {
         (
             authored_row356.world_position(0).x,
             authored_row356.world_position(0).y,
-            session
-                .terrain
+            session.canonical_terrain()
                 .ground_height(authored_row356.world_position(0))
         )
     );

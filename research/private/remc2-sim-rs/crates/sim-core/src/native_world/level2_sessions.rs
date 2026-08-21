@@ -2,7 +2,7 @@ use super::*;
 
 impl Level2SharedSpellResetSession {
     pub(super) fn from_parts_with_starting_spells(
-        terrain: SessionTerrain,
+        _terrain: SessionTerrain,
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
         presentation: &PresentationSelectors,
@@ -169,8 +169,6 @@ impl Level2SharedSpellResetSession {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let mut session = Self {
-            baseline_terrain: terrain.clone(),
-            terrain,
             baseline_pickups: pickups.clone(),
             pickups,
             baseline_dynamic_pickups: Vec::new(),
@@ -2165,12 +2163,14 @@ impl Level2SharedSpellResetSession {
         family: u8,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         let source_player_order = (0..self.players.len()).collect::<Vec<_>>();
         self.step_level2_spell_acquisition_with_castle_mana(
             family,
             player_entity_index,
             player_position,
+            terrain,
             None,
             &source_player_order,
         )
@@ -2181,6 +2181,7 @@ impl Level2SharedSpellResetSession {
         family: u8,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
         parent_castle_mana: Option<i32>,
         source_player_order: &[usize],
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
@@ -2275,7 +2276,7 @@ impl Level2SharedSpellResetSession {
             .pickup(source_slot)
             .cloned()
             .expect("validated Level 2 spell source row remains live");
-        let ground = self.terrain.ground_height(pickup.position);
+        let ground = terrain.ground_height(pickup.position);
         if pickup.position.z > ground {
             pickup.position.z = pickup.position.z.wrapping_sub(128);
         }
@@ -2359,6 +2360,7 @@ impl Level2SharedSpellResetSession {
         family: u8,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         let source_player_order = (0..self.players.len()).collect::<Vec<_>>();
         self.step_level2_spell_acquisition_with_economy_in_source_order(
@@ -2366,6 +2368,7 @@ impl Level2SharedSpellResetSession {
             family,
             player_entity_index,
             player_position,
+            terrain,
             &source_player_order,
         )
     }
@@ -2376,6 +2379,7 @@ impl Level2SharedSpellResetSession {
         family: u8,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
         source_player_order: &[usize],
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         let active_parent = self
@@ -2412,6 +2416,7 @@ impl Level2SharedSpellResetSession {
             family,
             player_entity_index,
             player_position,
+            terrain,
             parent_castle_mana,
             source_player_order,
         )?;
@@ -2457,6 +2462,7 @@ impl Level2SharedSpellResetSession {
         family: u8,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         let source_player_order = (0..self.players.len()).collect::<Vec<_>>();
         self.step_level2_spell_replacement_acquisition_with_economy_in_source_order(
@@ -2465,6 +2471,7 @@ impl Level2SharedSpellResetSession {
             family,
             player_entity_index,
             player_position,
+            terrain,
             &source_player_order,
         )
     }
@@ -2476,6 +2483,7 @@ impl Level2SharedSpellResetSession {
         family: u8,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
         source_player_order: &[usize],
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         let family_index = self
@@ -2505,6 +2513,7 @@ impl Level2SharedSpellResetSession {
             family,
             player_entity_index,
             player_position,
+            terrain,
             None,
             source_player_order,
         );
@@ -2570,8 +2579,9 @@ impl Level2SharedSpellResetSession {
         &mut self,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
     ) -> Result<Level2SpeedPickupStep> {
-        self.step_speed_pickup_inner(player_entity_index, player_position, true)
+        self.step_speed_pickup_inner(player_entity_index, player_position, terrain, true)
     }
 
     /// Source `UpdateEntities` keeps one presentation/event stream across
@@ -2582,14 +2592,16 @@ impl Level2SharedSpellResetSession {
         &mut self,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
     ) -> Result<Level2SpeedPickupStep> {
-        self.step_speed_pickup_inner(player_entity_index, player_position, false)
+        self.step_speed_pickup_inner(player_entity_index, player_position, terrain, false)
     }
 
     fn step_speed_pickup_inner(
         &mut self,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
         clear_events: bool,
     ) -> Result<Level2SpeedPickupStep> {
         if player_entity_index != self.player_entity.index {
@@ -2613,7 +2625,7 @@ impl Level2SharedSpellResetSession {
         // terrain query. The surrounding Level2 session owns map-chain
         // surgery; this adapter deliberately claims only the row-local Z
         // write and records that boundary in the typed state below.
-        let ground = self.terrain.ground_height(pickup.position);
+        let ground = terrain.ground_height(pickup.position);
         if pickup.position.z > ground {
             pickup.position.z = pickup.position.z.wrapping_sub(128);
         }
@@ -2727,6 +2739,7 @@ impl Level2SharedSpellResetSession {
         source_slot: u16,
         player_entity_index: u16,
         player_position: Position,
+        terrain: &SessionTerrain,
     ) -> Result<Option<Level2SpeedPickupStep>> {
         match source_slot {
             38 if player_entity_index == self.player_entity.index => Ok(None),
@@ -2735,7 +2748,7 @@ impl Level2SharedSpellResetSession {
                 self.player_entity.index
             ))),
             75 => self
-                .step_speed_pickup_in_source_order(player_entity_index, player_position)
+                .step_speed_pickup_in_source_order(player_entity_index, player_position, terrain)
                 .map(Some),
             _ => Err(NativeWorldError::new(format!(
                 "unknown Level 2 shared pickup source slot {source_slot}"
@@ -2745,6 +2758,11 @@ impl Level2SharedSpellResetSession {
 
     #[must_use]
     pub fn reset_hash(&self) -> String {
+        self.reset_hash_without_terrain()
+    }
+
+    #[must_use]
+    pub(crate) fn reset_hash_with_terrain(&self, terrain: &SessionTerrain) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         for entity in self.pickups.iter().chain(self.holders.iter()) {
@@ -2762,7 +2780,7 @@ impl Level2SharedSpellResetSession {
         }
         hasher.update(self.local_player.record_bytes());
         hasher.update(self.player_entity_sha256.as_bytes());
-        hasher.update(self.terrain.deterministic_hash().to_le_bytes());
+        hasher.update(terrain.deterministic_hash().to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
         for experience in self.persistent_spell_experience {
@@ -2901,13 +2919,164 @@ impl Level2SharedSpellResetSession {
         format!("{:x}", hasher.finalize())
     }
 
+    fn reset_hash_without_terrain(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        for entity in self.pickups.iter().chain(self.holders.iter()) {
+            hasher.update(entity.record_bytes());
+        }
+        for entity in &self.dynamic_pickups {
+            hasher.update(entity.record_bytes());
+        }
+        hasher.update(self.player_entity.record_bytes());
+        for player in &self.players {
+            hasher.update(player.record_bytes());
+        }
+        for entity in &self.player_entities {
+            hasher.update(entity.record_bytes());
+        }
+        hasher.update(self.local_player.record_bytes());
+        hasher.update(self.player_entity_sha256.as_bytes());
+        hasher.update(self.player_mana.to_le_bytes());
+        hasher.update(self.player_life_regen.to_le_bytes());
+        for experience in self.persistent_spell_experience {
+            hasher.update(experience.to_le_bytes());
+        }
+        for experience in self.spell_experience {
+            hasher.update(experience.to_le_bytes());
+        }
+        for level in self.spell_levels {
+            hasher.update(level.to_le_bytes());
+        }
+        hasher.update(self.speed.entity_index.to_le_bytes());
+        hasher.update(self.speed.active_value.to_le_bytes());
+        hasher.update(self.speed.activation_value.to_le_bytes());
+        hasher.update(self.speed.mana_cost.to_le_bytes());
+        if let Some(shield) = self.shield {
+            hasher.update([1]);
+            hasher.update(shield.holder_entity_index.to_le_bytes());
+            hasher.update(shield.parent_entity_index.to_le_bytes());
+            hasher.update([shield.tier, shield.action]);
+            hasher.update(shield.active_value.to_le_bytes());
+            hasher.update(shield.activation_value.to_le_bytes());
+            hasher.update(shield.mana_cost.to_le_bytes());
+            hasher.update(shield.parent_mana.to_le_bytes());
+            hasher.update(shield.parent_life.to_le_bytes());
+            hasher.update(shield.parent_mana_regen.to_le_bytes());
+            hasher.update(shield.parent_status_flags.to_le_bytes());
+            hasher.update(shield.countdown.to_le_bytes());
+            hasher.update(shield.experience_awarded.to_le_bytes());
+            hasher.update([u8::from(shield.cleanup_requested)]);
+        } else {
+            hasher.update([0]);
+        }
+        if let Some(mailbox) = self.shield_damage_mailbox {
+            hasher.update(b"shield-damage-mailbox-v1");
+            hasher.update(mailbox.target_entity_index.to_le_bytes());
+            hasher.update(mailbox.damage.to_le_bytes());
+            hasher.update(mailbox.attacker_entity_index.to_le_bytes());
+        }
+        if let Some(invisible) = self.invisible {
+            hasher.update([1]);
+            hasher.update(invisible.holder_entity_index.to_le_bytes());
+            hasher.update(invisible.parent_entity_index.to_le_bytes());
+            hasher.update([invisible.tier, invisible.action]);
+            hasher.update(invisible.active_value.to_le_bytes());
+            hasher.update(invisible.activation_value.to_le_bytes());
+            hasher.update(invisible.mana_cost.to_le_bytes());
+            hasher.update(invisible.mana_regen_requirement.to_le_bytes());
+            hasher.update(invisible.parent_mana.to_le_bytes());
+            hasher.update(invisible.parent_life.to_le_bytes());
+            hasher.update(invisible.parent_mana_regen.to_le_bytes());
+            hasher.update(invisible.parent_status_flags.to_le_bytes());
+            hasher.update(invisible.spell_status_flags.to_le_bytes());
+            hasher.update([invisible.parent_visibility_mode]);
+            hasher.update([u8::from(invisible.owner_word_clear_pending)]);
+            hasher.update(invisible.countdown.to_le_bytes());
+            hasher.update(invisible.experience_awarded.to_le_bytes());
+            hasher.update([u8::from(invisible.cleanup_requested)]);
+        } else {
+            hasher.update([0]);
+        }
+        if let Some(beyond_sight) = self.beyond_sight {
+            hasher.update([1]);
+            hasher.update(beyond_sight.holder_entity_index.to_le_bytes());
+            hasher.update(beyond_sight.parent_entity_index.to_le_bytes());
+            hasher.update([beyond_sight.tier, beyond_sight.action]);
+            hasher.update(beyond_sight.active_value.to_le_bytes());
+            hasher.update(beyond_sight.activation_value.to_le_bytes());
+            hasher.update(beyond_sight.mana_cost.to_le_bytes());
+            hasher.update(beyond_sight.mana_regen_requirement.to_le_bytes());
+            hasher.update(beyond_sight.parent_mana.to_le_bytes());
+            hasher.update(beyond_sight.parent_life.to_le_bytes());
+            hasher.update(beyond_sight.parent_mana_regen.to_le_bytes());
+            hasher.update(beyond_sight.countdown.to_le_bytes());
+            hasher.update(beyond_sight.experience_awarded.to_le_bytes());
+            hasher.update([u8::from(beyond_sight.cleanup_requested)]);
+        } else {
+            hasher.update([0]);
+        }
+        hasher.update(self.beyond_sight_auxiliary.entity_index.to_le_bytes());
+        hasher.update(self.beyond_sight_auxiliary.next_entity.to_le_bytes());
+        hasher.update(self.beyond_sight_auxiliary.entity_index2.to_le_bytes());
+        hasher.update([self.beyond_sight_auxiliary.effect_parameter]);
+        if self.free_spell_usage {
+            hasher.update(b"level2-free-spell-usage-v1");
+            hasher.update([1]);
+        }
+        for state in &self.acquisitions {
+            hasher.update([state.family]);
+            hasher.update(state.source_slot.to_le_bytes());
+            hasher.update(state.authored_source_index.to_le_bytes());
+            hasher.update(state.owner_entity_index.to_le_bytes());
+            hasher.update([state.source_action, state.holder_action]);
+            hasher.update(state.replacement_action.unwrap_or(u8::MAX).to_le_bytes());
+            hasher.update(state.parent_entity_index.to_le_bytes());
+            hasher.update(state.presentation_timer.to_le_bytes());
+            hasher.update(state.holder_relation.to_le_bytes());
+            hasher.update([state.eligibility]);
+            hasher.update([state.learned]);
+            hasher.update(state.left_spell_slot.to_le_bytes());
+            hasher.update(state.right_spell_slot.to_le_bytes());
+            hasher.update([
+                state.left_subspell_index.to_le_bytes()[0],
+                state.right_subspell_index.to_le_bytes()[0],
+                state.selected_tier.to_le_bytes()[0],
+                u8::from(state.source_draw_enabled),
+            ]);
+            hasher.update(state.subspell_index.to_le_bytes());
+            hasher.update(state.word_0x30.to_le_bytes());
+            hasher.update([state.byte_0x3b]);
+            hasher.update([state.byte_0x3c, state.font_type_index]);
+            hasher.update(state.mana_regen.to_le_bytes());
+            hasher.update(state.max_mana.to_le_bytes());
+            hasher.update(state.mana.to_le_bytes());
+            hasher.update(state.source_life.to_le_bytes());
+            hasher.update(state.return_side.to_le_bytes());
+        }
+        for (source_slot, state) in &self.persistent_acquisitions {
+            hasher.update([0xfe]);
+            hasher.update(source_slot.to_le_bytes());
+            hasher.update([state.family, state.source_action, state.holder_action]);
+            hasher.update(state.source_slot.to_le_bytes());
+            hasher.update(state.holder_relation.to_le_bytes());
+            hasher.update([state.eligibility, state.learned]);
+            hasher.update(state.source_life.to_le_bytes());
+            hasher.update([u8::from(state.source_draw_enabled)]);
+        }
+        hasher.update(self.speed_pickup_state.owner_entity_index.to_le_bytes());
+        hasher.update([u8::from(self.speed_pickup_state.collected)]);
+        hasher.update([u8::from(self.speed_pickup_state.visible)]);
+        hasher.update([self.speed_pickup_state.state_timer]);
+        format!("{:x}", hasher.finalize())
+    }
+
     pub fn reset(&mut self) {
         self.pickups.clone_from(&self.baseline_pickups);
         self.dynamic_pickups
             .clone_from(&self.baseline_dynamic_pickups);
         self.authored_pickup_slots
             .clone_from(&self.baseline_authored_pickup_slots);
-        self.terrain = self.baseline_terrain.clone();
         self.holders.clone_from(&self.baseline_holders);
         self.player_mana = self.baseline_player_mana;
         self.player_life_regen = self.baseline_player_life_regen;
@@ -2990,8 +3159,6 @@ impl Level2OrdinaryResetSession {
         )
         .expect("Level 2 ordinary population census fits u32");
         Ok(Self {
-            baseline_terrain: terrain.clone(),
-            terrain,
             house_build_footprints,
             baseline_houses: houses.clone(),
             houses,
@@ -3059,14 +3226,19 @@ impl Level2OrdinaryResetSession {
         }
     }
 
-    pub fn step_house_action_52(&mut self, source_slot: u16) -> Vec<HouseStepEvent> {
-        self.houses.step_source_slot(source_slot, &self.terrain)
+    pub fn step_house_action_52(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> Vec<HouseStepEvent> {
+        self.houses.step_source_slot(source_slot, terrain)
     }
 
     pub(super) fn apply_house_terrain_events(
         &mut self,
         economy: &mut Level2EconomyState,
         events: &[HouseStepEvent],
+        terrain: &mut SessionTerrain,
     ) -> Result<()> {
         for event in events {
             match *event {
@@ -3084,7 +3256,7 @@ impl Level2OrdinaryResetSession {
                                 "Level 2 House BUILD footprint {building_index} is absent"
                             ))
                         })?;
-                    self.terrain
+                    terrain
                         .apply_house_construction(position, Some(remaining), footprint)
                         .map_err(NativeWorldError::new)?;
                 }
@@ -3101,7 +3273,7 @@ impl Level2OrdinaryResetSession {
                                 "Level 2 House BUILD footprint {building_index} is absent"
                             ))
                         })?;
-                    self.terrain
+                    terrain
                         .apply_house_construction(position, None, footprint)
                         .map_err(NativeWorldError::new)?;
                 }
@@ -3128,8 +3300,7 @@ impl Level2OrdinaryResetSession {
                                 "Level 2 House BUILD footprint {building_index} is absent"
                             ))
                         })?;
-                    let outcome = self
-                        .terrain
+                    let outcome = terrain
                         .apply_house_removal(
                             position,
                             rng,
@@ -3222,7 +3393,11 @@ impl Level2OrdinaryResetSession {
         Ok(())
     }
 
-    pub fn step_villager_action_105(&mut self, source_slot: u16) -> Vec<VillagerStepEffect> {
+    pub fn step_villager_action_105(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> Vec<VillagerStepEffect> {
         let mut source_views = self
             .houses
             .houses()
@@ -3237,7 +3412,7 @@ impl Level2OrdinaryResetSession {
             .collect::<Vec<_>>();
         source_views.sort_unstable_by_key(|view| view.source_entity_index);
         self.villagers
-            .step_source_slot(source_slot, &self.terrain, &source_views, &mut self.houses)
+            .step_source_slot(source_slot, terrain, &source_views, &mut self.houses)
     }
 
     pub fn inject_house_damage(
@@ -3273,7 +3448,11 @@ impl Level2OrdinaryResetSession {
             .map_err(NativeWorldError::new)
     }
 
-    pub fn step_dolmen_action_6(&mut self, source_slot: u16) -> Result<Level2DolmenStep> {
+    pub fn step_dolmen_action_6(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> Result<Level2DolmenStep> {
         let index = self
             .dolmens
             .iter()
@@ -3294,11 +3473,10 @@ impl Level2OrdinaryResetSession {
                 ]);
             }
         }
-        Ok(self.dolmens[index].step_action_6(&self.terrain))
+        Ok(self.dolmens[index].step_action_6(terrain))
     }
 
     pub fn reset(&mut self) {
-        self.terrain = self.baseline_terrain.clone();
         self.houses = self.baseline_houses.clone();
         self.villagers = self.baseline_villagers.clone();
         self.dolmens = self.baseline_dolmens.clone();

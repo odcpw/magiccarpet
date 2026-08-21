@@ -7,7 +7,7 @@ fn level_two_local_player_unboosted_mana_upkeep_follows_entity_pass_count_and_re
         .expect("qualified Level 2 reset session");
     let baseline_campaign_hash = session.campaign_state_hash();
     let seed = |session: &mut Level2ResetSession, mana: i32, mana_regen: i32| {
-        let shared = &mut session.shared_spells;
+        let mut shared = &mut session.shared_spells;
         shared.player_entity.mana = mana;
         shared.player_entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
         shared.player_entity.mana_regen = mana_regen;
@@ -1276,7 +1276,7 @@ fn level_two_experience_scroll_uses_wrapping_runtime_xp_and_downward_selection()
         .expect("source-shaped family-12 acquisition");
     let local_entity_index = session.state.entity_index;
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let owner_index = shared
             .players
             .iter()
@@ -1299,7 +1299,7 @@ fn level_two_experience_scroll_uses_wrapping_runtime_xp_and_downward_selection()
     session.step_outer_turn(PlayerCommand::default(), 0);
 
     let expected_runtime = (i32::MAX - 2).wrapping_add(LEVEL2_EXPERIENCE_SCROLL_AWARD);
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     let owner = shared
         .players
         .iter()
@@ -1591,7 +1591,7 @@ fn level_two_setspell_options_tier_and_hand_state_are_exact() {
     session.reset();
     configure_cold_pickup(&mut session);
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let ordinary = &session.shared_spells().pickups()[0];
+    let mut ordinary = &session.shared_spells().pickups()[0];
     assert!(!session.shared_spells.free_spell_usage);
     assert_eq!(ordinary.max_mana, 5_000);
     assert_eq!(ordinary.mana_regen, 10_000);
@@ -2299,8 +2299,8 @@ fn level_two_mana_sphere_dynamic_handler_moves_and_updates_source_chain() {
         .copied()
         .expect("live sphere");
     {
-        let sphere = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let sphere = economy_view
             .spheres
             .iter_mut()
             .find(|sphere| sphere.source_entity_index == sphere_slot)
@@ -2416,8 +2416,8 @@ fn level_two_mana_carrier_arrival_clears_return_target_once() {
         .spawn_mana_carrier(castle.position, 111, u32::from(castle_slot))
         .expect("carrier allocation");
     {
-        let carrier = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let carrier = economy_view
             .carriers
             .iter_mut()
             .find(|carrier| carrier.source_entity_index == carrier_slot)

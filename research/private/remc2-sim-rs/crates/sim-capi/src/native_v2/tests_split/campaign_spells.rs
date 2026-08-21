@@ -3733,9 +3733,18 @@ fn level2_campaign_economy_sidecar_copies_typed_payload_without_touching_legacy_
         let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
+        let terrain = reset.canonical_terrain().clone();
         let sphere_id = reset
             .economy_mut()
-            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 111, 222)
+            .spawn_mana_sphere_from_death(
+                901,
+                Position::default(),
+                0,
+                0x3456,
+                111,
+                222,
+                &terrain,
+            )
             .expect("test sphere allocation");
         let carrier_slot = reset
             .economy_mut()

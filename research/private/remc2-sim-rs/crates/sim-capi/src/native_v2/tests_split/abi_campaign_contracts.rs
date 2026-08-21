@@ -1413,7 +1413,7 @@ fn level2_campaign_terrain_planes_are_generation_bound_and_reset_exact() {
     let expected = inspection
         .level2_reset_session()
         .expect("Level 2 reset session");
-    let expected_planes = expected.terrain.planes();
+    let expected_planes = expected.canonical_terrain().planes();
     let handle = open_level2_campaign_handle();
 
     let mut state = McCampaignTerrainStateV2::default();

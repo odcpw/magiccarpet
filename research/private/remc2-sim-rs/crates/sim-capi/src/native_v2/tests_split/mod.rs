@@ -3411,7 +3411,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
             &mut state,
             launch_command,
             sim_core::FlightProfile::OUTDOOR,
-            &reset.terrain,
+            reset.canonical_terrain(),
             &mut context,
         );
         Ok(state.actual_speed)
@@ -3527,7 +3527,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
                     &mut state,
                     launch_command,
                     sim_core::FlightProfile::OUTDOOR,
-                    &reset.terrain,
+                    reset.canonical_terrain(),
                     &mut context,
                 );
                 state.position

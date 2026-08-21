@@ -44,7 +44,7 @@
             )
             .expect("source arena admits possession flyer");
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let projectile = economy
                 .possession_projectiles
                 .iter_mut()
@@ -249,20 +249,23 @@
             )
             .expect("source arena admits possession flyer");
         {
-            let economy = session.economy_mut();
-            let projectile = economy
-                .possession_projectiles
-                .iter_mut()
-                .find(|projectile| projectile.source_entity_index == projectile_slot)
-                .expect("spawned possession flyer");
-            projectile.position = no_target_position;
-            projectile.actual_speed = 0;
-            projectile.life = 0;
+            let mut economy = session.economy_mut();
+            let projectile = {
+                let projectile = economy
+                    .possession_projectiles
+                    .iter_mut()
+                    .find(|projectile| projectile.source_entity_index == projectile_slot)
+                    .expect("spawned possession flyer");
+                projectile.position = no_target_position;
+                projectile.actual_speed = 0;
+                projectile.life = 0;
+                *projectile
+            };
             assert!(
                 level2_first_possession_target_sphere_slot(
                     &economy.map_chains,
                     &economy.spheres,
-                    *projectile,
+                    projectile,
                 )
                 .is_none(),
                 "expiry fixture is outside every eligible model-39 collision volume"
@@ -337,8 +340,9 @@
                     position,
                 )
                 .expect("source arena admits possession flyer");
-            {
-                let economy = session.economy_mut();
+        {
+            let mut economy = session.economy_mut();
+            let projectile = {
                 let projectile = economy
                     .possession_projectiles
                     .iter_mut()
@@ -347,11 +351,13 @@
                 projectile.position = position;
                 projectile.actual_speed = 0;
                 projectile.life = 4;
+                *projectile
+            };
                 assert!(
                     level2_first_possession_target_sphere_slot(
                         &economy.map_chains,
                         &economy.spheres,
-                        *projectile,
+                        projectile,
                     )
                     .is_none(),
                     "{boundary_case} fixture is outside every eligible model-39 collision volume"
@@ -406,8 +412,7 @@
         };
         let mut ground_session = level_two_possession_lifecycle_session();
         ground_session
-            .economy_mut()
-            .terrain
+            .canonical_terrain_mut()
             .planes
             .ground_heights
             .fill(50);
@@ -429,7 +434,7 @@
 
         let mut cave_session = level_two_possession_lifecycle_session();
         {
-            let terrain = &mut cave_session.economy_mut().terrain;
+            let terrain = cave_session.canonical_terrain_mut();
             terrain.map_type = MapType::Cave;
             terrain.planes.ground_heights.fill(0);
             terrain.planes.secondary_heights.fill(255);
@@ -477,7 +482,7 @@
             )
             .expect("source arena admits possession flyer");
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let projectile = economy
                 .possession_projectiles
                 .iter_mut()
@@ -504,8 +509,8 @@
             .allocate_authored_model39(0, 23, class1_only_position)
             .expect("source arena admits class-1-only candidate");
         {
-            let candidate = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let candidate = economy_view
                 .spheres
                 .iter_mut()
                 .find(|sphere| {
@@ -523,7 +528,7 @@
             .copied()
             .find(|projectile| projectile.source_entity_index == projectile_slot)
             .expect("live possession flyer");
-        let economy = session.economy();
+        let mut economy = session.economy();
         assert!(
             source_map_search_slots(
                 economy.map_chains(),
@@ -557,8 +562,8 @@
             .allocate_authored_model39(0, 23, projectile_position)
             .expect("source arena admits first class-0 candidate");
         {
-            let candidate = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let candidate = economy_view
                 .spheres
                 .iter_mut()
                 .find(|sphere| {
@@ -569,7 +574,7 @@
             candidate.id = 0xbeef;
             candidate.player_entity_index = source_id_entity_index.wrapping_add(1);
         }
-        let economy = session.economy();
+        let mut economy = session.economy();
         assert!(
             source_map_search_slots(
                 economy.map_chains(),
@@ -619,8 +624,8 @@
             .expect("second equal-score model-39 guidance target");
         assert!(first.source_entity_index < second.source_entity_index);
         for slot in [first.source_entity_index, second.source_entity_index] {
-            let sphere = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let sphere = economy_view
                 .spheres
                 .iter_mut()
                 .find(|sphere| sphere.source_entity_index == slot)
@@ -646,8 +651,8 @@
             )
             .expect("guided Possession flyer allocation");
         {
-            let projectile = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let projectile = economy_view
                 .possession_projectiles
                 .iter_mut()
                 .find(|projectile| projectile.source_entity_index == projectile_slot)
@@ -852,8 +857,8 @@
         let mut session = level_two_possession_lifecycle_session();
         let holder_index = 116;
         let (activation_value, mana_cost) = {
-            let holder = session
-                .shared_spells_mut()
+            let mut shared_view = session.shared_spells_mut();
+            let holder = shared_view
                 .dynamic_pickups
                 .iter_mut()
                 .find(|holder| holder.index == holder_index)
@@ -867,11 +872,12 @@
         };
         assert!(mana_cost > 0, "fixture retains a positive source mana cost");
         {
-            let shared = session.shared_spells_mut();
+            let mut shared = session.shared_spells_mut();
             shared.player_entity.mana_regen = 37;
             shared.player_entity.record[140..144].copy_from_slice(&37_i32.to_le_bytes());
+            let player_index = shared.player_entity.index;
             for entity in &mut shared.player_entities {
-                if entity.index == shared.player_entity.index {
+                if entity.index == player_index {
                     entity.mana_regen = 37;
                     entity.record[140..144].copy_from_slice(&37_i32.to_le_bytes());
                 }
@@ -907,11 +913,12 @@
         );
 
         {
-            let shared = session.shared_spells_mut();
+            let mut shared = session.shared_spells_mut();
             shared.player_entity.mana_regen = 37;
             shared.player_entity.record[140..144].copy_from_slice(&37_i32.to_le_bytes());
+            let player_index = shared.player_entity.index;
             for entity in &mut shared.player_entities {
-                if entity.index == shared.player_entity.index {
+                if entity.index == player_index {
                     entity.mana_regen = 37;
                     entity.record[140..144].copy_from_slice(&37_i32.to_le_bytes());
                 }
@@ -945,7 +952,7 @@
             z: 0,
         };
         let collision_position = Position {
-            z: session.economy().terrain.ground_height(probe_position),
+            z: session.canonical_terrain().ground_height(probe_position),
             ..probe_position
         };
         let first = session
@@ -960,8 +967,8 @@
             (first.source_entity_index, 0xfeed_0001),
             (second.source_entity_index, 0xfeed_0002),
         ] {
-            let sphere = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let sphere = economy_view
                 .spheres
                 .iter_mut()
                 .find(|sphere| sphere.source_entity_index == sphere_slot)
@@ -982,7 +989,7 @@
             )
             .expect("source arena admits possession flyer");
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let projectile = economy
                 .possession_projectiles
                 .iter_mut()
@@ -1122,9 +1129,9 @@
                 y: 30_000,
                 z: 0,
             };
-            position.z = session.terrain.ground_height(position);
+            position.z = session.canonical_terrain().ground_height(position);
             {
-                let economy = session.economy_mut();
+                let mut economy = session.economy_mut();
                 economy.spheres.push(ManaSphere {
                     id: u32::from(target_slot),
                     source_entity_index: target_slot,
@@ -1874,8 +1881,7 @@
         assert_eq!(
             stage_child.position.z,
             castle_lifecycle
-                .economy()
-                .terrain
+                .canonical_terrain()
                 .ground_height(construction.position)
                 .saturating_add(384)
         );
@@ -1933,7 +1939,7 @@
         );
         assert!(stage_two.economy_mut().step_castle_action(stage_two_slot));
         {
-            let economy = stage_two.economy_mut();
+            let mut economy = stage_two.economy_mut();
             assert!(economy.set_castle_controller_coefficient(2, 0x2a));
             let castle = economy.castle.as_mut().expect("stage-two Castle");
             castle.action = 5;
@@ -2149,7 +2155,7 @@
                 .set_castle_anchor(release_slot, release_anchor)
         );
         {
-            let economy = release_session.economy_mut();
+            let mut economy = release_session.economy_mut();
             economy.player_mana = 0;
             let castle = economy.castle.as_mut().expect("release Castle");
             castle.mana = castle.mana_capacity + 1_000;
@@ -2185,7 +2191,7 @@
             .build_castle(Position::default(), 111)
             .expect("partial release Castle");
         {
-            let economy = partial_release.economy_mut();
+            let mut economy = partial_release.economy_mut();
             economy.player_mana = 0;
             economy.free_slots.truncate(2);
             let castle = economy.castle.as_mut().expect("partial release Castle");
@@ -2251,7 +2257,7 @@
         );
         assert!(teardown.economy_mut().step_castle_action(teardown_slot));
         {
-            let economy = teardown.economy_mut();
+            let mut economy = teardown.economy_mut();
             economy.set_player_spell_cleanup_context(1, 4, 777);
             economy.set_player_spell_holder_counters(17, 9);
             let castle = economy.castle.as_mut().expect("teardown Castle");
@@ -2556,7 +2562,7 @@
             .build_castle(Position::default(), 111)
             .expect("final Castle");
         {
-            let economy = final_teardown.economy_mut();
+            let mut economy = final_teardown.economy_mut();
             economy.set_player_spell_cleanup_context(1, 4, 888);
             let castle = economy.castle.as_mut().expect("final Castle");
             castle.action = 6;
@@ -3073,7 +3079,8 @@
             .build_castle(Position::default(), 111)
             .expect("action-6 Castle");
         {
-            let castle = teardown.economy_mut().castle.as_mut().expect("Castle");
+            let mut economy_view = teardown.economy_mut();
+            let castle = economy_view.castle.as_mut().expect("Castle");
             castle.action = 6;
             castle.level = 1;
             castle.life = -1;
@@ -3134,7 +3141,7 @@
             .build_castle(Position::default(), 111)
             .expect("blocked Castle");
         {
-            let economy = blocked.economy_mut();
+            let mut economy = blocked.economy_mut();
             economy.free_slots.clear();
             let castle = economy.castle.as_mut().expect("blocked Castle");
             castle.action = 6;
@@ -3269,8 +3276,7 @@
             first_controller.position.y
         );
         let ground = controller
-            .economy()
-            .terrain
+            .canonical_terrain()
             .ground_height(first_controller.axis_position);
         let base_z = ground.saturating_add(384);
         assert_eq!(
@@ -3363,7 +3369,8 @@
             (5, 4)
         );
         {
-            let castle = maintenance.economy_mut().castle.as_mut().expect("Castle");
+            let mut economy_view = maintenance.economy_mut();
+            let castle = economy_view.castle.as_mut().expect("Castle");
             castle.action = 4;
             castle.timer = 0;
             castle.phase &= !1;
@@ -3424,7 +3431,8 @@
             .build_castle(Position::default(), 111)
             .expect("teardown Castle allocation");
         {
-            let castle = teardown.economy_mut().castle.as_mut().expect("Castle");
+            let mut economy_view = teardown.economy_mut();
+            let castle = economy_view.castle.as_mut().expect("Castle");
             castle.action = 6;
             castle.level = 1;
             castle.life = -1;
@@ -3807,8 +3815,8 @@
                     ))
             )
         }));
-        assert_eq!(session.terrain, session.ordinary().terrain);
-        assert_eq!(session.terrain, session.economy().terrain);
+        assert_eq!(session.canonical_terrain(), session.canonical_terrain());
+        assert_eq!(session.canonical_terrain(), session.canonical_terrain());
         assert_ne!(session.terrain_hash(), baseline_terrain_hash);
         let removal_residents = session
             .economy()

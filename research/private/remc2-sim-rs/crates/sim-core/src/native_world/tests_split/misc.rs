@@ -481,8 +481,8 @@ fn level_two_authored_model76_builds_full_cluster_then_spawns_tail_on_expiry() {
         first_child.position
     );
 
-    let root = session
-        .economy_mut()
+    let mut economy_view = session.economy_mut();
+    let root = economy_view
         .authored_model76
         .iter_mut()
         .find(|candidate| candidate.source_entity_index == source.source_entity_index)
@@ -578,7 +578,7 @@ fn level_two_model76_callback_snaps_to_live_target_cache() {
         y: source.position.y.wrapping_add(2_048),
         z: 0,
     };
-    let ground = session.terrain.ground_height(target_xy);
+    let ground = session.canonical_terrain().ground_height(target_xy);
     let target_position = Position {
         z: ground.wrapping_add(512),
         ..target_xy
@@ -596,8 +596,8 @@ fn level_two_model76_callback_snaps_to_live_target_cache() {
         // this bounded slice; seed the callback state directly so the
         // retained `sub_33C70` branch stays covered without claiming the
         // producer already supplies that relation.
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_model76
             .iter_mut()
             .find(|candidate| candidate.source_entity_index == source.source_entity_index)
@@ -652,8 +652,8 @@ fn level_two_model76_callback_enters_terminal_state_for_dead_target() {
         .expect("model-76 child before terminal state");
     session.entities[target_index].life = -1;
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_model76
             .iter_mut()
             .find(|candidate| candidate.source_entity_index == source.source_entity_index)
@@ -1528,7 +1528,7 @@ fn level_two_remote_shield_owner_does_not_overwrite_local_mana_projection() {
     let local_mana = session.shared_spells().player_mana();
     let remote_mana = local_mana.wrapping_add(7_777);
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let remote = &mut shared.player_entities[1];
         remote.active = true;
         remote.model = 0;
@@ -1616,7 +1616,7 @@ fn level_two_shield_expiry_replays_queued_setspell_word() {
     let outcome = acquired.expect("authored family-6 acquisition");
     assert!(session.shared_spells_mut().activate_shield(256, false));
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared
             .shield
             .as_mut()
@@ -1732,7 +1732,7 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
     // state reconciliation without a second economy journey.
     let local_entity_index = session.state.entity_index;
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.player_entity.set_mana(5_000);
         shared.player_entity.mana_regen = 0;
         shared.player_entity.record[140..144].fill(0);
@@ -1905,7 +1905,7 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
         .mana = 5_000;
 
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.player_mana = 5_000;
         shared.player_entity.mana = 5_000;
         shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
@@ -1989,7 +1989,7 @@ fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
     let local_visibility = session.shared_spells().local_player.record[447];
     let remote_mana = local_mana.wrapping_add(7_777);
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let remote = &mut shared.player_entities[1];
         remote.active = true;
         remote.model = 0;
@@ -2038,7 +2038,7 @@ fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
     // command caster enough mana so this would be an accepted cast if the
     // local registry leaked that remote identity into `sub_5F660`.
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.player_entity.set_mana(5_000);
         shared.player_entity.mana_regen = 0;
         shared.player_entity.record[140..144].fill(0);
@@ -2092,7 +2092,7 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
     let invisible_position = invisible_source.position;
     let remote_mana = session.shared_spells().player_mana().wrapping_add(7_777);
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let remote = &mut shared.player_entities[1];
         remote.active = true;
         remote.model = 0;
@@ -2124,7 +2124,7 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
     });
     let acquired = acquired.expect("remote model-0 player acquires Invisible");
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared
             .invisible
             .as_mut()
@@ -2146,21 +2146,28 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
 
     let beyond_position = session.shared_spells().pickups()[0].position;
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.players[0].family_selected_tiers[12] = 1;
         shared.pickups[0].phase = 0;
         shared.pickups[0].record[66] = 0;
     }
     {
-        let shared = &mut session.shared_spells;
-        let economy = &mut session.economy;
+        let terrain = session.canonical_terrain().clone();
+        let mut shared = &mut session.shared_spells;
+        let mut economy = &mut session.economy;
         shared
-            .step_level2_spell_acquisition_with_economy(economy, 12, 111, beyond_position)
+            .step_level2_spell_acquisition_with_economy(
+                economy,
+                12,
+                111,
+                beyond_position,
+                &terrain,
+            )
             .expect("local family-12 source pass")
             .expect("local model-0 player acquires Beyond Sight");
     }
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.player_mana = 5_000;
         shared.player_entity.mana = 5_000;
         shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
@@ -2174,7 +2181,7 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
         assert!(shared.activate_beyond_sight(256, false));
     }
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.players[1].enabled_spell_holders[4] = 113;
         shared.holders[0].active_value = 1;
     }
@@ -2184,7 +2191,7 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
     assert!(blocked.family4_gate_active);
     assert!(!blocked.visible_to_local_player);
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.players[1].enabled_spell_holders[4] = 0;
         shared.holders[0].active_value = 0;
     }
@@ -2241,7 +2248,7 @@ fn level_two_invisible_expiry_replays_queued_setspell_word() {
         .parent_mana = 5_000;
     assert!(session.shared_spells_mut().activate_invisible(256, false));
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared
             .invisible
             .as_mut()
@@ -2307,7 +2314,7 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
     assert_eq!(cold.active_value, 0);
 
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared.player_mana = 5_000;
         shared.player_entity.mana = 5_000;
         shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
@@ -2436,7 +2443,7 @@ fn level_two_beyond_sight_threshold_crossing_emits_improvement_after_award() {
         .mana = 9_999;
 
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let owner_index = shared
             .players
             .iter()
@@ -2487,7 +2494,7 @@ fn level_two_beyond_sight_threshold_crossing_emits_improvement_after_award() {
     session.shared_spells_mut().events.clear();
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     let owner = shared
         .players
         .iter()
@@ -2569,7 +2576,7 @@ fn level_two_beyond_sight_threshold_without_source_enabled_array_or_holder_is_si
     let local_entity_index = session.state.entity_index;
 
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let owner_index = shared
             .players
             .iter()
@@ -2619,7 +2626,7 @@ fn level_two_beyond_sight_threshold_without_source_enabled_array_or_holder_is_si
     );
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     let owner = shared
         .players
         .iter()
@@ -2657,7 +2664,7 @@ fn level_two_beyond_sight_wrapping_level_drop_still_emits_source_improvement() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let local_entity_index = session.state.entity_index;
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let owner_index = shared
             .players
             .iter()
@@ -2693,7 +2700,7 @@ fn level_two_beyond_sight_wrapping_level_drop_still_emits_source_improvement() {
     );
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     let owner = shared
         .players
         .iter()
@@ -2736,7 +2743,7 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
     let local_mana = session.shared_spells().player_mana();
     let remote_mana = local_mana.wrapping_add(7_777);
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let remote = &mut shared.player_entities[1];
         remote.active = true;
         remote.model = 0;
@@ -2772,7 +2779,7 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
     assert_eq!(session.shared_spells().player_mana(), local_mana);
 
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         let remote_player = &mut shared.players[1];
         remote_player.runtime_spell_experience[12] = 359;
         remote_player.record[212..216].copy_from_slice(&359_i32.to_le_bytes());
@@ -2803,7 +2810,7 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
         .shared_spells_mut()
         .step_level2_spell_acquisition(12, 111, far_position)
         .expect("remote action-36 source pulse");
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     assert_eq!(
         shared.players[1].runtime_spell_experience[12],
         remote_runtime_before.wrapping_add(1)
@@ -2849,7 +2856,7 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
 fn level_two_beyond_sight_core_menu_preserves_raw_opcode41_without_physical_mutation() {
     let (mut session, source_slot) = level_two_acquired_family12_menu_session();
 
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     let holder_before_locked_menu = shared
         .pickups()
         .iter()
@@ -2877,7 +2884,7 @@ fn level_two_beyond_sight_core_menu_preserves_raw_opcode41_without_physical_muta
         },
         0,
     );
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     assert_eq!(shared.players[0].record_bytes()[560], 7);
     assert_eq!(shared.players[0].record_bytes()[561], 12);
     assert_eq!(shared.players[0].record_bytes()[562], 0);
@@ -2907,7 +2914,7 @@ fn level_two_beyond_sight_core_menu_preserves_raw_opcode41_without_physical_muta
         },
         0,
     );
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     assert_eq!(shared.players[0].record_bytes()[561], 12);
     assert_eq!(shared.players[0].record_bytes()[562], 1);
     assert_eq!(shared.players[0].selected_spell_ui_index, 12);
@@ -2965,7 +2972,7 @@ fn level_two_beyond_sight_core_opcode31_applies_profile_at_zero_unlocked_tier() 
         },
         0,
     );
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     assert_eq!(shared.spell_levels()[12], 0);
     assert_eq!(shared.players[0].family_selected_tiers[12], 1);
     assert_eq!(shared.players[0].record_bytes()[540], 1);
@@ -2998,7 +3005,7 @@ fn level_two_beyond_sight_core_opcode31_applies_profile_at_zero_unlocked_tier() 
         },
         0,
     );
-    let shared = session.shared_spells();
+    let mut shared = session.shared_spells();
     assert_eq!(shared.players[0].right_spell_slot_raw, 12);
     assert_eq!(shared.players[0].right_subspell_index, 1);
     assert_eq!(shared.players[0].record_bytes()[559], 1);
@@ -3040,7 +3047,7 @@ fn level_two_beyond_sight_expiry_replays_queued_setspell_word() {
         })
         .expect("family-12 acquisition source slot");
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
         shared
             .beyond_sight
             .as_mut()
@@ -3510,7 +3517,7 @@ fn level_two_possession_holder_dispatch_phase_advances_once_and_replays_after_re
         0,
         256,
     );
-    if session.terrain.ground_height(expected_launch) > expected_launch.z {
+    if session.canonical_terrain().ground_height(expected_launch) > expected_launch.z {
         expected_launch = session.state.position;
     }
     expected_launch.z = expected_launch.z.wrapping_add(session.state.entity_fov);
@@ -3528,14 +3535,12 @@ fn level_two_possession_holder_dispatch_phase_advances_once_and_replays_after_re
         session.state.display_pitch.wrapping_sub(23),
         384_i16.wrapping_add(session.state.actual_speed),
     );
-    let ground_height = session
-        .terrain
+    let ground_height = session.canonical_terrain()
         .ground_height(expected_first_callback_position);
     if ground_height > expected_first_callback_position.z {
         expected_first_callback_position.z = ground_height;
     }
-    if let Some(cave_limit) = session
-        .terrain
+    if let Some(cave_limit) = session.canonical_terrain()
         .ceiling_height(expected_first_callback_position)
         .map(|height| height.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT))
         && cave_limit < expected_first_callback_position.z

@@ -150,8 +150,8 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
             .expect("installed Castle root")
             .position;
         {
-            let castle = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let castle = economy_view
                 .castle
                 .as_mut()
                 .expect("installed Castle root");
@@ -175,7 +175,7 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
             entity.control_flags = if boost { 0x0000_1000 } else { 0 };
             entity.record[16..20].copy_from_slice(&entity.control_flags.to_le_bytes());
         };
-        let shared = &mut session.shared_spells;
+        let mut shared = &mut session.shared_spells;
         shared.player_entity.mana = 1_000;
         shared.player_entity.mana_regen = 100;
         shared.player_entity.life = 1_000;
@@ -381,19 +381,19 @@ fn level_two_bad_stones_reconstruct_action9_map_chain_and_presentation() {
         assert_eq!(stone.map_cell(), expected_cells[ordinal]);
         let map_index = terrain_index(stone.map_cell().0, stone.map_cell().1);
         assert_eq!(
-            session.terrain.planes().entity_indices[map_index],
+            session.canonical_terrain().planes().entity_indices[map_index],
             entity.index as i16
         );
         assert_eq!(
             entity.position.z,
-            FlightWorld::ground_height(&session.terrain, entity.position)
+            FlightWorld::ground_height(session.canonical_terrain(), entity.position)
         );
     }
     let terrain_hash = session.terrain_hash();
     let mission_hash = session.mission().state_hash();
     let baseline_phase = session.bad_stones()[0].entity.phase;
     let expected_z =
-        FlightWorld::ground_height(&session.terrain, session.bad_stones()[0].entity.position);
+        FlightWorld::ground_height(session.canonical_terrain(), session.bad_stones()[0].entity.position);
     {
         let stone = &mut session.bad_stones[0];
         stone.entity.position.z = expected_z.wrapping_add(1);
@@ -571,8 +571,8 @@ fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
     // allocation. A cursor implementation that only resynchronizes the
     // map, but does not dispatch the pinned model-3/model-5 callbacks,
     // would retain these incorrect heights.
-    let model3_ground = session.terrain.ground_height(model3.position);
-    let model5_ground = session.terrain.ground_height(model5.position);
+    let model3_ground = session.canonical_terrain().ground_height(model3.position);
+    let model5_ground = session.canonical_terrain().ground_height(model5.position);
     session
         .economy_mut()
         .authored_class14
@@ -820,8 +820,8 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
     let seed = (1..=u16::MAX)
         .find(|candidate| level2_next_rng16(*candidate) % 0x9d >= 79)
         .expect("a model-13 emitting RNG seed exists");
-    let parent = session
-        .economy_mut()
+    let mut economy_view = session.economy_mut();
+    let parent = economy_view
         .authored_model13
         .iter_mut()
         .find(|candidate| candidate.source_entity_index == source.source_entity_index)
@@ -880,8 +880,9 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
         child.control_flags &= !SOURCE_REPLACEABLE_FLAG;
     }
     let before_exhaustion = exhausted.clone();
+    let terrain = session.canonical_terrain().clone();
     assert!(exhausted
-        .allocate_authored_model13(366, Position::default())
+        .allocate_authored_model13(366, Position::default(), &terrain)
         .is_none());
     assert_eq!(exhausted, before_exhaustion);
 
@@ -1227,8 +1228,7 @@ fn qualified_level_one_castle_build_reaches_every_owner_height_transactionally()
 
     let mut first_session = world.session();
     let mut second_session = world.session();
-    first_session
-        .terrain
+    first_session.terrain
         .apply_castle_update(
             CastleTerrainUpdate::ConstructionPass {
                 position: anchor,
@@ -1960,11 +1960,12 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
     session.state.entity_fov = 29;
     let transferred_a4_byte = 7;
     {
-        let shared = session.shared_spells_mut();
+        let mut shared = session.shared_spells_mut();
+        let player_index = shared.player_entity.index;
         let player = shared
             .players
             .iter_mut()
-            .find(|player| player.entity_index == shared.player_entity.index)
+            .find(|player| player.entity_index == player_index)
             .expect("qualified local Level 2 player row");
         player
             .type_str_164_auxiliary
@@ -1999,7 +2000,7 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
         0,
         256,
     );
-    if session.terrain.ground_height(expected_launch_position) > expected_launch_position.z {
+    if session.canonical_terrain().ground_height(expected_launch_position) > expected_launch_position.z {
         expected_launch_position = session.state.position;
     }
     expected_launch_position.z = expected_launch_position
@@ -2272,7 +2273,7 @@ fn level_two_castle_public_hands_apply_source_launch_displacement() {
             0,
             256,
         );
-        if session.terrain.ground_height(expected) > expected.z {
+        if session.canonical_terrain().ground_height(expected) > expected.z {
             expected = session.state.position;
         }
         assert_eq!(
@@ -2344,7 +2345,7 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
         .expect("family-2 holder")
         .index;
     {
-        let shared = missing_holder.shared_spells_mut();
+        let mut shared = missing_holder.shared_spells_mut();
         shared
             .dynamic_pickups
             .retain(|holder| holder.index != holder_index);
@@ -2384,8 +2385,8 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     let word24_before = 0x1357_u16;
     let word36_before = 3_u16;
     {
-        let holder = allocation_failed
-            .shared_spells_mut()
+        let mut shared_view = allocation_failed.shared_spells_mut();
+        let holder = shared_view
             .dynamic_pickups
             .iter_mut()
             .find(|holder| holder.index == holder_before.index)
@@ -2395,7 +2396,7 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     }
     let retained_a4_byte = 11;
     {
-        let shared = allocation_failed.shared_spells_mut();
+        let mut shared = allocation_failed.shared_spells_mut();
         let player_entity_index = shared.player_entity.index;
         let player = shared
             .players
@@ -2477,8 +2478,7 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
         .find(|&(x, y)| {
             (0_u8..8).any(|row| {
                 (0_u8..8).any(|column| {
-                    site_rejected
-                        .terrain
+                    site_rejected.canonical_terrain()
                         .angle_flags(crate::Tile {
                             x: x.wrapping_sub(8).wrapping_add(column),
                             y: y.wrapping_sub(8).wrapping_add(row),
@@ -2492,7 +2492,7 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     let blocked_position = Position {
         x: u16::from(blocked_tile.0) << 8,
         y: u16::from(blocked_tile.1) << 8,
-        z: site_rejected.terrain.ground_height(Position {
+        z: site_rejected.canonical_terrain().ground_height(Position {
             x: u16::from(blocked_tile.0) << 8,
             y: u16::from(blocked_tile.1) << 8,
             z: 0,

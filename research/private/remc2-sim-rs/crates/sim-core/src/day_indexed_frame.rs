@@ -510,7 +510,7 @@ pub fn render_level2_day_indexed_frame(
     let tick = session.state.tick;
     let camera = camera_from_state(&session.state)?;
     let profile = ClassicHdRenderProfile::compatibility_320x200();
-    let planes = session.terrain.planes();
+    let planes = session.canonical_terrain().planes();
     validate_terrain_planes(
         planes.terrain_types.as_ref(),
         planes.ground_heights.as_ref(),

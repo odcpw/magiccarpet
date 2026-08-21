@@ -213,8 +213,8 @@ fn produce_archer_child(session: &mut Level2ResetSession) -> (u16, u16, i16) {
         .set_level2_entity_position(player_entity, root.position)
         .expect("local player accepts Archer target position");
     let parent_roll = root.roll;
-    let source = session
-        .economy_mut()
+    let mut economy_view = session.economy_mut();
+    let source = economy_view
         .authored_class5
         .iter_mut()
         .find(|source| source.source_entity_index == root.source_entity_index)
@@ -451,8 +451,8 @@ fn archer_root_and_child_allocation_failures_are_atomic() {
 fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
     let (mut session, _) = activate_group20_archers();
     let (root_slot, child_slot, _) = produce_archer_child(&mut session);
-    let root = session
-        .economy_mut()
+    let mut economy_view = session.economy_mut();
+    let root = economy_view
         .authored_class5
         .iter_mut()
         .find(|source| source.source_entity_index == root_slot)
@@ -646,7 +646,9 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
             0,
             row245_before.actual_speed,
         );
-        expected_row245_after_seven.z = session.terrain.ground_height(expected_row245_after_seven);
+        expected_row245_after_seven.z = session
+            .canonical_terrain()
+            .ground_height(expected_row245_after_seven);
     }
     let row245_after_seven_steps = session
         .economy()
@@ -679,7 +681,9 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         .find(|source| source.authored_index == 238)
         .copied()
         .expect("model-3 row 238 remains live after model-9 callbacks");
-    let row238_ground = session.terrain.ground_height(row238_before.position);
+    let row238_ground = session
+        .canonical_terrain()
+        .ground_height(row238_before.position);
     let player_entity = session.state.entity_index;
     for entity in &mut session.entities {
         if entity.class == 3 {
@@ -694,8 +698,8 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         .get_mut(usize::from(player_entity))
         .expect("production player target")
         .control_flags &= !MODEL3_RAW_SOURCE_DISABLED_BIT;
-    let row238_mut = session
-        .economy_mut()
+    let mut economy_view = session.economy_mut();
+    let row238_mut = economy_view
         .authored_class5
         .iter_mut()
         .find(|source| source.authored_index == 238)
@@ -750,8 +754,8 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
             },
         )
         .expect("production out-of-range target position");
-    let row238_mut = session
-        .economy_mut()
+    let mut economy_view = session.economy_mut();
+    let row238_mut = economy_view
         .authored_class5
         .iter_mut()
         .find(|source| source.authored_index == 238)
@@ -893,8 +897,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
         .control_flags &= !MODEL3_RAW_SOURCE_DISABLED_BIT;
     let initial_rng = 0x2468;
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
@@ -944,8 +948,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     let child_attacker = 0x4242;
     let child_life = 8_900;
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
@@ -1011,8 +1015,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     // pre-kill handoff without movement or RNG draws.
     let death_attacker = 0x5151;
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
@@ -1067,8 +1071,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
         .expect("model-3 peer constructor");
     let peer_slot = peer.source_entity_index;
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
@@ -1121,8 +1125,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     // not win when that gate is clear, although cadence still consumes its
     // two RNG draws.
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
@@ -1211,8 +1215,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
         let target_heading = heading_for_positions(root_position, target_position);
         let initial_rng = 0x1357;
         {
-            let root = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let root = economy_view
                 .authored_class5
                 .iter_mut()
                 .find(|source| source.source_entity_index == root_slot)
@@ -1261,8 +1265,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     let child_slot = chain[0].source_entity_index;
     let child_before = chain[0];
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
@@ -1311,8 +1315,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     // cadence it consumes no RNG, emits source sound 8, and leaves the root
     // in the action-26 callback after the source settle.
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
@@ -1353,7 +1357,7 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     // A live peer in action 26 drives action 27's case-2 handoff, preserving
     // the peer target relation and clearing the source peer word in order.
     {
-        let economy = session.economy_mut();
+        let mut economy = session.economy_mut();
         economy
             .authored_class5
             .iter_mut()
@@ -1441,8 +1445,8 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     // The default descriptor stage makes action 30 a source no-op; the live
     // cursor still advances its byte/phase exactly once.
     {
-        let root = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let root = economy_view
             .authored_class5
             .iter_mut()
             .find(|source| source.source_entity_index == root_slot)
@@ -1742,10 +1746,11 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
         .level2_reset_session()
         .expect("Level 2 negative-branch session");
     let absent_hash = session.goat_hash();
+    let terrain = session.canonical_terrain().clone();
     assert!(
         session
             .goats
-            .step_source_slot(999, &session.terrain, &[])
+            .step_source_slot(999, &terrain, &[])
             .is_empty()
     );
     assert_eq!(session.goat_hash(), absent_hash);
@@ -1756,7 +1761,7 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
         goat.phase = 7;
     });
     let wrong_hash = session.goat_hash();
-    let wrong_events = session.goats.step_source_slot(40, &session.terrain, &[]);
+    let wrong_events = session.goats.step_source_slot(40, &terrain, &[]);
     let wrong_after = session
         .goats()
         .iter()
@@ -1775,7 +1780,7 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
         goat.phase = 9;
     });
     let wrong_subtype_hash = session.goat_hash();
-    let wrong_subtype_events = session.goats.step_source_slot(44, &session.terrain, &[]);
+    let wrong_subtype_events = session.goats.step_source_slot(44, &terrain, &[]);
     let wrong_subtype_after = session
         .goats()
         .iter()
@@ -1793,7 +1798,7 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
         goat.mana = 0;
         goat.rng = 0x2345;
     });
-    let terminal_events = session.goats.step_source_slot(41, &session.terrain, &[]);
+    let terminal_events = session.goats.step_source_slot(41, &terrain, &[]);
     let terminal_after = session
         .goats()
         .iter()
@@ -1823,12 +1828,7 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
         .expect("reclaimed Goat remains in the reset projection");
     assert!(!disabled_after.active);
     assert_eq!(disabled_after.rng, disabled.rng);
-    assert!(
-        session
-            .goats
-            .step_source_slot(43, &session.terrain, &[])
-            .is_empty()
-    );
+    assert!(session.goats.step_source_slot(43, &terrain, &[]).is_empty());
 
     // Wrong class/model allocation is rejected before the class-5 arena or
     // its sidecar/RNG map can change; an absent economy source is the same
@@ -2142,7 +2142,8 @@ fn level_two_bee_death_tail_allocation_failure_still_closes_without_partial_outp
     let mut gated = bee;
     gated.action = 21;
     gated.source_byte_3e = 8;
-    exhausted.step_authored_bee_death_tail(&mut gated);
+    let terrain = session.canonical_terrain().clone();
+    exhausted.step_authored_bee_death_tail(&mut gated, &terrain);
 
     assert!(!gated.active);
     assert!(!gated.drawing_enabled);
@@ -2256,7 +2257,8 @@ fn level_two_creature_audio_negative_branches_emit_nothing_and_preserve_state() 
     // Stale, wrong-action, and wrong-patrol-subtype visits fail closed before
     // the three source audio tails and leave their typed journal/hash alone.
     let stale_hash = session.goat_hash();
-    assert_no_goat_bleat(&session.goats.step_source_slot(999, &session.terrain, &[]));
+    let terrain = session.canonical_terrain().clone();
+    assert_no_goat_bleat(&session.goats.step_source_slot(999, &terrain, &[]));
     assert_eq!(session.goat_hash(), stale_hash);
 
     let wrong_action = update_level_two_goat(&mut session, 40, |goat| {
@@ -2265,7 +2267,7 @@ fn level_two_creature_audio_negative_branches_emit_nothing_and_preserve_state() 
         goat.phase = 1;
     });
     let wrong_action_hash = session.goat_hash();
-    let wrong_action_events = session.goats.step_source_slot(40, &session.terrain, &[]);
+    let wrong_action_events = session.goats.step_source_slot(40, &terrain, &[]);
     assert_no_goat_bleat(&wrong_action_events);
     assert_eq!(
         session
@@ -2284,7 +2286,7 @@ fn level_two_creature_audio_negative_branches_emit_nothing_and_preserve_state() 
         goat.phase = 1;
     });
     let wrong_subtype_hash = session.goat_hash();
-    let wrong_subtype_events = session.goats.step_source_slot(44, &session.terrain, &[]);
+    let wrong_subtype_events = session.goats.step_source_slot(44, &terrain, &[]);
     assert_no_goat_bleat(&wrong_subtype_events);
     assert_eq!(
         session
@@ -2304,7 +2306,7 @@ fn level_two_creature_audio_negative_branches_emit_nothing_and_preserve_state() 
         goat.rng = 62;
     });
     let dead_hash = session.goat_hash();
-    assert_no_goat_bleat(&session.goats.step_source_slot(45, &session.terrain, &[]));
+    assert_no_goat_bleat(&session.goats.step_source_slot(45, &terrain, &[]));
     assert_eq!(session.goat_hash(), dead_hash);
     assert_eq!(
         session

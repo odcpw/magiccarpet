@@ -573,6 +573,7 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
         let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
+        let terrain = reset.canonical_terrain().clone();
         let sphere_id = reset
             .economy_mut()
             .spawn_mana_sphere_from_death(
@@ -586,6 +587,7 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
                 0x4321,
                 321,
                 111,
+                &terrain,
             )
             .expect("Level 2 mana sphere allocation");
         let first = reset

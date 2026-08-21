@@ -454,11 +454,12 @@ fn level_two_reset_session_matches_all_nineteen_preserved_idle_frames() {
         let decoded = after.decoded_flight_input(player_slot);
         decoded.apply(&mut session.state);
         let profile = session.profile();
+        let terrain = session.canonical_terrain().clone();
         crate::step_entity_pass_with_context(
             &mut session.state,
             decoded.command,
             profile,
-            &session.terrain,
+            &terrain,
             &mut session.context,
         );
         let mut expected = after.project_player_flight(player_slot);
@@ -500,10 +501,10 @@ fn level_two_shared_day_flight_uses_level2_profile() {
         .expect("Level 2 Day terrain oracle");
     let plane =
         |index: usize| &oracle_frame[index * LEGACY_MAP_CELLS..(index + 1) * LEGACY_MAP_CELLS];
-    assert_eq!(session.terrain.planes().terrain_types.as_ref(), plane(0));
-    assert_eq!(session.terrain.planes().ground_heights.as_ref(), plane(1));
-    assert_eq!(session.terrain.planes().shading.as_ref(), plane(2));
-    assert_eq!(session.terrain.planes().angles.as_ref(), plane(3));
+    assert_eq!(session.canonical_terrain().planes().terrain_types.as_ref(), plane(0));
+    assert_eq!(session.canonical_terrain().planes().ground_heights.as_ref(), plane(1));
+    assert_eq!(session.canonical_terrain().planes().shading.as_ref(), plane(2));
+    assert_eq!(session.canonical_terrain().planes().angles.as_ref(), plane(3));
     // Day does not query the cave ceiling. The authored six-plane reset
     // preserves its secondary-height plane, but that plane is not part of
     // the Day frame-0 comparison (the preserved sequence's plane 4 is not
@@ -513,18 +514,18 @@ fn level_two_shared_day_flight_uses_level2_profile() {
         .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     assert_eq!(
-        session.terrain.planes().entity_indices.as_ref(),
+        session.canonical_terrain().planes().entity_indices.as_ref(),
         expected_entity_indices.as_slice()
     );
     assert_eq!(inspection.metadata().map_type, MapType::Day);
     assert_eq!(session.profile(), FlightProfile::OUTDOOR);
-    assert_eq!(session.terrain.planes().terrain_types.len(), 256 * 256);
-    assert_eq!(session.terrain.planes().ground_heights.len(), 256 * 256);
-    assert_eq!(session.terrain.planes().shading.len(), 256 * 256);
-    assert_eq!(session.terrain.planes().angles.len(), 256 * 256);
-    assert_eq!(session.terrain.planes().secondary_heights.len(), 256 * 256);
-    assert_eq!(session.terrain.planes().entity_indices.len(), 256 * 256);
-    assert_eq!(session.terrain.ceiling_height(session.state.position), None);
+    assert_eq!(session.canonical_terrain().planes().terrain_types.len(), 256 * 256);
+    assert_eq!(session.canonical_terrain().planes().ground_heights.len(), 256 * 256);
+    assert_eq!(session.canonical_terrain().planes().shading.len(), 256 * 256);
+    assert_eq!(session.canonical_terrain().planes().angles.len(), 256 * 256);
+    assert_eq!(session.canonical_terrain().planes().secondary_heights.len(), 256 * 256);
+    assert_eq!(session.canonical_terrain().planes().entity_indices.len(), 256 * 256);
+    assert_eq!(session.canonical_terrain().ceiling_height(session.state.position), None);
 
     // Day uses the same shared terrain queries as Level 1; compare the
     // immutable package terrain against the mutable session projection at
@@ -547,36 +548,36 @@ fn level_two_shared_day_flight_uses_level2_profile() {
         },
     ] {
         assert_eq!(
-            session.terrain.ground_height(position),
+            session.canonical_terrain().ground_height(position),
             oracle.ground_height(position)
         );
         assert_eq!(
-            session.terrain.terrain_type(position),
+            session.canonical_terrain().terrain_type(position),
             oracle.terrain_type(position)
         );
         assert_eq!(
-            session.terrain.material_mask(position),
+            session.canonical_terrain().material_mask(position),
             oracle.material_mask(position)
         );
     }
     assert_eq!(
-        session.terrain.terrain_type(Position {
+        session.canonical_terrain().terrain_type(Position {
             x: 128,
             y: 32_896,
             z: 0
         }),
         69
     );
-    assert_eq!(session.terrain.planes().ground_heights[0 + 128 * 256], 2);
+    assert_eq!(session.canonical_terrain().planes().ground_heights[0 + 128 * 256], 2);
 
     let mut camera = TerrainSlopeCamera::default();
     let mut oracle_camera = TerrainSlopeCamera::default();
     assert_eq!(
-        camera.update(session.terrain.ground_heights(), 0x0080, 0x8080),
+        camera.update(session.canonical_terrain().ground_heights(), 0x0080, 0x8080),
         oracle_camera.update(oracle.ground_heights(), 0x0080, 0x8080)
     );
     assert_eq!(
-        camera.update(session.terrain.ground_heights(), 0x0080, 0x8080),
+        camera.update(session.canonical_terrain().ground_heights(), 0x0080, 0x8080),
         oracle_camera.update(oracle.ground_heights(), 0x0080, 0x8080)
     );
 

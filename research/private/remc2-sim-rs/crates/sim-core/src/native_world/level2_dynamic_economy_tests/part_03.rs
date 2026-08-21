@@ -10,7 +10,8 @@
             .build_castle(Position::default(), 111)
             .expect("fixed-v21 defender cadence Castle");
         {
-            let castle = session.economy_mut().castle.as_mut().expect("Castle");
+            let mut economy_view = session.economy_mut();
+            let castle = economy_view.castle.as_mut().expect("Castle");
             castle.level = 4; // sub_60400 returns fixed v21 = 2.
             castle.phase = 0;
             castle.mana = 0;
@@ -25,7 +26,7 @@
         assert_ne!(live_slot, 0);
         let sentinel_target = 0xdead;
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             economy
                 .castle_children
                 .iter_mut()
@@ -72,7 +73,8 @@
             .build_castle(Position::default(), 111)
             .expect("sub_5FF50 Castle");
         {
-            let castle = session.economy_mut().castle.as_mut().expect("Castle");
+            let mut economy_view = session.economy_mut();
+            let castle = economy_view.castle.as_mut().expect("Castle");
             castle.level = 1;
             castle.phase = 0;
             castle.mana = 0;
@@ -88,7 +90,7 @@
             z: 0,
         };
         let dead_rng = {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let defender = economy
                 .castle_children
                 .iter_mut()
@@ -195,7 +197,8 @@
             .build_castle(Position::default(), 111)
             .expect("zero-mana Castle");
         {
-            let castle = zero_mana.economy_mut().castle.as_mut().expect("Castle");
+            let mut economy_view = zero_mana.economy_mut();
+            let castle = economy_view.castle.as_mut().expect("Castle");
             castle.level = 1;
             castle.phase = 0;
             castle.mana = 0;
@@ -209,7 +212,7 @@
             .expect("zero-mana Castle")
             .defender_slots[0];
         let (zero_rng, zero_player_relation, zero_free_slots, zero_event_count) = {
-            let economy = zero_mana.economy_mut();
+            let mut economy = zero_mana.economy_mut();
             let child = economy
                 .castle_children
                 .iter_mut()
@@ -306,7 +309,8 @@
             .build_castle(Position::default(), 111)
             .expect("excess-holder Castle");
         {
-            let castle = excess.economy_mut().castle.as_mut().expect("Castle");
+            let mut economy_view = excess.economy_mut();
+            let castle = economy_view.castle.as_mut().expect("Castle");
             castle.level = 4;
             castle.phase = 0;
         }
@@ -319,7 +323,7 @@
         assert_ne!(primary_excess_slot, 0);
         assert_ne!(excess_slot, 0);
         {
-            let economy = excess.economy_mut();
+            let mut economy = excess.economy_mut();
             let castle = economy.castle.as_mut().expect("excess-holder Castle");
             castle.level = 1;
             castle.phase = 0;
@@ -417,7 +421,7 @@
             .expect("wrong-relation Castle")
             .defender_slots[0];
         {
-            let economy = wrong.economy_mut();
+            let mut economy = wrong.economy_mut();
             let child = economy
                 .castle_children
                 .iter_mut()
@@ -534,7 +538,7 @@
                 y: castle_position.y,
                 z: 0,
             };
-            let holder_ground = session.economy().terrain.ground_height(holder_position);
+            let holder_ground = session.canonical_terrain().ground_height(holder_position);
             (
                 session,
                 baseline_hash,
@@ -559,7 +563,7 @@
         ) = setup();
         holder_position.z = holder_ground.saturating_sub(100);
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let child = economy
                 .castle_children
                 .iter_mut()
@@ -632,7 +636,7 @@
         holder_position.x = holder_position.x.wrapping_add(49);
         holder_position.z = holder_ground;
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let child = economy
                 .castle_children
                 .iter_mut()
@@ -675,7 +679,7 @@
         ) = setup();
         holder_position.z = holder_ground.saturating_add(513);
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             let child = economy
                 .castle_children
                 .iter_mut()
@@ -1000,8 +1004,8 @@
             .spawn_mana_sphere_from_death(77, holder_position, 0, 0x1234, 1, 111)
             .expect("signed-Z sphere");
         let sphere_slot = u16::try_from(sphere_id).expect("sphere slot fits");
-        let sphere = session
-            .economy_mut()
+        let mut economy_view = session.economy_mut();
+        let sphere = economy_view
             .spheres
             .iter_mut()
             .find(|sphere| sphere.source_entity_index == sphere_slot)
@@ -1054,7 +1058,7 @@
                 .expect("Cave defender holder");
             (
                 child.position,
-                session.economy().terrain.ground_height(child.position),
+                session.canonical_terrain().ground_height(child.position),
             )
         };
         let tile = crate::Tile {
@@ -1067,11 +1071,14 @@
         // speed 48, emits sound 22 on the uncooldown transition, and applies
         // sub_580E0's ground+512 floor after the -16 step.
         {
-            let economy = session.economy_mut();
-            economy.terrain.map_type = MapType::Cave;
-            economy.terrain.planes.angles.fill(0);
-            economy.terrain.planes.secondary_heights.fill(255);
-            economy.terrain.planes.angles[terrain_index] = 8;
+            let terrain = session.canonical_terrain_mut();
+            terrain.map_type = MapType::Cave;
+            terrain.planes.angles.fill(0);
+            terrain.planes.secondary_heights.fill(255);
+            terrain.planes.angles[terrain_index] = 8;
+        }
+        {
+            let mut economy = session.economy_mut();
             let child = economy
                 .castle_children
                 .iter_mut()
@@ -1119,8 +1126,8 @@
         // source emits the same sound and reloads 32 exactly once.
         session.economy_mut().events.clear();
         {
-            let economy = session.economy_mut();
-            economy.terrain.planes.angles[terrain_index] = 0;
+            session.canonical_terrain_mut().planes.angles[terrain_index] = 0;
+            let mut economy = session.economy_mut();
             let child = economy
                 .castle_children
                 .iter_mut()
@@ -1160,8 +1167,8 @@
         // the angle flag is clear.
         session.economy_mut().events.clear();
         {
-            let economy = session.economy_mut();
-            economy.terrain.planes.secondary_heights.fill(20);
+            session.canonical_terrain_mut().planes.secondary_heights.fill(20);
+            let mut economy = session.economy_mut();
             let child = economy
                 .castle_children
                 .iter_mut()
@@ -1203,7 +1210,7 @@
             .expect("no-free teardown Castle");
         let before_sphere_count = session.economy().spheres().len();
         let before_linked_entities = session.economy().map_chains().linked_entity_indices();
-        let before_ground = session.economy().terrain.planes.ground_heights.clone();
+        let before_ground = session.canonical_terrain().planes.ground_heights.clone();
         let before_rng = session
             .economy()
             .source_rng
@@ -1211,7 +1218,7 @@
             .copied()
             .expect("live Castle source RNG");
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             economy.free_slots.clear();
             let castle = economy.castle.as_mut().expect("no-free teardown Castle");
             castle.action = 6;
@@ -1235,7 +1242,7 @@
             "no-free teardown cannot mutate the source map arena"
         );
         assert_eq!(
-            session.economy().terrain.planes.ground_heights,
+            session.canonical_terrain().planes.ground_heights,
             before_ground
         );
         assert!(
@@ -1258,7 +1265,7 @@
             .economy_mut()
             .build_castle(Position::default(), 111)
             .expect("no-free teardown Castle");
-        let before_ground = session.economy().terrain.planes.ground_heights.clone();
+        let before_ground = session.canonical_terrain().planes.ground_heights.clone();
         let before_rng = session
             .economy()
             .source_rng
@@ -1267,7 +1274,7 @@
             .expect("live Castle source RNG");
         let before_phase = session.economy().castle().expect("Castle").phase;
         {
-            let economy = session.economy_mut();
+            let mut economy = session.economy_mut();
             economy.free_slots.clear();
             let castle = economy.castle.as_mut().expect("no-free teardown Castle");
             castle.action = 6;
@@ -1290,7 +1297,7 @@
             Some(before_rng)
         );
         assert_eq!(
-            session.economy().terrain.planes.ground_heights,
+            session.canonical_terrain().planes.ground_heights,
             before_ground
         );
         assert!(!session.economy().events().iter().any(|event| {
@@ -1315,7 +1322,7 @@
             .build_castle(Position::default(), 111)
             .expect("allocator-rebuild Castle");
         let stale_slot = {
-            let economy = rebuild.economy_mut();
+            let mut economy = rebuild.economy_mut();
             let stale_id = economy
                 .spawn_mana_sphere_from_death(52, Position::default(), 0, 0x9876, 1, 111)
                 .expect("stale typed sphere");
@@ -1339,7 +1346,7 @@
             stale_slot
         };
         {
-            let economy = rebuild.economy_mut();
+            let mut economy = rebuild.economy_mut();
             economy.free_slots.clear();
             let castle = economy.castle.as_mut().expect("allocator-rebuild Castle");
             castle.mana = 2_000;
@@ -1440,7 +1447,7 @@
         );
         assert!(chain.economy_mut().step_castle_action(chain_castle_slot));
         {
-            let economy = chain.economy_mut();
+            let mut economy = chain.economy_mut();
             assert!(economy.set_castle_controller_coefficient(2, 0x2a));
             let castle = economy.castle.as_mut().expect("stage-two Castle");
             castle.action = 5;
@@ -1486,7 +1493,7 @@
         );
         chain.select_level2_campaign_entry_stage();
         {
-            let economy = chain.economy_mut();
+            let mut economy = chain.economy_mut();
             let castle = economy.castle.as_mut().expect("stage-two Castle");
             // Keep the real stage-two controller chain while selecting the
             // source maintenance tail that owns model-15 rows. This is only
@@ -1530,8 +1537,8 @@
             assert!(chain.economy().map_chains().is_linked(*slot));
         }
         {
-            let castle = chain
-                .economy_mut()
+            let mut economy_view = chain.economy_mut();
+            let castle = economy_view
                 .castle
                 .as_mut()
                 .expect("stage-two Castle");
@@ -1659,7 +1666,7 @@
             .build_castle(Position::default(), 111)
             .expect("retry allocator Castle");
         {
-            let economy = chain.economy_mut();
+            let mut economy = chain.economy_mut();
             let castle = economy.castle.as_mut().expect("retry allocator Castle");
             castle.level = 3;
             castle.action = 4;
@@ -1715,7 +1722,7 @@
         );
         let ordinary_slots = chain.economy().free_slots.len();
         let filled_rows = {
-            let economy = chain.economy_mut();
+            let mut economy = chain.economy_mut();
             for _ in 0..ordinary_slots {
                 assert!(
                     economy
@@ -1818,7 +1825,7 @@
             .build_castle(Position::default(), 111)
             .expect("lower-slot discriminator Castle");
         {
-            let economy = chain.economy_mut();
+            let mut economy = chain.economy_mut();
             let castle = economy
                 .castle
                 .as_mut()
@@ -2031,7 +2038,7 @@
             .find(|projectile| projectile.active)
             .copied()
             .expect("new-Castle flyer remains live after its same-pass gate-only callback");
-        let ground = session.terrain.ground_height(flyer.position);
+        let ground = session.canonical_terrain().ground_height(flyer.position);
         let blocker_index = session
             .entities
             .iter()
@@ -2046,8 +2053,8 @@
         blocker.record[90..92].copy_from_slice(&0_i16.to_le_bytes());
         blocker.set_position(flyer.position);
         {
-            let projectile = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let projectile = economy_view
                 .castle_projectiles
                 .iter_mut()
                 .find(|projectile| projectile.source_entity_index == flyer.source_entity_index)
@@ -2109,7 +2116,7 @@
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 later-gate session");
-        session.economy_mut().terrain.planes.angles.fill(0);
+        session.canonical_terrain_mut().planes.angles.fill(0);
         let initial = Position {
             x: 8_192,
             y: 8_192,
@@ -2125,8 +2132,8 @@
                 .step_castle_projectile_slot(flyer_slot, &[])
         );
         {
-            let projectile = session
-                .economy_mut()
+            let mut economy_view = session.economy_mut();
+            let projectile = economy_view
                 .castle_projectiles
                 .iter_mut()
                 .find(|projectile| projectile.source_entity_index == flyer_slot)
@@ -2163,7 +2170,7 @@
             .find(|projectile| projectile.source_entity_index == flyer_slot)
             .copied()
             .expect("live flyer before pure gate failure");
-        assert!(before_failed_retry.position.z > session.terrain.ground_height(initial));
+        assert!(before_failed_retry.position.z > session.canonical_terrain().ground_height(initial));
         assert_eq!(before_failed_retry.life, before_failed_retry.max_life);
         assert!(
             session

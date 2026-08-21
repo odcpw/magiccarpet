@@ -185,6 +185,7 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
         if !is_authored_trader_row(authored_index) {
             return None;
@@ -195,7 +196,7 @@ impl Level2EconomyState {
         self.class5_model14_constructor_phase = source_byte_3e.wrapping_add(1);
 
         let mut position = position;
-        position.z = self.terrain.ground_height(position);
+        position.z = terrain.ground_height(position);
         let payload = trader_constructor_payload(
             source_entity_index,
             initial_rng,
@@ -244,6 +245,7 @@ impl Level2EconomyState {
         linked_head: u16,
         linked: &[TraderLinkedState],
         buildings: &[TraderBuildingCandidate],
+        terrain: &SessionTerrain,
     ) -> Option<TraderAction113Step> {
         let source_index = self.authored_class5.iter().position(|source| {
             source.active
@@ -262,7 +264,7 @@ impl Level2EconomyState {
         };
         let effects = step_trader_action113(&mut source, &mut context);
         if effects.moved {
-            source.position.z = self.terrain.ground_height(source.position);
+            source.position.z = terrain.ground_height(source.position);
         }
         if consumed_mailbox && let Some(runtime) = self.authored_class5_runtime_mut(source_slot) {
             runtime.pending_damage = 0;
