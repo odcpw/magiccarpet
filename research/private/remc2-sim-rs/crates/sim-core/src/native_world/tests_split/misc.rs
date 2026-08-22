@@ -22,7 +22,7 @@ fn level_two_imported_model1_root_hides_after_inverse_overlap_success() {
         .find(|candidate| candidate.source_slot == root.source_slot)
         .expect("imported root state")
         .model = 1;
-    session.entities[usize::from(root.source_slot)].model = 1;
+    session.economy.entities[usize::from(root.source_slot)].model = 1;
     session.state.position = Position {
         x: root.position.x.wrapping_add(4_096),
         y: root.position.y,
@@ -50,7 +50,7 @@ fn level_two_imported_model1_root_hides_after_inverse_overlap_success() {
             .expect("imported model-1 root state")
             .drawing_enabled
     );
-    assert!(session.entities()[usize::from(root.source_slot)].drawing_disabled());
+    assert!(session.economy.entities()[usize::from(root.source_slot)].drawing_disabled());
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn level_two_model76_switch25_allocation_failure_is_transactional() {
     baseline.economy_mut().free_slots = crafted_free_slots.clone();
     session.economy_mut().free_slots = crafted_free_slots.clone();
     for candidate in [&mut baseline, &mut session] {
-        for entity in candidate.entities.iter_mut().filter(|entity| {
+        for entity in candidate.economy.entities.iter_mut().filter(|entity| {
             entity.active
                 && entity.class == 11
                 && entity.model == 0
@@ -585,12 +585,12 @@ fn level_two_model76_callback_snaps_to_live_target_cache() {
     };
     let target_pitch = 300_i16;
     let target_height_offset = 64_i16;
-    session.entities[target_index].position = target_position;
-    session.entities[target_index].control_flags = 0;
-    session.entities[target_index].life = 500;
-    session.entities[target_index].record[86..88]
+    session.economy.entities[target_index].position = target_position;
+    session.economy.entities[target_index].control_flags = 0;
+    session.economy.entities[target_index].life = 500;
+    session.economy.entities[target_index].record[86..88]
         .copy_from_slice(&target_height_offset.to_le_bytes());
-    session.entities[target_index].record[88..90].copy_from_slice(&target_pitch.to_le_bytes());
+    session.economy.entities[target_index].record[88..90].copy_from_slice(&target_pitch.to_le_bytes());
     {
         // `sub_4A310` leaves the authored Level 2 producer untargeted in
         // this bounded slice; seed the callback state directly so the
@@ -650,7 +650,7 @@ fn level_two_model76_callback_enters_terminal_state_for_dead_target() {
         .find(|child| child.parent_entity_index == source.source_entity_index)
         .map(|child| child.position)
         .expect("model-76 child before terminal state");
-    session.entities[target_index].life = -1;
+    session.economy.entities[target_index].life = -1;
     {
         let mut economy_view = session.economy_mut();
         let root = economy_view
@@ -748,7 +748,7 @@ fn level_two_model76_generic_collision_callback_is_exact() {
     no_collision
         .level2_model76_activated
         .extend([116_u16, 120, 124]);
-    for entity in &mut no_collision.entities {
+    for entity in &mut no_collision.economy.entities {
         entity.active = false;
     }
     let no_collision_rng = no_collision
@@ -798,8 +798,8 @@ fn level_two_model76_generic_collision_callback_is_exact() {
             let local_player = session.state.entity_index;
             assert_eq!(
                 (
-                    session.entities[usize::from(local_player)].class,
-                    session.entities[usize::from(local_player)].model
+                    session.economy.entities[usize::from(local_player)].class,
+                    session.economy.entities[usize::from(local_player)].model
                 ),
                 (3, 0)
             );
@@ -830,7 +830,7 @@ fn level_two_model76_generic_collision_callback_is_exact() {
             session
                 .set_level2_entity_position(local_player, positive_position)
                 .expect("move local player to the deterministic collision point");
-            let target_before = session.entities[usize::from(local_player)].clone();
+            let target_before = session.economy.entities[usize::from(local_player)].clone();
             session.step_outer_turn(PlayerCommand::default(), 0);
             let root = session
                 .economy()
@@ -839,7 +839,7 @@ fn level_two_model76_generic_collision_callback_is_exact() {
                 .find(|source| source.authored_index == 112)
                 .copied()
                 .expect("row 112 remains live for the collision turn");
-            let target = &session.entities[usize::from(local_player)];
+            let target = &session.economy.entities[usize::from(local_player)];
             let payload_delta = target
                 .source_wind_spell_payload()
                 .wrapping_sub(target_before.source_wind_spell_payload());
@@ -920,9 +920,9 @@ fn level_two_model76_column_zero_owner_reaches_model2_mailbox_on_production_turn
     // the production path, while reset reachability stays a residual.
     let target_slot = session.state.entity_index;
     let target_index = usize::from(target_slot);
-    session.entities[target_index].model = 2;
-    session.entities[target_index].active = true;
-    session.entities[target_index].life = 500;
+    session.economy.entities[target_index].model = 2;
+    session.economy.entities[target_index].active = true;
+    session.economy.entities[target_index].life = 500;
     let target = session
         .entities()
         .iter()
@@ -960,12 +960,12 @@ fn level_two_model76_column_zero_owner_reaches_model2_mailbox_on_production_turn
     session
         .set_level2_entity_position(target_slot, first_column_zero.position)
         .expect("model-2 target position");
-    session.entities[target_index].record[86..88].copy_from_slice(&0_i16.to_le_bytes());
-    session.entities[target_index].record[88..90].copy_from_slice(&i16::MAX.to_le_bytes());
-    session.entities[target_index].record[90..92].copy_from_slice(&i16::MAX.to_le_bytes());
-    session.entities[target_index].record[92..94].copy_from_slice(&i16::MAX.to_le_bytes());
-    session.entities[target_index].record[98..102].copy_from_slice(&9_i32.to_le_bytes());
-    session.entities[target_index].record[102..104].copy_from_slice(&7_u16.to_le_bytes());
+    session.economy.entities[target_index].record[86..88].copy_from_slice(&0_i16.to_le_bytes());
+    session.economy.entities[target_index].record[88..90].copy_from_slice(&i16::MAX.to_le_bytes());
+    session.economy.entities[target_index].record[90..92].copy_from_slice(&i16::MAX.to_le_bytes());
+    session.economy.entities[target_index].record[92..94].copy_from_slice(&i16::MAX.to_le_bytes());
+    session.economy.entities[target_index].record[98..102].copy_from_slice(&9_i32.to_le_bytes());
+    session.economy.entities[target_index].record[102..104].copy_from_slice(&7_u16.to_le_bytes());
     session
         .economy_mut()
         .authored_model76
@@ -1310,7 +1310,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     let assert_player_mailbox =
         |session: &Level2ResetSession, expected_damage: i32, expected_owner: u16| {
             let player_record =
-                session.entities[usize::from(session.state.entity_index)].record_bytes();
+                session.economy.entities[usize::from(session.state.entity_index)].record_bytes();
             assert_eq!(
                 i32::from_le_bytes(
                     player_record[98..102]

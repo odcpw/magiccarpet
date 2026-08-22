@@ -310,7 +310,7 @@ fn configure_level2_scheduler_audio_rows(session: &mut Level2ResetSession) {
     let hit_position = action_14.position;
     assert!(session.goats.replace_goat_for_test(action_14));
     session.state.position = hit_position;
-    session.entities[usize::from(player_entity_index)].position = hit_position;
+    session.economy.entities[usize::from(player_entity_index)].position = hit_position;
     session
         .submit_goat_damage(42, 1, player_entity_index)
         .expect("qualified action-14 audio branch");

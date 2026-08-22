@@ -94,7 +94,7 @@ fn level_two_model32_switch_stays_inert_until_objective_state_two() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.economy().authored_model45().is_empty());
     assert!(!session.level2_objective_done());
-    assert!(!session.entities()[32].drawing_disabled());
+    assert!(!session.economy.entities()[32].drawing_disabled());
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
@@ -105,7 +105,7 @@ fn level_two_model32_switch_stays_inert_until_objective_state_two() {
         .expect("source objective completion sentinel");
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.level2_objective_done());
-    assert!(session.entities()[32].drawing_disabled());
+    assert!(session.economy.entities()[32].drawing_disabled());
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated {
@@ -309,7 +309,7 @@ fn level_two_objective_type3_ignores_text_selector_and_uses_bound_player_state()
 
     // A dead/hidden entity alone is not the source terminal state: the
     // referenced player slot remains participating, so kind 3 stays put.
-    session.entities[usize::from(target_index)].life = -1;
+    session.economy.entities[usize::from(target_index)].life = -1;
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(session.runtime().objectives[0].stage_selectors[1], 1);
 
@@ -441,7 +441,7 @@ fn level_two_model_zero_one_switches_use_strict_xy_predicates() {
     session
         .set_level2_entity_position(111, row_65.world_position(0))
         .expect("restore overlap before dead-player check");
-    session.entities[111].life = -1;
+    session.economy.entities[111].life = -1;
     assert!(
         !session
             .level2_authored_switch_matches(65)
@@ -508,7 +508,7 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
             .expect("rooted row-109 switch state")
             .drawing_enabled
     );
-    assert!(session.entities()[usize::from(root.source_slot)].drawing_disabled());
+    assert!(session.economy.entities()[usize::from(root.source_slot)].drawing_disabled());
     assert_eq!(wind.model, 22);
     assert_eq!(wind.action, 22);
 
@@ -590,7 +590,7 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
         .level2_reset_session()
         .expect("Level 2 rooted wind-switch dead-player session");
     dead.state.position = root.position;
-    dead.entities[111].life = -1;
+    dead.economy.entities[111].life = -1;
     for _ in 0..16 {
         dead.step_outer_turn(PlayerCommand::default(), 0);
     }
@@ -706,7 +706,7 @@ fn level_two_model4_group31_activates_for_level_end_local_model_zero_player() {
         .level2_reset_session()
         .expect("Level 2 model-4 exit-switch session");
     assert_eq!(
-        session.entities()[usize::from(session.state.entity_index)].model,
+        session.economy.entities()[usize::from(session.state.entity_index)].model,
         0
     );
 
@@ -888,7 +888,7 @@ fn level_two_model4_group31_requires_a_model_zero_local_player() {
         .expect("Level 2 model-4 exit-switch session");
     session.runtime.set_level2_is_level_end(1);
     let local_index = usize::from(session.state.entity_index);
-    session.entities[local_index].model = 1;
+    session.economy.entities[local_index].model = 1;
 
     session.step_outer_turn(PlayerCommand::default(), 0);
 
@@ -920,7 +920,7 @@ fn level_two_model4_group31_scans_each_live_player_objective() {
         .level2_reset_session()
         .expect("Level 2 model-4 exit-switch session");
     let local_index = usize::from(session.state.entity_index);
-    session.entities[local_index].model = 1;
+    session.economy.entities[local_index].model = 1;
 
     let remote_player = session
         .players
@@ -1562,7 +1562,7 @@ fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
             .expect("public player-position input");
         assert_eq!(
             session.state.position,
-            session.entities()[usize::from(local_player)].position,
+            session.economy.entities()[usize::from(local_player)].position,
             "public local-player position input keeps state/entity projections coherent"
         );
         for _ in 0..turns {

@@ -188,6 +188,7 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         shared.player_mana = 1_000;
         set_player_extents(
             session
+                .economy
                 .entities
                 .get_mut(usize::from(player_index))
                 .expect("local player entity"),

@@ -846,7 +846,7 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
     )));
     assert!(session.level2_objective_done());
     assert_eq!(session.level2_objective_pause(), 1);
-    assert!(session.entities()[32].drawing_disabled());
+    assert!(session.economy.entities()[32].drawing_disabled());
     assert_eq!(session.runtime().objectives[0].stage_selectors[3], 2);
     assert_eq!(session.runtime().objectives[0].done, 1);
     assert_eq!(session.runtime().bytes()[306], 1);
@@ -871,7 +871,7 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
     assert_eq!(session.level2_selected_objective_stage_state(), 1);
     assert!(!session.level2_objective_done());
     assert_eq!(session.level2_objective_pause(), 0);
-    assert!(!session.entities()[32].drawing_disabled());
+    assert!(!session.economy.entities()[32].drawing_disabled());
     assert_eq!(session.runtime().objectives[0].stage_selectors[3], 1);
     assert_eq!(session.runtime().objectives[0].done, 0);
 }
@@ -929,7 +929,7 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
                              remote_model: u8,
                              remote_life: i32,
                              full_hand: bool| {
-        for entity in &mut session.entities {
+        for entity in &mut session.economy.entities {
             if entity.class == 3
                 && entity.index != local_entity_index
                 && entity.index != remote_entity_index
@@ -940,7 +940,7 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
                 entity.record[4..8].fill(0);
             }
         }
-        let local = &mut session.entities[usize::from(local_entity_index)];
+        let local = &mut session.economy.entities[usize::from(local_entity_index)];
         local.active = true;
         local.class = 3;
         local.model = 0;
@@ -961,7 +961,7 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
         local.next_relation = None;
         local.record[4..8].fill(0);
 
-        let remote = &mut session.entities[usize::from(remote_entity_index)];
+        let remote = &mut session.economy.entities[usize::from(remote_entity_index)];
         remote.active = true;
         remote.class = 3;
         remote.model = remote_model;

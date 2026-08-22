@@ -1150,7 +1150,7 @@ fn level_two_outer_turn_family12_honors_remote_owner_and_return_hand_override() 
         session.shared_spells_mut().players[0].enabled_spell_holders[12] = 999;
         session.shared_spells_mut().players[0].record[268 + 12 * 2..270 + 12 * 2]
             .copy_from_slice(&999_u16.to_le_bytes());
-        let remote_entity = &mut session.entities[112];
+        let remote_entity = &mut session.economy.entities[112];
         remote_entity.active = true;
         remote_entity.model = 0;
         remote_entity.life = 1;
@@ -1472,7 +1472,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
         session.dispatch_observability_hash(),
         session.economy().reset_hash(),
         session.economy().global_rng,
-        session.entities.clone(),
+        session.economy.entities.clone(),
         session.economy().free_slots.clone(),
     );
 
@@ -1777,7 +1777,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     assert_eq!(session.dispatch_observability_hash(), baseline.1);
     assert_eq!(session.economy().reset_hash(), baseline.2);
     assert_eq!(session.economy().global_rng, baseline.3);
-    assert_eq!(session.entities, baseline.4);
+    assert_eq!(session.economy.entities, baseline.4);
     assert_eq!(session.economy().free_slots, baseline.5);
     assert!(session.dispatch_events().is_empty());
 }

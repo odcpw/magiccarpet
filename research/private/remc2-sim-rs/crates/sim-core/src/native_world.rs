@@ -2971,8 +2971,7 @@ pub struct Level2ResetSession {
     campaign_state: Option<crate::campaign::state::CampaignState>,
     baseline_context: FlightContext,
     pub context: FlightContext,
-    baseline_entities: Box<[EntitySnapshot]>,
-    entities: Box<[EntitySnapshot]>,
+    economy: crate::campaign::source_arena::SourceArena,
     baseline_players: Box<[PlayerSnapshot]>,
     players: Box<[PlayerSnapshot]>,
     baseline_runtime: RuntimeSnapshot,
@@ -2982,7 +2981,6 @@ pub struct Level2ResetSession {
     bad_stones: Box<[Level2BadStone]>,
     baseline_shared_spells: Level2SharedSpellResetSession,
     shared_spells: Level2SharedSpellResetSession,
-    economy: Level2EconomyState,
     ordinary: Level2OrdinaryResetSession,
     baseline_goats: GoatFamily,
     goats: GoatFamily,
@@ -3084,6 +3082,20 @@ pub struct Level2ResetSession {
     /// consumed only once when `a2 == 1`.
     baseline_level2_model45_activated: BTreeSet<u16>,
     level2_model45_activated: BTreeSet<u16>,
+}
+
+impl std::ops::Deref for Level2ResetSession {
+    type Target = crate::campaign::source_arena::SourceArena;
+
+    fn deref(&self) -> &Self::Target {
+        &self.economy
+    }
+}
+
+impl std::ops::DerefMut for Level2ResetSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.economy
+    }
 }
 
 /// One lossless, source-ordered result from the bounded Level 2 dispatcher.

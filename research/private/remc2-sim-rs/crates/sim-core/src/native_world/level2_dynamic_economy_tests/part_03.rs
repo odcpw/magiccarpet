@@ -2044,7 +2044,7 @@
             .iter()
             .position(|entity| !entity.active && entity.index != 0)
             .expect("free source row for prior-landing gate blocker");
-        let blocker = &mut session.entities[blocker_index];
+        let blocker = &mut session.economy.entities[blocker_index];
         blocker.active = true;
         blocker.life = -1;
         blocker.class = 10;
@@ -2074,7 +2074,7 @@
             .find(|projectile| projectile.source_entity_index == flyer.source_entity_index)
             .expect("terrain-intercept flyer")
             .yaw;
-        let entities = session.entities.clone();
+        let entities = session.economy.entities.clone();
         assert!(
             !session
                 .economy_mut()
@@ -2152,7 +2152,7 @@
             .iter()
             .position(|entity| !entity.active && entity.index != 0)
             .expect("free source row for later gate blocker");
-        let blocker = &mut session.entities[blocker_index];
+        let blocker = &mut session.economy.entities[blocker_index];
         blocker.active = true;
         blocker.life = -1;
         blocker.class = 10;
@@ -2160,7 +2160,7 @@
         blocker.record[88..90].copy_from_slice(&0_i16.to_le_bytes());
         blocker.record[90..92].copy_from_slice(&0_i16.to_le_bytes());
         blocker.set_position(initial);
-        let entities = session.entities.clone();
+        let entities = session.economy.entities.clone();
         let free_slots = session.economy().free_slots.clone();
         session.economy_mut().free_slots.clear();
         let before_failed_retry = session
@@ -2236,7 +2236,7 @@
                 .iter()
                 .position(|entity| !entity.active && entity.index != 0)
                 .expect("free source row for site-gate blocker");
-            let blocker = &mut session.entities[blocker_index];
+            let blocker = &mut session.economy.entities[blocker_index];
             blocker.active = true;
             blocker.life = if class == 10 && model == 45 { -1 } else { 8 };
             blocker.class = class;

@@ -65,30 +65,30 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
     // Row 1 is a qualified imported class-10/model-45 target. Rebind the
     // remote player row to model 2 so the same production scan exercises
     // the second `sub_33710` branch without adding a synthetic arena row.
-    session.entities[1].set_position(parent.position);
-    session.entities[112].model = 2;
-    session.entities[112].record[68] = 2;
-    session.entities[112].set_position(parent.position);
+    session.economy.entities[1].set_position(parent.position);
+    session.economy.entities[112].model = 2;
+    session.economy.entities[112].record[68] = 2;
+    session.economy.entities[112].set_position(parent.position);
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(session.entities[1].source_wind_spell_payload(), 1_000);
+    assert_eq!(session.economy.entities[1].source_wind_spell_payload(), 1_000);
     assert_eq!(
-        session.entities[1].source_wind_spell_owner(),
+        session.economy.entities[1].source_wind_spell_owner(),
         parent.entity_id
     );
-    assert_eq!(session.entities[112].source_spell_word_30(), 30);
-    assert_eq!(session.entities[112].activation_value, 30);
-    assert_eq!(session.entities[112].word_26(), parent_slot);
-    assert_eq!(session.entities[112].source_wind_spell_payload(), 1_000);
+    assert_eq!(session.economy.entities[112].source_spell_word_30(), 30);
+    assert_eq!(session.economy.entities[112].activation_value, 30);
+    assert_eq!(session.economy.entities[112].word_26(), parent_slot);
+    assert_eq!(session.economy.entities[112].source_wind_spell_payload(), 1_000);
     assert_eq!(
-        session.entities[112].source_wind_spell_owner(),
+        session.economy.entities[112].source_wind_spell_owner(),
         parent.entity_id
     );
 
     // The model-45 branch is `sub_11900`: a non-zero owner replaces its
     // payload on the next firing cadence rather than accumulating it.
-    session.entities[1].record[98..102].copy_from_slice(&7_i32.to_le_bytes());
-    session.entities[1].record[102..104].copy_from_slice(&55_u16.to_le_bytes());
+    session.economy.entities[1].record[98..102].copy_from_slice(&7_i32.to_le_bytes());
+    session.economy.entities[1].record[102..104].copy_from_slice(&55_u16.to_le_bytes());
     let next_parent_position = session
         .economy()
         .authored_model22()
@@ -96,8 +96,8 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
         .find(|source| source.source_entity_index == parent_slot)
         .expect("live wind parent")
         .position;
-    session.entities[1].set_position(next_parent_position);
-    session.entities[112].set_position(next_parent_position);
+    session.economy.entities[1].set_position(next_parent_position);
+    session.economy.entities[112].set_position(next_parent_position);
     session
         .economy_mut()
         .authored_model22
@@ -106,15 +106,15 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
         .expect("live wind parent")
         .phase = 16;
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(session.entities[1].source_wind_spell_payload(), 1_000);
+    assert_eq!(session.economy.entities[1].source_wind_spell_payload(), 1_000);
     assert_eq!(
-        session.entities[1].source_wind_spell_owner(),
+        session.economy.entities[1].source_wind_spell_owner(),
         parent.entity_id
     );
 
     // A non-firing phase leaves both target mailboxes untouched.
-    let payload_before = session.entities[1].source_wind_spell_payload();
-    let owner_before = session.entities[1].source_wind_spell_owner();
+    let payload_before = session.economy.entities[1].source_wind_spell_payload();
+    let owner_before = session.economy.entities[1].source_wind_spell_owner();
     session
         .economy_mut()
         .authored_model22
@@ -124,10 +124,10 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
         .phase = 17;
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
-        session.entities[1].source_wind_spell_payload(),
+        session.economy.entities[1].source_wind_spell_payload(),
         payload_before
     );
-    assert_eq!(session.entities[1].source_wind_spell_owner(), owner_before);
+    assert_eq!(session.economy.entities[1].source_wind_spell_owner(), owner_before);
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
     rejected.record[68] = 2;
     assert!(!level2_wind_sub33810_accepts(parent_source_id, &rejected));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let target = &session.entities[usize::from(target_index)];
+    let target = &session.economy.entities[usize::from(target_index)];
     assert_ne!(target.yaw, 0);
     assert_eq!(target.actual_speed, target_speed_before);
     assert_ne!(target.control_flags & 0x0000_0800, 0);
@@ -233,8 +233,8 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         y: current_parent.position.y,
         z: current_parent.position.z,
     };
-    session.entities[usize::from(target_index)].set_control_flags(0);
-    session.entities[usize::from(target_index)].set_position(second_target_position);
+    session.economy.entities[usize::from(target_index)].set_control_flags(0);
+    session.economy.entities[usize::from(target_index)].set_position(second_target_position);
     session
         .economy_mut()
         .map_chains
@@ -246,7 +246,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         })
         .expect("second target map chain follows its source position");
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(session.entities[usize::from(target_index)].actual_speed, 80);
+    assert_eq!(session.economy.entities[usize::from(target_index)].actual_speed, 80);
     let roll_after = session
         .players
         .iter()
@@ -270,7 +270,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         z: current_parent.position.z,
     };
     {
-        let target = &mut session.entities[usize::from(target_index)];
+        let target = &mut session.economy.entities[usize::from(target_index)];
         target.model = 1;
         target.record[68] = 1;
         target.set_actual_speed(17);
@@ -295,7 +295,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         .expect("non-zero model target player-state row")
         .roll_0x155();
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let nonzero_model_target = &session.entities[usize::from(target_index)];
+    let nonzero_model_target = &session.economy.entities[usize::from(target_index)];
     // Source-slot 112 runs Nyphur sub_12910/sub_12A70 before the later
     // wind-parent callback: sub_12A70 changes 17 to 1, and nonzero-model
     // sub_33340 preserves that combined full-turn value.
@@ -328,7 +328,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         z: class10_parent.position.z,
     };
     {
-        let target = &mut session.entities[usize::from(target_index)];
+        let target = &mut session.economy.entities[usize::from(target_index)];
         target.class = 10;
         target.record[67] = 10;
         target.model = 39;
@@ -348,7 +348,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
             y: class10_position.y,
         })
         .expect("class-10 target map chain follows its source position");
-    let class10_snapshot = session.entities[usize::from(target_index)].clone();
+    let class10_snapshot = session.economy.entities[usize::from(target_index)].clone();
     assert!(level2_wind_sub33810_accepts(
         parent_source_id,
         &class10_snapshot
@@ -361,7 +361,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         &rejected_class10
     ));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let class10_target = &session.entities[usize::from(target_index)];
+    let class10_target = &session.economy.entities[usize::from(target_index)];
     assert_eq!(class10_target.actual_speed, 23);
     assert_eq!(class10_target.yaw, 204);
     assert_ne!(class10_target.control_flags & 0x0000_0800, 0);
@@ -386,7 +386,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         z: class2_parent.position.z,
     };
     {
-        let target = &mut session.entities[usize::from(target_index)];
+        let target = &mut session.economy.entities[usize::from(target_index)];
         target.class = 2;
         target.record[67] = 2;
         target.model = 7;
@@ -408,7 +408,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
             y: class2_position.y,
         })
         .expect("class-2 target map chain follows its source position");
-    let class2_snapshot = session.entities[usize::from(target_index)].clone();
+    let class2_snapshot = session.economy.entities[usize::from(target_index)].clone();
     assert!(level2_wind_sub33810_accepts(
         parent_source_id,
         &class2_snapshot
@@ -421,7 +421,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         &rejected_class2
     ));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let class2_target = &session.entities[usize::from(target_index)];
+    let class2_target = &session.economy.entities[usize::from(target_index)];
     assert_eq!(class2_target.actual_speed, 31);
     assert_eq!(class2_target.yaw, 204);
     assert_ne!(class2_target.control_flags & 0x0000_0800, 0);
@@ -442,7 +442,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         z: class5_parent.position.z,
     };
     {
-        let target = &mut session.entities[usize::from(target_index)];
+        let target = &mut session.economy.entities[usize::from(target_index)];
         target.class = 5;
         target.record[67] = 5;
         target.model = 13;
@@ -464,7 +464,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
             y: class5_position.y,
         })
         .expect("class-5 target map chain follows its source position");
-    let class5_snapshot = session.entities[usize::from(target_index)].clone();
+    let class5_snapshot = session.economy.entities[usize::from(target_index)].clone();
     assert!(level2_wind_sub33810_accepts(
         parent_source_id,
         &class5_snapshot
@@ -477,7 +477,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         &rejected_class5
     ));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let class5_target = &session.entities[usize::from(target_index)];
+    let class5_target = &session.economy.entities[usize::from(target_index)];
     assert_eq!(class5_target.actual_speed, 37);
     assert_eq!(class5_target.yaw, 204);
     assert_ne!(class5_target.control_flags & 0x0000_0800, 0);
@@ -498,7 +498,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         z: rejected_parent.position.z,
     };
     {
-        let target = &mut session.entities[usize::from(target_index)];
+        let target = &mut session.economy.entities[usize::from(target_index)];
         target.action = 180;
         target.record[73] = 180;
         target.set_actual_speed(41);
@@ -517,7 +517,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         })
         .expect("rejected class-5 target map chain follows its source position");
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let rejected_target = &session.entities[usize::from(target_index)];
+    let rejected_target = &session.economy.entities[usize::from(target_index)];
     assert_eq!(rejected_target.actual_speed, 41);
     assert_eq!(rejected_target.yaw, 0);
     assert_eq!(rejected_target.control_flags & 0x0000_0800, 0);
@@ -648,7 +648,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     // the third reaches the source selector-10/action-18 handoff.
     let local_entity_index = session.state.entity_index;
     let local_index = usize::from(local_entity_index);
-    for entity in &mut session.entities {
+    for entity in &mut session.economy.entities {
         if entity.index != local_entity_index && entity.class == 3 {
             entity.control_flags |= 0x20;
         }
@@ -684,7 +684,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     );
     assert_eq!(after_off_cadence.target_entity_index, None);
 
-    session.entities[local_index].control_flags |= 0x20;
+    session.economy.entities[local_index].control_flags |= 0x20;
     let hidden = configure(&mut session, stage_target, 0, 1);
     {
         let mut economy_view = session.economy_mut();
@@ -707,7 +707,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     assert_eq!((after_hidden.action, after_hidden.stage_var2), (23, 2));
     assert_eq!(after_hidden.target_entity_index, None);
 
-    session.entities[local_index].control_flags &= !0x20;
+    session.economy.entities[local_index].control_flags &= !0x20;
     let visible = configure(&mut session, stage_target, 0, 1);
     {
         let mut economy_view = session.economy_mut();
@@ -735,7 +735,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
 
     // The existing action-18 path consumes target loss only after the
     // selector-defined handoff; no action or StageVar was seeded above.
-    session.entities[local_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
+    session.economy.entities[local_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
     {
         let mut economy_view = session.economy_mut();
         let source = economy_view
@@ -1612,7 +1612,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     source.source_byte_3e = 1;
     source.control_flags &= !LEVEL2_BEE_MOVEMENT_SKIP_BIT;
     assert!(session.economy.replace_authored_bee_for_test(source));
-    session.entities[local_index].life = -1;
+    session.economy.entities[local_index].life = -1;
     session.step_outer_turn(PlayerCommand::default(), 0);
     let dead_target = session
         .economy()
@@ -1648,7 +1648,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
         .copied()
         .expect("production Bee source after reset");
     let initial_rng = source.entity_rng;
-    let target_height_offset = session.entities[local_index].array_yaw();
+    let target_height_offset = session.economy.entities[local_index].array_yaw();
     let desired_z = target_height_offset.wrapping_add(session.state.position.z);
     let direction: i16 = if source.position.z == desired_z {
         0
@@ -1666,7 +1666,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     source.source_byte_3e = 1;
     source.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
     assert!(session.economy.replace_authored_bee_for_test(source));
-    session.entities[local_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
+    session.economy.entities[local_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
     session.step_outer_turn(PlayerCommand::default(), 0);
     let hidden_target = session
         .economy()
@@ -1811,7 +1811,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     session.queue_level2_player_contact_damage(77, 222);
     assert_eq!(session.player_pending_damage, 77);
     assert_eq!(session.player_pending_attacker, 222);
-    let player_record = session.entities[usize::from(session.state.entity_index)].record_bytes();
+    let player_record = session.economy.entities[usize::from(session.state.entity_index)].record_bytes();
     assert_eq!(
         i32::from_le_bytes(
             player_record[98..102]
@@ -1913,7 +1913,7 @@ fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_vis
         session.player_life,
         life_before - LEVEL2_BEE_CONTACT_SUBSPELL
     );
-    let player_record = session.entities[usize::from(session.state.entity_index)].record_bytes();
+    let player_record = session.economy.entities[usize::from(session.state.entity_index)].record_bytes();
     assert_eq!(
         i32::from_le_bytes(
             player_record[98..102]
@@ -1991,13 +1991,13 @@ fn level_two_player_contact_lethal_visit_retains_owner_and_records_killer() {
     let local_index = usize::from(session.state.entity_index);
     let attacker = 222_u16;
     session.player_life = 100;
-    session.entities[local_index].life = 100;
-    session.entities[local_index].record[12..16].copy_from_slice(&100_i32.to_le_bytes());
+    session.economy.entities[local_index].life = 100;
+    session.economy.entities[local_index].record[12..16].copy_from_slice(&100_i32.to_le_bytes());
     session.shared_spells.set_player_entity_life(100);
     session.queue_level2_player_contact_damage(200, attacker);
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    let player = &session.entities[local_index];
+    let player = &session.economy.entities[local_index];
     assert_eq!(session.player_life, -100);
     assert_eq!(player.action, 2);
     assert_eq!(player.word_24(), attacker);
@@ -2025,7 +2025,7 @@ fn level_two_player_contact_lethal_visit_retains_owner_and_records_killer() {
     // Later source visits clear word-0x26 but do not reapply damage or
     // clear the lethal mailbox owner, matching the life<0 branch.
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let player = &session.entities[local_index];
+    let player = &session.economy.entities[local_index];
     assert_eq!(player.word_26(), 0);
     assert_eq!(
         u16::from_le_bytes(player.record_bytes()[102..104].try_into().unwrap()),
@@ -2062,9 +2062,9 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
         .iter()
         .position(|entity| entity.index != 0 && !entity.active)
         .expect("inactive class-3 candidate row");
-    let candidate_entity_index = session.entities[candidate_index].index;
+    let candidate_entity_index = session.economy.entities[candidate_index].index;
     let local_entity_index = session.state.entity_index;
-    for entity in &mut session.entities {
+    for entity in &mut session.economy.entities {
         if entity.class == 3
             && entity.index != local_entity_index
             && entity.index != candidate_entity_index
@@ -2087,7 +2087,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
         z: source.position.z.wrapping_add(0x1401),
     };
     session.state.position = far_position;
-    let local_entity = &mut session.entities[local_index];
+    let local_entity = &mut session.economy.entities[local_index];
     local_entity.active = true;
     local_entity.class = 3;
     local_entity.model = 0;
@@ -2101,7 +2101,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
         y: source.position.y,
         z: source.position.z,
     };
-    let candidate = &mut session.entities[candidate_index];
+    let candidate = &mut session.economy.entities[candidate_index];
     candidate.active = true;
     candidate.class = 3;
     candidate.model = 0;
@@ -2129,7 +2129,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
 
     // Hide the stale local relation from the next scan while preserving
     // it in word_0x96; source action 17 must scan and overwrite it.
-    session.entities[local_index].control_flags = ENTITY_DRAW_DISABLED_BIT;
+    session.economy.entities[local_index].control_flags = ENTITY_DRAW_DISABLED_BIT;
     let mut reacquire = lost;
     reacquire.source_byte_3e = 30;
     reacquire.source_byte_39 = 1;
@@ -2230,7 +2230,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     ];
     let initial_rng = 0x1234;
     let configure = |session: &mut Level2ResetSession, all_blocked: bool| {
-        for entity in &mut session.entities {
+        for entity in &mut session.economy.entities {
             if entity.class == 3 && entity.index != session.state.entity_index {
                 entity.active = false;
                 entity.next_relation = None;
@@ -2238,8 +2238,8 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
             }
         }
         session.state.position = target_positions[0];
-        let first_candidate_id = session.entities[candidate_indices[0]].index;
-        let local = &mut session.entities[local_index];
+        let first_candidate_id = session.economy.entities[candidate_indices[0]].index;
+        let local = &mut session.economy.entities[local_index];
         local.active = true;
         local.class = 3;
         local.life = 100;
@@ -2247,7 +2247,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
         local.next_relation = Some(first_candidate_id);
         local.record[4..8].copy_from_slice(&(u32::from(first_candidate_id) + 1).to_le_bytes());
         for (offset, candidate_index) in candidate_indices.iter().copied().enumerate() {
-            let candidate = &mut session.entities[candidate_index];
+            let candidate = &mut session.economy.entities[candidate_index];
             candidate.active = true;
             candidate.class = 3;
             candidate.model = 0;
@@ -2260,8 +2260,8 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
         for (offset, candidate_index) in linked_order.iter().copied().enumerate() {
             let next = linked_order
                 .get(offset + 1)
-                .map(|next_index| session.entities[*next_index].index);
-            let candidate = &mut session.entities[candidate_index];
+                .map(|next_index| session.economy.entities[*next_index].index);
+            let candidate = &mut session.economy.entities[candidate_index];
             candidate.next_relation = next;
             if let Some(next) = next {
                 candidate.record[4..8].copy_from_slice(&(u32::from(next) + 1).to_le_bytes());
@@ -2303,7 +2303,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     assert_eq!(acquired.action, 18);
     assert_eq!(
         acquired.target_entity_index,
-        Some(session.entities[candidate_indices[2]].index)
+        Some(session.economy.entities[candidate_indices[2]].index)
     );
     assert_eq!(acquired.entity_rng, third);
     assert_eq!(acquired.last_sound_id, (third & 1) + 12);
@@ -2339,7 +2339,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     // With eligible candidates present, a zero byte-0x39 suppresses the
     // class-3 scan but does not suppress the two preceding wander draws.
     for candidate_index in [candidate_indices[1], candidate_indices[2]] {
-        session.entities[candidate_index].control_flags = 0;
+        session.economy.entities[candidate_index].control_flags = 0;
     }
     let source = session
         .economy
@@ -3584,48 +3584,48 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
         y: 9_100,
         z: 0,
     };
-    session.entities[local_player_index].control_flags = 0x20;
-    session.entities[local_player_index].position = Position {
+    session.economy.entities[local_player_index].control_flags = 0x20;
+    session.economy.entities[local_player_index].position = Position {
         x: 40_000,
         y: 40_000,
         z: 0,
     };
-    session.entities[injected_index].active = true;
-    session.entities[injected_index].class = 3;
+    session.economy.entities[injected_index].active = true;
+    session.economy.entities[injected_index].class = 3;
     // A non-model-0 class-3 row remains in the source linked list but is
     // not an action-10 player target (`sub_61620`'s `!model` gate).
-    session.entities[injected_index].model = 2;
-    session.entities[injected_index].life = 100;
-    session.entities[injected_index].position = Position {
+    session.economy.entities[injected_index].model = 2;
+    session.economy.entities[injected_index].life = 100;
+    session.economy.entities[injected_index].position = Position {
         x: 10_000,
         y: 9_400,
         z: 0,
     };
-    session.entities[injected_index].control_flags = 0;
-    session.entities[second_injected_index].active = true;
-    session.entities[second_injected_index].class = 3;
-    session.entities[second_injected_index].model = 0;
-    session.entities[second_injected_index].life = 100;
-    session.entities[second_injected_index].position = Position {
+    session.economy.entities[injected_index].control_flags = 0;
+    session.economy.entities[second_injected_index].active = true;
+    session.economy.entities[second_injected_index].class = 3;
+    session.economy.entities[second_injected_index].model = 0;
+    session.economy.entities[second_injected_index].life = 100;
+    session.economy.entities[second_injected_index].position = Position {
         x: 10_000,
         y: 9_400,
         z: 0,
     };
-    session.entities[second_injected_index].control_flags = 0;
-    session.entities[112].model = 0;
-    session.entities[local_player_index].next_relation =
-        Some(session.entities[second_injected_index].index);
-    session.entities[local_player_index].record[4..8].copy_from_slice(
-        &(u32::from(session.entities[second_injected_index].index) + 1).to_le_bytes(),
+    session.economy.entities[second_injected_index].control_flags = 0;
+    session.economy.entities[112].model = 0;
+    session.economy.entities[local_player_index].next_relation =
+        Some(session.economy.entities[second_injected_index].index);
+    session.economy.entities[local_player_index].record[4..8].copy_from_slice(
+        &(u32::from(session.economy.entities[second_injected_index].index) + 1).to_le_bytes(),
     );
-    session.entities[second_injected_index].next_relation = Some(session.entities[112].index);
-    session.entities[second_injected_index].record[4..8]
-        .copy_from_slice(&(u32::from(session.entities[112].index) + 1).to_le_bytes());
-    session.entities[112].next_relation = Some(session.entities[injected_index].index);
-    session.entities[112].record[4..8]
-        .copy_from_slice(&(u32::from(session.entities[injected_index].index) + 1).to_le_bytes());
-    session.entities[injected_index].next_relation = None;
-    session.entities[injected_index].record[4..8].fill(0);
+    session.economy.entities[second_injected_index].next_relation = Some(session.economy.entities[112].index);
+    session.economy.entities[second_injected_index].record[4..8]
+        .copy_from_slice(&(u32::from(session.economy.entities[112].index) + 1).to_le_bytes());
+    session.economy.entities[112].next_relation = Some(session.economy.entities[injected_index].index);
+    session.economy.entities[112].record[4..8]
+        .copy_from_slice(&(u32::from(session.economy.entities[injected_index].index) + 1).to_le_bytes());
+    session.economy.entities[injected_index].next_relation = None;
+    session.economy.entities[injected_index].record[4..8].fill(0);
     let expected_player_slots = session
         .entities
         .iter()
@@ -3641,8 +3641,8 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
     let goat_player_targets = session.level2_goat_player_targets();
     let source_order = vec![
         session.state.entity_index,
-        session.entities[second_injected_index].index,
-        session.entities[112].index,
+        session.economy.entities[second_injected_index].index,
+        session.economy.entities[112].index,
     ];
     assert_ne!(expected_player_slots, source_order);
     assert_eq!(
@@ -3655,7 +3655,7 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
     assert!(
         !goat_player_targets
             .iter()
-            .any(|player| player.entity_index == session.entities[injected_index].index)
+            .any(|player| player.entity_index == session.economy.entities[injected_index].index)
     );
     assert_eq!(
         goat_player_targets
@@ -3675,7 +3675,7 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
     assert_eq!(goat.action, 14);
     assert_eq!(
         goat.target_entity_index,
-        Some(session.entities[second_injected_index].index)
+        Some(session.economy.entities[second_injected_index].index)
     );
     assert_eq!(goat.partner_entity_index, None);
 }
@@ -3790,23 +3790,23 @@ fn level_two_goat_dispatch_falls_back_to_peer_when_all_live_players_are_ineligib
         y: 9_100,
         z: 0,
     };
-    session.entities[local_player_index].control_flags = 0x20;
-    session.entities[local_player_index].position = session.state.position;
-    session.entities[injected_index].active = true;
-    session.entities[injected_index].class = 3;
-    session.entities[injected_index].model = 0;
-    session.entities[injected_index].life = 100;
-    session.entities[injected_index].position = Position {
+    session.economy.entities[local_player_index].control_flags = 0x20;
+    session.economy.entities[local_player_index].position = session.state.position;
+    session.economy.entities[injected_index].active = true;
+    session.economy.entities[injected_index].class = 3;
+    session.economy.entities[injected_index].model = 0;
+    session.economy.entities[injected_index].life = 100;
+    session.economy.entities[injected_index].position = Position {
         x: 10_000,
         y: 9_300,
         z: 0,
     };
-    session.entities[injected_index].control_flags = 0x20;
-    session.entities[112].next_relation = Some(session.entities[injected_index].index);
-    session.entities[112].record[4..8]
-        .copy_from_slice(&(u32::from(session.entities[injected_index].index) + 1).to_le_bytes());
-    session.entities[injected_index].next_relation = None;
-    session.entities[injected_index].record[4..8].fill(0);
+    session.economy.entities[injected_index].control_flags = 0x20;
+    session.economy.entities[112].next_relation = Some(session.economy.entities[injected_index].index);
+    session.economy.entities[112].record[4..8]
+        .copy_from_slice(&(u32::from(session.economy.entities[injected_index].index) + 1).to_le_bytes());
+    session.economy.entities[injected_index].next_relation = None;
+    session.economy.entities[injected_index].record[4..8].fill(0);
 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let goat = session
@@ -3868,7 +3868,7 @@ fn level_two_goat_action9_peer_fallback_requires_proximity_countdown() {
         for goat in rows {
             assert!(session.goats.replace_goat_for_test(goat));
         }
-        for entity in session.entities.iter_mut().filter(|entity| {
+        for entity in session.economy.entities.iter_mut().filter(|entity| {
             entity.active && entity.class == 3 && entity.model == 0 && entity.life >= 0
         }) {
             entity.control_flags |= 0x20;
@@ -3923,7 +3923,7 @@ fn level_two_goat_action14_production_distinguishes_ordinary_and_direct_hit_tail
         .expect("authored Goat slot 39")
         .position;
     session.state.position = initial_position;
-    session.entities[usize::from(local_player_index)].position = initial_position;
+    session.economy.entities[usize::from(local_player_index)].position = initial_position;
 
     let mut ordinary = session
         .goats()
@@ -3965,7 +3965,7 @@ fn level_two_goat_action14_production_distinguishes_ordinary_and_direct_hit_tail
 
     session.reset();
     session.state.position = initial_position;
-    session.entities[usize::from(local_player_index)].position = initial_position;
+    session.economy.entities[usize::from(local_player_index)].position = initial_position;
     let mut direct_hit = session
         .goats()
         .iter()

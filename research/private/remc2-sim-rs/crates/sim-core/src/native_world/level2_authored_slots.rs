@@ -4466,7 +4466,7 @@ impl Level2EconomyState {
     }
 
     #[must_use]
-    pub(super) fn slot_generation(&self, slot: u16) -> u32 {
+    pub(crate) fn slot_generation(&self, slot: u16) -> u32 {
         self.slot_generations
             .get(&slot)
             .copied()

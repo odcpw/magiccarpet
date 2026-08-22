@@ -8,15 +8,17 @@ use std::sync::Arc;
 
 use sha2::{Digest as _, Sha256};
 
+use super::source_arena::SourceArena;
+
 use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, SpellFireContext, SpellFireSource,
     TetherTarget,
     goat::GoatState,
     mission_content::MissionContentSession,
     native_world::{
-        EntitySnapshot, Level2BadStone, Level2EconomyState, Level2NyphurDispatchTrace,
-        Level2OrdinaryResetSession, Level2ResetSession, Level2SharedSpellResetSession,
-        PlayerSnapshot, RuntimeObjective, RuntimeSnapshot, SessionTerrain,
+        Level2BadStone, Level2NyphurDispatchTrace, Level2OrdinaryResetSession, Level2ResetSession,
+        Level2SharedSpellResetSession, PlayerSnapshot, RuntimeObjective, RuntimeSnapshot,
+        SessionTerrain,
     },
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash,
@@ -77,12 +79,14 @@ pub struct SourceLink {
     pub active: bool,
 }
 
-/// Resettable source arena projection.  The source records remain the
-/// lossless row authority during this preparation leaf.
+/// Immutable receipts for the canonical live `SourceArena`.
+///
+/// The live records and allocator are not cloned into this reset observer;
+/// doing so would recreate the shadow authority that CF-06 removes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceArenaState {
-    pub entities: Box<[EntitySnapshot]>,
-    pub topology: SourceTopology,
+    arena_receipt: CanonicalDigest,
+    economy_reset_hash: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,7 +101,6 @@ pub struct PlayersAndRuntimeState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceSidecarsState {
     pub shared_spells: Level2SharedSpellResetSession,
-    pub economy: Level2EconomyState,
     pub ordinary: Level2OrdinaryResetSession,
     pub goats: Box<[GoatState]>,
     pub bad_stones: Box<[Level2BadStone]>,
@@ -356,26 +359,21 @@ impl ResetState {
         session: &Level2ResetSession,
         terrain: &SessionTerrain,
     ) -> Self {
-        let entities = session.entities().to_vec().into_boxed_slice();
-        let links = entities
-            .iter()
-            .map(|entity| SourceLink {
-                source_slot: entity.index,
-                old_map_entity: entity.old_map_entity(),
-                next_entity: entity.next_entity(),
-                active: entity.active,
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let topology = SourceTopology {
-            receipt: digest_topology(&links),
-            links,
-        };
         let runtime = session.runtime().clone();
         let players = session.players().to_vec().into_boxed_slice();
+        let entity_streams = session
+            .source_arena()
+            .entities()
+            .iter()
+            .map(|entity| entity.entity_rng)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let source_arena = SourceArenaState {
+            arena_receipt: digest_live_source_arena(session.source_arena()),
+            economy_reset_hash: session.economy().reset_hash_with_terrain(terrain),
+        };
         let sidecars = SourceSidecarsState {
             shared_spells: session.shared_spells().clone(),
-            economy: session.economy().clone(),
             ordinary: session.ordinary().clone(),
             goats: session.goats().to_vec().into_boxed_slice(),
             bad_stones: session.bad_stones().to_vec().into_boxed_slice(),
@@ -392,7 +390,7 @@ impl ResetState {
         };
         Self {
             flight: session.state,
-            source_arena: SourceArenaState { entities, topology },
+            source_arena,
             terrain: terrain.clone(),
             players_and_runtime: PlayersAndRuntimeState {
                 players,
@@ -402,12 +400,7 @@ impl ResetState {
             source_rng: SourceRngState {
                 global_state: runtime.random_state,
                 terrain_rng: terrain.terrain_rng(),
-                entity_streams: session
-                    .entities()
-                    .iter()
-                    .map(|entity| entity.entity_rng)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
+                entity_streams,
             },
             objectives: ObjectiveState {
                 stage_index: runtime.stage_index,
@@ -482,7 +475,11 @@ fn reset_component_digests(
         digest_source_arena(&state.source_arena),
         digest_terrain(&state.terrain),
         digest_players_and_runtime(&state.players_and_runtime),
-        digest_source_sidecars(&state.source_sidecars, &state.terrain),
+        digest_source_sidecars(
+            &state.source_sidecars,
+            &state.source_arena.economy_reset_hash,
+            &state.terrain,
+        ),
         digest_source_rng(&state.source_rng),
         digest_objectives(&state.objectives),
         state.effect_journal.receipt,
@@ -495,14 +492,19 @@ fn digest_flight(flight: &FlightState) -> CanonicalDigest {
 }
 
 #[must_use]
-fn digest_source_arena(arena: &SourceArenaState) -> CanonicalDigest {
+const fn digest_source_arena(arena: &SourceArenaState) -> CanonicalDigest {
+    arena.arena_receipt
+}
+
+#[must_use]
+fn digest_live_source_arena(arena: &SourceArena) -> CanonicalDigest {
     digest_with(|hasher| {
-        append_len(hasher, arena.entities.len());
-        for entity in &arena.entities {
+        append_len(hasher, arena.entities().len());
+        for entity in arena.entities() {
             append_len(hasher, entity.record_bytes().len());
             hasher.update(entity.record_bytes());
         }
-        hasher.update(arena.topology.receipt.as_bytes());
+        hasher.update(arena.topology().receipt.as_bytes());
     })
 }
 
@@ -718,6 +720,7 @@ fn append_position(hasher: &mut Sha256, position: crate::Position) {
 #[must_use]
 fn digest_source_sidecars(
     sidecars: &SourceSidecarsState,
+    economy_reset_hash: &str,
     terrain: &SessionTerrain,
 ) -> CanonicalDigest {
     digest_with(|hasher| {
@@ -725,7 +728,7 @@ fn digest_source_sidecars(
             hasher,
             &sidecars.shared_spells.reset_hash_with_terrain(terrain),
         );
-        append_string(hasher, &sidecars.economy.reset_hash_with_terrain(terrain));
+        append_string(hasher, economy_reset_hash);
         append_string(hasher, &sidecars.ordinary.reset_hash());
         append_string(hasher, &sidecars.mission.state_hash());
         hasher.update(sidecars.legacy_campaign_state_hash.to_le_bytes());
@@ -766,7 +769,7 @@ fn digest_objectives(objectives: &ObjectiveState) -> CanonicalDigest {
 }
 
 #[must_use]
-fn digest_topology(links: &[SourceLink]) -> CanonicalDigest {
+pub(crate) fn digest_topology(links: &[SourceLink]) -> CanonicalDigest {
     digest_with(|hasher| {
         append_len(hasher, links.len());
         for link in links {

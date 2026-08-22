@@ -1,6 +1,7 @@
 // Moved mechanically from native_world.rs for CF-01. This file is included as a child of native_world so its internal visibility and parent state access remain unchanged.
 use super::*;
 
+use crate::campaign::source_arena::SourceArena;
 use crate::campaign::state::CampaignState;
 
 impl Level2ResetSession {
@@ -18,7 +19,7 @@ impl Level2ResetSession {
             .collect::<BTreeSet<_>>();
         let linked = eligible
             .iter()
-            .filter_map(|index| self.entities[usize::from(*index)].next_relation)
+            .filter_map(|index| self.economy.entities[usize::from(*index)].next_relation)
             .collect::<BTreeSet<_>>();
         let Some(mut current) = eligible
             .iter()
@@ -30,7 +31,7 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut targets = Vec::with_capacity(eligible.len());
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.entities.get(usize::from(current)) else {
+            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
                 break;
             };
             if eligible.contains(&current) {
@@ -56,7 +57,7 @@ impl Level2ResetSession {
         let radius_squared = MODEL3_TARGET_RANGE * MODEL3_TARGET_RANGE;
         let mut nearest: Option<(u32, EntitySnapshot)> = None;
         for (entity_index, position, control_flags) in self.level2_bee_class3_targets() {
-            let Some(entity) = self.entities.get(usize::from(entity_index)) else {
+            let Some(entity) = self.economy.entities.get(usize::from(entity_index)) else {
                 continue;
             };
             let dx = i32::from(position.x.wrapping_sub(source.position.x).cast_signed());
@@ -305,7 +306,11 @@ impl Level2ResetSession {
         &mut self,
         target: level2_class5::archer::ArcherTarget,
     ) {
-        if let Some(entity) = self.entities.get_mut(usize::from(target.entity_index)) {
+        if let Some(entity) = self
+            .economy
+            .entities
+            .get_mut(usize::from(target.entity_index))
+        {
             entity.set_source_dword_10(target.dword_0x10);
             return;
         }
@@ -363,7 +368,7 @@ impl Level2ResetSession {
         if entity_index == 0 {
             return None;
         }
-        if let Some(entity) = self.entities.get(usize::from(entity_index)) {
+        if let Some(entity) = self.economy.entities.get(usize::from(entity_index)) {
             return Some(level2_class5::trader::TraderTarget {
                 entity_index: entity.index,
                 class: entity.class,
@@ -393,7 +398,11 @@ impl Level2ResetSession {
         &mut self,
         target: level2_class5::trader::TraderTarget,
     ) {
-        if let Some(entity) = self.entities.get_mut(usize::from(target.entity_index)) {
+        if let Some(entity) = self
+            .economy
+            .entities
+            .get_mut(usize::from(target.entity_index))
+        {
             entity.set_source_dword_10(target.dword_0x10);
             return;
         }
@@ -415,7 +424,7 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut linked = Vec::new();
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.entities.get(usize::from(current)) else {
+            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
                 break;
             };
             linked.push(level2_class5::trader::TraderLinkedState {
@@ -441,7 +450,7 @@ impl Level2ResetSession {
             .collect::<BTreeSet<_>>();
         let linked = eligible
             .iter()
-            .filter_map(|index| self.entities.get(usize::from(*index)))
+            .filter_map(|index| self.economy.entities.get(usize::from(*index)))
             .filter_map(|entity| entity.next_relation)
             .collect::<BTreeSet<_>>();
         let Some(mut current) = eligible
@@ -454,7 +463,7 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut buildings = Vec::new();
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.entities.get(usize::from(current)) else {
+            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
                 break;
             };
             if eligible.contains(&current) && entity.model == HOUSE_MODEL {
@@ -492,7 +501,7 @@ impl Level2ResetSession {
             .collect::<BTreeSet<_>>();
         let linked = eligible
             .iter()
-            .filter_map(|index| self.entities[usize::from(*index)].next_relation)
+            .filter_map(|index| self.economy.entities[usize::from(*index)].next_relation)
             .collect::<BTreeSet<_>>();
         let Some(mut current) = eligible
             .iter()
@@ -504,7 +513,7 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut targets = Vec::with_capacity(eligible.len());
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.entities.get(usize::from(current)) else {
+            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
                 break;
             };
             if eligible.contains(&current) {
@@ -530,16 +539,19 @@ impl Level2ResetSession {
     /// used by `sub_68FF0`, leaving holder/mana state in its existing owner.
     pub(super) fn refresh_level2_spell_owner_candidates(&mut self) -> Vec<usize> {
         let local_entity_index = self.state.entity_index;
+        let local_position = self.state.position;
         if let Some(local_entity) = self
+            .economy
             .entities
             .iter_mut()
             .find(|entity| entity.index == local_entity_index)
         {
-            local_entity.set_position(self.state.position);
+            local_entity.set_position(local_position);
         }
         for player_index in 0..self.shared_spells.players.len() {
             let entity_index = self.shared_spells.players[player_index].entity_index;
             let Some(live_entity) = self
+                .economy
                 .entities
                 .iter()
                 .find(|entity| entity.index == entity_index)
@@ -570,7 +582,7 @@ impl Level2ResetSession {
             .collect::<BTreeSet<_>>();
         let linked = chain_entities
             .iter()
-            .filter_map(|index| self.entities.get(usize::from(*index)))
+            .filter_map(|index| self.economy.entities.get(usize::from(*index)))
             .filter_map(|entity| entity.next_relation)
             .collect::<BTreeSet<_>>();
         let Some(mut current) = chain_entities
@@ -583,7 +595,7 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut player_order = Vec::new();
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.entities.get(usize::from(current)) else {
+            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
                 break;
             };
             if chain_entities.contains(&current)
@@ -1358,7 +1370,7 @@ impl Level2ResetSession {
         let Some(profile) = level2_direct_starting_spell_profile(family, tier) else {
             return;
         };
-        if let Some(holder) = self.entities.get_mut(usize::from(holder_index)) {
+        if let Some(holder) = self.economy.entities.get_mut(usize::from(holder_index)) {
             holder.apply_nyphur_spell_profile(profile, tier);
             holder.record[48..50].fill(0);
         }
@@ -1423,7 +1435,8 @@ impl Level2ResetSession {
             let common_upkeep = self.nyphur_dispatcher.common_upkeep(parent.phase);
             let castle_mana = (common_upkeep.castle_entity_index != 0)
                 .then(|| {
-                    self.entities
+                    self.economy
+                        .entities
                         .get(usize::from(common_upkeep.castle_entity_index))
                 })
                 .flatten()
@@ -1521,7 +1534,7 @@ impl Level2ResetSession {
             }
         }
 
-        if let Some(holder) = self.entities.get_mut(usize::from(holder_index)) {
+        if let Some(holder) = self.economy.entities.get_mut(usize::from(holder_index)) {
             holder.active_value = next_active_value;
             holder.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
             let word_36 = u16::from_le_bytes([holder.record[58], holder.record[59]]);
@@ -1690,7 +1703,7 @@ impl Level2ResetSession {
             }
         }
 
-        if let Some(holder) = self.entities.get_mut(usize::from(holder_index)) {
+        if let Some(holder) = self.economy.entities.get_mut(usize::from(holder_index)) {
             holder.active_value = next_active_value;
             holder.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
             let word_36 = u16::from_le_bytes([holder.record[58], holder.record[59]]);
@@ -2224,8 +2237,7 @@ impl Level2ResetSession {
             campaign_state: None,
             baseline_context: context.clone(),
             context,
-            baseline_entities: entities.clone(),
-            entities,
+            economy: SourceArena::new(entities, economy),
             baseline_players: players.clone(),
             players,
             baseline_runtime: runtime.clone(),
@@ -2235,7 +2247,6 @@ impl Level2ResetSession {
             bad_stones,
             baseline_shared_spells: shared_spells.clone(),
             shared_spells,
-            economy,
             ordinary,
             baseline_goats: goats.clone(),
             goats,
@@ -2330,6 +2341,15 @@ impl Level2ResetSession {
             .expect("Level 2 campaign state installed after construction")
     }
 
+    #[must_use]
+    pub(crate) fn source_arena(&self) -> &SourceArena {
+        &self.economy
+    }
+
+    pub(crate) fn source_arena_mut(&mut self) -> &mut SourceArena {
+        &mut self.economy
+    }
+
     /// Borrow the one terrain owner used by all Level 2 production handlers.
     pub fn canonical_terrain(&self) -> &SessionTerrain {
         self.campaign_state().terrain()
@@ -2382,7 +2402,7 @@ impl Level2ResetSession {
 
     #[must_use]
     pub fn entities(&self) -> &[EntitySnapshot] {
-        &self.entities
+        self.economy.entities()
     }
 
     /// Return the source `str_D93C0` byte-2 flags for one entity-parameter
@@ -2559,7 +2579,7 @@ impl Level2ResetSession {
         entity_index: u16,
         position: Position,
     ) -> Result<()> {
-        let Some(entity) = self.entities.get_mut(usize::from(entity_index)) else {
+        let Some(entity) = self.economy.entities.get_mut(usize::from(entity_index)) else {
             return Err(NativeWorldError::new(format!(
                 "Level 2 entity index {entity_index} is out of bounds"
             )));
@@ -2591,7 +2611,7 @@ impl Level2ResetSession {
         F: FnMut(&EntitySnapshot) -> Position,
     {
         const SWITCH_HALF_WIDTH: i16 = 121;
-        let overlap = self.entities.iter().any(|entity| {
+        let overlap = self.economy.entities.iter().any(|entity| {
             entity.active
                 && entity.class == 3
                 && entity.model == 0
@@ -2617,7 +2637,8 @@ impl Level2ResetSession {
         F: FnMut(&EntitySnapshot) -> Position,
     {
         const SWITCH_HALF_WIDTH: i16 = 121;
-        self.entities
+        self.economy
+            .entities
             .iter()
             .find(|entity| {
                 entity.active
@@ -2681,7 +2702,7 @@ impl Level2ResetSession {
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
         level2_nyphur_participant(
             &self.players,
-            &self.entities,
+            &self.economy.entities,
             &self.runtime,
             baseline_entity,
         )
@@ -3862,8 +3883,9 @@ impl Level2ResetSession {
     }
 
     pub(super) fn sync_level2_model76_targets_from_entities(&mut self) {
-        for source in &mut self.economy.authored_model76 {
-            let Some(target) = self
+        let source_arena = &mut self.economy;
+        for source in &mut source_arena.economy.authored_model76 {
+            let Some(target) = source_arena
                 .entities
                 .get(usize::from(source.target_entity_index))
                 .filter(|target| target.active)
@@ -4036,7 +4058,7 @@ impl Level2ResetSession {
         }
         self.level2_model45_activated
             .extend(constructed.iter().map(|(index, _)| *index));
-        if let Some(root) = self.entities.get_mut(usize::from(root_slot)) {
+        if let Some(root) = self.economy.entities.get_mut(usize::from(root_slot)) {
             root.disable_drawing();
         }
         self.level2_group8_activated = true;
@@ -4073,7 +4095,7 @@ impl Level2ResetSession {
             if player.active_player_index < 0 {
                 return false;
             }
-            let Some(entity) = self.entities.get(usize::from(player.entity_index)) else {
+            let Some(entity) = self.economy.entities.get(usize::from(player.entity_index)) else {
                 return false;
             };
             entity.active
@@ -4296,7 +4318,7 @@ impl Level2ResetSession {
         };
         self.level2_switch_producers_activated
             .insert(switch_row.index);
-        if let Some(root) = self.entities.get_mut(usize::from(root_slot)) {
+        if let Some(root) = self.economy.entities.get_mut(usize::from(root_slot)) {
             root.disable_drawing();
         }
         self.dispatch_events
@@ -4478,7 +4500,7 @@ impl Level2ResetSession {
                 root.cooldown = next_cooldown;
                 root.phase = next_phase;
             }
-            if let Some(entity) = self.entities.get_mut(usize::from(source_slot)) {
+            if let Some(entity) = self.economy.entities.get_mut(usize::from(source_slot)) {
                 entity.set_phase(next_phase);
                 entity.set_source_word_10(u16::from(next_cooldown));
             }
@@ -4499,7 +4521,7 @@ impl Level2ResetSession {
                 {
                     root.drawing_enabled = false;
                 }
-                if let Some(entity) = self.entities.get_mut(usize::from(source_slot)) {
+                if let Some(entity) = self.economy.entities.get_mut(usize::from(source_slot)) {
                     entity.disable_drawing();
                 }
             }
@@ -5666,7 +5688,12 @@ impl Level2ResetSession {
         deferred_dynamic_slots: &mut BTreeSet<(u16, u32)>,
         pending_source_rows: &mut BTreeMap<(u16, u32), Level2DynamicArenaCursorRow>,
     ) {
-        for row in self.economy.live_arena_cursor_rows() {
+        for arena_row in self.economy.cursor_rows() {
+            let row = Level2DynamicArenaCursorRow {
+                source_slot: arena_row.handle.source_slot,
+                generation: arena_row.handle.generation,
+                kind: arena_row.kind,
+            };
             let key = (row.source_slot, row.generation);
             if live_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
                 continue;
@@ -5790,7 +5817,8 @@ impl Level2ResetSession {
                     .map(|holder| (holder.index, 13_u8)),
             )
             .chain(
-                self.entities
+                self.economy
+                    .entities
                     .iter()
                     .filter(|holder| {
                         holder.active
@@ -5805,7 +5833,8 @@ impl Level2ResetSession {
                     .map(|holder| (holder.index, 11_u8)),
             )
             .chain(
-                self.entities
+                self.economy
+                    .entities
                     .iter()
                     .filter(|holder| {
                         holder.active
@@ -5855,7 +5884,8 @@ impl Level2ResetSession {
                     .map(|dolmen| (dolmen.entity.index, 4_u8)),
             )
             .chain(
-                self.entities
+                self.economy
+                    .entities
                     .iter()
                     .filter(|entity| {
                         entity.active
@@ -6325,11 +6355,12 @@ impl Level2ResetSession {
                         .as_ref()
                         .expect("Level 2 campaign state owns canonical terrain")
                         .terrain();
+                    let source_arena = &mut self.economy;
                     match self.nyphur_dispatcher.step_dispatch(
                         pass,
                         source_slot,
-                        &mut self.entities,
-                        self.economy.spheres(),
+                        &mut source_arena.entities,
+                        source_arena.economy.spheres(),
                         &self.players,
                         terrain,
                         &self.presentation,
@@ -6627,11 +6658,12 @@ impl Level2ResetSession {
                 self.runtime.local_player_slot,
                 self.state.entity_index,
                 self.state.position,
-                self.entities
+                self.economy
+                    .entities
                     .iter()
                     .find(|entity| entity.index == self.state.entity_index)
                     .map_or(0, |entity| entity.life),
-                &self.entities,
+                &self.economy.entities,
             );
         if collected {
             self.economy.deactivate_authored_class14_slot(source_slot);
@@ -6819,7 +6851,7 @@ impl Level2ResetSession {
                 entity.apply_wind_model45_mailbox(parent.entity_id, parent.subspell_index);
             }
         }
-        for entity in self.entities.iter_mut().filter(|entity| {
+        for entity in self.economy.entities.iter_mut().filter(|entity| {
             entity.active && entity.life >= 0 && entity.class == 3 && entity.model == 2
         }) {
             if overlaps(entity) {
@@ -6897,7 +6929,7 @@ impl Level2ResetSession {
                         )
                     });
                 if hit {
-                    if let Some(target) = self.entities.get_mut(usize::from(target_index)) {
+                    if let Some(target) = self.economy.entities.get_mut(usize::from(target_index)) {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
                         hit_count = hit_count.wrapping_add(1);
                     }
@@ -6928,7 +6960,7 @@ impl Level2ResetSession {
                         })
                     });
                 if hit {
-                    if let Some(target) = self.entities.get_mut(usize::from(target_index)) {
+                    if let Some(target) = self.economy.entities.get_mut(usize::from(target_index)) {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
                         hit_count = hit_count.wrapping_add(1);
                     }
@@ -6966,7 +6998,7 @@ impl Level2ResetSession {
                             )
                     });
                 if hit {
-                    if let Some(target) = self.entities.get_mut(usize::from(target_index)) {
+                    if let Some(target) = self.economy.entities.get_mut(usize::from(target_index)) {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
                         hit_count = hit_count.wrapping_add(1);
                     }
@@ -7009,7 +7041,7 @@ impl Level2ResetSession {
             source_map_search_slots(&self.economy.map_chains, parent.position, &search_offsets);
         let targets = candidates
             .into_iter()
-            .filter_map(|entity_index| self.entities.get(usize::from(entity_index)))
+            .filter_map(|entity_index| self.economy.entities.get(usize::from(entity_index)))
             .filter(|entity| {
                 entity.active
                     && matches!(entity.class, 2 | 3 | 5 | 10)
@@ -7018,7 +7050,12 @@ impl Level2ResetSession {
             .map(|entity| entity.index)
             .collect::<Vec<_>>();
         for target_index in targets {
-            let Some(snapshot) = self.entities.get(usize::from(target_index)).cloned() else {
+            let Some(snapshot) = self
+                .economy
+                .entities
+                .get(usize::from(target_index))
+                .cloned()
+            else {
                 continue;
             };
             let target_position = if target_index == self.state.entity_index {
@@ -7052,12 +7089,13 @@ impl Level2ResetSession {
                             i16::from_le_bytes([parameter[14], parameter[15]])
                         });
                     if distance >= 5_308_416 {
-                        self.entities[usize::from(target_index)]
+                        self.economy.entities[usize::from(target_index)]
                             .set_control_flags(control_flags & !0x1000_0000);
                     } else {
-                        self.entities[usize::from(target_index)].set_control_flags(control_flags);
+                        self.economy.entities[usize::from(target_index)]
+                            .set_control_flags(control_flags);
                     }
-                    self.entities[usize::from(target_index)].set_yaw(yaw);
+                    self.economy.entities[usize::from(target_index)].set_yaw(yaw);
                     move_speed = 64;
                     hit = true;
                 }
@@ -7069,8 +7107,9 @@ impl Level2ResetSession {
                     let control_flags = snapshot.control_flags | 0x0000_0800;
                     let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(turn_delta));
                     predicted.z = predicted.z.wrapping_add(114);
-                    self.entities[usize::from(target_index)].set_control_flags(control_flags);
-                    self.entities[usize::from(target_index)].set_yaw(yaw);
+                    self.economy.entities[usize::from(target_index)]
+                        .set_control_flags(control_flags);
+                    self.economy.entities[usize::from(target_index)].set_yaw(yaw);
                     move_speed = 128;
                     hit = true;
                 } else {
@@ -7089,11 +7128,11 @@ impl Level2ResetSession {
                                 }
                             }
                         }
-                        self.entities[usize::from(target_index)].set_actual_speed(80);
+                        self.economy.entities[usize::from(target_index)].set_actual_speed(80);
                     }
                     let yaw = if distance >= 0x40000 {
                         let yaw = wrap_source_angle(desired_yaw.wrapping_add(591));
-                        self.entities[usize::from(target_index)]
+                        self.economy.entities[usize::from(target_index)]
                             .set_source_word_30(yaw.cast_unsigned());
                         move_speed = 96;
                         yaw
@@ -7107,24 +7146,25 @@ impl Level2ResetSession {
                             i16::try_from((relative_z + i32::from(ground)).max(i32::from(ground)))
                                 .unwrap_or(ground);
                         let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(turn_delta));
-                        self.entities[usize::from(target_index)].set_control_flags(control_flags);
+                        self.economy.entities[usize::from(target_index)]
+                            .set_control_flags(control_flags);
                         let mut entity_rng = snapshot.entity_rng;
                         entity_rng = entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
-                        self.entities[usize::from(target_index)].set_entity_rng(entity_rng);
+                        self.economy.entities[usize::from(target_index)].set_entity_rng(entity_rng);
                         if relative_z >= i32::from(latch_band) + i32::from(entity_rng % latch_band)
                         {
-                            self.entities[usize::from(target_index)]
+                            self.economy.entities[usize::from(target_index)]
                                 .set_control_flags(control_flags | 0x1000_0000);
-                            self.entities[usize::from(target_index)]
+                            self.economy.entities[usize::from(target_index)]
                                 .set_source_word_30(yaw.cast_unsigned());
                         }
                         yaw
                     };
-                    self.entities[usize::from(target_index)].set_yaw(yaw);
+                    self.economy.entities[usize::from(target_index)].set_yaw(yaw);
                 }
             }
             if move_speed != 0 {
-                let move_yaw = self.entities[usize::from(target_index)].source_word_30();
+                let move_yaw = self.economy.entities[usize::from(target_index)].source_word_30();
                 crate::move_entity(
                     &mut predicted,
                     i16::try_from(move_yaw).expect("wind target move yaw fits"),
@@ -7154,7 +7194,7 @@ impl Level2ResetSession {
                     }
                 }
             }
-            let entity = &mut self.entities[usize::from(target_index)];
+            let entity = &mut self.economy.entities[usize::from(target_index)];
             entity.set_position(predicted);
             if target_index == self.state.entity_index {
                 self.state.position = predicted;
@@ -7166,7 +7206,7 @@ impl Level2ResetSession {
                 y: predicted.y,
             });
             if hit {
-                self.entities[usize::from(target_index)]
+                self.economy.entities[usize::from(target_index)]
                     .apply_wind_model45_mailbox(parent.entity_id, parent.subspell_index);
             }
         }
@@ -7249,8 +7289,12 @@ impl Level2ResetSession {
                     .as_ref()
                     .expect("Level 2 campaign state owns canonical terrain")
                     .terrain();
-                self.economy
-                    .step_castle_projectile_slot(source_slot, &self.entities, terrain)
+                let source_arena = &mut self.economy;
+                source_arena.economy.step_castle_projectile_slot(
+                    source_slot,
+                    &source_arena.entities,
+                    terrain,
+                )
             }
             Level2DynamicArenaKind::FireballProjectile => {
                 let terrain = self
@@ -7407,7 +7451,7 @@ impl Level2ResetSession {
                     // Keep stale, disabled, wrong-class/model, and self-owned
                     // identities fail-closed before changing the reset census.
                     let qualifying_killer = killer_entity_index != source_before.entity_id
-                        && self.entities.iter().any(|entity| {
+                        && self.economy.entities.iter().any(|entity| {
                             entity.index == killer_entity_index
                                 && entity.active
                                 && entity.life >= 0
@@ -7638,7 +7682,12 @@ impl Level2ResetSession {
                         source.word_0x96_150
                     };
                     (target_index != 0)
-                        .then(|| self.entities.get(usize::from(target_index)).cloned())
+                        .then(|| {
+                            self.economy
+                                .entities
+                                .get(usize::from(target_index))
+                                .cloned()
+                        })
                         .flatten()
                 });
                 if source.is_some_and(|source| {
@@ -8045,7 +8094,7 @@ impl Level2ResetSession {
         ]);
         hasher.update(self.level2_day_hud_player_panel_selector.to_le_bytes());
         hasher.update(self.runtime.bytes());
-        for entity in &self.entities {
+        for entity in &self.economy.entities {
             hasher.update(entity.record_bytes());
         }
         for player in &self.players {
@@ -8123,10 +8172,12 @@ impl Level2ResetSession {
         if self.player_life < 0 || damage <= 0 || attacker == 0 {
             return;
         }
+        let player_entity_index = self.state.entity_index;
         let entity = self
+            .economy
             .entities
             .iter_mut()
-            .find(|entity| entity.index == self.state.entity_index)
+            .find(|entity| entity.index == player_entity_index)
             .expect("Level 2 local player entity remains present");
         let raw_attacker = u16::from_le_bytes(
             entity.record[102..104]
@@ -8157,6 +8208,7 @@ impl Level2ResetSession {
         let player_entity_index = self.state.entity_index;
         let (attacker, damage, previous_killer) = {
             let entity = self
+                .economy
                 .entities
                 .iter()
                 .find(|entity| entity.index == player_entity_index)
@@ -8175,11 +8227,12 @@ impl Level2ResetSession {
                 entity.word_24(),
             )
         };
-        let attacker_is_model67 = self.entities.iter().find(|entity| {
+        let attacker_is_model67 = self.economy.entities.iter().any(|entity| {
             entity.index == attacker && entity.active && entity.class == 10 && entity.model == 67
         });
         if attacker == 0 {
             let entity = self
+                .economy
                 .entities
                 .iter_mut()
                 .find(|entity| entity.index == player_entity_index)
@@ -8195,6 +8248,7 @@ impl Level2ResetSession {
         // again on later visits because the life guard has already failed.
         if self.player_life < 0 {
             let entity = self
+                .economy
                 .entities
                 .iter_mut()
                 .find(|entity| entity.index == player_entity_index)
@@ -8212,15 +8266,28 @@ impl Level2ResetSession {
         self.player_life = self.player_life.wrapping_sub(applied_damage);
         self.shared_spells.set_player_hit_frame_time(4);
         let lethal = self.player_life < 0;
-        let killer = if lethal && attacker_is_model67.is_some() {
+        let killer = if lethal && attacker_is_model67 {
             0
         } else if lethal {
             attacker
         } else {
             previous_killer
         };
+        let player_life = self.player_life;
+        let shield_projection = self
+            .shared_spells
+            .shield_state()
+            .filter(|shield| shield.parent_entity_index == player_entity_index)
+            .map(|shield| {
+                (
+                    shield.parent_mana,
+                    shield.parent_mana_regen,
+                    shield.parent_status_flags,
+                )
+            });
         {
             let entity = self
+                .economy
                 .entities
                 .iter_mut()
                 .find(|entity| entity.index == player_entity_index)
@@ -8233,20 +8300,16 @@ impl Level2ResetSession {
                 // visit. The payload remains for the next ownerless add.
                 entity.record[102..104].copy_from_slice(&0_u16.to_le_bytes());
             }
-            entity.life = self.player_life;
-            entity.record[12..16].copy_from_slice(&self.player_life.to_le_bytes());
+            entity.life = player_life;
+            entity.record[12..16].copy_from_slice(&player_life.to_le_bytes());
             entity.record[98..102].copy_from_slice(&applied_damage.to_le_bytes());
-            if let Some(shield) = self
-                .shared_spells
-                .shield_state()
-                .filter(|shield| shield.parent_entity_index == player_entity_index)
-            {
-                entity.mana = shield.parent_mana;
-                entity.mana_regen = shield.parent_mana_regen;
-                entity.control_flags = shield.parent_status_flags;
-                entity.record[16..20].copy_from_slice(&shield.parent_status_flags.to_le_bytes());
-                entity.record[140..144].copy_from_slice(&shield.parent_mana_regen.to_le_bytes());
-                entity.record[148..152].copy_from_slice(&shield.parent_mana.to_le_bytes());
+            if let Some((mana, mana_regen, status_flags)) = shield_projection {
+                entity.mana = mana;
+                entity.mana_regen = mana_regen;
+                entity.control_flags = status_flags;
+                entity.record[16..20].copy_from_slice(&status_flags.to_le_bytes());
+                entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
+                entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
             }
         }
         self.player_pending_attacker = if lethal { attacker } else { 0 };
@@ -8336,12 +8399,11 @@ impl Level2ResetSession {
         self.state = self.baseline_state;
         *self.canonical_terrain_mut() = self.baseline_terrain.clone();
         self.context = self.baseline_context.clone();
-        self.entities = self.baseline_entities.clone();
+        self.economy.reset();
         self.players.clone_from(&self.baseline_players);
         self.runtime = self.baseline_runtime.clone();
         self.bad_stones.clone_from(&self.baseline_bad_stones);
         self.shared_spells = self.baseline_shared_spells.clone();
-        self.economy.reset();
         self.ordinary.reset();
         self.goats = self.baseline_goats.clone();
         self.mission.reset();
