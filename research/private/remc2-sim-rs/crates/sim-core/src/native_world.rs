@@ -2965,17 +2965,12 @@ pub struct Level2ResetSession {
     profile: FlightProfile,
     package_sha256: String,
     collision_masks: Option<CollisionMaskBank>,
-    baseline_state: FlightState,
-    pub state: FlightState,
     baseline_terrain: SessionTerrain,
-    campaign_state: Option<crate::campaign::state::CampaignState>,
-    baseline_context: FlightContext,
-    pub context: FlightContext,
     economy: crate::campaign::source_arena::SourceArena,
-    baseline_players: Box<[PlayerSnapshot]>,
-    players: Box<[PlayerSnapshot]>,
-    baseline_runtime: RuntimeSnapshot,
-    runtime: RuntimeSnapshot,
+    campaign_state: Option<crate::campaign::state::CampaignState>,
+    /// Constructor-only handoff into `campaign_state.live.core`. It is `None`
+    /// for every usable session, so there is never a second live authority.
+    bootstrap_core: Option<crate::campaign::state::CanonicalRuntimeState>,
     presentation: PresentationSelectors,
     baseline_bad_stones: Box<[Level2BadStone]>,
     bad_stones: Box<[Level2BadStone]>,
@@ -3085,16 +3080,28 @@ pub struct Level2ResetSession {
 }
 
 impl std::ops::Deref for Level2ResetSession {
-    type Target = crate::campaign::source_arena::SourceArena;
+    type Target = crate::campaign::state::CanonicalRuntimeState;
 
     fn deref(&self) -> &Self::Target {
-        &self.economy
+        if let Some(campaign) = &self.campaign_state {
+            campaign.core()
+        } else {
+            self.bootstrap_core
+                .as_ref()
+                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
+        }
     }
 }
 
 impl std::ops::DerefMut for Level2ResetSession {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.economy
+        if let Some(campaign) = &mut self.campaign_state {
+            campaign.core_mut()
+        } else {
+            self.bootstrap_core
+                .as_mut()
+                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
+        }
     }
 }
 

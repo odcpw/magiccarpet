@@ -131,7 +131,7 @@ fn configure_three_level_two_creature_sounds(session: &mut Level2ResetSession) {
         goat.phase = 1;
     });
     session.state.position = hit_goat.position;
-    session.entities[usize::from(player_entity_index)].position = hit_goat.position;
+    session.economy.entities[usize::from(player_entity_index)].position = hit_goat.position;
     session
         .submit_goat_damage(42, 1, player_entity_index)
         .expect("qualified direct-hit Goat audio branch");
@@ -685,7 +685,7 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         .canonical_terrain()
         .ground_height(row238_before.position);
     let player_entity = session.state.entity_index;
-    for entity in &mut session.entities {
+    for entity in &mut session.economy.entities {
         if entity.class == 3 {
             entity.control_flags |= MODEL3_RAW_SOURCE_DISABLED_BIT;
         }
@@ -694,6 +694,7 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
         .set_level2_entity_position(player_entity, row238_before.position)
         .expect("production player target position");
     session
+        .economy
         .entities
         .get_mut(usize::from(player_entity))
         .expect("production player target")
@@ -739,7 +740,7 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
     // source acquisition predicate, while the cadence still consumes the
     // two LCG draws.  The old wrapper incorrectly waited for action 217 and
     // cleared a stale relation here.
-    for entity in &mut session.entities {
+    for entity in &mut session.economy.entities {
         if entity.class == 3 {
             entity.control_flags |= MODEL3_RAW_SOURCE_DISABLED_BIT;
         }
@@ -882,7 +883,7 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     // the descriptor cadence, source action 25 consumes two draws, writes
     // word 0x96, and enters action 26 because row 74's descriptor byte flag
     // is 0x01 (the source action-30 branch is not selected).
-    for entity in &mut session.entities {
+    for entity in &mut session.economy.entities {
         if entity.class == 3 {
             entity.control_flags |= MODEL3_RAW_SOURCE_DISABLED_BIT;
         }
@@ -891,6 +892,7 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
         .set_level2_entity_position(player_slot, root_position)
         .expect("qualified player target position");
     session
+        .economy
         .entities
         .get_mut(usize::from(player_slot))
         .expect("qualified player target")
@@ -1060,7 +1062,7 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
 
     // With the class-3 projection rejected, the same-model source chain
     // selects the nearest eligible model-3 peer and enters action 27.
-    for entity in &mut session.entities {
+    for entity in &mut session.economy.entities {
         if entity.class == 3 {
             entity.control_flags |= MODEL3_RAW_SOURCE_DISABLED_BIT;
         }
@@ -1197,7 +1199,7 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
         ),
     ];
     for (label, target_position, disabled) in rejected_target_cases {
-        for entity in &mut session.entities {
+        for entity in &mut session.economy.entities {
             if entity.class == 3 {
                 entity.control_flags |= MODEL3_RAW_SOURCE_DISABLED_BIT;
             }
@@ -1207,6 +1209,7 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
             .expect("rejected class-3 target position");
         if !disabled {
             session
+                .economy
                 .entities
                 .get_mut(usize::from(player_slot))
                 .expect("rejected class-3 target")
@@ -1329,6 +1332,7 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
         root.pending_word_0x62 = 0;
     }
     session
+        .economy
         .entities
         .get_mut(usize::from(player_slot))
         .expect("action-26 target")

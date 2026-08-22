@@ -2039,8 +2039,7 @@
             .copied()
             .expect("new-Castle flyer remains live after its same-pass gate-only callback");
         let ground = session.canonical_terrain().ground_height(flyer.position);
-        let blocker_index = session
-            .entities
+        let blocker_index = session.economy.entities
             .iter()
             .position(|entity| !entity.active && entity.index != 0)
             .expect("free source row for prior-landing gate blocker");
@@ -2147,8 +2146,7 @@
             projectile.yaw = 512;
             projectile.life = projectile.max_life;
         }
-        let blocker_index = session
-            .entities
+        let blocker_index = session.economy.entities
             .iter()
             .position(|entity| !entity.active && entity.index != 0)
             .expect("free source row for later gate blocker");
@@ -2231,11 +2229,11 @@
         for (class, model) in [(3_u8, 2_u8), (10_u8, 45_u8)] {
             session.reset();
             session.select_level2_campaign_entry_stage();
-            let blocker_index = session
-                .entities
+            let blocker_index = session.economy.entities
                 .iter()
                 .position(|entity| !entity.active && entity.index != 0)
                 .expect("free source row for site-gate blocker");
+            let player_position = session.state.position;
             let blocker = &mut session.economy.entities[blocker_index];
             blocker.active = true;
             blocker.life = if class == 10 && model == 45 { -1 } else { 8 };
@@ -2243,7 +2241,7 @@
             blocker.model = model;
             blocker.record[88..90].copy_from_slice(&0_i16.to_le_bytes());
             blocker.record[90..92].copy_from_slice(&0_i16.to_le_bytes());
-            blocker.set_position(session.state.position);
+            blocker.set_position(player_position);
 
             // The source cursor visits the newly allocated flyer after the
             // holder in this same request pass. Install the live blocker

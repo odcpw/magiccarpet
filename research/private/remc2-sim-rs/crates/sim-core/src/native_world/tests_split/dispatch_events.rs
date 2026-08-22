@@ -157,8 +157,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
     let parent_source_id = parent.entity_id;
     let spell_experience_before = *session.shared_spells().spell_experience();
     let (target_snapshot, target_speed_before) = {
-        let target = session
-            .entities
+        let target = session.economy.entities
             .get_mut(usize::from(target_index))
             .expect("imported player target");
         assert_eq!(target.class, 3);
@@ -2057,8 +2056,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 Bee");
     let local_index = usize::from(session.state.entity_index);
-    let candidate_index = session
-        .entities
+    let candidate_index = session.economy.entities
         .iter()
         .position(|entity| entity.index != 0 && !entity.active)
         .expect("inactive class-3 candidate row");
@@ -2178,8 +2176,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
         .expect("production group-21 row 229 Bee");
 
     let local_index = usize::from(session.state.entity_index);
-    let candidate_indices = session
-        .entities
+    let candidate_indices = session.economy.entities
         .iter()
         .enumerate()
         .filter(|(_, entity)| entity.index != 0 && !entity.active)
@@ -2230,8 +2227,9 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     ];
     let initial_rng = 0x1234;
     let configure = |session: &mut Level2ResetSession, all_blocked: bool| {
+        let player_entity_index = session.state.entity_index;
         for entity in &mut session.economy.entities {
-            if entity.class == 3 && entity.index != session.state.entity_index {
+            if entity.class == 3 && entity.index != player_entity_index {
                 entity.active = false;
                 entity.next_relation = None;
                 entity.record[4..8].fill(0);
@@ -3545,13 +3543,11 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
         .level2_reset_session()
         .expect("Level 2 Goat player-feed session");
     let local_player_index = usize::from(session.state.entity_index);
-    let injected_index = session
-        .entities
+    let injected_index = session.economy.entities
         .iter()
         .position(|entity| entity.index != 0 && !entity.active)
         .expect("inactive source row for synthetic class-3 candidate");
-    let second_injected_index = session
-        .entities
+    let second_injected_index = session.economy.entities
         .iter()
         .enumerate()
         .skip(injected_index + 1)
@@ -3626,8 +3622,7 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
         .copy_from_slice(&(u32::from(session.economy.entities[injected_index].index) + 1).to_le_bytes());
     session.economy.entities[injected_index].next_relation = None;
     session.economy.entities[injected_index].record[4..8].fill(0);
-    let expected_player_slots = session
-        .entities
+    let expected_player_slots = session.economy.entities
         .iter()
         .filter(|entity| {
             entity.index != 0
@@ -3729,8 +3724,7 @@ fn level_two_goat_dispatch_falls_back_to_peer_when_all_live_players_are_ineligib
         .level2_reset_session()
         .expect("Level 2 Goat peer-fallback session");
     let local_player_index = usize::from(session.state.entity_index);
-    let injected_index = session
-        .entities
+    let injected_index = session.economy.entities
         .iter()
         .position(|entity| entity.index != 0 && !entity.active)
         .expect("inactive source row for synthetic class-3 candidate");

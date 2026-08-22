@@ -1,8 +1,10 @@
 //! CampaignState carrier for the campaign fold seam.
 //!
-//! CF-04 introduced this carrier as a read-only projection. CF-05 adds the
-//! narrow terrain owner/borrow boundary; the remaining domains still project
-//! the old Level 2 authority until their sequential cutover leaves land.
+//! CF-04 introduced this carrier as a read-only projection. CF-05 moved terrain,
+//! CF-06 established the canonical source arena, and CF-07 moves flight,
+//! players, global runtime, context, and source-RNG receipts without changing
+//! the source schedule. Remaining domains stay projections until their
+//! sequential cutover leaves land.
 
 use std::sync::Arc;
 
@@ -79,6 +81,18 @@ pub struct SourceLink {
     pub active: bool,
 }
 
+/// The one live owner for the state domains cut over through CF-07.
+///
+/// `Level2ResetSession` borrows these fields through its private campaign
+/// carrier; it no longer stores parallel flight/player/runtime/RNG fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalRuntimeState {
+    pub state: FlightState,
+    pub players: Box<[PlayerSnapshot]>,
+    pub runtime: RuntimeSnapshot,
+    pub context: FlightContext,
+}
+
 /// Immutable receipts for the canonical live `SourceArena`.
 ///
 /// The live records and allocator are not cloned into this reset observer;
@@ -87,13 +101,7 @@ pub struct SourceLink {
 pub struct SourceArenaState {
     arena_receipt: CanonicalDigest,
     economy_reset_hash: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PlayersAndRuntimeState {
-    pub players: Box<[PlayerSnapshot]>,
-    pub runtime: RuntimeSnapshot,
-    pub context: FlightContext,
+    source_rng_receipt: CanonicalDigest,
 }
 
 /// Typed sidecars that currently have public read-only projections.  Their
@@ -120,13 +128,6 @@ pub struct NyphurState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceRngState {
-    pub global_state: u32,
-    pub terrain_rng: u16,
-    pub entity_streams: Box<[u16]>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectiveState {
     pub stage_index: u8,
     pub objectives: Box<[RuntimeObjective]>,
@@ -142,12 +143,10 @@ pub struct EffectJournalState {
 /// The complete resettable live carrier, grouped according to the census.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResetState {
-    pub flight: FlightState,
+    pub core: CanonicalRuntimeState,
     pub source_arena: SourceArenaState,
     pub terrain: SessionTerrain,
-    pub players_and_runtime: PlayersAndRuntimeState,
     pub source_sidecars: SourceSidecarsState,
-    pub source_rng: SourceRngState,
     pub objectives: ObjectiveState,
     pub effect_journal: EffectJournalState,
 }
@@ -184,6 +183,7 @@ impl ScratchState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignState {
+    baseline_core: Arc<CanonicalRuntimeState>,
     pub persistent: PersistentState,
     pub live: ResetState,
     pub scratch: ScratchState,
@@ -199,11 +199,34 @@ impl CampaignState {
         session: &Level2ResetSession,
         terrain: &SessionTerrain,
     ) -> Self {
+        let live = ResetState::from_level2_with_terrain(session, terrain);
         Self {
+            baseline_core: Arc::new(live.core.clone()),
             persistent: PersistentState,
-            live: ResetState::from_level2_with_terrain(session, terrain),
+            live,
             scratch: ScratchState::from_level2(session, 0),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn core(&self) -> &CanonicalRuntimeState {
+        &self.live.core
+    }
+
+    pub(crate) fn core_mut(&mut self) -> &mut CanonicalRuntimeState {
+        &mut self.live.core
+    }
+
+    /// Restore the migrated domains from one immutable aggregate baseline.
+    pub(crate) fn reset_core(&mut self) {
+        self.live.core = (*self.baseline_core).clone();
+        self.scratch.invalidate();
+    }
+
+    /// Seal an intentional pre-generation configuration into the one reset
+    /// baseline before a session handle is exposed.
+    pub(crate) fn rebase_core(&mut self) {
+        self.baseline_core = Arc::new(self.live.core.clone());
     }
 
     /// Borrow the one mutable terrain carrier used by the production route.
@@ -292,12 +315,14 @@ impl CampaignSession {
         let live = ResetState::from_level2(session);
         let definition = Arc::new(CampaignDefinition::from_level2(session));
         let baseline_hash = ResetReceipt::from_state(&baseline);
+        let baseline_core = Arc::new(baseline.core.clone());
         let scratch = ScratchState::from_level2(session, 0);
         Self {
             definition,
             baseline,
             baseline_hash,
             state: CampaignState {
+                baseline_core,
                 persistent: PersistentState,
                 live,
                 scratch,
@@ -316,6 +341,7 @@ impl CampaignSession {
     /// Shell-only reset semantics; this does not reset the old authority.
     pub fn reset(&mut self) {
         self.state.live = (*self.baseline).clone();
+        self.state.baseline_core = Arc::new(self.baseline.core.clone());
         self.state.scratch.invalidate();
         self.generation = self.generation.wrapping_add(1);
     }
@@ -359,19 +385,6 @@ impl ResetState {
         session: &Level2ResetSession,
         terrain: &SessionTerrain,
     ) -> Self {
-        let runtime = session.runtime().clone();
-        let players = session.players().to_vec().into_boxed_slice();
-        let entity_streams = session
-            .source_arena()
-            .entities()
-            .iter()
-            .map(|entity| entity.entity_rng)
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let source_arena = SourceArenaState {
-            arena_receipt: digest_live_source_arena(session.source_arena()),
-            economy_reset_hash: session.economy().reset_hash_with_terrain(terrain),
-        };
         let sidecars = SourceSidecarsState {
             shared_spells: session.shared_spells().clone(),
             ordinary: session.ordinary().clone(),
@@ -389,22 +402,25 @@ impl ResetState {
             receipt: digest_effect_journal(session),
         };
         Self {
-            flight: session.state,
-            source_arena,
-            terrain: terrain.clone(),
-            players_and_runtime: PlayersAndRuntimeState {
-                players,
-                runtime: runtime.clone(),
+            core: CanonicalRuntimeState {
+                state: session.state,
+                players: session.players().to_vec().into_boxed_slice(),
+                runtime: session.runtime().clone(),
                 context: session.context.clone(),
             },
-            source_rng: SourceRngState {
-                global_state: runtime.random_state,
-                terrain_rng: terrain.terrain_rng(),
-                entity_streams,
+            source_arena: SourceArenaState {
+                arena_receipt: digest_live_source_arena(session.source_arena()),
+                economy_reset_hash: session.economy().reset_hash_with_terrain(terrain),
+                source_rng_receipt: digest_source_rng_inputs(
+                    session.source_global_rng(),
+                    terrain,
+                    session.source_arena(),
+                ),
             },
+            terrain: terrain.clone(),
             objectives: ObjectiveState {
-                stage_index: runtime.stage_index,
-                objectives: runtime.objectives.clone(),
+                stage_index: session.runtime().stage_index,
+                objectives: session.runtime().objectives.clone(),
             },
             source_sidecars: sidecars,
             effect_journal,
@@ -466,21 +482,37 @@ pub enum EncodeResetError {
     OutputTooSmall { required: usize, capacity: usize },
 }
 
+/// A rejected transactional outer turn. Every variant is detected before the
+/// candidate replaces the live session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CampaignStepError {
+    StaleGeneration {
+        expected: u64,
+        actual: u64,
+    },
+    InvalidLocalPlayerBinding {
+        slot: u8,
+        expected_entity: u16,
+        actual_entity: Option<u16>,
+    },
+    Encode(EncodeResetError),
+}
+
 #[must_use]
 fn reset_component_digests(
     state: &ResetState,
 ) -> [CanonicalDigest; RESET_V1_COMPONENT_COUNT as usize] {
     [
-        digest_flight(&state.flight),
-        digest_source_arena(&state.source_arena),
+        digest_flight(&state.core.state),
+        state.source_arena.arena_receipt,
         digest_terrain(&state.terrain),
-        digest_players_and_runtime(&state.players_and_runtime),
+        digest_players_and_runtime(&state.core),
         digest_source_sidecars(
             &state.source_sidecars,
             &state.source_arena.economy_reset_hash,
             &state.terrain,
         ),
-        digest_source_rng(&state.source_rng),
+        state.source_arena.source_rng_receipt,
         digest_objectives(&state.objectives),
         state.effect_journal.receipt,
     ]
@@ -489,11 +521,6 @@ fn reset_component_digests(
 #[must_use]
 fn digest_flight(flight: &FlightState) -> CanonicalDigest {
     digest_with(|hasher| hasher.update(state_hash(flight).to_le_bytes()))
-}
-
-#[must_use]
-const fn digest_source_arena(arena: &SourceArenaState) -> CanonicalDigest {
-    arena.arena_receipt
 }
 
 #[must_use]
@@ -518,7 +545,7 @@ fn digest_terrain(terrain: &SessionTerrain) -> CanonicalDigest {
 }
 
 #[must_use]
-fn digest_players_and_runtime(state: &PlayersAndRuntimeState) -> CanonicalDigest {
+fn digest_players_and_runtime(state: &CanonicalRuntimeState) -> CanonicalDigest {
     digest_with(|hasher| {
         append_len(hasher, state.players.len());
         for player in &state.players {
@@ -741,13 +768,17 @@ fn digest_source_sidecars(
 }
 
 #[must_use]
-fn digest_source_rng(rng: &SourceRngState) -> CanonicalDigest {
+fn digest_source_rng_inputs(
+    global_state: u32,
+    terrain: &SessionTerrain,
+    arena: &SourceArena,
+) -> CanonicalDigest {
     digest_with(|hasher| {
-        hasher.update(rng.global_state.to_le_bytes());
-        hasher.update(rng.terrain_rng.to_le_bytes());
-        append_len(hasher, rng.entity_streams.len());
-        for stream in &rng.entity_streams {
-            hasher.update(stream.to_le_bytes());
+        hasher.update(global_state.to_le_bytes());
+        hasher.update(terrain.terrain_rng().to_le_bytes());
+        append_len(hasher, arena.entities().len());
+        for entity in arena.entities() {
+            hasher.update(entity.entity_rng.to_le_bytes());
         }
     })
 }
@@ -1064,5 +1095,185 @@ mod tests {
         assert_eq!(session.campaign_state_hash(), baseline_hash);
         assert_eq!(session.terrain_hash(), baseline_terrain_hash);
         assert_eq!(session.canonical_terrain(), control.canonical_terrain());
+    }
+
+    #[test]
+    fn cf07_rng_flight_player_runtime_cutover_preserves_order() {
+        let mut session = level_two_session();
+        let mut control = session.clone();
+        let before_rng = session.cf07_rng_observation();
+        let generation = session.campaign_state().scratch.validity_epoch;
+        let command = PlayerCommand {
+            flags: 1,
+            ..PlayerCommand::default()
+        };
+        let mut output = vec![0_u8; RESET_V1_ENCODED_LEN];
+
+        let control_evidence = control.step_outer_turn(command, 1);
+        let (evidence, written) = session
+            .step_outer_turn_transactional(generation, command, 1, &mut output)
+            .expect("bounded candidate commits");
+        assert_eq!(written, RESET_V1_ENCODED_LEN);
+        assert_eq!(evidence, control_evidence);
+        assert_eq!(session.campaign_state_hash(), control.campaign_state_hash());
+        assert_eq!(session.state, control.state);
+        assert_eq!(session.players(), control.players());
+        assert_eq!(session.runtime(), control.runtime());
+        assert_eq!(session.context, control.context);
+        assert_eq!(output, encode_reset_v1(&ResetState::from_level2(&session)));
+
+        let after_rng = session.cf07_rng_observation();
+        let expected_source_rng = (0..crate::entity_passes_for_speed_index(1))
+            .fold(before_rng.0, |rng, _| {
+                rng.wrapping_mul(9_377).wrapping_add(9_439)
+            });
+        assert_eq!(after_rng.0, expected_source_rng);
+        assert_eq!(
+            after_rng.2, before_rng.2,
+            "the player/effects stream advanced outside its source callback"
+        );
+        assert_eq!(
+            after_rng.1, before_rng.1,
+            "the imported global-runtime seed became a second live RNG writer"
+        );
+
+        // The source-schedule RNG and player/effects RNG sites occupy distinct
+        // canonical receipt domains. Swapping, dropping, or duplicating an
+        // observation cannot alias the accepted post-turn receipt.
+        let accepted = ResetState::from_level2(&session);
+        let accepted_bytes = encode_reset_v1(&accepted);
+        let mut swapped = accepted.clone();
+        std::mem::swap(
+            &mut swapped.source_arena.arena_receipt,
+            &mut swapped.source_arena.source_rng_receipt,
+        );
+        assert_ne!(encode_reset_v1(&swapped), accepted_bytes);
+        let mut dropped = accepted.clone();
+        dropped.source_arena.source_rng_receipt = CanonicalDigest::zero();
+        assert_ne!(encode_reset_v1(&dropped), accepted_bytes);
+        let mut duplicated = accepted.clone();
+        let rng_receipt = duplicated.source_arena.source_rng_receipt;
+        duplicated.source_arena.source_rng_receipt = digest_with(|hasher| {
+            hasher.update(rng_receipt.as_bytes());
+            hasher.update(rng_receipt.as_bytes());
+        });
+        assert_ne!(encode_reset_v1(&duplicated), accepted_bytes);
+        let mut wrong_player_site = accepted.clone();
+        wrong_player_site
+            .core
+            .context
+            .effects
+            .as_mut()
+            .expect("qualified effects context")
+            .global_rng ^= 1;
+        assert_ne!(encode_reset_v1(&wrong_player_site), accepted_bytes);
+    }
+
+    #[test]
+    fn cf07_failed_step_is_atomic_for_rng_players_and_flight() {
+        let mut session = level_two_session();
+        let generation = session.campaign_state().scratch.validity_epoch;
+        let before = session.clone();
+        let mut undersized = vec![0xa5_u8; RESET_V1_ENCODED_LEN - 1];
+        let undersized_before = undersized.clone();
+        assert_eq!(
+            session.step_outer_turn_transactional(
+                generation,
+                PlayerCommand::default(),
+                0,
+                &mut undersized,
+            ),
+            Err(CampaignStepError::Encode(
+                EncodeResetError::OutputTooSmall {
+                    required: RESET_V1_ENCODED_LEN,
+                    capacity: RESET_V1_ENCODED_LEN - 1,
+                }
+            ))
+        );
+        assert_eq!(session, before);
+        assert_eq!(undersized, undersized_before);
+
+        let mut output = vec![0x5a_u8; RESET_V1_ENCODED_LEN];
+        let output_before = output.clone();
+        assert_eq!(
+            session.step_outer_turn_transactional(
+                generation.wrapping_add(1),
+                PlayerCommand::default(),
+                0,
+                &mut output,
+            ),
+            Err(CampaignStepError::StaleGeneration {
+                expected: generation.wrapping_add(1),
+                actual: generation,
+            })
+        );
+        assert_eq!(session, before);
+        assert_eq!(output, output_before);
+
+        session
+            .campaign_state_mut()
+            .core_mut()
+            .runtime
+            .local_player_slot = u8::MAX;
+        let invalid_before = session.clone();
+        let expected_entity = session.state.entity_index;
+        assert_eq!(
+            session.step_outer_turn_transactional(
+                generation,
+                PlayerCommand::default(),
+                0,
+                &mut output,
+            ),
+            Err(CampaignStepError::InvalidLocalPlayerBinding {
+                slot: u8::MAX,
+                expected_entity,
+                actual_entity: None,
+            })
+        );
+        assert_eq!(session, invalid_before);
+        assert_eq!(output, output_before);
+    }
+
+    #[test]
+    fn cf07_reset_replay_restores_rng_and_local_player_timing() {
+        let mut session = level_two_session();
+        let command = PlayerCommand {
+            flags: 1,
+            ..PlayerCommand::default()
+        };
+        let first_generation = session.campaign_state().scratch.validity_epoch;
+        let mut first_output = vec![0_u8; RESET_V1_ENCODED_LEN];
+        let (first_evidence, first_written) = session
+            .step_outer_turn_transactional(first_generation, command, 0, &mut first_output)
+            .expect("first generation commits");
+        let first_hash = session.campaign_state_hash();
+        let first_rng = session.cf07_rng_observation();
+        assert_eq!(first_written, RESET_V1_ENCODED_LEN);
+
+        session.reset();
+        let second_generation = session.campaign_state().scratch.validity_epoch;
+        assert_eq!(second_generation, first_generation.wrapping_add(1));
+        let reset_before_stale = session.clone();
+        let mut stale_output = vec![0x3c_u8; RESET_V1_ENCODED_LEN];
+        let stale_output_before = stale_output.clone();
+        assert_eq!(
+            session.step_outer_turn_transactional(first_generation, command, 0, &mut stale_output,),
+            Err(CampaignStepError::StaleGeneration {
+                expected: first_generation,
+                actual: second_generation,
+            })
+        );
+        assert_eq!(session, reset_before_stale);
+        assert_eq!(stale_output, stale_output_before);
+
+        let mut replay_output = vec![0_u8; RESET_V1_ENCODED_LEN];
+        let (replay_evidence, replay_written) = session
+            .step_outer_turn_transactional(second_generation, command, 0, &mut replay_output)
+            .expect("reset generation commits");
+        assert_eq!(replay_written, RESET_V1_ENCODED_LEN);
+        assert_eq!(replay_evidence, first_evidence);
+        assert_eq!(session.campaign_state_hash(), first_hash);
+        assert_eq!(session.cf07_rng_observation(), first_rng);
+        assert_eq!(replay_output, first_output);
     }
 }

@@ -354,14 +354,10 @@ fn level_two_nyphur_mode14_rejects_non_family4_holder_carrier() {
     // mode-14 handler boundary; it cannot consume the family-0 holder.
     session.nyphur_dispatcher.state_byte = 14;
     let terrain = session.canonical_terrain().clone();
+    let players = session.players().to_vec();
     session
         .nyphur_dispatcher
-        .step_sub_161a0(
-            112,
-            &mut session.economy.entities,
-            &session.players,
-            &terrain,
-        )
+        .step_sub_161a0(112, &mut session.economy.entities, &players, &terrain)
         .expect("malformed mode-14 carrier fails through movement epilogue");
     assert_eq!(session.economy.entities[112].source_word_96(), 0);
     assert_eq!(session.economy.entities[112].source_word_98(), 0);
@@ -688,12 +684,13 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     let mut direction_carrier = initial.clone();
     direction_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
     let direction_terrain = direction_carrier.canonical_terrain().clone();
+    let direction_players = direction_carrier.players().to_vec();
     direction_carrier
         .nyphur_dispatcher
         .step_sub_13850(
             112,
             &mut direction_carrier.economy.entities,
-            &direction_carrier.players,
+            &direction_players,
             &direction_terrain,
             &direction_carrier.presentation,
         )
@@ -706,12 +703,13 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     let mut reset_carrier = initial.clone();
     reset_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e = 8;
     let reset_terrain = reset_carrier.canonical_terrain().clone();
+    let reset_players = reset_carrier.players().to_vec();
     reset_carrier
         .nyphur_dispatcher
         .step_sub_13850(
             112,
             &mut reset_carrier.economy.entities,
-            &reset_carrier.players,
+            &reset_players,
             &reset_terrain,
             &reset_carrier.presentation,
         )
@@ -727,13 +725,14 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         wrong_identity.economy.entities[70].model.wrapping_add(1);
     wrong_identity.economy.entities[70].record[68] = wrong_identity.economy.entities[70].model;
     let wrong_identity_terrain = wrong_identity.canonical_terrain().clone();
+    let wrong_identity_players = wrong_identity.players().to_vec();
     assert!(
         wrong_identity
             .nyphur_dispatcher
             .step_sub_13850(
                 112,
                 &mut wrong_identity.economy.entities,
-                &wrong_identity.players,
+                &wrong_identity_players,
                 &wrong_identity_terrain,
                 &wrong_identity.presentation,
             )
@@ -978,6 +977,7 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
         .level2_reset_session()
         .expect("qualified Level 2 Nyphur distance-gate session");
     let source_index = base
+        .economy
         .entities
         .iter()
         .position(|entity| entity.index == 112)
@@ -1062,6 +1062,7 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
         level2_direct_starting_spell_profile(3, 0).expect("bounded family-3 Speed Up profile");
     let speed_activation = speed_profile.word_0x30;
     let speed_holder_slot = base
+        .economy
         .entities
         .iter()
         .enumerate()
@@ -1075,6 +1076,7 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
         })
         .expect("controlled unused family-3 holder slot");
     let speed_holder = speed_up
+        .economy
         .entities
         .iter_mut()
         .find(|entity| entity.index == speed_holder_slot)
@@ -1128,6 +1130,7 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
         "family-3 Speed Up installs its source cooldown"
     );
     let live_speed_holder = speed_up
+        .economy
         .entities
         .iter()
         .find(|entity| entity.index == speed_holder_slot)
@@ -2420,9 +2423,10 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     damaged.nyphur_dispatcher.common_upkeep.life =
         damaged.nyphur_dispatcher.common_upkeep.max_life / 2 - 1;
     damaged.economy.entities[112].phase = 1;
+    let damaged_players = damaged.players().to_vec();
     damaged
         .nyphur_dispatcher
-        .step_sub_12e70(112, &mut damaged.economy.entities, &damaged.players)
+        .step_sub_12e70(112, &mut damaged.economy.entities, &damaged_players)
         .expect("pre-cadence damaged Castle branch");
     assert_eq!(damaged.nyphur_dispatcher.state_byte, 11);
     assert_eq!(damaged.economy.entities[112].source_word_96(), 70);
@@ -2437,9 +2441,10 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
         at_half.nyphur_dispatcher.common_upkeep.max_life / 2;
     at_half.economy.entities[112].phase = 1;
     let source_before = at_half.economy.entities[112].clone();
+    let at_half_players = at_half.players().to_vec();
     at_half
         .nyphur_dispatcher
-        .step_sub_12e70(112, &mut at_half.economy.entities, &at_half.players)
+        .step_sub_12e70(112, &mut at_half.economy.entities, &at_half_players)
         .expect("cadence rejects full-health Castle branch");
     assert_eq!(at_half.nyphur_dispatcher.state_byte, 0);
     assert_eq!(

@@ -207,6 +207,7 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         .expect("on-Castle upkeep session");
     let (on_root_slot, on_max_mana, on_max_life) = configure(&mut on_castle, 1_000, false);
     let on_player = on_castle
+        .economy
         .entities
         .iter()
         .find(|entity| entity.index == on_castle.state.entity_index)
@@ -283,6 +284,7 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         .expect("off-Castle upkeep session");
     let (_off_root_slot, off_max_mana, off_max_life) = configure(&mut off_castle, 20_000, false);
     let off_player = off_castle
+        .economy
         .entities
         .iter()
         .find(|entity| entity.index == off_castle.state.entity_index)
@@ -736,8 +738,7 @@ fn level_two_authored_class14_model5_scans_past_remote_collision_for_local_xp() 
         .find(|player| player.slot == 1)
         .expect("remote Level 2 player")
         .entity_index;
-    let remote = session
-        .entities
+    let remote = session.economy.entities
         .iter_mut()
         .find(|entity| entity.index == remote_entity_index)
         .expect("remote player entity");

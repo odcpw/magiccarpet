@@ -1066,8 +1066,7 @@
                     .map(|holder| holder.index),
             );
             static_route_slots.extend(
-                session
-                    .entities
+                session.economy.entities
                     .iter()
                     .filter(|entity| {
                         entity.active

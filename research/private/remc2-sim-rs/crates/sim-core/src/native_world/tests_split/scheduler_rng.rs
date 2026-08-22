@@ -251,8 +251,7 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
         .find(|sphere| sphere.source_entity_index == tree_after.last_sphere_source_entity_index)
         .copied()
         .expect("tree callback sphere remains in the following pass");
-    let owner_id = session
-        .entities
+    let owner_id = session.economy.entities
         .get(usize::from(owner_entity_index))
         .map_or(owner_entity_index, |entity| entity.source_id);
     assert_eq!(sphere.id, u32::from(owner_id));
@@ -1483,6 +1482,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     assert_eq!(baseline.3, initial_global);
     assert_eq!(
         session
+            .economy
             .entities
             .iter()
             .map(|entity| (entity.index, entity.entity_rng))

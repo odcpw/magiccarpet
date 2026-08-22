@@ -148,8 +148,7 @@ fn level_two_model76_switch25_stays_latent_without_overlap() {
         event,
         Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
     )));
-    let live_switch = session
-        .entities()
+    let live_switch = session.economy.entities()
         .iter()
         .find(|entity| entity.index == 25)
         .expect("live switch slot 25");
@@ -257,8 +256,7 @@ fn level_two_model76_switch25_activates_row112_once_and_enters_cursor() {
         "slot 25 must materialize row 112 on overlap"
     );
     assert!(session.level2_group10_switch25.is_none());
-    let live_switch = session
-        .entities()
+    let live_switch = session.economy.entities()
         .iter()
         .find(|entity| entity.index == 25)
         .expect("live switch slot 25");
@@ -335,8 +333,7 @@ fn level_two_model76_switch25_allocation_failure_is_transactional() {
     assert_eq!(session.economy().free_slots, baseline_free_slots);
     assert_eq!(session.economy().live_arena_slots(), baseline_live);
     assert!(session.level2_group10_switch25.is_some());
-    let live_switch = session
-        .entities()
+    let live_switch = session.economy.entities()
         .iter()
         .find(|entity| entity.index == 25)
         .expect("live switch slot 25");
@@ -923,8 +920,7 @@ fn level_two_model76_column_zero_owner_reaches_model2_mailbox_on_production_turn
     session.economy.entities[target_index].model = 2;
     session.economy.entities[target_index].active = true;
     session.economy.entities[target_index].life = 500;
-    let target = session
-        .entities()
+    let target = session.economy.entities()
         .iter()
         .find(|entity| entity.index == target_slot)
         .expect("model-2 target");
@@ -976,8 +972,7 @@ fn level_two_model76_column_zero_owner_reaches_model2_mailbox_on_production_turn
 
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    let target = session
-        .entities()
+    let target = session.economy.entities()
         .iter()
         .find(|entity| entity.index == target_slot)
         .expect("model-2 target after owner callback");
@@ -1740,8 +1735,7 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
         shared.caster.mana = 5_000;
         shared.player_mana = 5_000;
     }
-    session
-        .entities
+    session.economy.entities
         .get_mut(usize::from(local_entity_index))
         .expect("local source entity")
         .set_mana(5_000);

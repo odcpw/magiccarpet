@@ -684,8 +684,7 @@ fn level_two_model4_group31_stays_latent_before_player_level_end() {
             ..
         } if authored_indices.as_ref() == [244]
     )));
-    let switch = session
-        .entities()
+    let switch = session.economy.entities()
         .iter()
         .find(|entity| {
             entity.active
@@ -756,8 +755,7 @@ fn level_two_model4_group31_activates_for_level_end_local_model_zero_player() {
             && source.active
             && source.drawing_enabled
     }));
-    let switch = session
-        .entities()
+    let switch = session.economy.entities()
         .iter()
         .find(|entity| {
             entity.active
@@ -898,8 +896,7 @@ fn level_two_model4_group31_requires_a_model_zero_local_player() {
         event,
         Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
     )));
-    let switch = session
-        .entities()
+    let switch = session.economy.entities()
         .iter()
         .find(|entity| {
             entity.active
@@ -929,8 +926,7 @@ fn level_two_model4_group31_scans_each_live_player_objective() {
         .map(|player| (player.entity_index, player.player_color_index()))
         .expect("fixture has a non-local live player row");
     let remote_index = usize::from(remote_player.0);
-    let remote = session
-        .entities
+    let remote = session.economy.entities
         .get_mut(remote_index)
         .expect("remote player entity is in the entity arena");
     assert!(remote.active && remote.class == 3 && remote.life >= 0);
@@ -974,8 +970,7 @@ fn level_two_model4_group31_ignores_dead_player_objective() {
         .expect("Level 2 model-4 exit-switch session");
     session.runtime.set_level2_is_level_end(1);
     let local_index = usize::from(session.state.entity_index);
-    let local = session
-        .entities
+    let local = session.economy.entities
         .get_mut(local_index)
         .expect("local player entity is in the entity arena");
     assert!(local.active && local.class == 3 && local.model == 0);
@@ -990,8 +985,7 @@ fn level_two_model4_group31_ignores_dead_player_objective() {
         event,
         Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
     )));
-    let switch = session
-        .entities()
+    let switch = session.economy.entities()
         .iter()
         .find(|entity| {
             entity.active
@@ -2775,8 +2769,7 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
     assert_eq!(imported_root.source_slot, 23);
     assert_eq!(imported_root.phase, baseline_root_phase.wrapping_add(1));
     assert_eq!(imported_root.cooldown, 10);
-    let imported_entity = session
-        .entities()
+    let imported_entity = session.economy.entities()
         .iter()
         .find(|entity| entity.index == 23)
         .expect("imported row-11 entity");
@@ -3979,8 +3972,7 @@ fn level_two_reset_model32_producer_reaches_group21_bees_from_production_turns()
     // source slot 76 with source id/group 21. The ordinary source pass
     // must consume that real producer and materialize the three authored
     // group-21 Bees without a direct allocator or fixture-only route.
-    let producer_slot = session
-        .entities()
+    let producer_slot = session.economy.entities()
         .iter()
         .find(|entity| {
             entity.index == 76
@@ -4039,8 +4031,7 @@ fn level_two_reset_model32_producer_reaches_group29_bees_from_production_turns()
         .expect("Level 2 group-29 Bee session");
     let baseline_hash = session.campaign_state_hash();
 
-    let producer_slot = session
-        .entities()
+    let producer_slot = session.economy.entities()
         .iter()
         .find(|entity| {
             entity.index == 87

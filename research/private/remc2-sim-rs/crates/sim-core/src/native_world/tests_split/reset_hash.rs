@@ -455,12 +455,13 @@ fn level_two_reset_session_matches_all_nineteen_preserved_idle_frames() {
         decoded.apply(&mut session.state);
         let profile = session.profile();
         let terrain = session.canonical_terrain().clone();
+        let core = session.campaign_state_mut().core_mut();
         crate::step_entity_pass_with_context(
-            &mut session.state,
+            &mut core.state,
             decoded.command,
             profile,
             &terrain,
-            &mut session.context,
+            &mut core.context,
         );
         let mut expected = after.project_player_flight(player_slot);
         expected.tick = session.state.tick;
