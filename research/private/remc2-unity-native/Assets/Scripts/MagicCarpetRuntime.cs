@@ -782,6 +782,7 @@ namespace MagicCarpet.Native
         private readonly SpellMenuCommandBuffer spellMenuCommands = new();
         private bool autoplay;
         private bool autoplayQuit;
+        private bool engineSessionRequested;
         private bool level1Autoplay;
         private bool level1AutoplayQuit;
         private bool level1AutoplayFast;
@@ -2149,7 +2150,7 @@ namespace MagicCarpet.Native
                 }
                 ResolveOwnerPaths(arguments, out packagePath, out closurePath);
                 var assetCachePath = OwnerAssetCache.ResolveOptionalPath(arguments);
-                if (qualifiedMode && assetCachePath == null)
+                if ((qualifiedMode || engineSessionRequested) && assetCachePath == null)
                 {
                     throw new InvalidDataException(
                         "exact presentation mode requires the owner asset cache");
@@ -2165,7 +2166,9 @@ namespace MagicCarpet.Native
                         $"content={ownerAssetCache.ContentHash}");
                 }
                 session = OpenSessionWithAssetCache(
-                    packagePath, closurePath, assetCachePath);
+                    packagePath, closurePath, assetCachePath, engineSessionRequested);
+                if (session.UsesEngineContract)
+                    Debug.Log("MC_ENGINE_SESSION neutral authority active");
                 LoadAndValidateExactWorld();
                 if (ownerAssetCache != null)
                 {
@@ -8312,6 +8315,65 @@ namespace MagicCarpet.Native
                 assetCache);
         }
 
+        internal void QualificationInitializeEnginePresentation(
+            string package,
+            string closure,
+            string assetCache)
+        {
+            QualificationInitializePresentationFromStartup(
+                new[]
+                {
+                    "-mc-qualified", "-mc-autoplay", "-mc-engine-session",
+                    "-mc-control-mode", "7"
+                },
+                package,
+                closure,
+                assetCache);
+            Require(
+                session != null && session.UsesEngineContract,
+                "qualified engine presentation owns one neutral session");
+        }
+
+        internal int[] QualificationDriveEnginePresentation(int fixedSteps)
+        {
+            Require(
+                session != null && session.UsesEngineContract && fixedSteps > 0,
+                "qualified engine presentation route is initialized");
+            var initialGeneration = snapshot.generation;
+            var initialTick = snapshot.tick;
+            var initialHandleCount = NativeSession.ActiveSessionCount;
+            for (var index = 0; index < fixedSteps; index++)
+            {
+                FixedUpdateCore(true);
+            }
+            var complete =
+                NativeSim.PresentationFrameCompositorComplete |
+                NativeSim.PresentationFrameHasProvenance |
+                NativeSim.PresentationFrameOverlaysComposited |
+                NativeSim.PresentationFramePostprocessComplete |
+                NativeSim.PresentationFrameLightingComplete;
+            return new[]
+            {
+                snapshot.generation == initialGeneration ? 1 : 0,
+                snapshot.tick == initialTick + checked((ulong)fixedSteps) ? 1 : 0,
+                NativeSession.ActiveSessionCount == initialHandleCount ? 1 : 0,
+                CurrentNativeFinalPresentationOwns() ? 1 : 0,
+                (presentationFrameInfo.flags & complete) == complete ? 1 : 0,
+                managedTerrainSubmissionCount == 0 &&
+                managedWorldSubmissionCount == 0 &&
+                managedEntitySubmissionCount == 0 &&
+                managedMissionSubmissionCount == 0 ? 1 : 0,
+            };
+        }
+
+        internal void QualificationDisposeEnginePresentation()
+        {
+            Require(
+                !gameObject.activeInHierarchy,
+                "EditMode engine-presentation disposal requires an inactive object");
+            DisposeSession();
+        }
+
         internal void QualificationInitializeLevel2Production(
             string package,
             string assetCache)
@@ -8532,7 +8594,8 @@ namespace MagicCarpet.Native
             session = OpenSessionWithAssetCache(
                 packagePath,
                 closurePath,
-                ownerAssetCache.RootPath);
+                ownerAssetCache.RootPath,
+                engineSessionRequested);
             LoadAndValidateExactWorld();
             LoadAndValidateOwnerHudDescriptor();
             ConfigureWorld();
@@ -11480,6 +11543,8 @@ namespace MagicCarpet.Native
             level2Mode = HasArgument(arguments, "-mc-level2");
             autoplay = HasArgument(arguments, "-mc-autoplay");
             autoplayQuit = HasArgument(arguments, "-mc-autoplay-quit");
+            engineSessionRequested =
+                HasArgument(arguments, "-mc-engine-session");
             level1Autoplay = HasArgument(arguments, "-mc-level1-autoplay");
             level1AutoplayQuit =
                 HasArgument(arguments, "-mc-level1-autoplay-quit");
@@ -11491,6 +11556,12 @@ namespace MagicCarpet.Native
             {
                 throw new InvalidDataException(
                     "synthetic autoplay and Level 1 autoplay are mutually exclusive");
+            }
+            if (engineSessionRequested && !autoplay)
+            {
+                throw new InvalidDataException(
+                    "-mc-engine-session currently requires the fixed -mc-autoplay route; " +
+                    "interactive spell-menu commands are not yet semantic");
             }
             if (level1AutoplayFast && !level1Autoplay)
             {
@@ -11571,8 +11642,18 @@ namespace MagicCarpet.Native
         private static NativeSession OpenSessionWithAssetCache(
             string package,
             string closure,
-            string assetCache)
+            string assetCache,
+            bool useEngineSession = false)
         {
+            if (useEngineSession)
+            {
+                if (string.IsNullOrWhiteSpace(assetCache))
+                {
+                    throw new InvalidOperationException(
+                        "neutral engine session requires an explicit owner asset cache");
+                }
+                return NativeSession.OpenEngine(package, closure, assetCache);
+            }
             var prior =
                 Environment.GetEnvironmentVariable("MC_ASSET_CACHE_PATH");
             try
@@ -12049,13 +12130,13 @@ namespace MagicCarpet.Native
             terrainFrameCommandBuffer = null;
             terrainFrameCompositeLive = false;
             if (terrainFrameCompositeMaterial != null)
-                Destroy(terrainFrameCompositeMaterial);
+                DestroyOwnedPresentationObject(terrainFrameCompositeMaterial);
             if (terrainDepthOnlyMaterial != null)
-                Destroy(terrainDepthOnlyMaterial);
+                DestroyOwnedPresentationObject(terrainDepthOnlyMaterial);
             if (terrainFrameIndexTexture != null)
-                Destroy(terrainFrameIndexTexture);
+                DestroyOwnedPresentationObject(terrainFrameIndexTexture);
             if (terrainFrameCoverageTexture != null)
-                Destroy(terrainFrameCoverageTexture);
+                DestroyOwnedPresentationObject(terrainFrameCoverageTexture);
             terrainFrameCompositeMaterial = null;
             terrainDepthOnlyMaterial = null;
             terrainFrameIndexTexture = null;
@@ -12111,6 +12192,18 @@ namespace MagicCarpet.Native
             level2LastStepInputZ = 0;
             session?.Dispose();
             session = null;
+        }
+
+        private static void DestroyOwnedPresentationObject(UnityEngine.Object value)
+        {
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+            {
+                DestroyImmediate(value);
+                return;
+            }
+#endif
+            Destroy(value);
         }
 
         private sealed class EntityMarker

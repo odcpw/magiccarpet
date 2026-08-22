@@ -1,5 +1,10 @@
 # Program folding research for campaign generalization
 
+> **Retained technical research, superseded work order as of 2026-08-21.** Use
+> its quotienting, ownership and migration ideas only after the neutral
+> package/API and custom-package proof. Track-P/Level-2-first ordering and the
+> Level-3-as-first-generality-proof premise are retired.
+
 Version: 0.1
 Status: research extension at revision
 `b05873b0f5610cfaf777e94df1ac86595da7b0ed`; not an implementation contract

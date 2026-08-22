@@ -8,23 +8,78 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Registry {
     pub(super) next_handle: u64,
-    pub(super) sessions: BTreeMap<u64, Arc<Mutex<SessionRecord>>>,
+    pub(super) sessions: BTreeMap<u64, RegistryEntry>,
+}
+
+#[derive(Clone)]
+pub(super) enum RegistryEntry {
+    Legacy(Arc<Mutex<SessionRecord>>),
+    Neutral(Arc<Mutex<super::game_session_abi::NeutralSession>>),
 }
 
 impl Registry {
     pub(super) fn insert(&mut self, session: SessionRecord) -> AbiResult<u64> {
+        let handle = self.reserve_handle()?;
+        self.sessions
+            .insert(handle, RegistryEntry::Legacy(Arc::new(Mutex::new(session))));
+        Ok(handle)
+    }
+
+    pub(super) fn reserve_handle(&mut self) -> AbiResult<u64> {
         for _ in 0..u16::MAX {
             self.next_handle = next_nonzero(self.next_handle);
             if !self.sessions.contains_key(&self.next_handle) {
-                let handle = self.next_handle;
-                self.sessions.insert(handle, Arc::new(Mutex::new(session)));
-                return Ok(handle);
+                return Ok(self.next_handle);
             }
         }
         Err(AbiError::new(
             MC_STATUS_LOCK_FAILED,
             "session handle space is unavailable",
         ))
+    }
+
+    pub(super) fn insert_neutral(
+        &mut self,
+        handle: u64,
+        session: super::game_session_abi::NeutralSession,
+    ) -> AbiResult<()> {
+        if handle == 0 || self.sessions.contains_key(&handle) {
+            return Err(AbiError::new(
+                MC_STATUS_LOCK_FAILED,
+                format!("neutral session handle collision {handle}"),
+            ));
+        }
+        self.sessions.insert(
+            handle,
+            RegistryEntry::Neutral(Arc::new(Mutex::new(session))),
+        );
+        Ok(())
+    }
+
+    pub(super) fn remove_legacy(&mut self, handle: u64) -> AbiResult<()> {
+        match self.sessions.get(&handle) {
+            Some(RegistryEntry::Legacy(_)) => {
+                self.sessions.remove(&handle);
+                Ok(())
+            }
+            _ => Err(AbiError::new(
+                MC_STATUS_UNKNOWN_HANDLE,
+                format!("unknown legacy session handle {handle}"),
+            )),
+        }
+    }
+
+    pub(super) fn remove_neutral(&mut self, handle: u64) -> AbiResult<()> {
+        match self.sessions.get(&handle) {
+            Some(RegistryEntry::Neutral(_)) => {
+                self.sessions.remove(&handle);
+                Ok(())
+            }
+            _ => Err(AbiError::new(
+                MC_STATUS_UNKNOWN_HANDLE,
+                format!("unknown neutral session handle {handle}"),
+            )),
+        }
     }
 }
 
@@ -88,10 +143,7 @@ pub(super) fn with_registry_mut<T>(
     operation(&mut guard)
 }
 
-pub(super) fn session_arc(
-    registry: &Registry,
-    handle: u64,
-) -> AbiResult<Arc<Mutex<SessionRecord>>> {
+fn session_entry(registry: &Registry, handle: u64) -> AbiResult<RegistryEntry> {
     if handle == 0 {
         return Err(AbiError::new(
             MC_STATUS_UNKNOWN_HANDLE,
@@ -110,22 +162,61 @@ pub(super) fn with_session<T>(
     handle: u64,
     operation: impl FnOnce(&SessionRecord) -> AbiResult<T>,
 ) -> AbiResult<T> {
-    let entry = with_registry(|registry| session_arc(registry, handle))?;
-    let guard = entry
-        .lock()
-        .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "session lock is poisoned"))?;
-    operation(&guard)
+    match with_registry(|registry| session_entry(registry, handle))? {
+        RegistryEntry::Legacy(entry) => {
+            let guard = entry
+                .lock()
+                .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "session lock is poisoned"))?;
+            operation(&guard)
+        }
+        RegistryEntry::Neutral(entry) => {
+            let guard = entry.lock().map_err(|_| {
+                AbiError::new(MC_STATUS_LOCK_FAILED, "neutral session lock is poisoned")
+            })?;
+            operation(guard.backend().projection())
+        }
+    }
 }
 
 pub(super) fn with_session_mut<T>(
     handle: u64,
     operation: impl FnOnce(&mut SessionRecord) -> AbiResult<T>,
 ) -> AbiResult<T> {
-    let entry = with_registry(|registry| session_arc(registry, handle))?;
-    let mut guard = entry
-        .lock()
-        .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "session lock is poisoned"))?;
-    operation(&mut guard)
+    match with_registry(|registry| session_entry(registry, handle))? {
+        RegistryEntry::Legacy(entry) => {
+            let mut guard = entry
+                .lock()
+                .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "session lock is poisoned"))?;
+            operation(&mut guard)
+        }
+        RegistryEntry::Neutral(_) => Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "legacy gameplay mutation is unavailable on a neutral session",
+        )),
+    }
+}
+
+/// Mutate only an explicitly classified presentation/audio sidecar on the
+/// same SessionRecord owned by the neutral GameSession. Callers must never use
+/// this seam for gameplay stepping, reset, injection, or selector authority.
+pub(super) fn with_projection_session_mut<T>(
+    handle: u64,
+    operation: impl FnOnce(&mut SessionRecord) -> AbiResult<T>,
+) -> AbiResult<T> {
+    match with_registry(|registry| session_entry(registry, handle))? {
+        RegistryEntry::Legacy(entry) => {
+            let mut guard = entry
+                .lock()
+                .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "session lock is poisoned"))?;
+            operation(&mut guard)
+        }
+        RegistryEntry::Neutral(entry) => {
+            let mut guard = entry.lock().map_err(|_| {
+                AbiError::new(MC_STATUS_LOCK_FAILED, "neutral session lock is poisoned")
+            })?;
+            operation(guard.backend_mut().projection_mut())
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2693,18 +2784,7 @@ pub extern "C" fn mc_native_campaign_mana_carriers_copy(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_session_destroy(handle: u64) -> i32 {
-    boundary(|| {
-        with_registry_mut(|registry| {
-            if handle == 0 || registry.sessions.remove(&handle).is_none() {
-                Err(AbiError::new(
-                    MC_STATUS_UNKNOWN_HANDLE,
-                    format!("unknown session handle {handle}"),
-                ))
-            } else {
-                Ok(())
-            }
-        })
-    })
+    boundary(|| with_registry_mut(|registry| registry.remove_legacy(handle)))
 }
 
 #[unsafe(no_mangle)]
@@ -3175,7 +3255,7 @@ pub extern "C" fn mc_native_session_presentation_frame_copy(
                 "presentation index and provenance buffers must be non-null",
             ));
         }
-        with_session_mut(handle, |session| {
+        with_projection_session_mut(handle, |session| {
             if query.generation != session.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,

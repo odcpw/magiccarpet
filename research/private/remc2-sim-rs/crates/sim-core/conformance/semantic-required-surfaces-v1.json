@@ -1,0 +1,93 @@
+{
+  "schema": "carpet-flight-semantic-required-surfaces/v1",
+  "bounded_scope": "F2 four-surface bridge; any implementation-window hash change requires semantic review before the catalog is updated",
+  "surfaces": [
+    {
+      "semantic_id": "ai.enemy.default.policy",
+      "access": "writable",
+      "disposition": "F3 publishes this bounded enum through guarded transactions; F8 materializes it only at explicit neutral session open/reopen, then the ordinary Rust Goat scheduler consumes the compiled classic or vigilant policy",
+      "implementation_file": "src/goat.rs",
+      "implementation_sha256": "8d57a0ecf38907f10c619f4e0948a3e81c5ab5ec0a06f3ff8ddce9f572605e01",
+      "descriptor_provenance_sha256": "8d57a0ecf38907f10c619f4e0948a3e81c5ab5ec0a06f3ff8ddce9f572605e01",
+      "required_anchors": [
+        "pub fn step_with_players<W: FlightWorld>",
+        "let mut events = self.begin_source_turn(players);",
+        "events.extend(self.step_source_slot(source_slot, world, players));",
+        "self.finish_source_turn();",
+        "pub(crate) fn begin_source_turn",
+        "pub(crate) fn step_source_slot<W: FlightWorld>",
+        "pub(crate) fn finish_source_turn",
+        "let vigilant_always_perceives = self.config.behavior_flags & 0x10 != 0;",
+        "GoatStepEvent::EngagementBoundaryReached"
+      ],
+      "ordinary_consumer": "Rust Goat source-order scheduler, owner-state perception, target decision, action mutation, phase/RNG epilogue, following-pass retaliation/reclaim, and ordered semantic event tail"
+    },
+    {
+      "semantic_id": "flight.player.max_forward_speed",
+      "access": "writable",
+      "disposition": "F3 publishes this definition value through guarded transactions; F6 materializes it only at explicit neutral session open/reopen and the ordinary Rust movement decoder consumes it",
+      "implementation_file": "build.rs",
+      "implementation_sha256": "171fed6decdb5bf26b89d8067ed6ace8912e6e3baee7353e98f9cb1ec9955be3",
+      "descriptor_provenance_sha256": "171fed6decdb5bf26b89d8067ed6ace8912e6e3baee7353e98f9cb1ec9955be3",
+      "required_anchors": [
+        "EventsFunctions.cpp content drift",
+        "SOURCE_FORWARD_LIMIT"
+      ],
+      "additional_consumer_file": "src/lib.rs",
+      "additional_consumer_anchors": [
+        "pub const SPEED_LIMIT: i16 = SOURCE_FORWARD_LIMIT;",
+        "pub struct FlightTuning",
+        "pub fn decode_movement_with_tuning",
+        "state.target_speed < tuning.max_forward_speed",
+        ".clamp(-tuning.max_forward_speed, tuning.max_forward_speed)",
+        "pub fn step_outer_turn_with_context_and_tuning"
+      ],
+      "ordinary_consumer": "Rust movement decode target-speed clamp and later entity flight integration"
+    },
+    {
+      "semantic_id": "presentation.spell.fireball.projectile_asset",
+      "access": "writable",
+      "disposition": "F9 publishes only a retained content-addressed artifact reference at package-reload timing; Rust validates the complete indexed-sprite contract and neutral clients bind the immutable payload by definition identity",
+      "implementation_file": "src/game_definition/presentation_asset.rs",
+      "implementation_sha256": "9efbccbc4aa610289331328dc899eba0f9f9c2c2d18c5e56c3cf8396e64c0024",
+      "descriptor_provenance_sha256": "9efbccbc4aa610289331328dc899eba0f9f9c2c2d18c5e56c3cf8396e64c0024",
+      "required_anchors": [
+        "pub struct IndexedPresentationAsset",
+        "pub struct BoundPresentationAsset",
+        "presentation asset kind, format, color, coordinate, or origin contract is unsupported",
+        "presentation pixel payload disagrees with dimensions, palette, or pixel budget",
+        "presentation payload dependencies disagree with the artifact graph"
+      ],
+      "additional_consumer_file": "../../../remc2-unity-native/Assets/Scripts/SemanticPresentationAssetCache.cs",
+      "additional_consumer_anchors": [
+        "internal sealed class SemanticPresentationAssetCache",
+        "internal Texture2D Bind",
+        "replacement.LoadRawTextureData(rgba);",
+        "InvalidationCount += 1;"
+      ],
+      "ordinary_consumer": "Neutral Rust asset observation expanded into an actual Unity point-filtered Texture2D cache and the corresponding TypeScript RGBA payload cache"
+    },
+    {
+      "semantic_id": "spell.fireball.mana_cost",
+      "access": "writable",
+      "disposition": "F3 publishes this definition value through guarded transactions; F7 materializes it only at explicit neutral session open/reopen, then the ordinary Rust spell-holder gate and projectile factory consume the same rule",
+      "implementation_file": "src/spell_activation.rs",
+      "implementation_sha256": "c2b6726b9d3325bc5287b7c262bb7559e0862286ed0a884c65c804417d1ae3ca",
+      "descriptor_provenance_sha256": "c2b6726b9d3325bc5287b7c262bb7559e0862286ed0a884c65c804417d1ae3ca",
+      "required_anchors": [
+        "pub fn activate_spell(",
+        "if caster.mana < holder.mana_cost",
+        "holder.active_value = holder.activation_value.cast_signed();",
+        "clear_pointer_action(caster, holder.model);"
+      ],
+      "additional_consumer_file": "src/level1_mission.rs",
+      "additional_consumer_anchors": [
+        "pub fn session_with_fireball_cost",
+        "self.player_mana < self.fireball_mana_cost",
+        "self.player_mana -= self.fireball_mana_cost",
+        "(FIREBALL_HOLDER_ACTIVATION_TICKS, self.fireball_mana_cost)"
+      ],
+      "ordinary_consumer": "Rust shared spell activation affordability gate, Level 1 accepted cast dispatch, ordinary projectile constructor, ordered same-pass emissions, and holder/projectile lifecycle"
+    }
+  ]
+}

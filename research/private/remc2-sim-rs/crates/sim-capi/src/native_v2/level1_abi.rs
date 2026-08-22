@@ -69,7 +69,7 @@ pub extern "C" fn mc_native_level1_presentation_input(
 ) -> i32 {
     boundary(|| {
         let input = read_versioned_input(input, "Level 1 presentation input")?;
-        with_session_mut(handle, |session| session.apply_presentation_input(input))
+        with_projection_session_mut(handle, |session| session.apply_presentation_input(input))
     })
 }
 
@@ -706,7 +706,7 @@ pub extern "C" fn mc_native_session_goat_draw_admission_evaluate(
     out_batch_size: u32,
 ) -> i32 {
     boundary_value(out_batch, out_batch_size, || {
-        with_session_mut(handle, |session| {
+        with_projection_session_mut(handle, |session| {
             if generation != session.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,

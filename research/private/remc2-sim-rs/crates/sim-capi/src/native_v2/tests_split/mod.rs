@@ -1966,16 +1966,6 @@ fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
     );
     with_session(notification_handle, |session| {
         assert_eq!(
-            session.notification_draw_feedback,
-            Some((
-                session.state.tick,
-                true,
-                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_STATE,
-                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER - 1,
-            )),
-            "the source text writer stages one decrement only after COMPLETE"
-        );
-        assert_eq!(
             (
                 session.mission.player_notification_state,
                 session.mission.player_notification_timer
@@ -1984,7 +1974,7 @@ fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
                 sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_STATE,
                 sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER,
             ),
-            "same-tick immutable state remains stable until the next outer turn"
+            "presentation observation leaves same-tick notification state unchanged"
         );
         Ok(())
     })
@@ -1994,14 +1984,9 @@ fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
     assert_eq!(repeat_info.newly_committed, 0);
     with_session(notification_handle, |session| {
         assert_eq!(
-            session.notification_draw_feedback,
-            Some((
-                session.state.tick,
-                true,
-                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_STATE,
-                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER - 1,
-            )),
-            "same-key cached retry cannot stage a second decrement"
+            session.mission.player_notification_timer,
+            sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER,
+            "same-key cached retry remains observational"
         );
         Ok(())
     })
@@ -2039,9 +2024,13 @@ fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
         );
         with_session(state_handle, |session| {
             assert_eq!(
-                session.notification_draw_feedback,
-                Some((session.state.tick, true, state, 0)),
-                "old timer 1 draws once and stages post-decrement zero"
+                (
+                    session.mission.player_notification_active,
+                    session.mission.player_notification_state,
+                    session.mission.player_notification_timer,
+                ),
+                (true, state, 1),
+                "notification rendering cannot advance the authoritative timer"
             );
             Ok(())
         })
@@ -2064,13 +2053,31 @@ fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
     assert_eq!(expired_status, MC_STATUS_OK);
     with_session(expired_notification_handle, |session| {
         assert_eq!(
-            session.notification_draw_feedback,
-            Some((session.state.tick, false, 0, -1)),
-            "old timer zero clears the source state without drawing"
+            (
+                session.mission.player_notification_active,
+                session.mission.player_notification_state,
+                session.mission.player_notification_timer,
+            ),
+            (true, 1, 0),
+            "presentation does not clear expired authoritative state"
         );
         Ok(())
     })
-    .expect("expired notification feedback");
+    .expect("expired notification observation");
+    with_session_mut(expired_notification_handle, |session| {
+        session.step(player_command(valid_command()).expect("valid native command"));
+        assert_eq!(
+            (
+                session.mission.player_notification_active,
+                session.mission.player_notification_state,
+                session.mission.player_notification_timer,
+            ),
+            (false, 0, -1),
+            "the Rust scheduler clears the notification on the next outer turn"
+        );
+        Ok(())
+    })
+    .expect("expired notification lifecycle advances independently of polling");
     assert_eq!(
         mc_native_session_destroy(expired_notification_handle),
         MC_STATUS_OK

@@ -9,6 +9,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from verify_compatibility_surface import verify_current_surface
+from verify_native_black_box import autoplay_command, verify_native_black_box
+
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
@@ -58,14 +61,24 @@ def verify_runtime_pins(manifest: dict) -> None:
                 "research/private/remc2-unity-native/Builds/Linux/"
                 "MagicCarpetNative_Data/Plugins/x86_64/libsim_capi.so"
             ),
+        "current_source_plugin_file_sha256":
+            REPO / "research/private/remc2-sim-rs/target/release/libsim_capi.so",
     }
     for field, path in files.items():
         require(path.is_file() and not path.is_symlink(), f"missing or unsafe pin: {path}")
         require(sha256_file(path) == pins[field], f"runtime pin mismatch: {field}")
     require(
+        pins["plugin_reality"]
+        == (
+            "current source build and Unity-project plugin are byte-identical; the "
+            "owner-local built-player plugin is separately pinned and behavior-qualified"
+        ),
+        "repository/shipped plugin scope is ambiguous",
+    )
+    require(
         pins["native_plugin_file_sha256"]
-        == pins["built_native_plugin_file_sha256"],
-        "source and built native plugin identities differ",
+        == pins["current_source_plugin_file_sha256"],
+        "Unity-project plugin is not the qualified current-source build",
     )
 
     package = json.loads(files["package_manifest_file_sha256"].read_text())
@@ -92,6 +105,30 @@ def verify_runtime_pins(manifest: dict) -> None:
         cache["bindings"]["level_asset_closure_sha256"]
         == pins["closure_identity_sha256"],
         "owner cache closure binding mismatch",
+    )
+
+    invocation = manifest["native_black_box_invocation"]
+    runner = REPO / invocation["runner_path"]
+    require(
+        runner == HERE / "verify_native_black_box.py"
+        and invocation["interpreter"] == "python3"
+        and invocation["command_count"] == 440
+        and invocation["command_record_bytes"] == 10
+        and invocation["checkpoint_ticks"] == [145, 163, 220, 303, 400],
+        "native black-box invocation contract mismatch",
+    )
+    require(
+        sha256_file(runner) == invocation["runner_file_sha256"],
+        "native black-box runner identity mismatch",
+    )
+    command_stream = b"".join(
+        autoplay_command(index) for index in range(invocation["command_count"])
+    )
+    require(
+        len(command_stream)
+        == invocation["command_count"] * invocation["command_record_bytes"]
+        and sha256_bytes(command_stream) == invocation["command_stream_sha256"],
+        "native black-box command-stream identity mismatch",
     )
 
     route_suite = next(
@@ -168,6 +205,7 @@ def verify_idle_suite(manifest: dict) -> None:
         check=True,
         text=True,
         capture_output=True,
+        timeout=300,
     )
     decoded = {
         row["frame"]: row
@@ -241,6 +279,7 @@ def verify_active_forward_suite(manifest: dict) -> None:
         check=True,
         text=True,
         capture_output=True,
+        timeout=300,
     )
     rows = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     require(len(rows) == len(active["checkpoints"]) == 8, "active checkpoint count")
@@ -343,7 +382,9 @@ def run_native_route_qualification(manifest: dict) -> dict[int, dict]:
         str(log_path),
     ]
     try:
-        result = subprocess.run(command, cwd=project, text=True, capture_output=True)
+        result = subprocess.run(
+            command, cwd=project, text=True, capture_output=True, timeout=300
+        )
         log = log_path.read_text(encoding="utf-8")
     finally:
         log_path.unlink(missing_ok=True)
@@ -566,6 +607,16 @@ def verify_checkpoint_contracts(manifest: dict) -> None:
                 checkpoint["presentation_scope_ref"] in manifest["presentation_scopes"],
                 f"{checkpoint_id} presentation scope missing",
             )
+            if suite["id"] == "unity-synthetic-presentation-route":
+                require("audio_identity" in checkpoint, f"{checkpoint_id} missing audio_identity")
+                audio_identity = checkpoint["audio_identity"]
+                require(
+                    audio_identity.get("status") == "available"
+                    and audio_identity.get("authority") == "native typed audio sidecars"
+                    and audio_identity.get("generation") == 1
+                    and audio_identity.get("count", 0) > 0,
+                    f"{checkpoint_id} audio identity contract mismatch",
+                )
 
     event_contract = manifest["event_hash_contract"]
     require(event_contract == {
@@ -594,6 +645,52 @@ def verify_checkpoint_contracts(manifest: dict) -> None:
         "excluded": ["abi_version", "struct_size", "reserved ABI bytes"],
     }, "event hash contract mismatch")
 
+    audio_contract = manifest["audio_hash_contract"]
+    require(audio_contract == {
+        "content_schema": "mc2-native-audio-logical-content-le/sha256-v1",
+        "lifecycle_schema": "mc2-native-audio-logical-lifecycle-le/sha256-v1",
+        "algorithm": "SHA-256",
+        "byte_order": "little-endian",
+        "concatenation": (
+            "audio sidecars in strictly increasing owning event-sequence order "
+            "with no count or framing bytes"
+        ),
+        "content_ordered_fields": [
+            "event_sequence:u64",
+            "state_hash:u64",
+            "asset_ref_index:u32",
+            "relative_x:i32",
+            "relative_y:i32",
+            "relative_z:i32",
+            "playback_rate_hz:u32",
+            "sound_id:u16",
+            "entity_index:u16",
+            "player_index:i16",
+            "sound_flags:i16",
+            "volume_q15:u16",
+            "pan_q16:u16",
+            "rate_delta_percent:i16",
+            "voice_index:u16",
+            "play_type:u8",
+            "loop_count:i8",
+            "action:u8",
+            "pooled_flush_rank:u8",
+            "pooled_flush_id:u64",
+        ],
+        "lifecycle_rule": (
+            "prepend generation:u64 to every audio record before the content fields"
+        ),
+        "excluded": [
+            "abi_version",
+            "struct_size",
+            "reserved ABI bytes other than consumer-semantic pooled_flush_id",
+        ],
+        "golden_change": (
+            "first fixed selected-audio identity; independently reviewed after "
+            "rejecting the earlier mixed-artifact JSON candidate"
+        ),
+    }, "audio hash contract mismatch")
+
 
 def run_focused_sim_test(test_name: str) -> None:
     sim_root = REPO / "research/private/remc2-sim-rs"
@@ -605,6 +702,7 @@ def run_focused_sim_test(test_name: str) -> None:
         cwd=sim_root,
         text=True,
         capture_output=True,
+        timeout=300,
     )
     require(
         result.returncode == 0,
@@ -633,6 +731,8 @@ def main() -> None:
     verify_first_presented_frame(manifest)
     verify_active_forward_suite(manifest)
     verify_supporting_corpus(manifest)
+    verify_current_surface()
+    verify_native_black_box(manifest)
     verify_unity_route(manifest)
     run_focused_sim_test(
         "regression_state::tests::"
@@ -645,7 +745,7 @@ def main() -> None:
     print(
         "MC_LEVEL1_REFERENCE_CORPUS PASS "
         "idle=3 active_forward=8 supporting_transitions=24 "
-        "unity_regression=5 classifications=explicit"
+        "native_black_box=5 unity_regression=5 classifications=explicit"
     )
 
 

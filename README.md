@@ -1,65 +1,79 @@
-# Magic Carpet private preservation lab
+# Carpet Flight / MagicCarpet private engine lab
 
-This repository is the private, owner-controlled research and preservation
-workspace for understanding *Magic Carpet 2* and developing a faithful
-Rust-driven Unity flight viewer. It is not the publication repository for the
-original commercial successor.
+This private repository develops one remc2-derived, Rust-authoritative game
+engine with Unity as its primary client. Its first canonical package is
+owner-local `MC2-owned`; the same engine is intended to support custom assets,
+rules, flight, spells, enemy AI and worlds through a typed semantic API.
 
-The repository intentionally tracks authored source, tests, policy, and
-research documentation while excluding:
+The repository is not a shipped product. During the 2026-08-21 recovery, no
+GitHub releases were present. Local ignored Unity/player/plugin artifacts exist,
+but they were not freshly certified by that planning task.
 
-- owned GOG installers, manuals, game data, saves, captures, and audio;
-- generated level packages, decoded owner-asset caches, analyzer projects, and
-  raw runtime evidence;
-- Unity `Library` and player builds, Rust `target`, Node dependencies, and
-  other reproducible build products;
-- Beads databases, agent state, local logs, and unreviewed transfer staging.
+## Direction
 
-Read these documents before changing the project:
+- remc2 plus the successful Rust port are the MC2 compatibility reference;
+- Rust owns definitions, gameplay, ordering, RNG, hashes, saves and replay;
+- Unity owns input and presentation and is the future OpenXR/VR shell;
+- Three.js is a rapid inspector/harness and optional client, not another
+  simulation;
+- the AI harness uses typed `describe/get/set/validate/diff/apply/rollback`
+  semantics rather than raw memory or Unity field edits; and
+- the next foundation is API-first around the working Level 1 route, followed
+  by an `MC2-owned` plus `custom-proof` two-package gate.
 
-1. [`AGENTS.md`](AGENTS.md)
-2. [`docs/program-charter.md`](docs/program-charter.md)
-3. [`docs/product-promise.md`](docs/product-promise.md)
-4. [`docs/preservation-track.md`](docs/preservation-track.md)
-5. [`docs/stack-decision.md`](docs/stack-decision.md)
-6. [`docs/provenance-policy.md`](docs/provenance-policy.md)
-7. [`docs/private-public-boundary.md`](docs/private-public-boundary.md)
+See the binding [program charter](docs/program-charter.md) and the temporary
+[evidence-first recovery and execution plan](docs/carpet-flight-engine-plan.md).
 
-## Active implementation
+## Current production route
 
-- `research/private/remc2-sim-rs/` — deterministic renderer-free Rust
-  simulation and native ABI.
-- `research/private/remc2-unity-native/` — Unity desktop presentation and
-  qualification harness.
-- `research/private/remc2-level-exporter/` — bounded Level 1 scene exporter.
-- `research/private/remc2-level-asset-closure/` — owner-data dependency
-  closure builder.
-- `research/private/remc2-unity-asset-cache/` — private decoded presentation
-  cache builder.
-- `research/private/remc2-frame-trace/` — deterministic reference tracing.
-- `research/private/remc2-atlas/` — source mapping tools and authored semantic
-  documentation; generated and owned data remain local.
+```text
+pinned remc2 + owner data
+  -> remc2-level-exporter
+  -> owner asset closure + decoded cache
+  -> Rust sim-core/session state
+  -> versioned sim-capi native ABI
+  -> Unity desktop presentation
+```
 
-The pinned MC2HD/remc2 checkout is represented as a submodule. Local
-instrumentation is preserved as a small patch in `upstream/patches/`.
+This route contains substantial working Level 1 behavior and incomplete Level
+2 work. It does not yet contain the neutral package definition, complete
+semantic authoring transaction, custom package proof, current VR runtime,
+voxel/city/water capabilities or a released commercial game.
 
-## Level 1 conformance milestone
+## Repository map
 
-The bounded private Level 1 preservation profile is closed at remc2 commit
-`6806c7204d17220ecc0430759f784aea8ee2ddb2`: 182/182 canonical matrix rows are
-Exact, zero are non-Exact, and 29 structured exclusions have mechanical
-proofs. The accepted PLAN29 evidence is exactly one clean Run A, with 481
-Rust tests, Unity EditMode 31/31, PlayMode 1/1, and passing presentation,
-privacy, provenance, victory, failure, restart, and replay gates.
+- `upstream/magic-carpet-2-hd/` — pinned remc2 source implementation; normally
+  read-only.
+- `research/private/remc2-level-exporter/` — pointer-free owner-level package
+  exporter.
+- `research/private/remc2-level-asset-closure/` — reachable owner-asset
+  closure.
+- `research/private/remc2-unity-asset-cache/` — deterministic decoded runtime
+  cache.
+- `research/private/remc2-sim-rs/` — Rust simulation, C ABI, CLI and parked
+  Wasm proof.
+- `research/private/remc2-unity-native/` — Unity `6000.3.20f1` client/editor.
+- `docs/` — current contracts plus subordinate/historical research.
 
-This is deliberately narrower than full-game parity. The fixed profile and
-nonclaims are recorded in the private [conformance matrix](research/private/remc2-sim-rs/level1-conformance/LEVEL1-CONFORMANCE-MATRIX.md)
-and [readiness record](research/private/remc2-unity-native/LEVEL1-READINESS.md).
+Owner packages, caches, captures and generated artifacts are runtime inputs and
+remain outside Git and distributable builds.
 
-## Data boundary
+## Canonical documents
 
-The project is usable only with lawfully owned data supplied outside Git.
-Nothing in this repository grants redistribution rights for the original
-game, its assets, or reconstructed expression. See
-[`PRIVATE_LAB.md`](PRIVATE_LAB.md) and the provenance policy for the controlling
-rules.
+1. [Program charter](docs/program-charter.md)
+2. [Product promise](docs/product-promise.md)
+3. [Engine/package/API contract](docs/modular-engine-game-module-contract.md)
+4. [Stack decision](docs/stack-decision.md)
+5. [Private/public boundary](docs/private-public-boundary.md) and
+   [provenance policy](docs/provenance-policy.md)
+6. [MC2 compatibility guide](docs/preservation-track.md)
+
+## Verification
+
+Exact focused and integration commands live in [AGENTS.md](AGENTS.md) and the
+component READMEs. Run the smallest route that reaches a change; a filtered
+zero-test result, internal helper, fixture-only path or historical artifact is
+not positive runtime evidence.
+
+The canonical checkout is `/home/oliver/Projects/odcpw/magiccarpet` on `3090`,
+branch `main`, private remote `odcpw/magiccarpet`.

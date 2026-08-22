@@ -1,0 +1,837 @@
+use serde_json::Value;
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::{Duration, Instant},
+};
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sim-core/tests/fixtures/custom-synthetic-v1")
+}
+
+fn run(arguments: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_sim-cli"))
+        .args(arguments)
+        .output()
+        .expect("run sim-cli")
+}
+
+fn wait_until(label: &str, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {label}");
+}
+
+fn has_staged_workspace_state(workspace: &std::path::Path) -> bool {
+    fs::read_dir(workspace).is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(".workspace-state.") && name.ends_with(".next")
+        })
+    })
+}
+
+struct TempWorkspace(PathBuf);
+
+impl TempWorkspace {
+    fn new(label: &str) -> Self {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "carpet-flight-cli-{label}-{}-{sequence}",
+            std::process::id()
+        )))
+    }
+}
+
+impl Drop for TempWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
+    let capabilities = run(&["game", "capabilities"]);
+    assert!(capabilities.status.success());
+    assert!(capabilities.stderr.is_empty());
+    let capabilities: Value = serde_json::from_slice(&capabilities.stdout).expect("JSON stdout");
+    assert_eq!(capabilities["ok"], true);
+    assert_eq!(capabilities["data"]["read_only"], false);
+    assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
+    assert_eq!(
+        capabilities["data"]["compiled_capabilities"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        capabilities["data"]["semantic_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+
+    let fixture = fixture();
+    let fixture = fixture.to_str().expect("UTF-8 fixture path");
+    let describe = run(&["game", "describe", "--package", fixture]);
+    assert!(describe.status.success());
+    assert!(describe.stderr.is_empty());
+    let describe_json: Value = serde_json::from_slice(&describe.stdout).expect("JSON stdout");
+    assert_eq!(describe_json["identity"]["package_id"], "custom.synthetic");
+    assert_eq!(
+        describe_json["data"]["descriptors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(describe_json["data"]["page"]["complete"], true);
+
+    let first_page = run(&["game", "describe", "--package", fixture, "--limit", "2"]);
+    assert!(first_page.status.success());
+    let first_page: Value = serde_json::from_slice(&first_page.stdout).expect("JSON stdout");
+    assert_eq!(
+        first_page["data"]["descriptors"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(first_page["data"]["page"]["complete"], false);
+    let cursor = first_page["data"]["page"]["next_cursor"]
+        .as_str()
+        .expect("next cursor");
+    let second_page = run(&[
+        "game",
+        "describe",
+        "--package",
+        fixture,
+        "--limit",
+        "2",
+        "--cursor",
+        cursor,
+    ]);
+    assert!(second_page.status.success());
+    let second_page: Value = serde_json::from_slice(&second_page.stdout).expect("JSON stdout");
+    assert_eq!(
+        second_page["data"]["descriptors"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(second_page["data"]["page"]["complete"], true);
+
+    let get_arguments = [
+        "game",
+        "get",
+        "--package",
+        fixture,
+        "--id",
+        "flight.player.max_forward_speed",
+    ];
+    let first = run(&get_arguments);
+    let second = run(&get_arguments);
+    assert!(first.status.success());
+    assert!(first.stderr.is_empty());
+    assert_eq!(first.stdout, second.stdout);
+    let get_json: Value = serde_json::from_slice(&first.stdout).expect("JSON stdout");
+    assert_eq!(get_json["data"]["value"]["type"], "integer");
+    assert_eq!(get_json["data"]["value"]["value"], 80);
+    assert_eq!(get_json["data"]["descriptor"]["access"], "writable");
+}
+
+#[test]
+fn unknown_reads_and_mutation_words_fail_with_typed_non_mutating_errors() {
+    let fixture = fixture();
+    let fixture = fixture.to_str().expect("UTF-8 fixture path");
+    let unknown = run(&[
+        "game",
+        "get",
+        "--package",
+        fixture,
+        "--id",
+        "flight.player.unknown_speed",
+    ]);
+    assert_eq!(unknown.status.code(), Some(3));
+    assert!(unknown.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&unknown.stderr).expect("JSON stderr");
+    assert_eq!(error["errors"][0]["code"], "UNKNOWN_ID");
+    assert_eq!(error["errors"][0]["state_changed"], false);
+
+    for (operation, expected_code) in [
+        ("set", "MISSING_WORKSPACE"),
+        ("apply", "MISSING_VALIDATION_RECEIPT"),
+        ("rollback", "INVALID_REQUEST"),
+        ("reset", "SESSION_CONTRACT_NOT_READY"),
+    ] {
+        let rejected = run(&["game", operation]);
+        assert_eq!(rejected.status.code(), Some(2));
+        assert!(rejected.stdout.is_empty());
+        let error: Value = serde_json::from_slice(&rejected.stderr).expect("JSON stderr");
+        assert_eq!(error["errors"][0]["code"], expected_code);
+        assert_eq!(error["errors"][0]["state_changed"], false);
+    }
+}
+
+#[test]
+fn describe_rejects_invalid_limits_and_foreign_cursors() {
+    let fixture = fixture();
+    let fixture = fixture.to_str().expect("UTF-8 fixture path");
+    for arguments in [
+        vec!["game", "describe", "--package", fixture, "--limit", "0"],
+        vec![
+            "game",
+            "describe",
+            "--package",
+            fixture,
+            "--cursor",
+            "v1.not-this-catalog.not-this-definition.2",
+        ],
+    ] {
+        let rejected = run(&arguments);
+        assert_eq!(rejected.status.code(), Some(2));
+        assert!(rejected.stdout.is_empty());
+        let error: Value = serde_json::from_slice(&rejected.stderr).expect("JSON stderr");
+        assert_eq!(error["errors"][0]["state_changed"], false);
+    }
+}
+
+#[test]
+fn describe_loads_the_real_owner_definition_through_the_same_cli_contract() {
+    let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let export = private.join("generated/level1-export-m");
+    let closure = private.join("generated/level1-asset-closure.json");
+    let cache = private.join("generated/level1-unity-asset-cache-plan29-final");
+    let output = run(&[
+        "game",
+        "describe",
+        "--owner-export",
+        export.to_str().unwrap(),
+        "--owner-closure",
+        closure.to_str().unwrap(),
+        "--owner-cache",
+        cache.to_str().unwrap(),
+        "--id",
+        "presentation.spell.fireball.projectile_asset",
+    ]);
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let output: Value = serde_json::from_slice(&output.stdout).expect("JSON stdout");
+    assert_eq!(output["identity"]["package_id"], "mc2.owned");
+    assert_eq!(
+        output["identity"]["provenance"]["distribution"],
+        "owner_local"
+    );
+    assert_eq!(output["data"]["descriptors"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn workspace_authoring_cli_stages_previews_and_refuses_unsafe_asset_timing_without_mutation() {
+    let temporary = TempWorkspace::new("f9-unsafe-asset-timing");
+    let workspace = temporary.0.to_str().unwrap();
+    let fixture = fixture();
+    let fixture = fixture.to_str().unwrap();
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "cli-workspace",
+        "--package",
+        fixture,
+    ]);
+    assert!(created.status.success());
+    assert!(created.stderr.is_empty());
+    let initial_state = fs::read(temporary.0.join("workspace-state.json")).unwrap();
+
+    let inspect = run(&["game", "inspect", "--workspace", workspace]);
+    assert!(inspect.status.success());
+    let inspect: Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(
+        inspect["data"]["workspace"]["active_definition_revision"],
+        1
+    );
+    assert_eq!(
+        inspect["data"]["writable_surface"],
+        serde_json::json!([
+            "ai.enemy.default.policy",
+            "flight.player.max_forward_speed",
+            "presentation.spell.fireball.projectile_asset",
+            "spell.fireball.mana_cost"
+        ])
+    );
+
+    let described = run(&[
+        "game",
+        "describe",
+        "--workspace",
+        workspace,
+        "--id",
+        "presentation.spell.fireball.projectile_asset",
+    ]);
+    assert!(described.status.success());
+    let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+    assert_eq!(described["data"]["descriptors"][0]["access"], "writable");
+
+    let changes_path = temporary.0.join("changes.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "id": "presentation.spell.fireball.projectile_asset",
+            "value": {"type": "reference", "value": "sha256:c924ac200c84b9983374d1abcacff27414c3f565ac82792394353e0358ee0b34"}
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "cli-unsafe-asset-timing",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success());
+    assert!(staged.stderr.is_empty());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(staged["data"]["published"], false);
+    let change_set_path = temporary.0.join("change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+
+    let preview = run(&[
+        "game",
+        "preview",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(preview.status.success());
+    assert!(preview.stderr.is_empty());
+    let preview: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(preview["data"]["validation"]["accepted"], false);
+    assert_eq!(
+        preview["data"]["validation"]["diagnostics"][0]["code"],
+        "UNSAFE_TIMING"
+    );
+    assert_eq!(preview["data"]["apply_request"], Value::Null);
+    assert_eq!(
+        fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+        initial_state
+    );
+
+    let validation_hash = preview["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+    let rejected = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validation_hash,
+    ]);
+    assert_eq!(rejected.status.code(), Some(3));
+    assert!(rejected.stdout.is_empty());
+    let rejected: Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert_eq!(rejected["errors"][0]["code"], "VALIDATION_REJECTED");
+    assert_eq!(rejected["errors"][0]["state_changed"], false);
+    assert_eq!(
+        fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+        initial_state
+    );
+
+    let status = run(&[
+        "game",
+        "apply-status",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "cli-unsafe-asset-timing",
+    ]);
+    assert!(status.status.success());
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["data"]["status"], "not_started");
+}
+
+#[test]
+fn authoring_cli_rejects_session_generation_and_duplicate_workspace_creation() {
+    let temporary = TempWorkspace::new("f3-schema");
+    let workspace = temporary.0.to_str().unwrap();
+    let fixture = fixture();
+    let fixture = fixture.to_str().unwrap();
+    let create_arguments = [
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "schema-workspace",
+        "--package",
+        fixture,
+    ];
+    assert!(run(&create_arguments).status.success());
+    let duplicate = run(&create_arguments);
+    assert_eq!(duplicate.status.code(), Some(3));
+    let duplicate: Value = serde_json::from_slice(&duplicate.stderr).unwrap();
+    assert_eq!(duplicate["errors"][0]["code"], "WORKSPACE_EXISTS");
+
+    let definition_hash = serde_json::from_slice::<Value>(
+        &run(&["game", "inspect", "--workspace", workspace]).stdout,
+    )
+    .unwrap()["identity"]["definition_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invalid_path = temporary.0.join("session-generation.json");
+    fs::write(
+        &invalid_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": "carpet-flight-change-set/v1",
+            "target_workspace": "schema-workspace",
+            "expected_definition_hash": definition_hash,
+            "expected_definition_revision": 1,
+            "idempotency_key": "wrong-guard",
+            "changes": [{
+                "id": "flight.player.max_forward_speed",
+                "value": {"type": "integer", "value": 82}
+            }],
+            "requested_timing": "session_reset",
+            "intent": null,
+            "session_generation": 4
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let rejected = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        invalid_path.to_str().unwrap(),
+    ]);
+    assert_eq!(rejected.status.code(), Some(2));
+    let rejected: Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert_eq!(rejected["errors"][0]["code"], "INVALID_REQUEST");
+    assert!(
+        rejected["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field `session_generation`")
+    );
+}
+
+#[test]
+fn authoring_cli_applies_reads_back_retries_and_forward_rolls_back_definition_value() {
+    let temporary = TempWorkspace::new("f3-positive");
+    let workspace = temporary.0.to_str().unwrap();
+    let fixture = fixture();
+    let fixture = fixture.to_str().unwrap();
+    assert!(
+        run(&[
+            "game",
+            "workspace-create",
+            "--workspace",
+            workspace,
+            "--workspace-id",
+            "positive-workspace",
+            "--package",
+            fixture,
+        ])
+        .status
+        .success()
+    );
+    let changes_path = temporary.0.join("changes.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "id": "flight.player.max_forward_speed",
+            "value": {"type": "integer", "value": 82},
+            "expected_value": {"type": "integer", "value": 80}
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "positive-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+        "--intent",
+        "prove-definition-publication-only",
+    ]);
+    assert!(staged.status.success());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    let change_set_path = temporary.0.join("change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let preview = run(&[
+        "game",
+        "preview",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(preview.status.success());
+    let preview: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(preview["data"]["validation"]["accepted"], true);
+    assert_eq!(preview["data"]["diff"][0]["before"]["value"], 80);
+    assert_eq!(preview["data"]["diff"][0]["after"]["value"], 82);
+    let validation_hash = preview["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+    let apply_arguments = [
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validation_hash,
+    ];
+    let applied = run(&apply_arguments);
+    assert!(applied.status.success());
+    assert!(applied.stderr.is_empty());
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(
+        applied["data"]["receipt"]["resulting_definition_revision"],
+        2
+    );
+    let receipt_hash = applied["data"]["receipt"]["receipt_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let transaction_id = applied["data"]["receipt"]["transaction_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let resulting_hash = applied["data"]["receipt"]["resulting_definition_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let get = run(&[
+        "game",
+        "get",
+        "--workspace",
+        workspace,
+        "--id",
+        "flight.player.max_forward_speed",
+    ]);
+    assert!(get.status.success());
+    let get: Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(get["data"]["value"]["value"], 82);
+    assert_eq!(get["identity"]["revision"], 2);
+
+    let retry = run(&apply_arguments);
+    assert!(retry.status.success());
+    let retry: Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(retry["data"]["receipt"]["receipt_hash"], receipt_hash);
+    let status = run(&[
+        "game",
+        "apply-status",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "positive-apply",
+    ]);
+    assert!(status.status.success());
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["data"]["status"], "committed");
+    assert_eq!(status["data"]["receipt"]["receipt_hash"], receipt_hash);
+
+    let rolled = run(&[
+        "game",
+        "rollback",
+        "--workspace",
+        workspace,
+        "--expected-definition-hash",
+        &resulting_hash,
+        "--expected-definition-revision",
+        "2",
+        "--source-transaction",
+        &transaction_id,
+        "--idempotency-key",
+        "positive-rollback",
+    ]);
+    assert!(rolled.status.success());
+    let rolled: Value = serde_json::from_slice(&rolled.stdout).unwrap();
+    assert_eq!(rolled["data"]["receipt"]["operation"], "rollback");
+    assert_eq!(
+        rolled["data"]["receipt"]["resulting_definition_revision"],
+        3
+    );
+    assert_eq!(
+        rolled["data"]["receipt"]["mutation_timing"],
+        "session_reset"
+    );
+    assert_eq!(
+        rolled["data"]["receipt"]["applied_ids"],
+        serde_json::json!(["flight.player.max_forward_speed"])
+    );
+    let restored = run(&[
+        "game",
+        "get",
+        "--workspace",
+        workspace,
+        "--id",
+        "flight.player.max_forward_speed",
+    ]);
+    assert!(restored.status.success());
+    let restored: Value = serde_json::from_slice(&restored.stdout).unwrap();
+    assert_eq!(restored["data"]["value"]["value"], 80);
+    assert_eq!(restored["identity"]["revision"], 3);
+}
+
+#[test]
+fn killed_cli_before_commit_preserves_state_and_reports_not_started() {
+    let temporary = TempWorkspace::new("f3-cancel-before");
+    let workspace = temporary.0.to_str().unwrap();
+    let fixture = fixture();
+    let fixture = fixture.to_str().unwrap();
+    assert!(
+        run(&[
+            "game",
+            "workspace-create",
+            "--workspace",
+            workspace,
+            "--workspace-id",
+            "cancel-before-workspace",
+            "--package",
+            fixture,
+        ])
+        .status
+        .success()
+    );
+    let initial_state = fs::read(temporary.0.join("workspace-state.json")).unwrap();
+    let changes_path = temporary.0.join("cancel-before-changes.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "id": "flight.player.max_forward_speed",
+            "value": {"type": "integer", "value": 83}
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "cancel-before-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    let change_set_path = temporary.0.join("cancel-before-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let preview = run(&[
+        "game",
+        "preview",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(preview.status.success());
+    let preview: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    let validation_hash = preview["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sim-cli"))
+        .args([
+            "game",
+            "apply",
+            "--workspace",
+            workspace,
+            "--change-set",
+            change_set_path.to_str().unwrap(),
+            "--validation-receipt",
+            validation_hash,
+        ])
+        .env(
+            "CARPET_FLIGHT_TEST_PUBLICATION_FAULT",
+            "pause_before_commit",
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("pre-commit staged state", || {
+        temporary.0.join(".workspace-lock").is_file() && has_staged_workspace_state(&temporary.0)
+    });
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    assert_eq!(
+        fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+        initial_state
+    );
+    let status = run(&[
+        "game",
+        "apply-status",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "cancel-before-apply",
+    ]);
+    assert!(status.status.success());
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["data"]["status"], "not_started");
+    assert_eq!(status["data"]["receipt"], Value::Null);
+}
+
+#[test]
+fn killed_cli_after_commit_recovers_exact_receipt_and_idempotent_retry() {
+    let temporary = TempWorkspace::new("f3-cancel-after");
+    let workspace = temporary.0.to_str().unwrap();
+    let fixture = fixture();
+    let fixture = fixture.to_str().unwrap();
+    assert!(
+        run(&[
+            "game",
+            "workspace-create",
+            "--workspace",
+            workspace,
+            "--workspace-id",
+            "cancel-after-workspace",
+            "--package",
+            fixture,
+        ])
+        .status
+        .success()
+    );
+    let changes_path = temporary.0.join("cancel-after-changes.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "id": "flight.player.max_forward_speed",
+            "value": {"type": "integer", "value": 84}
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "cancel-after-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    let change_set_path = temporary.0.join("cancel-after-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let preview = run(&[
+        "game",
+        "preview",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(preview.status.success());
+    let preview: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    let validation_hash = preview["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+    let apply_arguments = [
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validation_hash,
+    ];
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sim-cli"))
+        .args(apply_arguments)
+        .env("CARPET_FLIGHT_TEST_PUBLICATION_FAULT", "pause_after_commit")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("committed revision", || {
+        fs::read(temporary.0.join("workspace-state.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|state| {
+                state["definitions"][state["active_definition_hash"].as_str().unwrap()]["revision"]
+                    == 2
+            })
+    });
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    let status = run(&[
+        "game",
+        "apply-status",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "cancel-after-apply",
+    ]);
+    assert!(status.status.success());
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["data"]["status"], "committed");
+    assert_eq!(
+        status["data"]["receipt"]["resulting_definition_revision"],
+        2
+    );
+    let retry = run(&apply_arguments);
+    assert!(retry.status.success());
+    let retry: Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(retry["data"]["receipt"], status["data"]["receipt"]);
+}

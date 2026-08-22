@@ -1,7 +1,11 @@
 # Level 1, VoxelMode, and future structure direction
 
+> **Historical/subordinate as of 2026-08-21.** Preserve accepted Level 1 and
+> voxel research evidence, but no VoxelMode wave is authorized before the
+> neutral package/API and custom-package foundation proof.
+
 Date: 2026-08-01
-Status: approved direction; Level 1 baseline gate closed, VoxelMode implementation authorized
+Status: historical direction; implementation priority superseded
 Track: `track:shared`
 
 ## Decision

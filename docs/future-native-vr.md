@@ -1,6 +1,10 @@
 # Future vision: native VR carpet flight
 
-Status: later Track S native-platform exploration; not first social-demo scope  
+> **Future client note as of 2026-08-21.** Native VR is a Unity/OpenXR adapter
+> over the same Rust authority after the foundation proof; the old Track S
+> ordering is retired.
+
+Status: deferred Unity/OpenXR client direction
 Date: 2026-07-23  
 Depends on: accepted native deterministic parity and a proven flat-screen
 carpet experience

@@ -5,6 +5,19 @@
 
 use super::*;
 
+fn apply_definition_tuning_to_context(
+    context: &mut FlightContext,
+    tuning: &SessionDefinitionTuning,
+) {
+    if let Some(fire) = context.spell_fire.as_mut() {
+        for holder in &mut fire.holders {
+            if holder.model == sim_core::level1_mission::FIREBALL_SPELL_FAMILY {
+                holder.mana_cost = tuning.fireball_mana_cost;
+            }
+        }
+    }
+}
+
 impl SessionRecord {
     pub(crate) fn set_game_paused(&mut self, paused: bool) {
         if paused && !self.game_paused {
@@ -384,6 +397,18 @@ impl SessionRecord {
         world: NativeWorld,
         terrain_frame_assets: Option<Arc<TerrainFrameAssets>>,
     ) -> AbiResult<Self> {
+        Self::new_with_terrain_frame_assets_and_definition_tuning(
+            world,
+            terrain_frame_assets,
+            SessionDefinitionTuning::default(),
+        )
+    }
+
+    pub(crate) fn new_with_terrain_frame_assets_and_definition_tuning(
+        world: NativeWorld,
+        terrain_frame_assets: Option<Arc<TerrainFrameAssets>>,
+        definition_tuning: SessionDefinitionTuning,
+    ) -> AbiResult<Self> {
         let world = Arc::new(world);
         let archer_selector_frames = terrain_frame_assets
             .as_ref()
@@ -412,10 +437,13 @@ impl SessionRecord {
         let camera_look_yaw = i16::from_le_bytes([record[28], record[29]]);
         let camera_look_pitch = i16::from_le_bytes([record[30], record[31]]);
         let state = *world.reset_state();
-        let mut mission = world.level1_mission().session(
+        let mut mission = world.level1_mission().session_with_fireball_cost(
             world.entities()[usize::from(state.entity_index)].life,
             1_000,
+            definition_tuning.fireball_mana_cost,
         );
+        let mut context = world.session_context();
+        apply_definition_tuning_to_context(&mut context, &definition_tuning);
         mission.set_source_turn_counter(source_turn.cast_unsigned());
         mission.set_reset_source_map_chains(world.reset_source_map_chains().clone());
         let camera_fov = 128;
@@ -433,6 +461,13 @@ impl SessionRecord {
             camera_history.y,
         );
         let terrain = SessionTerrain::from_world(world.as_ref());
+        let live_world = LiveWorldState::from_entities_with_map(
+            world.entities(),
+            &terrain.planes().entity_indices,
+            world.goat_stage_point(),
+            definition_tuning.goat_config,
+        )
+        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
         let classic_hd_shading = Arc::from(terrain.planes().shading.clone());
         let lighting_receipt = mission
             .dynamic_lighting_execution_receipt(&terrain.planes().shading)
@@ -444,8 +479,9 @@ impl SessionRecord {
         Ok(Self {
             terrain,
             state,
-            context: world.session_context(),
-            live_world: world.reset_live_world().clone(),
+            definition_tuning,
+            context,
+            live_world,
             mission,
             frozen_actors,
             selector_frames: world.goat_tmap_bank().map(GoatTmapClocks::from_bank),
@@ -457,7 +493,6 @@ impl SessionRecord {
             castle_selector_frame,
             renderable_map_chains,
             selector_draw_feedback: None,
-            notification_draw_feedback: None,
             goat_draw_admission: None,
             world,
             generation: 1,
@@ -507,10 +542,18 @@ impl SessionRecord {
         Arc::make_mut(&mut self.classic_hd_shading).copy_from_slice(&self.terrain.planes().shading);
         self.state = *self.world.reset_state();
         self.context = self.world.session_context();
-        self.live_world = self.world.reset_live_world().clone();
-        self.mission = self.world.level1_mission().session(
+        apply_definition_tuning_to_context(&mut self.context, &self.definition_tuning);
+        self.live_world = LiveWorldState::from_entities_with_map(
+            self.world.entities(),
+            &self.terrain.planes().entity_indices,
+            self.world.goat_stage_point(),
+            self.definition_tuning.goat_config,
+        )
+        .expect("validated owner Goat definition reconstructs on reset");
+        self.mission = self.world.level1_mission().session_with_fireball_cost(
             self.world.entities()[usize::from(self.state.entity_index)].life,
             1_000,
+            self.definition_tuning.fireball_mana_cost,
         );
         self.mission
             .set_reset_source_map_chains(self.world.reset_source_map_chains().clone());
@@ -545,7 +588,6 @@ impl SessionRecord {
             reset_renderable_map_chains(self.world.as_ref(), self.frozen_actors.as_ref())
                 .expect("validated world reset renderable chains remain valid");
         self.selector_draw_feedback = None;
-        self.notification_draw_feedback = None;
         self.goat_draw_admission = None;
         self.generation = next_nonzero(self.generation);
         self.presentation_frame.reset(self.generation);
@@ -598,6 +640,14 @@ impl SessionRecord {
         self.pending_house_effects.clear();
         #[cfg(test)]
         self.immediate_released_holder_handoff.clear();
+    }
+
+    pub(crate) fn reset_with_definition_tuning(
+        &mut self,
+        definition_tuning: SessionDefinitionTuning,
+    ) {
+        self.definition_tuning = definition_tuning;
+        self.reset();
     }
 
     pub(crate) fn presentation_state(&self) -> McPresentationStateV2 {
@@ -1839,11 +1889,23 @@ impl SessionRecord {
         ))
     }
 
-    pub(crate) fn world_frame(&mut self) -> AbiResult<Level1TerrainFrame> {
+    pub(crate) fn world_frame(&self) -> AbiResult<Level1TerrainFrame> {
         let ambient_entities = self.mission.ambient_entities().copied().collect::<Vec<_>>();
-        let frame = self.render_world_frame(&ambient_entities, &self.renderable_map_chains)?;
-        self.commit_world_frame_feedback(&frame)?;
-        Ok(frame)
+        self.render_world_frame(&ambient_entities, &self.renderable_map_chains)
+    }
+
+    /// Advance selector draw-attempt latches from the authoritative Rust
+    /// schedule, independently of whether any client asks for a frame.
+    fn schedule_world_frame_feedback(&mut self) {
+        if self.terrain_frame_assets.is_none() {
+            return;
+        }
+        let ambient_entities = self.mission.ambient_entities().copied().collect::<Vec<_>>();
+        let frame = self
+            .render_world_frame(&ambient_entities, &self.renderable_map_chains)
+            .expect("qualified selector scheduler renders the authoritative world frame");
+        self.commit_world_frame_feedback(&frame)
+            .expect("qualified selector scheduler commits validated draw masks");
     }
 
     pub(crate) fn commit_world_frame_feedback(
@@ -2149,7 +2211,6 @@ impl SessionRecord {
             ));
         }
         let source_render_inputs = self.source_render_inputs(map_mode)?;
-        let notification_feedback = bridge.notification_feedback;
         let input = PresentationFrameInput {
             generation: query.generation,
             tick: query.tick,
@@ -2181,51 +2242,8 @@ impl SessionRecord {
             overlay: bridge.overlay,
             lighting_receipt: Some(self.lighting_receipt),
         };
-        let mut goat_candidate = self.selector_frames.clone().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "presentation source renderer has no Goat selector clocks",
-            )
-        })?;
-        let mut archer_candidate = self.archer_selector_frames.clone().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "presentation source renderer has no Archer selector clocks",
-            )
-        })?;
-        let mut firefly_candidate = self.firefly_selector_frames.clone().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "presentation source renderer has no Firefly selector clocks",
-            )
-        })?;
-        let mut villager_candidate = self.villager_selector_frames.clone().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "presentation source renderer has no villager selector clocks",
-            )
-        })?;
-        let mut fireball_candidate = self.fireball_selector_frame.clone().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "presentation source renderer has no Fireball selector clock",
-            )
-        })?;
-        let mut possession_candidate = self.possession_selector_frame.clone().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "presentation source renderer has no Possession selector clock",
-            )
-        })?;
-        let mut castle_candidate = self.castle_selector_frame.clone().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "presentation source renderer has no Castle selector clock",
-            )
-        })?;
         let mut presentation =
             std::mem::replace(&mut self.presentation_frame, PresentationFrameState::new(0));
-        let mut feedback_candidate = None;
         let result =
             presentation.finalize(input, &assets.tablesn, &assets.indexed_overlays, || {
                 let frame = self
@@ -2234,29 +2252,6 @@ impl SessionRecord {
                 let receipt = frame
                     .source_execution_receipt()
                     .map_err(|error| PresentationFrameError(error.0))?;
-                goat_candidate
-                    .latch_draw_attempts(frame.goat_selector_mask)
-                    .map_err(PresentationFrameError)?;
-                archer_candidate
-                    .latch_draw_attempts(frame.archer_selector_mask)
-                    .map_err(PresentationFrameError)?;
-                firefly_candidate.latch_draw_attempts(frame.firefly_selector_mask);
-                villager_candidate
-                    .latch_draw_attempts(frame.frozen_actor_selector_mask)
-                    .map_err(PresentationFrameError)?;
-                fireball_candidate.latch_draw_attempt(frame.fireball_draw_attempted);
-                possession_candidate.latch_draw_attempt(frame.possession_draw_attempted);
-                castle_candidate.latch_draw_attempt(frame.castle_draw_attempted);
-                feedback_candidate = Some((
-                    goat_candidate,
-                    archer_candidate,
-                    firefly_candidate,
-                    villager_candidate,
-                    fireball_candidate,
-                    possession_candidate,
-                    castle_candidate,
-                    frame.goat_selector_mask,
-                ));
                 Ok(SourceRenderedFrame {
                     map_world: map_mode.then(|| frame.indices.clone()),
                     indices: frame.indices,
@@ -2264,25 +2259,7 @@ impl SessionRecord {
                 })
             });
         self.presentation_frame = presentation;
-        let result =
-            result.map_err(|error| AbiError::new(MC_STATUS_GENERATION_MISMATCH, error.0))?;
-        if result.newly_committed {
-            let (goat, archer, firefly, villager, fireball, possession, castle, goat_mask) =
-                feedback_candidate
-                    .expect("newly committed presentation owns validated clock candidates");
-            self.selector_frames = Some(goat);
-            self.archer_selector_frames = Some(archer);
-            self.firefly_selector_frames = Some(firefly);
-            self.villager_selector_frames = Some(villager);
-            self.fireball_selector_frame = Some(fireball);
-            self.possession_selector_frame = Some(possession);
-            self.castle_selector_frame = Some(castle);
-            self.selector_draw_feedback = Some((self.state.tick, goat_mask));
-            if let Some((active, state, timer)) = notification_feedback {
-                self.notification_draw_feedback = Some((self.state.tick, active, state, timer));
-            }
-        }
-        Ok(result)
+        result.map_err(|error| AbiError::new(MC_STATUS_GENERATION_MISMATCH, error.0))
     }
 
     pub(crate) fn selector_frame_batch(
@@ -2374,9 +2351,38 @@ impl SessionRecord {
         Ok(receipt)
     }
 
+    pub(crate) fn game_snapshot(&self) -> sim_core::game_session::GameSnapshot {
+        let fire = self.context.spell_fire.as_ref();
+        sim_core::game_session::GameSnapshot {
+            tick: self.state.tick,
+            event_head: self.event_head,
+            state_hash: state_hash(&self.state),
+            conformance_hash: conformance_hash_v2(&self.state, &self.context),
+            player_pose: sim_core::game_session::PlayerPose {
+                x: self.state.position.x,
+                y: self.state.position.y,
+                z: self.state.position.z,
+                yaw: self.state.yaw,
+                display_pitch: self.state.display_pitch,
+                effective_pitch: self.state.effective_pitch,
+                roll: self.state.roll_accumulator,
+            },
+            player_motion: sim_core::game_session::PlayerMotion {
+                target_speed: self.state.target_speed,
+                actual_speed: self.state.actual_speed,
+                strafe_speed: self.state.strafe_speed,
+            },
+            caster_mana: fire.map_or(0, |fire| fire.caster.mana),
+            objective_count: u32::try_from(self.world.runtime().objectives.len())
+                .expect("validated objective count fits u32"),
+            action_sequence: u64::from(self.fire_sequence),
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> McSessionSnapshotV2 {
         let player = &self.world.players()[usize::from(self.world.runtime().local_player_slot)];
         let fire = self.context.spell_fire.as_ref();
+        let game = self.game_snapshot();
         let selected = fire.map_or(0, |fire| fire.selected_spell_ui_index);
         let left_holder = fire.map_or(0, |fire| fire.left_holder_index);
         let right_holder = fire.map_or(0, |fire| fire.right_holder_index);
@@ -2391,26 +2397,25 @@ impl SessionRecord {
         };
         let left_spell_slot = holder_model(left_holder).unwrap_or(player.left_spell_slot);
         let right_spell_slot = holder_model(right_holder).unwrap_or(player.right_spell_slot);
-        let caster_mana = fire.map_or(0, |fire| fire.caster.mana);
         McSessionSnapshotV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McSessionSnapshotV2>(),
             generation: self.generation,
-            tick: self.state.tick,
-            event_head: self.event_head,
-            state_hash: state_hash(&self.state),
-            conformance_hash: conformance_hash_v2(&self.state, &self.context),
+            tick: game.tick,
+            event_head: game.event_head,
+            state_hash: game.state_hash,
+            conformance_hash: game.conformance_hash,
             entity_index: self.state.entity_index,
-            x: self.state.position.x,
-            y: self.state.position.y,
-            z: self.state.position.z,
-            yaw: self.state.yaw,
-            display_pitch: self.state.display_pitch,
-            effective_pitch: self.state.effective_pitch,
-            roll_accumulator: self.state.roll_accumulator,
-            target_speed: self.state.target_speed,
-            actual_speed: self.state.actual_speed,
-            strafe_speed: self.state.strafe_speed,
+            x: game.player_pose.x,
+            y: game.player_pose.y,
+            z: game.player_pose.z,
+            yaw: game.player_pose.yaw,
+            display_pitch: game.player_pose.display_pitch,
+            effective_pitch: game.player_pose.effective_pitch,
+            roll_accumulator: game.player_pose.roll,
+            target_speed: game.player_motion.target_speed,
+            actual_speed: game.player_motion.actual_speed,
+            strafe_speed: game.player_motion.strafe_speed,
             phase: self.state.entity_phase,
             last_resolution: self.last_resolution,
             profile: profile_code(self.world.profile().cave_mode),
@@ -2427,9 +2432,10 @@ impl SessionRecord {
             right_spell_holder: right_holder,
             selected_spell_holder: selected_holder,
             reserved_0: 0,
-            caster_mana,
+            caster_mana: game.caster_mana,
             maptype_music: self.world.runtime().maptype_music,
-            fire_sequence: self.fire_sequence,
+            fire_sequence: u32::try_from(game.action_sequence)
+                .expect("compatibility action sequence fits u32"),
             reserved: [0; 4],
         }
     }
@@ -2521,13 +2527,14 @@ impl SessionRecord {
             // coalesces them with that frame's rows using the source pool.
             return;
         }
-        if let Some((_, active, state, timer)) = self.notification_draw_feedback.take() {
-            self.mission.player_notification_active = active;
-            self.mission.player_notification_state = state;
-            self.mission.player_notification_timer = timer;
-            if !active {
+        if self.mission.player_notification_active {
+            let next_timer = self.mission.player_notification_timer.wrapping_sub(1);
+            if self.mission.player_notification_timer <= 0 {
+                self.mission.player_notification_active = false;
+                self.mission.player_notification_state = 0;
                 self.mission.player_notification_id = 0;
             }
+            self.mission.player_notification_timer = next_timer;
         }
         self.mission.finish_hud_draw(self.state.tick);
         if let (Some(frames), Some(bank)) =
@@ -2773,13 +2780,14 @@ impl SessionRecord {
                 } else {
                     match self.mission.player_action {
                         sim_core::level1_mission::PLAYER_ACTION_ACTIVE => {
-                            step_outer_turn_with_context(
+                            step_outer_turn_with_context_and_tuning(
                                 &mut self.state,
                                 command,
                                 0,
                                 world.profile(),
                                 &self.terrain,
                                 &mut self.context,
+                                self.definition_tuning.flight,
                             )
                         }
                         sim_core::level1_mission::PLAYER_ACTION_DYING => {
@@ -3051,6 +3059,7 @@ impl SessionRecord {
             self.append_event(record);
             self.music_start_armed = false;
         }
+        self.schedule_world_frame_feedback();
     }
 
     pub(crate) fn apply_goat_event_side_effects(
@@ -4269,6 +4278,9 @@ impl SessionRecord {
                 let mut record = self.next_event_base(MC_EVENT_GOAT_ENGAGEMENT_BOUNDARY, live_hash);
                 record.entity_index = entity_index;
                 record.value_0 = i32::from(target_entity_index);
+                if target_entity_index == self.state.entity_index {
+                    record.player_index = i16::from(self.world.runtime().local_player_slot);
+                }
                 record
             }
         }

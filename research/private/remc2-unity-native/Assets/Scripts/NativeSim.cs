@@ -2477,6 +2477,90 @@ namespace MagicCarpet.Native
         internal static extern int mc_native_session_destroy(ulong handle);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_contract_json_v1(
+            IntPtr buffer,
+            uint capacity,
+            out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_open_v1(
+            byte[] packageDir,
+            uint packageDirLength,
+            byte[] closurePath,
+            uint closurePathLength,
+            byte[] assetCachePath,
+            uint assetCachePathLength,
+            out ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_open_workspace_v1(
+            byte[] packageDir,
+            uint packageDirLength,
+            byte[] closurePath,
+            uint closurePathLength,
+            byte[] assetCachePath,
+            uint assetCachePathLength,
+            byte[] workspacePath,
+            uint workspacePathLength,
+            out ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_destroy_v1(ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_snapshot_json_v1(
+            ulong handle,
+            IntPtr buffer,
+            uint capacity,
+            out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_step_json_v1(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            byte[] commandJson,
+            uint commandJsonLength);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_reset_v1(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_events_json_v1(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            ulong cursor,
+            uint limit,
+            IntPtr buffer,
+            uint capacity,
+            out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_audio_json_v1(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            ulong eventSequence,
+            IntPtr buffer,
+            uint capacity,
+            out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_session_presentation_asset_json_v1(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            byte[] semanticId,
+            uint semanticIdLength,
+            IntPtr buffer,
+            uint capacity,
+            out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_session_reset(
             ulong handle,
             out SessionSnapshot snapshot,

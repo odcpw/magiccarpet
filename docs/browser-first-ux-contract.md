@@ -1,7 +1,11 @@
 # Browser-first UX, onboarding, accessibility, and comfort contract
 
+> **Subordinate as of 2026-08-21.** Browser-first is retired. Reuse relevant UX,
+> accessibility and comfort requirements for Unity or optional browser clients;
+> this file is not a foundation or release gate.
+
 Version: 1.0  
-Status: Track S planning contract  
+Status: optional-client UX research
 Owner bead: `mc-9od`  
 Applies first to: current stable 64-bit desktop Chrome on supported Windows
 and Linux

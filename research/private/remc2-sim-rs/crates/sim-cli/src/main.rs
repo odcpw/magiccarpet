@@ -1,4 +1,7 @@
 use atlas_registry::AtlasRegistry;
+mod game_authoring;
+mod game_contract;
+
 use sim_core::legacy_terrain::LegacyTerrain;
 use sim_core::level1_mission::{
     Level1FeatureOracleBytes, Level1ResetSourceSlot,
@@ -87,10 +90,11 @@ fn main() -> ExitCode {
         Some("find-castle-site") => find_castle_site(),
         Some("reset-from-authored") => reset_from_authored(),
         Some("inspect-level2") => inspect_level2(),
+        Some("game") => game_contract::run(),
         Some("trace") => trace(),
         _ => {
             eprintln!(
-                "usage: sim-cli <atlas-check|classic-hd-qualify|conformance-validate|find-castle-site|inspect-forward|inspect-idle-diff|inspect-level2|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
+                "usage: sim-cli <atlas-check|classic-hd-qualify|conformance-validate|find-castle-site|game|inspect-forward|inspect-idle-diff|inspect-level2|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
             );
             ExitCode::from(2)
         }

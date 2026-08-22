@@ -1,305 +1,168 @@
-# Magic Carpet program charter
+# Carpet Flight program charter
 
-Version: 1.0  
-Effective: 2026-07-23  
-Status: governing program decision  
-Supersedes: the single-product assumptions in product promise v0.4 and the
-associated pure-C#/Unity-first, full replacement-MC2 plan  
-Tracking epics: `mc-znpx`, `mc-dl0r`, `mc-w58`
+Status: **binding operator direction, accepted 2026-08-21**
+Repository: `/home/oliver/Projects/odcpw/magiccarpet`
+Scope: private engine development and owner-local MC2 compatibility; commercial
+release remains a later explicit gate.
 
-## Program purpose
+## Purpose
 
-Honor Magic Carpet 2 in two complementary ways:
+Build one extensible game engine, **Carpet Flight**, from the working remc2 and
+Rust/Unity implementation already in this repository.
 
-1. preserve, understand, run, test, and where rights permit modernize the
-   original game for lawful owners; and
-2. create a beautiful original carpet-flight game that carries forward the
-   experience of expressive flight, finite world mana, terrain-changing magic,
-   creatures, rival sorcerers, strategic escalation, atmosphere, and social
-   play without copying the original game's code or expression.
+The first canonical game configuration is privately playable Magic Carpet 2
+using Oliver's owned local assets. The same engine must then support replacement
+assets, reskinning, retuning, changed flight and spell rules, changed enemy AI,
+new worlds, and eventually a substantially different independently branded
+game. The purpose of the MC2 path is both preservation and a demanding real
+first customer of the engine.
 
-The two outcomes are related but not the same product, repository, license, or
-release decision.
+This direction supersedes the former two-product, separate-repository,
+clean-slate C# successor, browser-first, and level-by-level-before-API plans.
+Those records may retain useful evidence, but they no longer select work.
 
-## Track P: private preservation and oracle
+## Permanent architecture decisions
 
-Track P uses the exact owned MC2 build and the existing reconstruction
-ecosystem:
+1. **One engine.** There is no second successor gameplay implementation and no
+   presumed sibling `carpet-flight` repository.
+2. **remc2 is the canonical MC2 source implementation.** Its behavior and the
+   accepted Rust port provide the compatibility reference for `MC2-owned`.
+3. **Rust owns gameplay authority.** `sim-core` or a focused Rust domain crate
+   owns definitions, sessions, ordering, RNG, rules, AI, world state, hashes,
+   saves and replays. No client owns a parallel simulation.
+4. **Unity is the primary player and editor.** It owns input adaptation,
+   presentation, audio playback, HUD, tools and the future OpenXR/VR shell.
+   Unity physics is not authoritative gameplay physics.
+5. **Three.js is an inspector and optional client.** It provides rapid
+   visualization, authoring, replay inspection and browser experiments over the
+   same Rust contract. It is not a competitor to Unity or a release gate.
+6. **The AI harness uses a semantic API.** It discovers and changes supported
+   game meaning through typed, versioned operations. It never edits raw memory,
+   guesses source offsets or mutates a client behind the engine's back.
+7. **Games are packages over capabilities.** Packages provide definitions,
+   bounded behavior graphs, worlds, presentation bindings and assets. The Rust
+   engine alone provides compiled capabilities.
 
-- `turican0/remc2`;
-- `thobbsinteractive/magic-carpet-2-hd`;
-- `turican0/dosbox-x-remc2`;
-- `turican0/MagicBalls`;
-- Ghidra, Binary Ninja, DOSBox, debuggers, captures, manuals, guides, and
-  controlled play.
+## Canonical product sequence
 
-Its goals are:
+### Foundation proof
 
-- reproduce current native remc2/MC2HD builds with Oliver's owned data;
-- preserve the deterministic input, internal-state comparison, earliest
-  divergence, save/checkpoint, and all-realm regression workflow;
-- understand the recovered simulation, flight, terrain, spells, AI, campaign,
-  formats, sound, UI, and network behavior;
-- identify and document remaining divergences or fragile reconstructed areas;
-- determine whether a headless simulation step, stable compatibility API, and
-  browser/Wasm owner-data experiment are technically feasible;
-- study MagicBalls as a modern-renderer precedent;
-- contribute general fixes or documentation upstream when scope, license, and
-  provenance permit; and
-- preserve an exact, reproducible private reference baseline.
+Build the authoring boundary around the successful Level 1 route before broad
+campaign expansion:
 
-Track P may use original names, owned assets, exact addresses, reconstructed
-source, raw state, and original formats inside the private lab. None of those
-permissions imply redistribution.
+1. extract a transport-neutral Rust `GameAdapter`/`GameSession` contract while
+   keeping the sealed Level 1 implementation intact;
+2. define the versioned package, immutable `GameDefinition`, semantic catalog,
+   definition transaction and client contracts;
+3. expose `MC2-owned/level1` through those contracts and preserve a fixed,
+   non-no-op accepted compatibility corpus through a built native consumer;
+4. prove Unity plus a minimal headless TypeScript consumer observe the same
+   normalized Rust domain values and cannot alter gameplay by polling; and
+5. run a synthetic `custom-proof` package that changes one asset, one flight
+   parameter, one spell rule and one enemy policy with byte-identical engine
+   and client executables.
 
-### Track P release states
+Only package artifacts may differ between baseline and custom runs. Each of the
+four changes needs a causal one-factor observation and a negative control.
 
-1. `PRIVATE_RESEARCH`: local builds and evidence only.
-2. `PRIVATE_OWNER_BUILD`: Oliver's own native/browser experiment using his
-   local data; not shared.
-3. `SOURCE_OR_PATCH_CANDIDATE`: only after exact reconstructed-code license and
-   lineage review.
-4. `OWNER_DATA_PRESERVATION_RELEASE`: only after counsel/rights-holder review,
-   no-bundled-data proof, branding decision, source obligations, installer and
-   security review, and an explicit release gate.
+### MC2 completion
 
-A browser page is distribution even when it asks the user to supply original
-data. Track P does not call itself legally cleared merely because it is
-noncommercial or requires ownership.
+After the foundation proof, migrate the remaining MC2 campaign into one shared
+engine. Later levels populate package data or add reusable compiled
+capabilities; they do not create Level-N public sessions, ABIs or Unity
+authorities. Existing Level 2 work remains valuable implementation evidence but
+is downstream of the neutral foundation.
 
-## Track S: original commercial successor
+### Original Carpet Flight product
 
-Track S is a new game and a new codebase.
+Use the same engine and semantic API to replace MC2-specific content and evolve
+the game into an independent commercial successor. Desired later capabilities
+include original art and audio, improved flight/combat/AI, native VR, generated
+asset workflows, real-city world packs, voxel battlefields, destruction and
+water simulation. Each enters as a named package, provider, compiled capability
+or client adapter; none is permission to fork the engine.
 
-Its promise:
+## Semantic authoring boundary
 
-> Fly a living magic carpet through sublime, reactive worlds—including
-> recognizable transformed cities—where momentum, finite magical resources,
-> creatures, rivals, weather, terrain and building destruction, strongholds,
-> and multiplayer strategy turn every 20-minute expedition into a story.
-
-Track S owns:
-
-- a new product name, world, lore, characters, factions, spells, creatures,
-  progression, campaign, objectives, UI language, fonts, icons, art, animation,
-  textures, VFX, music, sound, maps, and marketing;
-- independently designed simulation and networking code;
-- original or properly licensed Blender and procedural asset pipelines;
-- browser-first delivery and current desktop Chrome certification;
-- authoritative hosted multiplayer supporting solo, co-op, PvP, teams, and AI
-  through one simulation foundation;
-- later native Windows/Linux and OpenXR paths;
-- provider-based heightfield, bounded structural destruction, and later
-  volumetric or real-city worlds; and
-- a mod/content architecture defined for the successor rather than for MC2.
-
-Track S is inspired by functional game-design ideas and independently measured
-feel. It is not an MC2 compatibility layer, a 25-realm reproduction, or a
-replacement-expression version of the original campaign.
-
-## Shared bridge
-
-The tracks may share only reviewed, independently expressed material in these
-classes:
-
-- general engineering techniques;
-- public framework/tool knowledge;
-- original project design;
-- externally observable mechanics stated at a high level;
-- measurements accepted through the provenance protocol;
-- synthetic tests and independently chosen vectors;
-- deterministic replay/hash/divergence methodology;
-- browser performance, lifecycle, input, audio, and networking constraints;
-- generic simulation-step, event, presentation, terrain-provider, save, and
-  authority contracts; and
-- original assets created for Track S.
-
-The tracks do not share:
-
-- reconstructed/decompiled source;
-- original addresses, names, memory/state layouts, copied control flow, dumps,
-  recordings, or regression images;
-- original files, levels, tables, art, audio, text, fonts, UI, maps, branding,
-  trade dress, or extracted assets;
-- exact bulk constants or catalogs without individual transfer review; or
-- MagicBalls/remc2 structures disguised behind renamed wrappers.
-
-Every bridge artifact names source track, destination track, source class,
-permitted use, prohibited detail, author, reviewer, and exact hash.
-
-## Technical architecture policy
-
-### Track P
-
-Start from the reconstructed C++ ecosystem because fidelity and preservation
-are the purpose. Do not rewrite working recovered behavior merely to satisfy
-the successor's architecture.
-
-Evaluate:
-
-1. current remc2 as the canonical reconstructed source;
-2. MC2HD for releases, packaging, current community changes, and enhanced
-   native presentation;
-3. the DOSBox fork as the exact original-executable oracle;
-4. MagicBalls as evidence about modern presentation integration;
-5. a minimal headless/step boundary;
-6. a stable C ABI only if it reduces preservation, testing, or Wasm risk; and
-7. Emscripten/Wasm only after native regression is reproduced.
-
-### Track S
-
-Keep authoritative simulation independent from presentation and engine
-objects. `docs/stack-decision.md` provisionally selects Unity 6 LTS/C#/URP,
-Unity Web, Linux headless authority, Blender LTS/`bpy`, and a small TypeScript
-browser shell. The measured proof may retain, remediate, or replace that
-baseline.
-
-Unity is the provisional client/editor baseline because it offers:
-
-- CLI and batch automation;
-- MCP editor control;
-- mature Blender/FBX/GLB import;
-- URP, Shader Graph, VFX, animation, profiling, physics tools, UI, audio, and
-  asset workflows;
-- Windows/Linux/Web targets; and
-- OpenXR support for later native VR.
-
-Unity is not automatically authoritative. Authoritative movement, combat,
-resources, objectives, world edits, AI decisions, saves, replays, and network
-state must remain deterministic and testable without rendering, PhysX result
-order, wall-clock time, or editor state.
-
-Browser-native Three.js/WebGPU and a native/Wasm Rust or C++ core are invoked
-only if the Unity proof misses a declared hard gate in bootstrap size, memory,
-threading, server parity, iteration reliability or city streaming. Godot is a
-contingency if both primary paths fail. The decision gate uses the same
-synthetic workload and evidence axes for every invoked candidate.
-
-## Repository and access topology
+The stable operation family is:
 
 ```text
-/home/oliver/Projects/odcpw/magiccarpet
-    PRIVATE_LAB
-    owned data, evidence, upstream reconstruction checkouts,
-    preservation builds, source register, planning, private beads
-
-/home/oliver/Projects/odcpw/carpet-flight
-    SUCCESSOR_CANDIDATE
-    new history, original code/assets only, stack selected later,
-    no recursive copies or shared Git/artifact caches
-
-optional future preservation release root
-    PRESERVATION_RELEASE_CANDIDATE
-    created only after rights/release gate; never the private lab itself
+capabilities  describe  get  set(stage)  validate  diff
+apply  apply-status  rollback  reset  snapshot
 ```
 
-Git initialization, first commit, and remote creation still require the
-project-specific identity rule. The current private lab is never converted
-into either release repository.
+`set` stages only. `validate` and `diff` do not mutate. `apply` compare-and-swaps
+one immutable definition revision into an authoring workspace and returns a
+durable receipt. Existing sessions remain on their old definition until an
+explicit reset or reopen binds the new one and advances session generation.
+Rollback is a new guarded forward transaction to a retained content-addressed
+graph, not an unconditional history rewind.
 
-## Program milestones
+Every writable descriptor names a stable semantic ID, type, units, bounds,
+default/effective value, dependencies, side effects, provenance and mutation
+timing. Scheduled compiled capabilities also name their producer, dispatch
+phase/key, handler, same-pass epilogue, following-pass cleanup, authoritative
+read/write set and RNG/event effects.
 
-### P0 — Preservation baseline
+## Authority and determinism invariants
 
-- pin all upstream revisions and license signals;
-- complete the MC2HD clone and submodule inventory;
-- reproduce stable/development native builds with owned data;
-- run at least one deterministic regression;
-- document known exclusions, including current skipped/divergent levels;
-- establish private retention and build manifests.
+- Rust is the sole writer of live simulation state.
+- A validated immutable definition and content-addressed package/artifact graph
+  are the only package inputs to a session.
+- Client observation is read-only. Zero, one or many presentation polls between
+  identical steps must not change simulation hashes, RNG or gameplay events.
+- Preserve fixed-width/wrapping arithmetic, relevant source order, RNG draw
+  order, event/audio order, reset isolation, save/replay identities and hashes.
+- Source class/model/action/slot identifiers remain inside the MC2 compatibility
+  adapter; public authoring uses semantic IDs.
+- Packages contain no arbitrary native code, generated Rust or hidden I/O.
+- Unknown schema, capability, dependency, reference, hash, provenance or timing
+  fails closed before publication.
 
-### P1 — Preservation modernization proof
+## Private data and later release
 
-- prove a clean frame/step boundary or document blockers;
-- run headless where feasible;
-- compare native state hashes;
-- prove or falsify a minimal Wasm segment;
-- study one MagicBalls state-to-render exchange;
-- decide whether an owner-only browser prototype is worth building.
+This repository is a private lab. Owned MC2 data, derived caches, captures and
+source-shaped compatibility artifacts remain owner-local and outside releases.
+They are valid private runtime inputs and do not block engine work.
 
-### S0 — Successor stack proof
+A commercial/public build is a later, explicit review of content rights,
+provenance, dependencies, telemetry, privacy, naming and distribution. That
+review may require original replacement content; it does not force a separate
+engine or a fictitious internal clean-room transfer process today.
 
-- test the pinned Unity CLI/Pipeline/MCP, URP, Chrome and Blender workflow;
-- record the later native OpenXR package path without installing XR packages
-  into S0;
-- test deterministic simulation outside presentation;
-- run Unity Web against the declared synthetic scene and budgets; invoke a
-  browser-native challenger on the same proof only after a hard-gate miss;
-- test Linux headless authority and four Chrome clients;
-- record bootstrap, memory, frame, asset, network, iteration-time, and agent
-  automation evidence;
-- select the stack and fallback.
+## Work-selection law
 
-### S1 — First social demo
+- The canonical recovery and execution plan is
+  [`carpet-flight-engine-plan.md`](carpet-flight-engine-plan.md).
+- Until its two-package foundation graph is accepted, do not activate broad
+  Level-N, monolith-rewrite, browser, multiplayer, voxel, city, VR or release
+  waves.
+- A feature is not delivered by a schema, helper, mock, direct setter, internal
+  test or refusal path. Its positive path must cross the nearest real consumer.
+- Decomposition follows a consumer-owned semantic seam. Moving code without
+  establishing that seam is not progress.
+- Existing Beads and historical plans are evidence indexes, not authority.
+  Reconcile them to this charter before selecting work.
 
-One original 15–25 minute world, playable from a link:
+## Canonical documents
 
-- expressive carpet flight;
-- Fireball-like direct spell under a new public identity;
-- claim/transport/secure finite magical energy;
-- one stronghold/carrier loop;
-- one rival controller and at least four hostile ecological roles;
-- mountains, water, meadows, trees, volcano, storm, day/dusk;
-- HUD, minimap, objectives, death/recovery, results/rematch;
-- spatial environmental sound and original adaptive music;
-- solo, two-human co-op versus AI, two-human PvP, and mixed human/AI proof;
-- authoritative hosted simulation, reconnect, replay/hash evidence; and
-- original/proxy/licensed content with a complete manifest.
+Read these in order:
 
-### S2 — City vertical slice
+1. this charter;
+2. [`product-promise.md`](product-promise.md);
+3. [`modular-engine-game-module-contract.md`](modular-engine-game-module-contract.md);
+4. [`stack-decision.md`](stack-decision.md);
+5. [`private-public-boundary.md`](private-public-boundary.md) and
+   [`provenance-policy.md`](provenance-policy.md);
+6. the temporary recovery and execution plan.
 
-- one recognizable but transformed city district generated from properly
-  licensed geographic/building data;
-- streamed visual tiles and a bounded authoritative interaction layer;
-- selected destructible buildings/terrain rather than universal granular
-  simulation;
-- original factions, objective structure, art direction, audio identity, and
-  progression;
-- measured browser and native quality tiers.
+`AGENTS.md` and `README.md` summarize current repository operation. Other design
+documents are subordinate capability notes or dated historical evidence.
 
-### S3 — Commercial production decision
+## Change control
 
-Use S1/S2 evidence to choose:
-
-- campaign scale and structure;
-- business and source-license model;
-- launch emphasis among solo/co-op/PvP;
-- content-production budget;
-- supported native/VR targets;
-- hosting and moderation posture; and
-- whether preservation work receives a separately cleared public release.
-
-## Non-goals
-
-- Claiming the reconstructed engine is cleanly MIT, GPL, or commercially
-  shippable without resolving the contradictory lineage/license signals.
-- Rebuilding all 25 MC2 realms as the commercial successor's campaign.
-- Copying MC2 assets, names, story, UI, spell catalog, creatures, levels,
-  constants, or reconstructed implementation into Track S.
-- Forcing Track P through Track S's engine abstraction.
-- Forcing Track S to use remc2 merely because preservation work uses it.
-- Choosing Unity, Three.js, Godot, Rust, C++, or a network library without a
-  reproducible measured gate.
-- Promising fully destructible entire cities, MMO scale, console/mobile parity,
-  or VR launch support before their own evidence gates.
-
-## Decision ownership and change control
-
-Oliver owns product direction. Engineering evidence can recommend but cannot
-silently merge tracks or broaden release authority.
-
-A change requires a recorded decision when it alters:
-
-- the track boundary;
-- source/reconstructed-code access;
-- public release posture;
-- commercial product identity;
-- authoritative simulation stack;
-- browser/native/VR targets;
-- multiplayer authority;
-- city/world representation;
-- repository/access topology; or
-- first-demo feature floor.
-
-All downstream documents and beads must name `P`, `S`, or `SHARED`. An item
-without a track is not implementation-ready.
+Only a new explicit operator decision may reopen one engine versus two, Rust
+authority, Unity's primary role, Three.js's inspector role, or `MC2-owned` as
+the first package. New evidence may refine package schemas, transports,
+conformance cases and implementation order without silently changing those
+decisions.

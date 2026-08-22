@@ -20,6 +20,73 @@ fn camera_history_preserves_raw_wrapping_yaw_until_render_mapping() {
 }
 
 #[test]
+fn zero_one_and_many_presentation_reads_cannot_advance_notification_gameplay_state() {
+    let handles = [
+        open_fixture_with_presentation_cache(),
+        open_fixture_with_presentation_cache(),
+        open_fixture_with_presentation_cache(),
+    ];
+    let presentation_input = source_presentation_input();
+    for handle in handles {
+        with_session_mut(handle, |session| {
+            session.apply_presentation_input(presentation_input)?;
+            session.mission.player_notification_active = true;
+            session.mission.player_notification_id =
+                sim_core::level1_mission::ABILITY_IMPROVED_NAME_SELECTOR_BASE + 16;
+            session.mission.player_notification_state =
+                sim_core::level1_mission::ABILITY_IMPROVED_NOTIFICATION_STATE;
+            session.mission.player_notification_timer = 2;
+            Ok(())
+        })
+        .unwrap();
+    }
+    let query = valid_presentation_frame_query();
+    with_session_mut(handles[1], |session| {
+        session.presentation_frame(query).map(|_| ())
+    })
+    .unwrap();
+    for _ in 0..4 {
+        with_session_mut(handles[2], |session| {
+            session.presentation_frame(query).map(|_| ())
+        })
+        .unwrap();
+    }
+
+    let command = PlayerCommand::default();
+    for handle in handles {
+        with_session_mut(handle, |session| {
+            session.step(command);
+            Ok(())
+        })
+        .unwrap();
+    }
+    let observations = handles.map(|handle| {
+        with_session(handle, |session| {
+            Ok((
+                session.snapshot(),
+                session.live_world_hash_v2(),
+                session.mission.global_rng(),
+                session.events.clone(),
+                session.selector_frames.clone(),
+                session.archer_selector_frames.clone(),
+                session.firefly_selector_frames.clone(),
+                session.villager_selector_frames.clone(),
+                session.fireball_selector_frame.clone(),
+                session.possession_selector_frame.clone(),
+                session.castle_selector_frame.clone(),
+                session.selector_draw_feedback,
+            ))
+        })
+        .unwrap()
+    });
+    assert_eq!(observations[0], observations[1]);
+    assert_eq!(observations[0], observations[2]);
+    for handle in handles {
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+}
+
+#[test]
 fn render_camera_sidecar_exposes_stateful_slope_offset_and_reset() {
     let handle = open_fixture();
     let read = || {
@@ -1349,6 +1416,20 @@ fn source_ordered_world_frame_exposes_supported_families_without_changing_terrai
         0
     );
 
+    let feedback_before_world_read =
+        with_session(handle, |session| Ok(session.selector_draw_feedback)).unwrap();
+    let selector_frames_before_world_read = with_session(handle, |session| {
+        Ok((
+            session.selector_frames.clone(),
+            session.archer_selector_frames.clone(),
+            session.firefly_selector_frames.clone(),
+            session.villager_selector_frames.clone(),
+            session.fireball_selector_frame.clone(),
+            session.possession_selector_frame.clone(),
+            session.castle_selector_frame.clone(),
+        ))
+    })
+    .unwrap();
     let mut world_indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
     let mut world_coverage = vec![0_u8; LEVEL1_VIEW_PIXELS];
     let mut world_info = McTerrainFrameInfoV2::default();
@@ -1398,9 +1479,25 @@ fn source_ordered_world_frame_exposes_supported_families_without_changing_terrai
         world_info.coverage_hash,
         sim_core::terrain_frame::byte_hash(&world_coverage)
     );
-    let feedback =
-        with_session(handle, |session| Ok(session.selector_draw_feedback)).expect("draw feedback");
-    assert!(feedback.is_some());
+    assert_eq!(
+        with_session(handle, |session| Ok(session.selector_draw_feedback)).unwrap(),
+        feedback_before_world_read
+    );
+    assert_eq!(
+        with_session(handle, |session| {
+            Ok((
+                session.selector_frames.clone(),
+                session.archer_selector_frames.clone(),
+                session.firefly_selector_frames.clone(),
+                session.villager_selector_frames.clone(),
+                session.fireball_selector_frame.clone(),
+                session.possession_selector_frame.clone(),
+                session.castle_selector_frame.clone(),
+            ))
+        })
+        .unwrap(),
+        selector_frames_before_world_read
+    );
 
     let first_world_indices = world_indices.clone();
     let first_world_info = world_info;
@@ -1422,7 +1519,7 @@ fn source_ordered_world_frame_exposes_supported_families_without_changing_terrai
     assert_eq!(
         with_session(handle, |session| Ok(session.selector_draw_feedback))
             .expect("repeated draw feedback"),
-        feedback
+        feedback_before_world_read
     );
     assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
 }

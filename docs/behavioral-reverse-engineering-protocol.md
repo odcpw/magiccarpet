@@ -1,7 +1,11 @@
 # Behavioral reverse-engineering protocol
 
+> **Subordinate as of 2026-08-21.** Keep its falsifiable source/runtime evidence
+> methods, but retire Track-P-to-Track-S transfer and separate clean-room framing.
+> Evidence now feeds the private `MC2-owned` adapter and one Rust engine directly.
+
 Version: 0.3  
-Status: accepted private preservation and successor lesson-transfer protocol  
+Status: evidence-method reference; old transfer policy retired
 Tracking bead: `mc-w58.3`  
 Depends on: program charter v1.0, provenance policy v0.5  
 Decision date: 2026-07-23
@@ -90,9 +94,11 @@ prompt; do not improvise hidden prefixes, wrapper state or unusual directories.
 - [`docs/provenance-policy.md`](provenance-policy.md) is controlling for source
   classes, traffic lights, physical separation, reviewers and transfer.
 - [`docs/provenance/private-analysis-campaign-template.md`](provenance/private-analysis-campaign-template.md)
-  is the campaign record.
+  is a historical/subordinate campaign-record template for explicitly
+  authorized private archaeology.
 - [`docs/provenance/analysis-transfer-template.md`](provenance/analysis-transfer-template.md)
-  is the only executable-analysis handoff format.
+  records the retired Track-P-to-Track-S handoff format; it is not a current
+  implementation or release authority.
 - `research/private/source-register.md` is the private source/tool registry.
 - Ghidra is the baseline static-analysis candidate. `mc-51m` pins and verifies
   the exact release, JDK, loader/extensions, analysis options and dynamic path.

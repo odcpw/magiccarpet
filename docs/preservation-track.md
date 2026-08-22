@@ -1,118 +1,98 @@
-# MC2 preservation and oracle track
+# MC2-owned compatibility and preservation guide
 
-Version: 1.0  
-Status: governing private-track contract  
-Track: `P`
+Status: **subordinate compatibility contract; no longer a separate governing
+track**
+Authority: [`program-charter.md`](program-charter.md)
 
 ## Outcome
 
-Maintain a reproducible, deeply understood, testable MC2 runtime for Oliver's
-owned data, based on the existing reconstruction ecosystem and checked against
-the original executable.
+Preserve and complete MC2 behavior as the first real Carpet Flight game package
+while extracting one reusable engine. Private owner-local MC2 play and exact
+compatibility research are legitimate project outcomes; they do not form a
+second product or a one-way clean-room lesson pipeline.
 
-This track preserves history and fidelity. It does not create the commercial
-successor and does not imply public distribution rights.
+## Canonical inputs
 
-## Canonical sources
+- remc2 submodule commit
+  `6806c7204d17220ecc0430759f784aea8ee2ddb2` is the source implementation;
+- Oliver's owned local data is the authoritative private content input;
+- the remc2 level exporter, asset closure and decoded cache are the current
+  production import route;
+- current Rust runtime behavior and fresh verification at the candidate revision
+  outrank historical documents or Bead claims; and
+- original-binary/DOSBox/decompiler oracle work requires an explicit Oliver
+  request. The normal route uses remc2 source and owned-data packages.
 
-- Original executable/data: exact hashes in the private source register.
-- Reconstructed source: `turican0/remc2`, pinned per experiment.
-- HD release/community lane: `thobbsinteractive/magic-carpet-2-hd`.
-- Original oracle: `turican0/dosbox-x-remc2`.
-- Modern renderer precedent: `turican0/MagicBalls`.
-- Static/dynamic analysis: Ghidra, Binary Ninja, DOSBox, debugger and controlled
-  capture tools registered per campaign.
+## Compatibility laws
 
-Branch names are never sufficient identifiers. Each build, recording,
-snapshot, result, or note records exact commits, source-data profile, compiler,
-architecture, configuration, and artifact hash.
+- Preserve fixed-width/wrapping arithmetic, source-relevant slot and pass order,
+  RNG draw order, event/audio order, reset isolation and deterministic hashes.
+- A behavior identity includes ordinary producer/constructor, scheduler and
+  dispatch key, handler, same-pass epilogue/hide, following-pass
+  cleanup/reclaim, authoritative carriers and downstream consumer.
+- External MC2 levels are one-based and remc2 indexes are zero-based; conversion
+  occurs exactly once at the import boundary.
+- Unknown profiles, assets, capabilities and source mappings fail closed.
+- Owner data, derived caches, captures and exact private artifacts remain
+  outside Git and distributable builds.
+- A helper, direct setter, fixture-only entity, internal adapter call or
+  deterministic self-agreement does not prove the real production route.
 
-## Fidelity workflow
+## Relationship to the neutral engine
 
-```text
-owned original executable in instrumented DOSBox
-   + deterministic input
-   + exact instruction/checkpoint trigger
-   -> registers and private state snapshots
+Source IDs and exact MC2 layouts may remain inside the `MC2-owned`
+compatibility adapter. Public engine/package/client APIs use stable semantic
+IDs and neutral definitions.
 
-pinned native reconstructed build
-   + same input and checkpoint
-   -> state comparison
-   -> first divergence
-   -> explanation/fix/known-difference record
-```
+The existing Level 1 implementation should be sealed behind a Rust domain
+`GameAdapter`/`GameSession` contract rather than rewritten first. Existing
+Level 1/2 native and Unity APIs are grandfathered compatibility surfaces with an
+explicit inventory and retirement disposition; they may not justify new
+Level-N APIs.
 
-Visual similarity is supplementary. Internal state, replay, save/load, RNG
-ordering, entity state, terrain, economy, AI, and lifecycle comparisons are
-the primary fidelity evidence where available.
+Every later MC2 feature slice must either:
 
-## Modernization boundaries
+- add validated package data through the neutral schema; or
+- add one reusable compiled Rust capability with a stable semantic identity.
 
-Allowed private experiments include:
+Level-specific source behavior may remain a package binding only when the
+pinned implementation proves it is truly content-specific.
 
-- build-system and portability repair;
-- renderer/audio/input/filesystem adapters;
-- headless and deterministic-step extraction;
-- native 64-bit correctness;
-- regression tooling;
-- owner-local asset discovery/import;
-- high-resolution and accessibility experiments;
-- MagicBalls/Godot comparison;
-- C ABI and Wasm spikes;
-- private multiplayer observation; and
-- private VR presentation experiments.
+## Level 1 conformance corpus
 
-Every change states whether it is:
+The foundation requires a versioned, non-no-op Level 1 corpus manifest binding:
 
-- fidelity correction;
-- portability repair;
-- presentation modernization;
-- developer tooling;
-- deliberate behavior deviation; or
-- unresolved experiment.
+- exact owner package/cache and source revision identities;
+- exact engine/plugin build identity;
+- ordinary input command traces and seed;
+- accepted state/conformance hashes;
+- selected snapshots, ordered events and audio; and
+- provenance, invocation, result and named limitations.
 
-## Browser proof
+Run it through a built external native consumer of the neutral domain route and
+through the sealed legacy route in the same build. Fixed accepted observations
+prevent both routes from drifting together. The existing internal facade and
+Unity determinism tests are useful seeds, but their two-run self-comparison is
+not the fixed corpus.
 
-The browser proof is incremental:
+## Campaign completion
 
-1. compile a noninteractive support component;
-2. compile deterministic simulation for a bounded checkpoint;
-3. load owner-selected local data without upload;
-4. advance one level segment and compare native/Wasm state;
-5. drive a minimal renderer/audio/input shell;
-6. measure memory, startup, filesystem, user-gesture audio, worker/thread and
-   background-tab behavior;
-7. decide whether a complete owner-only browser build is viable.
+Level 1 is the foundation fixture. Level 2 work already contains valuable
+source, carrier, dispatch and transition evidence, but broad Level 2 completion
+resumes only after the package/API/client foundation and custom-package proof.
+Levels 2 onward then migrate through the same engine without reopening sealed
+Level 1 facts unnecessarily.
 
-No public URL or friend build follows automatically.
+“Whole MC2 complete” requires one shared campaign engine with all required
+terrain/flight, entity scheduling, RNG, combat, economy, spells, objectives,
+audio/effects, reset/replay/hash, save and client behavior reachable through
+real owner inputs. It is not established by a sequence of isolated level demos.
 
-## Upstream respect
+## Upstream and release posture
 
-- Preserve authorship and Git history.
-- Do not relabel the reconstruction as our work.
-- Prefer upstreamable portability, tests, docs, and bounded fixes where terms
-  permit.
-- Coordinate before presenting a preservation release as a continuation.
-- Record contributions, licenses, notices, and source-offer duties.
-- Consider sponsorship or other material support.
-
-## Exit criteria
-
-Track P has a complete first milestone when:
-
-- stable and development native builds are reproducible;
-- one deterministic original/native comparison is reproduced;
-- known divergent/skipped coverage is explicit;
-- private data and evidence retention is sound;
-- the core/host dependency map exists;
-- Wasm/headless feasibility has evidence; and
-- public/private/license decisions remain explicit rather than assumed.
-
-## Related implementation architecture
-
-See
-[`preservation-campaign-seam-geometry.md`](preservation-campaign-seam-geometry.md)
-for the private Rust campaign ownership and source-scheduler hypothesis, and
-[`preservation-program-folding-research.md`](preservation-program-folding-research.md)
-for the constrained-hypergraph, MDL, migration-landscape, and protein-folding
-research behind its post-Level-2 generalization.
+Treat remc2 and other upstream projects respectfully: preserve attribution,
+licenses and commit identities; do not claim reconstructed work as original
+upstream authorship. Private compatibility does not imply public distribution
+approval. A future release uses the separate artifact gate in
+[`provenance-policy.md`](provenance-policy.md) without changing the one-engine
+architecture.

@@ -347,7 +347,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 cache.ContentHash,
                 Is.EqualTo(
-                    "cb58b2190d3f6ed7c676e0180d0dfc909c7fe692e42946a927f887568be2eb8a"));
+                    "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf"));
             Assert.That(
                 cache.ReadOutput("frame/source-frame-census.json"),
                 Is.Not.Empty);

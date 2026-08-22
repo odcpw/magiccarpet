@@ -1,7 +1,12 @@
 # Reversible prototype distribution and licensing guardrails
 
+> **Later release appendix as of 2026-08-21.** Separate-repository and Track S
+> instructions are retired. Use `provenance-policy.md` and
+> `private-public-boundary.md` for the exact future release candidate; this file
+> does not block private engine work.
+
 Version: 1.0  
-Status: Track S pre-prototype contract  
+Status: historical release-risk input
 Owner bead: `mc-9xb`
 
 ## Decision
@@ -270,4 +275,3 @@ No earlier gate decides a later business model accidentally.
 
 This is an engineering guardrail, not a substitute for counsel at public or
 commercial release gates.
-

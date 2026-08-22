@@ -1312,7 +1312,47 @@ uint8_t mc_sim_phase(void);
 uint32_t mc_sim_fire_sequence(void);
 uint8_t mc_sim_last_resolution(void);
 
-/* Package-backed handle ABI v2. */
+/*
+ * Definition-bound neutral GameSession ABI v1. JSON outputs are UTF-8 byte
+ * spans without a trailing NUL. A zero-capacity read returns MC_STATUS_BOUNDS
+ * and writes the required byte count without changing session state.
+ */
+int32_t mc_game_session_contract_json_v1(
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
+int32_t mc_game_session_open_v1(
+    const uint8_t *package_dir, uint32_t package_dir_len,
+    const uint8_t *closure_path, uint32_t closure_path_len,
+    const uint8_t *asset_cache_path, uint32_t asset_cache_path_len,
+    uint64_t *out_handle);
+int32_t mc_game_session_open_workspace_v1(
+    const uint8_t *package_dir, uint32_t package_dir_len,
+    const uint8_t *closure_path, uint32_t closure_path_len,
+    const uint8_t *asset_cache_path, uint32_t asset_cache_path_len,
+    const uint8_t *workspace_path, uint32_t workspace_path_len,
+    uint64_t *out_handle);
+int32_t mc_game_session_destroy_v1(uint64_t handle);
+int32_t mc_game_session_snapshot_json_v1(
+    uint64_t handle, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
+int32_t mc_game_session_step_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    const uint8_t *command_json, uint32_t command_json_len);
+int32_t mc_game_session_reset_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick);
+int32_t mc_game_session_events_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint64_t cursor, uint32_t limit, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
+int32_t mc_game_session_audio_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint64_t event_sequence, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
+int32_t mc_game_session_presentation_asset_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    const uint8_t *semantic_id, uint32_t semantic_id_len, uint8_t *buffer,
+    uint32_t capacity, uint32_t *out_length);
+
+/* Compatibility package-backed handle ABI v2. */
 uint32_t mc_native_abi_version(void);
 int32_t mc_native_session_open(const uint8_t *package_dir,
                                uint32_t package_dir_len,

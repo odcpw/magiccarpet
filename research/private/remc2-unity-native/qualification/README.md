@@ -97,6 +97,156 @@ manifest:
 This proves the deterministic native/Unity route described by the registry. It
 does not turn that route into a remc2 or DOS capture.
 
+## Neutral GameSession client gates
+
+The native candidate is always supplied explicitly. The Python black-box
+consumer is the smallest F4/F5 domain check:
+
+```bash
+python3 qualification/verify_neutral_game_session.py \
+  --plugin /absolute/path/to/candidate/libsim_capi.so
+```
+
+The runner opens the real owner definition through `mc_game_session_*_v1`,
+submits semantic movement/casting JSON for the fixed 440-command route, pages
+semantic events, reads a logical audio sidecar, resets, and replays. Canonical
+snapshots and opaque MC2-owned compatibility receipts must equal the existing
+F1 state, event, and audio identities. It also rejects stale generation/tick
+guards and source-shaped command fields.
+
+The F5 managed and headless TypeScript consumers must use that same plugin:
+
+```bash
+python3 qualification/run_engine_session_editmode.py \
+  --project "$PWD" \
+  --plugin "$PWD/Assets/Plugins/x86_64/libsim_capi.so" \
+  --results /tmp/magiccarpet-engine-session-editmode.xml \
+  --log /tmp/magiccarpet-engine-session-editmode.log
+
+cd ../remc2-sim-rs/web
+pnpm typecheck:contract
+MC_GAME_SESSION_PLUGIN=/absolute/path/to/libsim_capi.so pnpm test:contract
+```
+
+The Unity runner requires a fresh non-empty report containing only
+`EngineSessionEditModeTests`, and verifies that the installed project plugin is
+byte-identical to `--plugin`. The TypeScript client spawns the strict NDJSON
+host over the same explicit library; it does not use the parked synthetic Wasm
+simulation. Candidate behavior is compared with the frozen corpus. Updating a
+current-source plugin identity after an additive build requires an explicit
+`GOLDEN-CHANGE` provenance note and unchanged fixed observations; it never
+authorizes regenerated gameplay, event, or audio expectations.
+
+The F6 one-factor semantic flight gate authors an immutable workspace through
+the real `sim-cli game set/preview/apply` transaction, then opens baseline and
+variant sessions through the same native plugin in Python, TypeScript, and
+Unity:
+
+```bash
+python3 qualification/verify_semantic_flight.py \
+  --plugin ../remc2-sim-rs/target/release/libsim_capi.so \
+  --sim-cli ../remc2-sim-rs/target/release/sim-cli
+```
+
+Only `flight.player.max_forward_speed:80->16` may differ in the definition.
+The gate requires ordinary Rust target speed, actual speed, and displacement
+to change while tick, mana, objective count, action sequence, semantic event
+order, reset replay, and the fixed F1 corpus remain unchanged. This proves one
+authorable flight field, not live next-tick mutation or complete flight tuning.
+
+The F7 one-factor Fireball gate uses the same immutable workspace and exact
+candidate plug-in route:
+
+```bash
+python3 qualification/verify_semantic_fireball.py \
+  --plugin ../remc2-sim-rs/target/release/libsim_capi.so \
+  --sim-cli ../remc2-sim-rs/target/release/sim-cli
+```
+
+Only `spell.fireball.mana_cost:100->200` may differ. Python, TypeScript, and
+Unity must observe the ordinary accepted-cast debit change from 900 to 800 mana
+while projectile identity/trajectory, Rust RNG, semantic event order,
+unrelated snapshot fields, and reset replay remain unchanged. Wrong types,
+negative values, client-supplied units, unsafe timings, stale definitions, and
+read-only surfaces fail closed. This proves one authorable spell rule, not all
+spell families or live mid-session mutation.
+
+The F8 one-factor enemy-policy gate publishes the bounded compiled Goat policy
+through the same immutable workspace and exact candidate plug-in route:
+
+```bash
+python3 qualification/verify_semantic_goat_policy.py \
+  --plugin ../remc2-sim-rs/target/release/libsim_capi.so \
+  --sim-cli ../remc2-sim-rs/target/release/sim-cli
+```
+
+Only `ai.enemy.default.policy:classic_goat_v1->vigilant_goat_v1` may differ.
+Python, TypeScript, and Unity must observe non-empty opaque
+`ai.engagement_boundary` events from the ordinary owner-state Goat scheduler;
+the classic definition must produce none on that pass. Unrelated event kinds,
+player state, mana, objectives, action sequence, reset replay, and the fixed F1
+corpus remain unchanged. The Rust lifecycle test additionally rejects the
+wrong action/stage phase and missing, hidden, drawing-disabled, or stale player
+targets on the following retaliation pass. This proves one bounded compiled
+policy selection, not arbitrary AI code injection or complete enemy authoring.
+
+The F9 asset gate compiles two independently authored synthetic indexed
+sprites through the deterministic source/recipe transform, publishes the
+second retained content hash into the existing Fireball presentation slot,
+and reads the typed payload through the neutral session contract:
+
+```bash
+python3 qualification/verify_semantic_presentation_asset.py \
+  --plugin ../remc2-sim-rs/target/release/libsim_capi.so \
+  --sim-cli ../remc2-sim-rs/target/release/sim-cli
+```
+
+Rust validates the exact kind, runtime format, dimensions, frames, flattened
+RGBA8 palette, animation timing, coordinates, origin, artifact dependencies,
+and engine-capped budgets. Python proves asset polling is observational and
+gameplay state/events are unchanged; TypeScript invalidates its decoded RGBA
+cache; Unity replaces an actual point-filtered `Texture2D`; and a forward
+rollback at revision 3 restores the retained baseline binding. The candidate
+plugin and both clients are identical across baseline and variant. Package
+tamper/path/hash failures and malformed typed assets fail before publication.
+This proves one bounded 2D presentation slot, not generated-art quality,
+animation authoring, 3D structures, or a complete production asset pipeline.
+
+The F10 foundation gate composes the four accepted changes in the same
+redistributable `custom.synthetic` package and runs MC2-owned, the unchanged
+custom baseline, four one-factor definitions, and the combined definition
+through one exact native plug-in and one shared command trace:
+
+```bash
+mkdir -p qualification/artifacts
+python3 qualification/verify_custom_package_foundation.py \
+  --plugin ../remc2-sim-rs/target/release/libsim_capi.so \
+  --sim-cli ../remc2-sim-rs/target/release/sim-cli \
+  --output qualification/artifacts/foundation-integrator.json
+
+python3 qualification/verify_custom_package_foundation_evidence.py \
+  --report qualification/artifacts/foundation-integrator.json \
+  --output qualification/artifacts/foundation-independent.json
+```
+
+The integrator requires exact one-factor causality and countermetrics,
+combined composition, reset/replay, 0/1/7 polling invariance, a seven-file
+package whitelist, no production package-ID branch, malformed/stale/tampered/
+partial refusal with unchanged roots, normalized native/Unity/TypeScript
+parity, the fixed Level 1 corpus, and the four-layer compatibility guard. It
+emits one result for every atomic requirement in the engine plan and fails if
+any requirement is uncovered. The independent verifier reopens the retained
+workspaces, reruns all three clients and the focused Rust/CLI suites, rechecks
+the fixed corpus and compatibility guard, and recomputes executable and
+package hashes.
+
+The current custom run is Unity EditMode evidence using the exact runtime and
+test assemblies. The older owner-local player remains separately inventoried
+and fixed-corpus-qualified; it is not mislabeled as having run the custom
+package. Passing F10 proves four bounded extension surfaces over one engine,
+not whole MC2, arbitrary games, production generated assets, VR, voxels,
+cities, water, multiplayer, or commercial release.
+
 ## Presentation correspondence gate
 
 `presentation-correspondence.json` is the typed presentation contract. It

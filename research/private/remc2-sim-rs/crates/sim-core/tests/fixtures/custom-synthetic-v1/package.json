@@ -1,0 +1,86 @@
+{
+  "artifacts": [
+    {
+      "bytes": 103,
+      "dependencies": ["presentation.projectile_asset", "presentation.projectile_asset_variant"],
+      "id": "definition.synthetic",
+      "kind": "definition",
+      "path": "definition.json",
+      "sha256": "eff9fb846b234f0d2f4efb9483de0939c6d53b39b020a7740f6ce13fea9df213"
+    },
+    {
+      "bytes": 498,
+      "dependencies": ["source.fireball.baseline", "recipe.fireball.indexed"],
+      "id": "presentation.projectile_asset",
+      "kind": "asset",
+      "path": "projectile.indices.u8",
+      "sha256": "11200749e51e49d4a9f4be95ffa8f6c0636be87e36781481c89e6a0825232508"
+    },
+    {
+      "bytes": 497,
+      "dependencies": ["source.fireball.variant", "recipe.fireball.indexed"],
+      "id": "presentation.projectile_asset_variant",
+      "kind": "asset",
+      "path": "projectile-variant.indices.u8",
+      "sha256": "c924ac200c84b9983374d1abcacff27414c3f565ac82792394353e0358ee0b34"
+    },
+    {
+      "bytes": 175,
+      "dependencies": [],
+      "id": "source.fireball.baseline",
+      "kind": "presentation",
+      "path": "fireball-baseline.source.json",
+      "sha256": "bc9256f219ab15ba76dc9c4cac93e976c872a48b7b197314d739d013918d28f4"
+    },
+    {
+      "bytes": 174,
+      "dependencies": [],
+      "id": "source.fireball.variant",
+      "kind": "presentation",
+      "path": "fireball-variant.source.json",
+      "sha256": "71a05922e7e3be0cf5fde48565fff13519e76ebcb616dc46357b7a865cc60032"
+    },
+    {
+      "bytes": 282,
+      "dependencies": [],
+      "id": "recipe.fireball.indexed",
+      "kind": "rules",
+      "path": "fireball.recipe.json",
+      "sha256": "19282f5e4a6cbf81743920fef561b3d230ecc752684f06bedc82e5567b61b9a8"
+    }
+  ],
+  "bindings": [
+    {
+      "id": "ai.enemy.default.policy",
+      "value": {"type": "enum", "value": "classic_goat_v1"}
+    },
+    {
+      "id": "flight.player.max_forward_speed",
+      "value": {"type": "integer", "value": 80}
+    },
+    {
+      "id": "presentation.spell.fireball.projectile_asset",
+      "value": {
+        "type": "reference",
+        "value": "sha256:11200749e51e49d4a9f4be95ffa8f6c0636be87e36781481c89e6a0825232508"
+      }
+    },
+    {
+      "id": "spell.fireball.mana_cost",
+      "value": {"type": "integer", "value": 100}
+    }
+  ],
+  "package": {"id": "custom.synthetic", "version": 1},
+  "provenance": {
+    "distribution": "redistributable",
+    "kind": "synthetic",
+    "source_sha256": "eff9fb846b234f0d2f4efb9483de0939c6d53b39b020a7740f6ce13fea9df213"
+  },
+  "requires_capabilities": [
+    {"exact_version": 1, "id": "engine.ai.creature_policy"},
+    {"exact_version": 1, "id": "engine.flight.fixed_point"},
+    {"exact_version": 1, "id": "engine.presentation.indexed_asset"},
+    {"exact_version": 1, "id": "engine.spell.projectile"}
+  ],
+  "schema": "carpet-flight-game-package/v1"
+}

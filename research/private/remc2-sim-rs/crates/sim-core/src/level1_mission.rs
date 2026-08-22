@@ -1765,6 +1765,7 @@ pub const FIREBALL_LIFETIME_TICKS: i16 = 0x2000 / FIREBALL_SPEED;
 pub const FIREBALL_PAYLOAD: i32 = 250;
 pub const FIREBALL_MANA_COST: i32 = 100;
 pub const FIREBALL_HOLDER_ACTIVATION_TICKS: u16 = 5;
+
 /// Qualified owner-data values from `DATA/SPELLS.DAT`, as loaded by remc2
 /// before `sub_6D9C0` evaluates single-player progression.
 pub const FIREBALL_TIER_THRESHOLDS_SINGLE_PLAYER: [i32; 3] = [0, 400, 12_000];
@@ -6078,6 +6079,16 @@ impl Level1MissionTemplate {
 
     #[must_use]
     pub fn session(&self, player_life: i32, player_mana: i32) -> Level1MissionState {
+        self.session_with_fireball_cost(player_life, player_mana, FIREBALL_MANA_COST)
+    }
+
+    #[must_use]
+    pub fn session_with_fireball_cost(
+        &self,
+        player_life: i32,
+        player_mana: i32,
+        fireball_mana_cost: i32,
+    ) -> Level1MissionState {
         let mut actors = self.actors.to_vec();
         for actor in &mut actors {
             actor.active = false;
@@ -6210,6 +6221,7 @@ impl Level1MissionTemplate {
             player_menu_state: 0,
             player_menu_close_requested: false,
             has_fireball: true,
+            fireball_mana_cost,
             has_possession: true,
             fireball_experience: 0,
             fireball_tier: 0,
@@ -6460,6 +6472,7 @@ pub struct Level1MissionState {
     pub player_menu_state: u8,
     pub player_menu_close_requested: bool,
     pub has_fireball: bool,
+    fireball_mana_cost: i32,
     pub has_possession: bool,
     pub fireball_experience: i32,
     pub fireball_tier: i8,
@@ -10099,7 +10112,7 @@ impl Level1MissionState {
     ) -> bool {
         if self.player_action != PLAYER_ACTION_ACTIVE
             || !self.has_fireball
-            || self.player_mana < FIREBALL_MANA_COST
+            || self.player_mana < self.fireball_mana_cost
         {
             return false;
         }
@@ -10108,7 +10121,7 @@ impl Level1MissionState {
         else {
             return false;
         };
-        self.player_mana -= FIREBALL_MANA_COST;
+        self.player_mana -= self.fireball_mana_cost;
         let mut position = player.position;
         position.z = position.z.wrapping_add(100);
         self.projectiles
@@ -10813,7 +10826,9 @@ impl Level1MissionState {
             };
             let family = actor.model;
             let (activation_value, mana_cost) = match family {
-                FIREBALL_SPELL_FAMILY => (FIREBALL_HOLDER_ACTIVATION_TICKS, FIREBALL_MANA_COST),
+                FIREBALL_SPELL_FAMILY => {
+                    (FIREBALL_HOLDER_ACTIVATION_TICKS, self.fireball_mana_cost)
+                }
                 POSSESSION_SPELL_FAMILY => (
                     POSSESSION_HOLDER_ACTIVATION_TICKS.cast_unsigned(),
                     POSSESSION_MANA_COST,
@@ -29663,6 +29678,40 @@ mod tests {
             mission.next_effect_id, 703,
             "the class-3/model-3 carrier does not consume a synthetic presentation ID"
         );
+    }
+
+    #[test]
+    fn definition_bound_fireball_cost_changes_only_affordability_and_mana_debit() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let player = FlightState {
+            entity_index: 152,
+            position: Position {
+                x: 20_000,
+                y: 20_000,
+                z: 1_000,
+            },
+            yaw: 91,
+            effective_pitch: -37,
+            actual_speed: 12,
+            ..FlightState::default()
+        };
+        let mut classic = template.session(10_000, 1_000);
+        let mut authored = template.session_with_fireball_cost(10_000, 1_000, 200);
+
+        assert!(classic.spawn_fireball_with_look(&player, 17, -23));
+        assert!(authored.spawn_fireball_with_look(&player, 17, -23));
+        assert_eq!(classic.player_mana, 900);
+        assert_eq!(authored.player_mana, 800);
+        assert_eq!(classic.projectiles(), authored.projectiles());
+        assert_eq!(classic.events(), authored.events());
+        assert_eq!(classic.global_rng(), authored.global_rng());
+
+        let mut unaffordable = template.session_with_fireball_cost(10_000, 1_000, 1_001);
+        assert!(!unaffordable.spawn_fireball_with_look(&player, 17, -23));
+        assert_eq!(unaffordable.player_mana, 1_000);
+        assert!(unaffordable.projectiles().is_empty());
+        assert!(unaffordable.events().is_empty());
+        assert_eq!(unaffordable.global_rng(), classic.global_rng());
     }
 
     #[test]

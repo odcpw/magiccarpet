@@ -20,6 +20,8 @@ pub mod economy_tmap;
 pub mod enhanced_presentation;
 pub mod firefly_tmap;
 pub mod frozen_actor_tmap;
+pub mod game_definition;
+pub mod game_session;
 pub mod goat;
 pub mod goat_draw_admission;
 pub mod goat_map_chain;
@@ -75,6 +77,28 @@ pub const TETHER_SPEED_LIMIT: i16 = 3 * PLAYER_MIN_SPEED / 2;
 
 const _: () = assert!(SOURCE_REVERSE_LIMIT == -SOURCE_FORWARD_LIMIT);
 const _: () = assert!(SOURCE_STRAFE_MINIMUM == -SOURCE_STRAFE_MAXIMUM);
+
+/// Definition-bound tuning consumed by the ordinary player flight decoder.
+///
+/// This is immutable for one session generation. The classic value remains
+/// the source-pinned MC2 limit; authoring publishes a new `GameDefinition`
+/// and takes effect only when a session is explicitly opened or rebound.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlightTuning {
+    pub max_forward_speed: i16,
+}
+
+impl FlightTuning {
+    pub const CLASSIC: Self = Self {
+        max_forward_speed: SPEED_LIMIT,
+    };
+}
+
+impl Default for FlightTuning {
+    fn default() -> Self {
+        Self::CLASSIC
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Position {
@@ -1669,19 +1693,26 @@ fn spell_menu_indices(argument: i8) -> Option<(u8, usize)> {
 }
 
 pub fn decode_movement(flags: u8, state: &mut FlightState) {
+    decode_movement_with_tuning(flags, state, FlightTuning::CLASSIC);
+}
+
+/// Decode the existing movement command using one immutable definition-bound
+/// limit. This is the single implementation used by both authored and classic
+/// sessions; it does not write position or velocity directly.
+pub fn decode_movement_with_tuning(flags: u8, state: &mut FlightState, tuning: FlightTuning) {
     state.speed_changed_flag = 0;
     let mut forward_direction = 0_i16;
-    if flags & 0b0000_0001 != 0 && state.target_speed < SPEED_LIMIT {
+    if flags & 0b0000_0001 != 0 && state.target_speed < tuning.max_forward_speed {
         forward_direction = 1;
     }
-    if flags & 0b0000_0010 != 0 && state.target_speed > -SPEED_LIMIT {
+    if flags & 0b0000_0010 != 0 && state.target_speed > -tuning.max_forward_speed {
         forward_direction = -1;
     }
     if forward_direction != 0 {
         state.target_speed = state
             .target_speed
             .saturating_add(SPEED_STEP * forward_direction)
-            .clamp(-SPEED_LIMIT, SPEED_LIMIT);
+            .clamp(-tuning.max_forward_speed, tuning.max_forward_speed);
         state.speed_changed_flag = 1;
     }
 
@@ -1755,7 +1786,28 @@ pub fn step_entity_pass_with_context<W: FlightWorld>(
     world: &W,
     context: &mut FlightContext,
 ) -> StepEvidence {
-    decode_movement(command.flags, state);
+    step_entity_pass_with_context_and_tuning(
+        state,
+        command,
+        profile,
+        world,
+        context,
+        FlightTuning::CLASSIC,
+    )
+}
+
+/// Advance the ordinary entity pass with immutable definition-bound flight
+/// tuning. All movement, collision, event, RNG, and epilogue work remains in
+/// the existing flight body.
+pub fn step_entity_pass_with_context_and_tuning<W: FlightWorld>(
+    state: &mut FlightState,
+    command: LatchedCommand,
+    profile: FlightProfile,
+    world: &W,
+    context: &mut FlightContext,
+    tuning: FlightTuning,
+) -> StepEvidence {
+    decode_movement_with_tuning(command.flags, state, tuning);
     journal_spell_fire(command.flags, context);
     step_entity_body_with_context(state, profile, world, context)
 }
@@ -2414,12 +2466,34 @@ pub fn step_outer_turn_with_context<W: FlightWorld>(
     world: &W,
     context: &mut FlightContext,
 ) -> Vec<StepEvidence> {
+    step_outer_turn_with_context_and_tuning(
+        state,
+        command,
+        speed_index,
+        profile,
+        world,
+        context,
+        FlightTuning::CLASSIC,
+    )
+}
+
+/// Latch one raw command and execute the ordinary entity passes using the
+/// tuning bound to this session generation.
+pub fn step_outer_turn_with_context_and_tuning<W: FlightWorld>(
+    state: &mut FlightState,
+    command: PlayerCommand,
+    speed_index: u8,
+    profile: FlightProfile,
+    world: &W,
+    context: &mut FlightContext,
+    tuning: FlightTuning,
+) -> Vec<StepEvidence> {
     let command = latch_command_with_context(state, command, context);
     let pass_count = entity_passes_for_speed_index(speed_index);
     let mut evidence = Vec::with_capacity(usize::from(pass_count));
     for _ in 0..pass_count {
-        evidence.push(step_entity_pass_with_context(
-            state, command, profile, world, context,
+        evidence.push(step_entity_pass_with_context_and_tuning(
+            state, command, profile, world, context, tuning,
         ));
     }
     evidence

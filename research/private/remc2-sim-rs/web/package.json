@@ -11,13 +11,16 @@
     "build": "pnpm build:wasm:release && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 8878",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "playwright test"
+    "typecheck:contract": "tsc --project tsconfig.headless.json",
+    "test:e2e": "playwright test",
+    "test:contract": "node --test tests/neutral-session.contract.test.ts"
   },
   "dependencies": {
     "three": "0.185.1"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",
+    "@types/node": "26.2.0",
     "@types/three": "0.185.1",
     "typescript": "7.0.2",
     "vite": "8.1.5"

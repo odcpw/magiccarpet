@@ -1273,7 +1273,9 @@ impl GoatFamily {
                             .find(|player| player.entity_index == target)
                             .copied()
                     });
-                if let Some(target) = target {
+                if let Some(target) =
+                    target.filter(|target| target.control_flags & (0x20 | 0x0000_0400) == 0)
+                {
                     if self.goats[family_index].phase & 3 == 0 {
                         let heading = heading_for_positions(
                             self.goats[family_index].position,
@@ -1666,9 +1668,10 @@ impl GoatFamily {
         events: &mut Vec<GoatStepEvent>,
     ) {
         let goat = &self.goats[family_index];
+        let vigilant_always_perceives = self.config.behavior_flags & 0x10 != 0;
         if goat.action != GOAT_PATROL_ACTION
             || goat.stage_var_2 != GOAT_PATROL_STAGE_MODE
-            || goat.proximity_countdown == 0
+            || (!vigilant_always_perceives && goat.proximity_countdown == 0)
             || !u16::from(goat.phase).is_multiple_of(self.config.perception_cadence)
         {
             return;
@@ -1695,7 +1698,7 @@ impl GoatFamily {
         let goat = &self.goats[family_index];
         let mut nearest: Option<(u32, u16)> = None;
         for player in players {
-            if player.control_flags & 0x20 != 0 {
+            if player.control_flags & (0x20 | 0x0000_0400) != 0 {
                 continue;
             }
             let dx = i32::from(player.position.x) - i32::from(goat.position.x);
@@ -2137,7 +2140,6 @@ impl LiveWorldState {
             hash.u16(goat.position.y);
             hash.i16(goat.position.z);
             hash.i16(goat.collision_half_width);
-            hash.i16(goat.collision_half_depth);
             hash.i16(goat.collision_vertical_offset);
             hash.i16(goat.collision_half_height);
             hash.u16(goat.render_parameter_index);
@@ -2245,6 +2247,25 @@ impl LiveWorldState {
         hash.bytes(b"mc2-live-world-v2\0");
         hash.u64(self.hash_v1());
         hash.u32(global_rng);
+        hash.finish()
+    }
+
+    /// Extend the compatibility-preserving v2 hash with the Goat collision
+    /// depth added for the Level 2 source collision probe.
+    ///
+    /// The field cannot be inserted into the frozen v1 byte stream: v2 is
+    /// embedded in accepted Level 1 event and render receipts. Pairing each
+    /// depth with its entity identity makes this extension order-explicit.
+    #[must_use]
+    pub fn hash_v3(&self, global_rng: u32) -> u64 {
+        let mut hash = Fnv1a64::new();
+        hash.bytes(b"mc2-live-world-v3\0");
+        hash.u64(self.hash_v2(global_rng));
+        hash.u32(u32::try_from(self.goats().len()).expect("Goat count fits u32"));
+        for goat in self.goats() {
+            hash.u16(goat.entity_index);
+            hash.i16(goat.collision_half_depth);
+        }
         hash.finish()
     }
 
@@ -2950,16 +2971,23 @@ mod tests {
         let reset_rng = 0xad6e_67d9;
         let reset_v1_hash = first.hash_v1();
         let reset_v2_hash = first.hash_v2(reset_rng);
-        // GOLDEN-CHANGE: the Level 2 source axis-4D roll extent is now part
-        // of the reset-visible Goat state, so the v1 preimage intentionally
-        // changes rather than aliasing two collision footprints.
+        let reset_v3_hash = first.hash_v3(reset_rng);
         assert_eq!(
-            reset_v1_hash, 0xa8b1_8d5b_d060_e521,
-            "v1 byte stream includes the source collision footprint"
+            reset_v1_hash, 0xd85c_8aee_41a9_dc64,
+            "legacy v1 byte stream remains pinned"
         );
         assert_eq!(
-            reset_v2_hash, 0xe029_6244_e51f_b914,
+            reset_v2_hash, 0xc5f2_8129_5e04_4de5,
             "v2 composes the pinned v1 hash with reset global RNG"
+        );
+        let mut changed_depth = second.clone();
+        changed_depth.goats.goats[0].collision_half_depth ^= 1;
+        assert_eq!(changed_depth.hash_v1(), reset_v1_hash);
+        assert_eq!(changed_depth.hash_v2(reset_rng), reset_v2_hash);
+        assert_ne!(
+            changed_depth.hash_v3(reset_rng),
+            reset_v3_hash,
+            "v3 distinguishes the Level 2 collision-depth extension without changing v1/v2"
         );
         assert_eq!(first, second, "live rows start byte-for-byte identical");
         assert_eq!(
@@ -2976,8 +3004,10 @@ mod tests {
         first.step(world.terrain());
         assert_ne!(first.hash_v1(), reset_v1_hash);
         assert_ne!(first.hash_v2(reset_rng), reset_v2_hash);
+        assert_ne!(first.hash_v3(reset_rng), reset_v3_hash);
         assert_eq!(second.hash_v1(), reset_v1_hash);
         assert_eq!(second.hash_v2(reset_rng), reset_v2_hash);
+        assert_eq!(second.hash_v3(reset_rng), reset_v3_hash);
 
         first
             .reset(
@@ -2989,6 +3019,7 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.hash_v1(), reset_v1_hash);
         assert_eq!(first.hash_v2(reset_rng), reset_v2_hash);
+        assert_eq!(first.hash_v3(reset_rng), reset_v3_hash);
     }
 
     #[test]
@@ -3214,6 +3245,96 @@ mod tests {
                 "{name} rejection"
             );
             assert_eq!(rejected.goats()[0].action, 15, "{name} action");
+        }
+    }
+
+    #[test]
+    fn vigilant_policy_runs_only_in_the_ordinary_patrol_phase_and_rejects_stale_targets() {
+        let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("qualified Level 1 owner package");
+        let mut vigilant_config = GoatBehaviorConfig::LEVEL_ONE;
+        vigilant_config.perception_cadence = 1;
+        vigilant_config.perception_radius = u16::MAX;
+        vigilant_config.perception_half_angle = 1_025;
+        vigilant_config.behavior_flags |= 0x10;
+        let owner_player = &world.entities()[152];
+        let player = GoatPlayerTarget {
+            entity_index: owner_player.index,
+            position: owner_player.position,
+            control_flags: owner_player.control_flags,
+        };
+
+        let family =
+            GoatFamily::from_entities(world.entities(), world.goat_stage_point(), vigilant_config)
+                .expect("real owner Goat family with vigilant compiled policy");
+        let mut acquired = family.clone();
+        let events = acquired.step_with_players(world.terrain(), &[player]);
+        let engaged = events
+            .iter()
+            .filter_map(|event| match event {
+                GoatStepEvent::EngagementBoundaryReached { entity_index, .. } => {
+                    Some(*entity_index)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!engaged.is_empty());
+        for entity_index in &engaged {
+            let goat = acquired
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == *entity_index)
+                .unwrap();
+            assert_eq!(goat.action, 14);
+            assert_eq!(goat.stage_var_2, 10);
+            assert_eq!(goat.target_entity_index, Some(player.entity_index));
+        }
+
+        let mut wrong_dispatch_phase = family;
+        for goat in &mut wrong_dispatch_phase.goats {
+            if goat.action == GOAT_PATROL_ACTION {
+                goat.stage_var_2 = GOAT_PATROL_STAGE_MODE.wrapping_add(1);
+            }
+        }
+        let events = wrong_dispatch_phase.step_with_players(world.terrain(), &[player]);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, GoatStepEvent::EngagementBoundaryReached { .. }))
+        );
+
+        for rejected_flags in [0x20, 0x0000_0400] {
+            let mut following_pass = acquired.clone();
+            following_pass.step_with_players(
+                world.terrain(),
+                &[GoatPlayerTarget {
+                    control_flags: rejected_flags,
+                    ..player
+                }],
+            );
+            for entity_index in &engaged {
+                let goat = following_pass
+                    .goats()
+                    .iter()
+                    .find(|goat| goat.entity_index == *entity_index)
+                    .unwrap();
+                assert_eq!(goat.action, 9, "ineligible target must leave retaliation");
+            }
+        }
+
+        let mut missing_target = acquired;
+        missing_target.step_with_players(world.terrain(), &[]);
+        for entity_index in engaged {
+            let goat = missing_target
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == entity_index)
+                .unwrap();
+            assert_eq!(goat.action, 9, "stale target must leave retaliation");
         }
     }
 

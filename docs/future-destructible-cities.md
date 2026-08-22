@@ -1,6 +1,10 @@
 # Future vision: streamed, destructible cities
 
-Status: Track S city vertical-slice direction after the island social demo  
+> **Future capability note as of 2026-08-21.** Cities and destruction extend
+> the accepted Rust world/capability contracts after the custom-package proof;
+> the old Track S milestone ordering is retired.
+
+Status: deferred one-engine capability direction
 Date: 2026-07-23  
 Depends on: the successor stack gate, authoritative multiplayer proof, world
 streaming seam and provenance-approved city inputs

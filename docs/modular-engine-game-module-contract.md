@@ -1,144 +1,245 @@
-# Original successor engine and game-module contract
+# Carpet Flight engine, package and semantic API contract
 
-Version: 1.0  
-Status: successor-track architecture baseline; exact stack pending proof  
-Track: `S`
+Status: **governing architecture contract; planned surfaces are not yet
+implemented unless the evidence-first plan says otherwise**
+Authority: [`program-charter.md`](program-charter.md)
 
 ## Decision
 
-Build a reusable deterministic carpet-flight engine for the original
-successor. MC2 is not a module, dependency, compatibility target, or privileged
-mode of this engine.
+Carpet Flight is one Rust-authoritative engine with versioned game packages and
+multiple non-authoritative clients. `MC2-owned` is the first compatibility
+package. A synthetic `custom-proof` package is the first independence witness.
+Unity is primary; Three.js is an inspector and optional client.
 
-The first production module is the successor's original island/city game.
-A tiny synthetic module proves that engine capabilities are not hard-coded to
-that product.
+Current `Level1*`/`Level2*` sessions, source-shaped packages and Unity wrappers
+are retained behind compatibility adapters. They are implementation inputs,
+not the permanent public language.
 
-## Architectural laws
+## Vocabulary
 
-1. One authoritative simulation truth across Chrome, native, server, replay
-   and tests.
-2. No MC2 reconstructed code, state shape, catalog, name, realm, original
-   asset, owner-data adapter or compatibility behavior in the successor engine.
-3. Capabilities, not product-name switches.
-4. Presentation and accessibility cannot mutate authority.
-5. Browser-delivered mods are validated data/assets/bounded graphs, not
-   arbitrary C#, native libraries or downloaded Wasm.
-6. Exact content/rules/build identity before room admission or save/replay use.
-7. Deterministic ordering, RNG, serialization, hashing and first-divergence
-   diagnostics.
-8. Explicit schema/version migration; no guessed compatibility.
-9. Safe package absence/removal and atomic activation.
-10. Every asset and package has provenance, license and budget metadata.
+- **Engine:** Rust domain code that validates definitions, owns sessions,
+  executes compiled capabilities and emits authoritative observations.
+- **Compiled capability:** a versioned Rust algorithm. Only an engine build
+  provides one.
+- **Game package:** a content-addressed graph of definitions, rules, bounded
+  behavior graphs, worlds, presentation bindings and assets. It may require
+  compiled capabilities but never supply native code.
+- **Game definition:** one immutable, fully validated semantic model assembled
+  from a package graph.
+- **Compatibility adapter:** a bounded translation between source-shaped data
+  or behavior and the neutral domain. remc2 IDs remain private to this layer.
+- **Workspace:** the authoring identity whose active-definition pointer is
+  changed by guarded publication.
+- **Session:** a Rust-owned live simulation bound to one immutable definition.
+- **Client:** a command producer and observation consumer with no gameplay
+  writer. Unity and Three.js are clients.
+- **Asset source/runtime asset:** provenance-bearing input and its validated,
+  content-addressed runtime result.
 
-## Layers
-
-```text
-Successor.Contracts
-  <- Successor.Determinism
-  <- Successor.Simulation
-  <- Successor.Module.Runtime
-  <- Successor.Persistence
-  <- Successor.Network.Protocol
-
-Successor.Module.Runtime
-  <- Successor.Client
-  <- Successor.Server
-  <- Successor.Replay
-  <- Successor.Tools
-```
-
-Names are logical. Unity assembly names are chosen only after the stack gate.
-
-## Generic capability families
-
-- carpet-like kinematic flight;
-- spatial and visibility queries;
-- world surfaces, water, hazards and deterministic edits;
-- bounded structural cells/destruction;
-- health, damage, effects and relationships;
-- finite-resource custody and transport;
-- stronghold/reserve/checkpoint roles;
-- commands, projectiles and abilities;
-- objectives, scheduled events and results;
-- AI perception, policy and command interfaces;
-- information eligibility, HUD/map read models and presentation cues;
-- save/checkpoint/replay/migration; and
-- room admission, snapshots, repair, reconnect and results.
-
-A capability enters the engine only when both the original production module
-and synthetic module can use it without successor-specific names or rules.
-
-## Package kinds
-
-| Kind | Owns |
-|---|---|
-| `GameModule` | Root original game identity, capabilities, schemas, defaults |
-| `BehaviorLibrary` | Bounded effects, objectives and AI policy nodes |
-| `WorldPack` | World topology, spawns, encounters, objectives and budgets |
-| `RulesProfile` | Factions, costs, damage, death, objective and victory laws |
-| `PresentationPack` | Original/licensed models, materials, VFX, audio, UI |
-| `LocalizationPack` | Strings, captions, narration and layout metadata |
-
-There is no `PrivateOwnedDataOverlay` in Track S.
-
-## Deterministic behavior
-
-Validated graphs may describe effects, objectives, AI selectors, ecology,
-progression, UI information and presentation cues. They have:
-
-- typed units and stable IDs;
-- deterministic iteration/RNG;
-- explicit state reads/writes and information eligibility;
-- bounded iterations, fanout, allocations, events and cost;
-- declared authoritative versus presentation domain;
-- schema owner and failure behavior.
-
-Reject unbounded loops/recursion, dynamic code, reflection, ambient clocks/RNG,
-filesystem/network access, hidden global state, target-specific authoritative
-behavior and presentation-to-authority callbacks.
-
-## Session identity
+## Layering
 
 ```text
-EngineApiVersion
-+ SimulationBuildHash
-+ ProtocolVersion
-+ GameModuleSetId
-+ ContentRoot
-+ RulesProfileId
-+ RulesHash
+asset sources/importers
+        -> validated package + artifact graph
+        -> immutable GameDefinition revision
+        -> Rust GameAdapter/GameSession authority
+        -> canonical commands/snapshots/events/audio/presentation bindings
+        -> C ABI -> Unity
+        -> process/Wasm/HTTP -> headless TypeScript / Three.js
+
+AI harness / human tools
+        -> semantic describe/get/set/validate/diff/apply/rollback
+        -> workspace definition publication
+        -> explicit session reset/reopen
 ```
 
-Track P owner-data identity is never part of a Track S session.
+The canonical domain interfaces live in `sim-core` or a focused Rust domain
+crate. `sim-capi`, CLI, MCP and HTTP/Wasm are transports. A transport may encode
+the contract differently but cannot add meaning, validation bypasses or
+gameplay state.
 
-## Saves and replays
+## Package manifest
 
-Record the compatibility tuple, package graph, schema versions, module state,
-world edit tail, canonical checkpoint hash, command stream and migration
-history. Outcomes are exact open, named deterministic migration, safe blocked
-dependency state, or corrupt/unsupported rejection.
+Every accepted package graph names:
 
-## Synthetic conformance module
+- schema version, package ID/version and compatible engine-contract range;
+- canonical package graph hash, dependencies and deterministic load order;
+- exact compiled capability requirements and optional-requirement behavior;
+- rules profiles, behavior graphs, worlds, presentation and asset bindings;
+- stable semantic IDs and compatibility mappings owned by adapters;
+- source, recipe, runtime and distribution provenance;
+- size/count/graph/resource limits;
+- save/replay compatibility and explicit migration declarations; and
+- all source/runtime artifact hashes.
 
-Before the social demo depends on the module system, prove:
+The engine provides compiled capabilities. Packages provide only data,
+declarative bounded graphs, assets and bindings. Unknown members or required
+capabilities, dependency cycles, semantic-ID collisions, path escapes, hash
+mismatches, invalid provenance or unsupported migrations fail before
+publication or session creation. Optional behavior never silently falls back to
+another package or Level 1.
 
-- engine boot with the production module absent;
-- one controllable mover, resource, effect, objective, AI policy, result,
-  world, cue, save and replay;
-- Chrome/native/server identical roots and replay hashes;
-- install/upgrade/migration/rollback/remove/reinstall;
-- teardown without leaked IDs/state;
-- malformed/oversized/revoked/corrupt package rejection; and
-- static dependency scan finding no MC2/reconstruction reference.
+## Capability and descriptor identity
 
-## Explicit non-goals
+A compiled capability has a stable semantic ID and version, typed inputs and
+outputs, deterministic constraints and availability. If it participates in a
+scheduled behavior lifecycle it also declares:
 
-- MC2 campaign/catalog compatibility;
-- executing/importing owner MC2 data;
-- sharing packages with Track P;
-- browser arbitrary-code mods;
-- hot-swapping authority during a match;
-- peer authority; and
-- claiming Unity, C#, Rust or another stack before its gate passes.
+- dispatch phase and key;
+- ordinary producer/constructor;
+- handler;
+- same-pass epilogue/hide behavior;
+- following-pass cleanup/reclaim;
+- authoritative read/write set; and
+- RNG, event and ordering effects.
 
+An authorable descriptor names:
+
+```text
+id, descriptor_version, kind, value_type, unit,
+default_value, bounds_or_enum, access, mutation_timing,
+determinism_role, dependencies, side_effects, scope,
+provenance, deprecation, summary, examples
+```
+
+Stable IDs describe game meaning, for example
+`flight.player.max_forward_speed`, not a Rust field, source address or remc2
+slot. A field is not writable merely because it exists internally.
+
+The initial mutation classes are tuning, content/assets, bounded declarative
+behavior and compiled capability selection/configuration. New algorithms require
+an engine build and cannot be uploaded through `set`.
+
+## Semantic operation contract
+
+```text
+capabilities
+describe
+get
+set             # stage and type-check only
+validate        # full dry run; no mutation
+diff            # typed semantic/graph diff; no mutation
+apply           # guarded atomic publication
+apply-status    # recover transaction disposition/receipt
+rollback        # new guarded forward publication to retained graph
+reset           # reset/rebind a session; does not edit a definition
+snapshot
+```
+
+`open`, `step`, event paging and `close` are adjacent runtime operations. All
+operations use stable versioned envelopes, typed errors, deterministic data
+bytes, bounded pagination and data-only machine output. Optional CLI/MCP/HTTP
+deadlines are transport policy, never a simulation outcome.
+
+## Definition transactions
+
+A change set contains a schema version, target workspace,
+`expected_definition_hash`, `expected_definition_revision`, idempotency key,
+typed replacements and requested timing. It does not target session generation.
+
+Validation creates a candidate definition and complete bounded diagnostics but
+does not publish. Apply compare-and-swaps the workspace's active-definition
+pointer and atomically makes the definition, package/artifact graph, bindings
+and transaction receipt visible. Authoritative roots are:
+
+- workspace active-definition pointer;
+- immutable definition and package graph;
+- artifact store and active asset bindings;
+- sessions and their definition bindings;
+- simulation state, event/audio journals and cursors;
+- Rust-owned presentation lifecycle/sidecars; and
+- transaction receipt journal.
+
+Failure before commit leaves every root unchanged. Cancellation after commit
+is resolved by `apply-status`. Existing sessions remain bound to their old
+definition until reset/reopen explicitly selects the new one and advances that
+session's generation.
+
+Rollback validates a retained prior graph and publishes it as a new definition
+revision using CAS against the current definition. It does not rewind history,
+guess “previous,” or silently rebind sessions.
+
+## Session and client contract
+
+Runtime identity includes:
+
+```text
+engine_contract
+package_graph_hash
+definition_hash + definition_revision
+session_id + generation + tick
+```
+
+The Rust domain exposes generation-bound typed commands, idempotent complete
+snapshots for named projections, ordered cursor-paged events/effects, reset and
+replay receipts, and typed version/capability negotiation.
+
+Presentation polling is observational. Rust schedules any source-required
+notification or presentation feedback independently of client poll frequency.
+Identical input traces with zero, one and many presentation reads between steps
+must produce identical simulation hashes, RNG and ordered gameplay events.
+
+Client parity compares canonical normalized domain values and canonical
+digests, not C struct bytes against JSON. Each adapter round-trips fixed vectors
+and rejects unknown gameplay fields. Rendering pixels may differ.
+
+## Asset contract
+
+An asset slot specifies kind, runtime format, dimensions, frames, palette/color
+space, animation timing, coordinate convention, dependencies and performance
+bounds. Publication records source hash, tool/model provenance, deterministic
+recipe where applicable, runtime hash and binding hash.
+
+Generative output becomes a hashed source artifact. The external model call
+need not reproduce identical bytes; deterministic validation and transformation
+start at the captured artifact. Catalog read-back alone is insufficient: the
+new runtime hash must reach the actual Unity/Three.js binding and cache
+invalidation boundary.
+
+## Compatibility adapters
+
+`MC2-owned` may use exact exporter records, owner cache identities, source
+class/model/action/slot values and accepted behavior internally. Its external
+surface is the same semantic definition/session/client contract used by
+`custom-proof`.
+
+Existing public Level 1/2 symbols are grandfathered only in an explicit
+compatibility baseline manifest with owner and retirement disposition. New
+package-specific symbols are forbidden outside compatibility namespaces.
+Neutral engine modules may not branch on Level-N identity; MC2 level names are
+allowed as package content.
+
+## Foundation conformance
+
+The binding executable gates are specified atomically in
+[`carpet-flight-engine-plan.md`](carpet-flight-engine-plan.md):
+
+- a fixed, versioned, non-no-op Level 1 corpus through a built native consumer;
+- same-build comparison with the sealed legacy route without permitting
+  co-regression;
+- type-enforced descriptor bindings plus an independent required-surface census;
+- transaction CAS, failure atomicity, two-session isolation and forward
+  rollback;
+- client normalized-value parity and polling invariance;
+- typed asset slot provenance and real runtime binding;
+- a structural baseline/guard for native, Rust, managed and TypeScript exports;
+  and
+- baseline, four one-factor variants and combined custom package using
+  byte-identical engine and client builds.
+
+Passing the foundation proves these bounded extension surfaces. It does not
+prove complete MC2, arbitrary games, production generated art, VR, voxel
+destruction, cities, water, multiplayer or public release.
+
+## Extension law
+
+- Later MC2 levels add package content or reusable compiled capabilities.
+- Voxel/destruction/water are compiled Rust world/physics capabilities over a
+  provider-neutral world contract.
+- Real cities are provenance-bound streamed world packs.
+- VR is a Unity/OpenXR input/presentation adapter over the same commands and
+  observations.
+- Three.js remains an inspector/optional client.
+
+No extension may introduce a client gameplay writer, Level-N public authority,
+arbitrary package code, raw-memory authoring, or a competing engine.

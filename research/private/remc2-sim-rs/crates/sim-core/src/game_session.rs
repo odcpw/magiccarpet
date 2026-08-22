@@ -1,0 +1,794 @@
+//! Transport-neutral, definition-bound game session authority.
+//!
+//! This module owns the lifetime relationship between an immutable
+//! [`GameDefinition`], one session identity, and one gameplay backend. It does
+//! not expose package-specific level names or transport layouts. Publishing a
+//! new definition cannot affect an existing session; only an explicit reset or
+//! reopen operation may advance that session's generation.
+
+use crate::game_definition::{BoundPresentationAsset, DefinitionError};
+use crate::game_definition::{GameDefinition, SemanticId};
+use serde::{Deserialize, Serialize};
+use std::{error::Error, fmt, sync::Arc};
+
+pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v1";
+
+fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&value.to_string())
+}
+
+fn serialize_u64_hex<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&format!("{value:016x}"))
+}
+
+/// Transport-independent player pose in the engine's deterministic fixed
+/// coordinate system. Unit metadata is discoverable from the semantic
+/// catalog; source entity or slot identifiers are deliberately absent.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct PlayerPose {
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub yaw: i16,
+    pub display_pitch: i16,
+    pub effective_pitch: i16,
+    pub roll: i16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct PlayerMotion {
+    pub target_speed: i16,
+    pub actual_speed: i16,
+    pub strafe_speed: i16,
+}
+
+/// Canonical bounded session observation used by adapters and transports.
+///
+/// Compatibility-only profile, level, source-slot, class/model/action, and
+/// raw spell-holder selectors remain private to the MC2-owned adapter.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct GameSnapshot {
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub tick: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub event_head: u64,
+    #[serde(serialize_with = "serialize_u64_hex")]
+    pub state_hash: u64,
+    #[serde(serialize_with = "serialize_u64_hex")]
+    pub conformance_hash: u64,
+    pub player_pose: PlayerPose,
+    pub player_motion: PlayerMotion,
+    pub caster_mana: i32,
+    pub objective_count: u32,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub action_sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LongitudinalControl {
+    #[default]
+    Coast,
+    Accelerate,
+    Decelerate,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LateralControl {
+    #[default]
+    Neutral,
+    Negative,
+    Positive,
+}
+
+/// Transport-neutral command subset exercised by the fixed Level 1 corpus.
+/// Menu/editor actions are separate semantic operations; no remc2 opcode or
+/// bitfield crosses this boundary.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GameCommand {
+    pub longitudinal: LongitudinalControl,
+    pub lateral: LateralControl,
+    pub roll_axis: i8,
+    pub pitch_axis: i8,
+    pub cast_left: bool,
+    pub cast_right: bool,
+    pub cast_selected: bool,
+    pub look_yaw: i16,
+    pub look_pitch: i16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct RuntimeActorId(#[serde(serialize_with = "serialize_u64_decimal")] pub u64);
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct RuntimeParticipantId(#[serde(serialize_with = "serialize_u64_decimal")] pub u64);
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GameAssetReference {
+    pub id: String,
+    pub content_address: String,
+}
+
+/// One ordered semantic event. Adapter-private numeric kinds, payload slots,
+/// and source identities are projected to a semantic ID, package asset
+/// identity, and opaque runtime handles. Event-specific semantic payloads may
+/// be added as typed domain fields; raw compatibility slots never cross this
+/// contract.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GameEvent {
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub sequence: u64,
+    #[serde(serialize_with = "serialize_u64_hex")]
+    pub state_hash: u64,
+    pub event_id: SemanticId,
+    pub actor: Option<RuntimeActorId>,
+    pub participant: Option<RuntimeParticipantId>,
+    pub asset: Option<GameAssetReference>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct EventPage {
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub requested_cursor: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub next_cursor: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub event_head: u64,
+    pub has_more: bool,
+    pub events: Vec<GameEvent>,
+    /// Optional opaque compatibility receipt emitted by preservation adapters.
+    /// It proves exact retained event/audio identities without exposing the
+    /// adapter's source selectors as the engine's public vocabulary.
+    pub compatibility: Option<CompatibilityReceipt>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CompatibilityReceipt {
+    pub contract: String,
+    pub event_count: u32,
+    pub event_content_sha256: String,
+    pub event_lifecycle_sha256: String,
+    pub audio_count: u32,
+    pub audio_content_sha256: String,
+    pub audio_lifecycle_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioAction {
+    Prepared,
+    Start,
+    Restart,
+    SuppressExisting,
+    SuppressNoVoice,
+    SuppressDistanceOrVolume,
+    SuppressPendingReplaced,
+    UpdateExisting,
+    EndLoop,
+    SuppressNoExisting,
+}
+
+/// A logical audio command joined to its event and package asset identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GameAudioCommand {
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub event_sequence: u64,
+    #[serde(serialize_with = "serialize_u64_hex")]
+    pub state_hash: u64,
+    pub asset: GameAssetReference,
+    pub relative_position: [i32; 3],
+    pub playback_rate_hz: u32,
+    pub actor: Option<RuntimeActorId>,
+    pub participant: Option<RuntimeParticipantId>,
+    pub sound_flags: i16,
+    pub volume_q15: u16,
+    pub pan_q16: u16,
+    pub rate_delta_percent: i16,
+    pub voice_index: u16,
+    pub play_type: u8,
+    pub loop_count: i8,
+    pub action: AudioAction,
+    pub pooled_flush_rank: u8,
+}
+
+/// Identity guard supplied with every state-changing session command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionGuard {
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub session_id: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub generation: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub expected_tick: u64,
+}
+
+/// Canonical domain identity carried by observations and receipts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionIdentity {
+    pub engine_contract: &'static str,
+    pub package_graph_hash: String,
+    pub definition_hash: String,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub definition_revision: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub session_id: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub generation: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub tick: u64,
+}
+
+/// One backend projection bound to the exact identity at which it was read.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionObservation<T> {
+    pub identity: SessionIdentity,
+    pub value: T,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionGuardErrorCode {
+    InvalidSessionId,
+    SessionMismatch,
+    GenerationMismatch,
+    TickMismatch,
+    GenerationExhausted,
+}
+
+impl SessionGuardErrorCode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidSessionId => "INVALID_SESSION_ID",
+            Self::SessionMismatch => "SESSION_MISMATCH",
+            Self::GenerationMismatch => "GENERATION_MISMATCH",
+            Self::TickMismatch => "TICK_MISMATCH",
+            Self::GenerationExhausted => "GENERATION_EXHAUSTED",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionGuardError {
+    pub code: SessionGuardErrorCode,
+    pub expected: SessionIdentity,
+    pub actual: SessionGuard,
+}
+
+impl fmt::Display for SessionGuardError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}: expected session/generation/tick {}/{}/{}, received {}/{}/{}",
+            self.code.as_str(),
+            self.expected.session_id,
+            self.expected.generation,
+            self.expected.tick,
+            self.actual.session_id,
+            self.actual.generation,
+            self.actual.expected_tick
+        )
+    }
+}
+
+impl Error for SessionGuardError {}
+
+#[derive(Debug)]
+pub enum GameSessionError<E> {
+    Guard(SessionGuardError),
+    Backend(E),
+}
+
+impl<E: fmt::Display> fmt::Display for GameSessionError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Guard(error) => error.fmt(formatter),
+            Self::Backend(error) => {
+                write!(formatter, "session backend rejected operation: {error}")
+            }
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for GameSessionError<E> {}
+
+#[derive(Debug)]
+pub enum GameSessionAssetError {
+    Guard(SessionGuardError),
+    Definition(DefinitionError),
+}
+
+impl fmt::Display for GameSessionAssetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Guard(error) => error.fmt(formatter),
+            Self::Definition(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for GameSessionAssetError {}
+
+/// Package-independent gameplay backend contract.
+///
+/// Implementations own live gameplay state, ordering, RNG, event/audio
+/// journals, presentation lifecycle, reset, and replay. A rejected `step` or
+/// `reset_for_definition` must leave that backend byte-for-byte unchanged.
+pub trait GameSessionBackend {
+    type Command;
+    type Snapshot;
+    type Error;
+
+    fn tick(&self) -> u64;
+    fn snapshot(&self) -> Self::Snapshot;
+    fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
+    fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
+    fn step(&mut self, command: Self::Command) -> Result<(), Self::Error>;
+    fn reset_for_definition(&mut self, definition: &GameDefinition) -> Result<(), Self::Error>;
+}
+
+/// Adapter that constructs one concrete backend from a neutral definition.
+pub trait GameAdapter {
+    type Backend: GameSessionBackend;
+    type OpenInput;
+    type Error;
+
+    fn open_backend(
+        &self,
+        definition: &GameDefinition,
+        input: Self::OpenInput,
+    ) -> Result<Self::Backend, Self::Error>;
+}
+
+/// Permanent neutral owner of one definition-bound gameplay backend.
+#[derive(Debug)]
+pub struct GameSession<B> {
+    definition: Arc<GameDefinition>,
+    session_id: u64,
+    generation: u64,
+    backend: B,
+}
+
+impl<B: GameSessionBackend> GameSession<B> {
+    /// Open a definition-bound session through a concrete adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns `INVALID_SESSION_ID` before adapter execution for identifier
+    /// zero, or the adapter's typed open error.
+    pub fn open<A>(
+        adapter: &A,
+        definition: Arc<GameDefinition>,
+        session_id: u64,
+        input: A::OpenInput,
+    ) -> Result<Self, OpenSessionError<A::Error>>
+    where
+        A: GameAdapter<Backend = B>,
+    {
+        if session_id == 0 {
+            return Err(OpenSessionError::InvalidSessionId);
+        }
+        let backend = adapter
+            .open_backend(&definition, input)
+            .map_err(OpenSessionError::Adapter)?;
+        Ok(Self {
+            definition,
+            session_id,
+            generation: 1,
+            backend,
+        })
+    }
+
+    #[must_use]
+    pub fn definition(&self) -> &Arc<GameDefinition> {
+        &self.definition
+    }
+
+    /// Borrow the bound backend for a transport-owned compatibility
+    /// projection. Gameplay mutation must still cross [`Self::step`],
+    /// [`Self::reset`], or [`Self::reopen`].
+    #[must_use]
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// Mutably borrow the backend for an explicitly classified transport
+    /// sidecar such as presentation input or audio acknowledgement. This is
+    /// not a second gameplay authority and must not be exposed as a general
+    /// client mutation surface.
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> SessionIdentity {
+        SessionIdentity {
+            engine_contract: GAME_SESSION_CONTRACT,
+            package_graph_hash: self.definition.package_graph_hash().to_owned(),
+            definition_hash: self.definition.definition_hash().to_owned(),
+            definition_revision: self.definition.revision(),
+            session_id: self.session_id,
+            generation: self.generation,
+            tick: self.backend.tick(),
+        }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> SessionObservation<B::Snapshot> {
+        SessionObservation {
+            identity: self.identity(),
+            value: self.backend.snapshot(),
+        }
+    }
+
+    /// Read an ordered bounded event page without advancing any session state.
+    pub fn events_after(
+        &self,
+        guard: SessionGuard,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<SessionObservation<EventPage>, GameSessionError<B::Error>> {
+        self.validate_guard(guard)
+            .map_err(GameSessionError::Guard)?;
+        let page = self
+            .backend
+            .events_after(cursor, limit)
+            .map_err(GameSessionError::Backend)?;
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: page,
+        })
+    }
+
+    /// Read one logical audio sidecar without consuming or releasing it.
+    pub fn audio_for_event(
+        &self,
+        guard: SessionGuard,
+        event_sequence: u64,
+    ) -> Result<SessionObservation<GameAudioCommand>, GameSessionError<B::Error>> {
+        self.validate_guard(guard)
+            .map_err(GameSessionError::Guard)?;
+        let command = self
+            .backend
+            .audio_for_event(event_sequence)
+            .map_err(GameSessionError::Backend)?;
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: command,
+        })
+    }
+
+    /// Read one typed content-addressed presentation asset without advancing
+    /// gameplay or consuming presentation lifecycle state.
+    pub fn presentation_asset(
+        &self,
+        guard: SessionGuard,
+        id: &SemanticId,
+    ) -> Result<SessionObservation<BoundPresentationAsset>, GameSessionAssetError> {
+        self.validate_guard(guard)
+            .map_err(GameSessionAssetError::Guard)?;
+        let asset = self
+            .definition
+            .presentation_asset(id)
+            .map_err(GameSessionAssetError::Definition)?;
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: asset,
+        })
+    }
+
+    /// Apply one typed command after exact session/generation/tick validation.
+    ///
+    /// # Errors
+    ///
+    /// A stale guard fails before the backend is called. Backend errors are
+    /// returned without changing the definition binding or generation.
+    pub fn step(
+        &mut self,
+        guard: SessionGuard,
+        command: B::Command,
+    ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
+        self.validate_guard(guard)
+            .map_err(GameSessionError::Guard)?;
+        self.backend
+            .step(command)
+            .map_err(GameSessionError::Backend)?;
+        Ok(self.snapshot())
+    }
+
+    /// Reset against the already-bound immutable definition.
+    pub fn reset(
+        &mut self,
+        guard: SessionGuard,
+    ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
+        self.reset_or_reopen(guard, Arc::clone(&self.definition))
+    }
+
+    /// Explicitly reset and bind this session, and only this session, to a new
+    /// immutable definition.
+    pub fn reopen(
+        &mut self,
+        guard: SessionGuard,
+        definition: Arc<GameDefinition>,
+    ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
+        self.reset_or_reopen(guard, definition)
+    }
+
+    fn reset_or_reopen(
+        &mut self,
+        guard: SessionGuard,
+        definition: Arc<GameDefinition>,
+    ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
+        self.validate_guard(guard)
+            .map_err(GameSessionError::Guard)?;
+        let next_generation = self.generation.checked_add(1).ok_or_else(|| {
+            GameSessionError::Guard(SessionGuardError {
+                code: SessionGuardErrorCode::GenerationExhausted,
+                expected: self.identity(),
+                actual: guard,
+            })
+        })?;
+        self.backend
+            .reset_for_definition(&definition)
+            .map_err(GameSessionError::Backend)?;
+        self.definition = definition;
+        self.generation = next_generation;
+        Ok(self.snapshot())
+    }
+
+    fn validate_guard(&self, guard: SessionGuard) -> Result<(), SessionGuardError> {
+        let expected = self.identity();
+        let code = if guard.session_id == 0 {
+            Some(SessionGuardErrorCode::InvalidSessionId)
+        } else if guard.session_id != expected.session_id {
+            Some(SessionGuardErrorCode::SessionMismatch)
+        } else if guard.generation != expected.generation {
+            Some(SessionGuardErrorCode::GenerationMismatch)
+        } else if guard.expected_tick != expected.tick {
+            Some(SessionGuardErrorCode::TickMismatch)
+        } else {
+            None
+        };
+        match code {
+            Some(code) => Err(SessionGuardError {
+                code,
+                expected,
+                actual: guard,
+            }),
+            None => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum OpenSessionError<E> {
+    InvalidSessionId,
+    Adapter(E),
+}
+
+impl<E: fmt::Display> fmt::Display for OpenSessionError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSessionId => formatter.write_str("INVALID_SESSION_ID: session ID is zero"),
+            Self::Adapter(error) => write!(formatter, "session adapter rejected open: {error}"),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for OpenSessionError<E> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game_definition::GamePackage;
+    use crate::game_definition::{
+        ChangeSetBuilder, PublicationFault, RequestedTiming, SemanticId, SemanticValue,
+        WorkspaceStore, default_catalog, engine_capabilities,
+    };
+    use std::{convert::Infallible, path::PathBuf};
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ProbeSnapshot {
+        tick: u64,
+        definition_hash: String,
+        command_total: i64,
+    }
+
+    #[derive(Debug)]
+    struct ProbeBackend {
+        tick: u64,
+        definition_hash: String,
+        command_total: i64,
+        reject_next_reset: bool,
+    }
+
+    impl GameSessionBackend for ProbeBackend {
+        type Command = i64;
+        type Snapshot = ProbeSnapshot;
+        type Error = &'static str;
+
+        fn tick(&self) -> u64 {
+            self.tick
+        }
+
+        fn snapshot(&self) -> Self::Snapshot {
+            ProbeSnapshot {
+                tick: self.tick,
+                definition_hash: self.definition_hash.clone(),
+                command_total: self.command_total,
+            }
+        }
+
+        fn events_after(&self, cursor: u64, _limit: usize) -> Result<EventPage, Self::Error> {
+            Ok(EventPage {
+                requested_cursor: cursor,
+                next_cursor: cursor,
+                event_head: cursor,
+                has_more: false,
+                events: Vec::new(),
+                compatibility: None,
+            })
+        }
+
+        fn audio_for_event(&self, _event_sequence: u64) -> Result<GameAudioCommand, Self::Error> {
+            Err("probe has no audio")
+        }
+
+        fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
+            self.command_total += command;
+            self.tick += 1;
+            Ok(())
+        }
+
+        fn reset_for_definition(&mut self, definition: &GameDefinition) -> Result<(), Self::Error> {
+            if self.reject_next_reset {
+                self.reject_next_reset = false;
+                return Err("injected reset rejection");
+            }
+            self.tick = 0;
+            self.command_total = 0;
+            self.definition_hash = definition.definition_hash().to_owned();
+            Ok(())
+        }
+    }
+
+    struct ProbeAdapter;
+
+    impl GameAdapter for ProbeAdapter {
+        type Backend = ProbeBackend;
+        type OpenInput = ();
+        type Error = Infallible;
+
+        fn open_backend(
+            &self,
+            definition: &GameDefinition,
+            (): Self::OpenInput,
+        ) -> Result<Self::Backend, Self::Error> {
+            Ok(ProbeBackend {
+                tick: 0,
+                definition_hash: definition.definition_hash().to_owned(),
+                command_total: 0,
+                reject_next_reset: false,
+            })
+        }
+    }
+
+    fn definition() -> GameDefinition {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/custom-synthetic-v1");
+        GameDefinition::from_package(
+            GamePackage::load(root).unwrap(),
+            &engine_capabilities().unwrap(),
+            &default_catalog().unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn guard(session: &GameSession<ProbeBackend>) -> SessionGuard {
+        let identity = session.identity();
+        SessionGuard {
+            session_id: identity.session_id,
+            generation: identity.generation,
+            expected_tick: identity.tick,
+        }
+    }
+
+    #[test]
+    fn publishing_a_definition_does_not_rebind_existing_sessions() {
+        let original = definition();
+        let root =
+            std::env::temp_dir().join(format!("carpet-flight-f4-binding-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = WorkspaceStore::create(&root, "binding-workspace", original.clone()).unwrap();
+        let mut first =
+            GameSession::open(&ProbeAdapter, Arc::new(original.clone()), 1, ()).unwrap();
+        let second = GameSession::open(&ProbeAdapter, Arc::new(original.clone()), 2, ()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "binding-workspace",
+            &original,
+            "publish-speed",
+            RequestedTiming::SessionReset,
+        )
+        .replace(
+            SemanticId::parse("flight.player.max_forward_speed").unwrap(),
+            SemanticValue::Integer(82),
+        )
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = Arc::new(store.active_definition().unwrap());
+
+        assert_eq!(first.identity().definition_hash, original.definition_hash());
+        assert_eq!(
+            second.identity().definition_hash,
+            original.definition_hash()
+        );
+        assert_eq!(first.identity().generation, 1);
+        assert_eq!(second.identity().generation, 1);
+        let reopened = first.reopen(guard(&first), Arc::clone(&published)).unwrap();
+        assert_eq!(
+            reopened.identity.definition_hash,
+            published.definition_hash()
+        );
+        assert_eq!(reopened.identity.definition_revision, 2);
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(
+            second.identity().definition_hash,
+            original.definition_hash()
+        );
+        assert_eq!(second.identity().generation, 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_guards_and_backend_rejection_preserve_binding_and_observation() {
+        let original = Arc::new(definition());
+        let mut session = GameSession::open(&ProbeAdapter, Arc::clone(&original), 7, ()).unwrap();
+        let before = session.snapshot();
+        let stale = SessionGuard {
+            expected_tick: 1,
+            ..guard(&session)
+        };
+        let error = session.step(stale, 4).unwrap_err();
+        assert!(matches!(
+            error,
+            GameSessionError::Guard(SessionGuardError {
+                code: SessionGuardErrorCode::TickMismatch,
+                ..
+            })
+        ));
+        assert_eq!(session.snapshot(), before);
+
+        session.backend.reject_next_reset = true;
+        let before_rejected_reset = session.snapshot();
+        let error = session.reset(guard(&session)).unwrap_err();
+        assert!(matches!(error, GameSessionError::Backend(_)));
+        assert_eq!(session.identity(), before_rejected_reset.identity);
+        assert_eq!(session.backend.snapshot(), before_rejected_reset.value);
+
+        let stepped = session.step(guard(&session), 4).unwrap();
+        assert_eq!(stepped.identity.tick, 1);
+        assert_eq!(stepped.value.command_total, 4);
+        let reset = session.reset(guard(&session)).unwrap();
+        assert_eq!(reset.identity.generation, 2);
+        assert_eq!(reset.identity.tick, 0);
+        assert_eq!(reset.value.command_total, 0);
+    }
+}

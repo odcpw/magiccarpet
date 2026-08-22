@@ -1,208 +1,128 @@
-# Product promise and scope box
+# Carpet Flight product promise
 
-Version: 1.0  
-Status: accepted two-track baseline  
-Governing charter: [`program-charter.md`](program-charter.md)  
-Tracking beads: `mc-znpx`, `mc-dl0r`, `mc-w58`
+Status: **governing product intent under the 2026-08-21 charter**
 
-## Program promise
+## The promise
 
-Preserve and deeply understand Magic Carpet 2 for lawful owners, while
-building an original browser-first commercial carpet-flight game that carries
-its finest experiential ideas into living islands and transformed cities with
-modern graphics, multiplayer, destruction, atmosphere, and later VR.
+Carpet Flight will be a living carpet-flight engine and game platform whose
+first complete configuration can play MC2 privately from owned assets, and
+whose rules, worlds, actors, AI and presentation can then be changed through a
+tight semantic API instead of another source-porting campaign.
 
-The preservation build and commercial game are separate deliverables.
+The target experience preserves the qualities that make MC2 compelling:
+immediate free flight, expressive terrain-scale movement, spell combat,
+creatures and opponents that create a living battlefield, progression and
+economy, readable objectives, dramatic audiovisual feedback, and deterministic
+world consequences. It is not a museum wrapper. It is the foundation for an
+independently branded, commercially viable successor with its own content and
+new capabilities.
 
-## Preservation promise
+## Two user experiences, one product
 
-Track `P` aims to make Oliver's exact owned MC2 build:
+### Player experience
 
-- reproducible through pinned remc2/MC2HD native builds;
-- testable through deterministic recordings and original/native state
-  comparison;
-- understandable through the existing source, DOSBox oracle, Ghidra, Binary
-  Ninja, manuals, play and research;
-- maintainable through portability, regression and documentation work;
-- experimentally browser-capable through owner-local data and Wasm; and
-- respectful of Tomas Vesely, Tim Hobbs and the wider contributor ecosystem.
+- Launch a real game quickly and fly without fighting tooling.
+- Feel speed, altitude, banking, hover, momentum and terrain proximity clearly.
+- Cast understandable, consequential spells in reactive battles.
+- Meet enemies and creatures whose choices are deterministic, inspectable and
+  meaningfully different.
+- Play a complete campaign through one engine rather than disconnected level
+  demos.
+- Later choose desktop, conventional controller, or native Unity/OpenXR VR
+  without changing simulation authority.
 
-It does not promise a public browser link, bundled data, public fork,
-commercial reuse, or license clearance. Those require separate evidence and
-approval.
+### Creator and AI-harness experience
 
-## Commercial successor promise
+- Ask the engine what can be changed and receive bounded typed descriptors.
+- Change assets, flight tuning, spells, actors, enemy policies, objectives and
+  worlds without locating Rust constants or Unity fields.
+- Preview validation and semantic diffs before publication.
+- Apply an atomic definition transaction, receive exact read-back evidence, and
+  reset/reopen a session onto the new definition.
+- Revert by publishing a retained prior definition under an optimistic guard.
+- Use the same operations from a local CLI, Unity editor tooling, an optional
+  MCP bridge and a Three.js inspector.
+- Swap an expensive model for a cheap or local model without changing the
+  authoring contract. Model output becomes a provenance-bearing source artifact
+  and must pass deterministic validation/transformation from that boundary.
 
-The commercial game is original IP:
+## First believable product proof
 
-> One click puts friends on living magic carpets in a sublime, reactive world.
-> They skim forests and surf, dive between towers, contest finite magic,
-> protect moving reserves and strongholds, fight creatures and rival
-> sorcerers, reshape routes and selected structures, survive storms and
-> volcanoes, and finish a dramatic 15–25 minute expedition that immediately
-> invites a rematch.
+The foundation milestone is deliberately smaller than “port the campaign” and
+stronger than “build an API scaffold.” It is complete only when:
 
-The successor is not sold as MC2, does not require MC2, and does not reproduce
-its 25 realms, catalog, code, assets, text, UI, maps, names, or branding.
+1. `MC2-owned/level1` runs through a neutral Rust domain session and built
+   native consumer against a fixed non-no-op compatibility corpus;
+2. Unity and a minimal headless TypeScript consumer round-trip the same
+   canonical domain observations, and polling either client cannot alter
+   gameplay;
+3. the authoring surface discovers the four first semantic targets with type,
+   units, bounds, provenance, dependencies and timing;
+4. baseline, four one-factor variants and one combined `custom-proof` package
+   change an asset, flight value, spell rule and ordinary enemy policy path;
+5. engine/plugin and client executable hashes stay identical across those
+   runs, with only declared package artifacts differing; and
+6. validation, CAS publication, failure atomicity, explicit session rebinding
+   and forward rollback produce machine-readable receipts.
 
-## Player fantasy
+This proves a bounded but real engine boundary. It does not prove arbitrary
+games, complete MC2 fidelity, production asset quality, VR, voxels, cities,
+water, multiplayer or commercial release.
 
-- A carpet with momentum, bank, skim, altitude, braking and expressive risk.
-- Extreme speed that remains readable through camera, horizon, sound, HUD and
-  tactical-map design.
-- A world that visibly and audibly responds to flight, spells, wind, weather,
-  fire, water, creatures, vegetation, terrain and structures.
-- Finite magical energy that exists in the world, changes custody, must be
-  collected and secured, and can be stolen or lost.
-- Escalation from exploration and opportunism through fortification and
-  conflict to spectacular magical warfare.
-- Rival flyers and creatures governed by the same world rather than scripted
-  shooting-gallery targets.
-- Places worth remembering: original islands first, recognizable transformed
-  city districts later.
-- Solo, co-op, PvP, teams and mixed human/AI compositions built on one
-  authoritative simulation.
-- Spatial wind, surf, forest, wildlife, fire, water, thunder and city ambience,
-  plus an original adaptive score.
+## Product horizons
 
-## Successor architectural identity
+### Horizon 1 — engine foundation
 
-The successor consists of:
+Protect the working Level 1 behavior while establishing neutral definitions,
+packages, semantic authoring, transactionality, client observations and the
+two-package conformance proof.
 
-1. deterministic, presentation-independent simulation;
-2. an authoritative Linux room/server;
-3. a Unity client/editor baseline protected by the measured retain/fallback gate;
-4. browser shell, secure transport, cache and lifecycle integration;
-5. original game rules/content packages and safe mod schemas;
-6. provider-based worlds and bounded destruction;
-7. original or properly licensed Blender/procedural assets; and
-8. replay, save, divergence, telemetry, accessibility and operations tooling.
+### Horizon 2 — complete MC2-owned
 
-Unity is the provisional baseline because of its CLI/MCP/editor, Blender
-integration, URP production path, platform support and later OpenXR route.
-It remains reversible through the Chrome/server proof in
-[`stack-decision.md`](stack-decision.md).
+Bring the remaining campaign, rules, enemy lifecycles, economy, spells,
+objectives and presentation through the same contracts. A level is content plus
+reusable capabilities, never a new public engine surface.
 
-## First successor social demo
+### Horizon 3 — original Carpet Flight
 
-### Audience and platform
+Replace the private MC2 content with an original art direction, worlds,
+characters, audio and identity; retune and extend gameplay through the semantic
+surface; then make a deliberate commercial release decision.
 
-- A private HTTPS link suitable for friends.
-- Current stable 64-bit desktop Chrome on supported Windows and Linux.
-- Keyboard/mouse baseline; controller highly desirable.
-- Native development clients permitted, but browser is the release gate.
-- Linux authoritative server; no peer or room creator is canonical authority.
-- No account needed; room code/link and an ephemeral display identity.
+### Horizon 4 — advanced worlds and embodiment
 
-### Session envelope
+Add Unity/OpenXR VR, provider-neutral real-city worlds, voxel battlefields,
+destruction and water as tested client adapters, world providers and compiled
+Rust capabilities. These are downstream ambitions, not foundation
+dependencies.
 
-- Nominal 20 minutes; acceptable 15–25 minutes.
-- Visible 30-minute infrastructure cutoff including bounded overtime.
-- Returning-player link-to-flight target under 60 seconds on the reference
-  connection.
-- 1–4 humans in the first demo.
-- Certified compositions: solo versus AI; two-human co-op versus AI;
-  two-human PvP; one mixed human/AI faction run.
-- Results, rematch and new room immediately available.
+## Quality floor
 
-### Original demo world
+- Determinism, reset/replay and clear provenance are product features.
+- Real runtime observations outrank screenshots, mocks and internal tests.
+- Unity presentation should feel authored, not like a debug view.
+- AI-created assets are not accepted merely because they render; they must meet
+  typed slot, animation, scale, coordinate, performance and binding contracts.
+- Errors must identify the semantic path, violated rule, current identity and a
+  safe next operation.
+- The engine must remain usable without a cloud model or a particular editor
+  automation plugin.
 
-- One bounded island/archipelago approximately 3–4 km across.
-- Ocean, shoreline, meadow, forest, mountains, caldera/volcano, settlement or
-  fortress silhouettes, storm and day/dusk.
-- A canonical deterministic surface provider and bounded local structural or
-  terrain edits.
-- No arbitrary full-world voxel requirement.
+## Explicit non-goals for the foundation
 
-### Functional journey
+- no separate successor repository or clean-slate gameplay core;
+- no browser-first or multiplayer-first launch gate;
+- no full monolith rewrite before the contract owns the seam;
+- no raw-memory or arbitrary string-key mutation API;
+- no arbitrary executable code in packages;
+- no broad Level 2/later-level expansion before the two-package proof;
+- no claim that owner-local MC2 artifacts are commercially distributable; and
+- no premature VR, city, destruction, water or generative-content production
+  wave.
 
-1. Open link, activate audio, preflight and join.
-2. Learn speed, bank, climb/dive, strafe/brake, skim, aim, HUD and minimap.
-3. Use one original direct projectile spell to release magical energy.
-4. Claim and transport exposed energy.
-5. Establish or activate a first stronghold.
-6. Protect a moving reserve/carrier and bank energy.
-7. Choose between resource, creature, rival and objective pressure.
-8. Earn and recognize one ability upgrade.
-9. Use one bounded world-edit spell tactically.
-10. Survive environmental escalation.
-11. Complete the selected objective or defeat the required opposition.
-12. Reach explicit results and rematch.
+## Scope-change test
 
-### Feature floor
-
-- Expressive, evidence-tuned carpet movement plus comfort options.
-- At least five distinct ability roles across direct attack, claim/resource,
-  world edit, defense/mobility and information/control.
-- Conserved magical-energy custody.
-- One stronghold and moving-reserve family with loss/recovery.
-- Health, damage, death and recovery.
-- One rival flyer using the authoritative command/rules interfaces.
-- Four hostile ecological roles: aerial swarm, ground artillery, resource
-  predator and area controller.
-- Mountains, water, meadow, trees, volcano/lava, wind, storm, clouds and
-  day/dusk.
-- Sequential objective, failure, result and rematch.
-- HUD, minimap, tactical map, objective recall, selection, captions,
-  remapping and reduced-roll options.
-- Spatial environmental sound and original adaptive musical sketch.
-- Room code, reconnect policy, AI assignment, snapshots/repair, rate limits,
-  replay/hash evidence and structured failure artifacts.
-
-The first-session, input, accessibility and comfort requirements are governed
-by [`browser-first-ux-contract.md`](browser-first-ux-contract.md).
-
-### Demo non-goals
-
-- MC2 names, realms, campaign, exact spell/creature catalog, original assets or
-  compatibility claims.
-- Full city streaming or universal building destruction.
-- Full voxel caves.
-- Ranked matchmaking, store, cosmetics, accounts or live-service economy.
-- Eight players, mobile, console or VR certification.
-- Final visual quality for every asset.
-
-## City vertical slice
-
-After the island demo, prove one transformed real-city district using
-properly licensed building/geographic data and original presentation:
-
-- hierarchical streaming and LOD;
-- separate visual, collision, structural and interaction payloads;
-- selected destructible structures and persistent sparse deltas;
-- server-owned structural/gameplay state;
-- client-owned cosmetic dust and small debris;
-- fantasy transformation rather than photorealistic copying;
-- attribution and derivative-data obligations built into the asset manifest;
-- browser low tier and native quality tier.
-
-## Milestones
-
-1. `P0` preservation baseline.
-2. `P1` owner-local preservation modernization/Wasm proof.
-3. `S0` Unity/browser/server/Blender/agent stack proof.
-4. `S1` original island social demo.
-5. `S2` original city vertical slice.
-6. `S3` commercial production, business and launch-scope decision.
-7. `S4` production alpha with the selected original campaign and multiplayer
-   content.
-8. `S5` 1.0 after performance, accessibility, operations, security, licensing,
-   branding, privacy, ratings and support gates.
-
-Track P may continue in parallel and does not block S1. Accepted lesson
-packages may improve flight and loop design, but none is required to begin or
-complete the successor baseline.
-
-## Scope-change rule
-
-Oliver's approval is required for changes to:
-
-- track separation;
-- public use of reconstructed code or original data;
-- successor stack;
-- browser-first priority;
-- authoritative player count or network model;
-- first-demo feature floor;
-- city/voxel/VR milestone order;
-- repository/access boundary; or
-- commercial identity and release posture.
+A proposed direction change must state which player or creator outcome improves,
+which accepted invariant changes, what current evidence requires the change,
+and what falsifier would reject it. “A different stack or architecture sounds
+cleaner” is not sufficient to reopen settled decisions.

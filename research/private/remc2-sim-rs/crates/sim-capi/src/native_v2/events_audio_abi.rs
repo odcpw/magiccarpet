@@ -197,7 +197,7 @@ pub extern "C" fn mc_native_audio_command_release(
     event_sequence: u64,
 ) -> i32 {
     boundary(|| {
-        with_session_mut(handle, |session| {
+        with_projection_session_mut(handle, |session| {
             if generation != session.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,
@@ -232,7 +232,7 @@ pub extern "C" fn mc_native_audio_command_discard(
     event_sequence: u64,
 ) -> i32 {
     boundary(|| {
-        with_session_mut(handle, |session| {
+        with_projection_session_mut(handle, |session| {
             if generation != session.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,
@@ -302,7 +302,7 @@ pub extern "C" fn mc_native_audio_voice_complete(
     event_sequence: u64,
 ) -> i32 {
     boundary(|| {
-        with_session_mut(handle, |session| {
+        with_projection_session_mut(handle, |session| {
             if generation != session.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,

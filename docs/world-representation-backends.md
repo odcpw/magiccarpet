@@ -1,7 +1,10 @@
 # Parallel world-representation backends
 
-Status: Track S architecture direction; exact interfaces remain subject to the
-representation-contract gate  
+> **Future capability note as of 2026-08-21.** Provider-neutral world ideas are
+> retained, but the old Track S premise and immediate backend work are retired.
+> World providers extend the one Rust engine after the custom-package proof.
+
+Status: deferred one-engine world-provider research
 Date: 2026-07-23  
 Related: `docs/modular-engine-game-module-contract.md`,
 `research/voxel-destruction-option.md`,

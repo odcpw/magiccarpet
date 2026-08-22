@@ -15,6 +15,7 @@ namespace MagicCarpet.Native
         private static readonly HashSet<NativeSession> Sessions = new();
 
         private long handleBits;
+        private readonly EngineSessionTransport engine;
         private readonly NativeSim.TerrainGridVertex[] terrainGrid;
         private readonly NativeSim.GoatSnapshot[] goats;
         private readonly NativeSim.SelectorFrameState[] selectorFrames;
@@ -29,9 +30,10 @@ namespace MagicCarpet.Native
 #endif
         }
 
-        private NativeSession(ulong handle)
+        private NativeSession(ulong handle, EngineSessionTransport engine = null)
         {
             handleBits = unchecked((long)handle);
+            this.engine = engine;
             terrainGrid = new NativeSim.TerrainGridVertex[
                 checked((int)NativeSim.mc_native_terrain_grid_vertex_count())];
             goats = new NativeSim.GoatSnapshot[33];
@@ -93,6 +95,59 @@ namespace MagicCarpet.Native
             return new NativeSession(handle);
         }
 
+        internal static NativeSession OpenEngine(
+            string packagePath,
+            string closurePath,
+            string assetCachePath,
+            string workspacePath = null)
+        {
+            NativeSim.AssertLayouts();
+            var transport = new EngineSessionTransport(
+                packagePath, closurePath, assetCachePath, workspacePath);
+            try
+            {
+                return new NativeSession(transport.Handle, transport);
+            }
+            catch
+            {
+                transport.Destroy();
+                throw;
+            }
+        }
+
+        internal bool UsesEngineContract => engine != null;
+
+        internal EngineSessionTransport.Contract EngineContract =>
+            engine?.NegotiatedContract ?? throw new InvalidOperationException(
+                "legacy session has no neutral engine contract");
+
+        internal EngineSessionTransport.SnapshotObservation EngineSnapshot()
+        {
+            return engine?.Snapshot() ?? throw new InvalidOperationException(
+                "legacy session has no neutral engine observation");
+        }
+
+        internal EngineSessionTransport.EventObservation EngineEvents(
+            string cursor,
+            uint limit = 1024)
+        {
+            return engine?.Events(cursor, limit) ?? throw new InvalidOperationException(
+                "legacy session has no neutral engine events");
+        }
+
+        internal EngineSessionTransport.AudioObservation EngineAudio(string eventSequence)
+        {
+            return engine?.Audio(eventSequence) ?? throw new InvalidOperationException(
+                "legacy session has no neutral engine audio");
+        }
+
+        internal EngineSessionTransport.PresentationAssetObservation EnginePresentationAsset(
+            string semanticId)
+        {
+            return engine?.PresentationAsset(semanticId) ?? throw new InvalidOperationException(
+                "legacy session has no neutral engine presentation asset");
+        }
+
         internal NativeSim.WorldInfo WorldInfo()
         {
             var status = NativeSim.mc_native_world_info(Handle, out var info, 72);
@@ -102,6 +157,10 @@ namespace MagicCarpet.Native
 
         internal NativeSim.SessionSnapshot Snapshot()
         {
+            if (engine != null)
+            {
+                return engine.CompatibilitySnapshot();
+            }
             var status = NativeSim.mc_native_session_snapshot(Handle, out var snapshot, 120);
             Check(status, "read session snapshot");
             return snapshot;
@@ -496,6 +555,11 @@ namespace MagicCarpet.Native
 
         internal NativeSim.SessionSnapshot Reset()
         {
+            if (engine != null)
+            {
+                engine.Reset();
+                return engine.CompatibilitySnapshot();
+            }
             var status = NativeSim.mc_native_session_reset(Handle, out var snapshot, 120);
             Check(status, "reset session");
             return snapshot;
@@ -512,6 +576,17 @@ namespace MagicCarpet.Native
             sbyte argument2 = 0,
             short requestedSpell = NativeSim.NoRequestedSpell)
         {
+            if (engine != null)
+            {
+                if (opcode != 0 || argument1 != 0 || argument2 != 0 ||
+                    requestedSpell != NativeSim.NoRequestedSpell)
+                {
+                    throw new InvalidOperationException(
+                        "source spell-menu selectors are not part of the neutral engine command contract");
+                }
+                engine.Step(roll, pitch, flags, lookYaw, lookPitch);
+                return engine.CompatibilitySnapshot();
+            }
             var command = NativeSim.Command.Create(
                 roll, pitch, flags, opcode, argument1, argument2, requestedSpell);
             var cameraInput = NativeSim.CameraInput.Create(lookYaw, lookPitch);
@@ -725,6 +800,15 @@ namespace MagicCarpet.Native
             {
                 throw new ArgumentOutOfRangeException(nameof(menuState));
             }
+            if (engine != null)
+            {
+                if (menuState != 0)
+                {
+                    throw new InvalidOperationException(
+                        "interactive menu state requires a future semantic engine command");
+                }
+                return;
+            }
             Check(
                 NativeSim.mc_native_level1_player_menu_state(
                     Handle, checked((byte)menuState)),
@@ -733,6 +817,15 @@ namespace MagicCarpet.Native
 
         internal void SetLevel1GamePaused(bool paused)
         {
+            if (engine != null)
+            {
+                if (paused)
+                {
+                    throw new InvalidOperationException(
+                        "pause requires a future semantic engine lifecycle command");
+                }
+                return;
+            }
             Check(
                 NativeSim.mc_native_level1_game_paused(
                     Handle, paused ? (byte)1 : (byte)0),
@@ -1997,7 +2090,9 @@ namespace MagicCarpet.Native
             {
                 return;
             }
-            var status = NativeSim.mc_native_session_destroy(unchecked((ulong)value));
+            var status = engine == null
+                ? NativeSim.mc_native_session_destroy(unchecked((ulong)value))
+                : NativeSim.mc_game_session_destroy_v1(unchecked((ulong)value));
             if (status != NativeSim.Ok)
             {
                 UnityEngine.Debug.LogError(

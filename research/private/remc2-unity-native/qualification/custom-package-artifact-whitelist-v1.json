@@ -1,0 +1,34 @@
+{
+  "schema": "carpet-flight-custom-package-artifact-whitelist/v1",
+  "package_id": "custom.synthetic",
+  "package_manifest_sha256": "61f2a21d43def4ba662e937682649af0fe401ac6c204ebb5e71d5635636a8596",
+  "allowed_files": {
+    "definition.json": "eff9fb846b234f0d2f4efb9483de0939c6d53b39b020a7740f6ce13fea9df213",
+    "fireball-baseline.source.json": "bc9256f219ab15ba76dc9c4cac93e976c872a48b7b197314d739d013918d28f4",
+    "fireball-variant.source.json": "71a05922e7e3be0cf5fde48565fff13519e76ebcb616dc46357b7a865cc60032",
+    "fireball.recipe.json": "19282f5e4a6cbf81743920fef561b3d230ecc752684f06bedc82e5567b61b9a8",
+    "package.json": "61f2a21d43def4ba662e937682649af0fe401ac6c204ebb5e71d5635636a8596",
+    "projectile-variant.indices.u8": "c924ac200c84b9983374d1abcacff27414c3f565ac82792394353e0358ee0b34",
+    "projectile.indices.u8": "11200749e51e49d4a9f4be95ffa8f6c0636be87e36781481c89e6a0825232508"
+  },
+  "allowed_semantic_differences": {
+    "flight": ["flight.player.max_forward_speed"],
+    "fireball": ["spell.fireball.mana_cost"],
+    "enemy_policy": ["ai.enemy.default.policy"],
+    "asset": ["presentation.spell.fireball.projectile_asset"],
+    "combined": [
+      "ai.enemy.default.policy",
+      "flight.player.max_forward_speed",
+      "presentation.spell.fireball.projectile_asset",
+      "spell.fireball.mana_cost"
+    ]
+  },
+  "prohibited_differences": [
+    "engine or plugin bytes",
+    "Unity runtime or test code per package",
+    "TypeScript client code per package",
+    "undeclared package artifact",
+    "test-created gameplay actor",
+    "package-ID gameplay branch"
+  ]
+}

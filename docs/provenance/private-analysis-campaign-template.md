@@ -1,5 +1,10 @@
 # Private executable-analysis campaign
 
+> **Historical/subordinate template as of 2026-08-21.** Retain its bounded
+> experiment, evidence and falsification fields for explicitly authorized
+> private archaeology. Track-S transfer language is retired and this template
+> cannot start original-binary work; Oliver must request that work explicitly.
+
 Track: `PRESERVATION`. This record does not authorize reconstructed code,
 original data, binary-derived structures or raw evidence to enter Track S.
 

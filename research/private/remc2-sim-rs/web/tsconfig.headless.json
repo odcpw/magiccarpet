@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "headless/neutral-session-client.ts",
+    "tests/neutral-session.contract.test.ts",
+    "tests/semantic-flight.contract.test.ts",
+    "tests/semantic-fireball.contract.test.ts",
+    "tests/semantic-goat-policy.contract.test.ts",
+    "tests/semantic-presentation-asset.contract.test.ts",
+    "tests/custom-package-foundation.contract.test.ts"
+  ]
+}

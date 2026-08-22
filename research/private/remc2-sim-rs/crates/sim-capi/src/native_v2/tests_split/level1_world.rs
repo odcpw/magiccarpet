@@ -357,10 +357,10 @@ fn goat_bulk_hash_damage_lifecycle_reset_and_session_isolation_are_atomic() {
     let (rng_only_reset_rows, rng_only_reset_batch) = goats(rng_only, rng_only_session.generation);
     assert_eq!(reset_rows, second_rows);
     assert_eq!(reset_batch.live_world_hash, second_batch.live_world_hash);
-    // GOLDEN-CHANGE: generic imported class-11 root callback state is
-    // reset/hash-bound alongside the existing Level 2 campaign state.
+    // The public C ABI names and publishes compatibility hash v2. New live
+    // fields belong in a new hash version rather than changing this receipt.
     assert_eq!(
-        reset_batch.live_world_hash, 0xe029_6244_e51f_b914,
+        reset_batch.live_world_hash, 0xc5f2_8129_5e04_4de5,
         "C ABI publishes the explicit v2 reset hash"
     );
     assert_eq!(rng_only_reset_rows, reset_rows);

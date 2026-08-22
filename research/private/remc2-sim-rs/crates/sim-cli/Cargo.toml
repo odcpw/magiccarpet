@@ -8,8 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 atlas-registry = { path = "../atlas-registry" }
+serde = "=1.0.229"
+serde_json = "=1.0.149"
 sim-core = { path = "../sim-core" }
 
 [lints]
 workspace = true
-

@@ -1,5 +1,10 @@
 # Original successor multiplayer session contract
 
+> **Deferred historical contract as of 2026-08-21.** Multiplayer is not a
+> foundation gate. Reuse only transport/session ideas that remain compatible
+> with the one Rust authority after the custom-package proof; the separate
+> successor, browser-first and server-authority premises below are retired.
+
 Version: 1.0  
 Status: successor-track rules and journey baseline  
 Track: `S`

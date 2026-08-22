@@ -1,7 +1,11 @@
 # Browser lifecycle, reconnect, and safe-carpet contract
 
+> **Deferred as of 2026-08-21.** This is optional browser/multiplayer client
+> research downstream of the one-engine two-package proof; it cannot define
+> simulation authority or current work selection.
+
 Version: 1.0  
-Status: Track S planning contract  
+Status: deferred optional-client research
 Owner bead: `mc-x8i`  
 Related contracts:
 [`browser-first-ux-contract.md`](browser-first-ux-contract.md),
@@ -446,4 +450,3 @@ Browser wall time assists diagnostics but never orders authoritative events.
 - [MDN Page Visibility API](https://developer.mozilla.org/en-US/docs/Web/API/Page_Visibility_API)
 - [MDN Pointer Lock API](https://developer.mozilla.org/en-US/docs/Web/API/Pointer_Lock_API)
 - [MDN WebSocket API](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket)
-

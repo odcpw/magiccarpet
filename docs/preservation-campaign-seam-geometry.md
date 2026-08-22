@@ -1,9 +1,12 @@
 # Preservation campaign seam geometry
 
+> **Retained technical evidence, superseded work order as of 2026-08-21.** The
+> measured Rust state/dispatch/fold findings remain useful, but Track P/Track S
+> separation and Level-2-before-semantic-API ordering do not govern. Reuse this
+> material only behind the one-engine contract and current recovery plan.
+
 Version: 1.0
-Status: implementable Track P design contract; semantic-fold implementation is
-gated by `mc-campaign-fold-contract-r78sq`, with the explicit milestone-0
-exception `mc-fold0-level1-facade-uf827`
+Status: historical campaign-fold research; implementation priority superseded
 Evidence revision: `ad6458dde700451c466758ea5e4c1f489b9eff2c`
 Pinned remc2 revision: `6806c7204d17220ecc0430759f784aea8ee2ddb2`
 Track: `P` only

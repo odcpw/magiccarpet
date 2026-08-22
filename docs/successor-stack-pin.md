@@ -1,7 +1,12 @@
 # Successor stack pin and proof contract
 
+> **Historical as of 2026-08-21.** The C# simulation, browser-first and separate
+> successor premises are retired. Reuse only independently reverified Unity,
+> tooling and asset facts under `stack-decision.md`; this file cannot select or
+> block foundation work.
+
 Version: 1.0  
-Status: planning pin; installation requires `mc-w58.15` approval  
+Status: historical evidence; no governing approval gate
 Verified: 2026-07-23  
 Track: `S` only  
 Decision owner: Oliver

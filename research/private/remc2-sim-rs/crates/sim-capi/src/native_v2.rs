@@ -6,6 +6,7 @@
 mod campaign_abi;
 mod campaign_facade;
 mod events_audio_abi;
+mod game_session_abi;
 mod level1_abi;
 mod session_record;
 mod shared_types;
@@ -35,8 +36,9 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use sim_core::native_world::resolve_level1_presentation_cache_root;
 use sim_core::{
-    FlightContext, FlightEvent, FlightState, FlightWorld, POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING,
-    PlayerCommand, Position, PositionalSoundCommand, StepEvidence,
+    FlightContext, FlightEvent, FlightState, FlightTuning, FlightWorld,
+    POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING, PlayerCommand, Position, PositionalSoundCommand,
+    StepEvidence,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
     classic_hd::{ClassicHdFrameWriter, ClassicHdRenderProfile, byte_hash},
     classic_hd_raster::rasterize_classic_hd_terrain,
@@ -67,8 +69,9 @@ use sim_core::{
         VILLAGER_PAYLOAD_SHA256, VillagerTmapClocks,
     },
     goat::{
-        GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_PATROL_ACTION, GoatPlayerTarget, GoatState,
-        GoatStepEvent, LEVEL_ONE_GOAT_INDICES, LEVEL_TWO_GOAT_INDICES, LiveWorldState,
+        GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_PATROL_ACTION, GoatBehaviorConfig,
+        GoatPlayerTarget, GoatState, GoatStepEvent, LEVEL_ONE_GOAT_INDICES, LEVEL_TWO_GOAT_INDICES,
+        LiveWorldState,
     },
     goat_draw_admission::{
         GoatDrawAdmission, GoatDrawCamera, evaluate_goat_draw_admission,
@@ -146,7 +149,7 @@ use sim_core::{
         LEVEL1_SCENERY_SELECTORS, SPELL_JAR_PAYLOAD_BYTES, SPELL_JAR_PAYLOAD_SHA256,
         StaticWorldTmapBank,
     },
-    step_entity_body_with_context, step_outer_turn_with_context,
+    step_entity_body_with_context, step_outer_turn_with_context_and_tuning,
     terrain_frame::{
         LEVEL1_SKY_BYTES, LEVEL1_TERRAIN_ATLAS_BYTES, LEVEL1_VIEW_HEIGHT, LEVEL1_VIEW_PIXELS,
         LEVEL1_VIEW_WIDTH, Level1CastleRootRender, Level1FrozenActorRender, Level1TerrainFrame,
@@ -275,10 +278,28 @@ impl CameraHistory {
 }
 
 #[derive(Debug)]
+struct SessionDefinitionTuning {
+    flight: FlightTuning,
+    fireball_mana_cost: i32,
+    goat_config: GoatBehaviorConfig,
+}
+
+impl Default for SessionDefinitionTuning {
+    fn default() -> Self {
+        Self {
+            flight: FlightTuning::CLASSIC,
+            fireball_mana_cost: 100,
+            goat_config: GoatBehaviorConfig::LEVEL_ONE,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct SessionRecord {
     world: Arc<NativeWorld>,
     terrain: SessionTerrain,
     state: FlightState,
+    definition_tuning: SessionDefinitionTuning,
     context: FlightContext,
     live_world: LiveWorldState,
     mission: Level1MissionState,
@@ -292,7 +313,6 @@ struct SessionRecord {
     castle_selector_frame: Option<CastleTmapClock>,
     renderable_map_chains: RenderableMapChains,
     selector_draw_feedback: Option<(u64, u8)>,
-    notification_draw_feedback: Option<(u64, bool, u8, i16)>,
     goat_draw_admission: Option<GoatDrawAdmission>,
     generation: u64,
     event_head: u64,

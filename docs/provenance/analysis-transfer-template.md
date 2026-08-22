@@ -1,5 +1,12 @@
 # Track P to Track S lesson-transfer package
 
+> **Historical template as of 2026-08-21.** Carpet Flight no longer has a
+> Track-P-to-Track-S implementation handoff. Keep this only as evidence of the
+> retired clean-room process; it cannot authorize work, select a destination,
+> or transfer material between repositories. Current private-source and future
+> release boundaries live in `docs/provenance-policy.md` and
+> `docs/private-public-boundary.md`.
+
 This document is the only handoff from a Track P executable-analysis campaign
 to a Track S implementation worker. It must stand alone without original code,
 addresses, screenshots, copied tables, proprietary files, or decompiler

@@ -1,7 +1,11 @@
 # Cross-platform targets, portability rules, and build gates
 
+> **Historical/subordinate as of 2026-08-21.** Its two-track/C#/browser premises
+> are retired. Current platform order and authority live in
+> `stack-decision.md`; retain only measured portability constraints.
+
 Version: 1.0  
-Status: two-track portability contract  
+Status: historical portability research
 Governing documents: `program-charter.md`, `stack-decision.md`
 
 ## Decision

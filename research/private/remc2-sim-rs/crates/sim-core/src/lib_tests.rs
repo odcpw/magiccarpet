@@ -411,6 +411,26 @@ fn target_and_strafe_controls_obey_steps_limits_and_decay() {
 }
 
 #[test]
+fn definition_bound_forward_limit_uses_the_ordinary_decoder() {
+    let tuning = FlightTuning {
+        max_forward_speed: 20,
+    };
+    let mut authored = FlightState::default();
+    let mut classic = FlightState::default();
+    for _ in 0..4 {
+        decode_movement_with_tuning(1, &mut authored, tuning);
+        decode_movement(1, &mut classic);
+    }
+    assert_eq!(authored.target_speed, 20);
+    assert_eq!(classic.target_speed, 64);
+
+    for _ in 0..4 {
+        decode_movement_with_tuning(2, &mut authored, tuning);
+    }
+    assert_eq!(authored.target_speed, -20);
+}
+
+#[test]
 fn opposing_movement_flags_preserve_original_priority() {
     let mut state = FlightState::default();
     decode_movement(0b0011, &mut state);
