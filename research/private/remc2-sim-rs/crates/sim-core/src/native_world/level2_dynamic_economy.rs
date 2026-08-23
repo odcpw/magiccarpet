@@ -993,6 +993,113 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
+    pub fn spawn_player_dying_burst(
+        &mut self,
+        player_entity_index: u16,
+        player_source_id: u16,
+        position: Position,
+    ) -> Option<u16> {
+        let source_slot = self.spawn_death_burst_from_death_with_id(
+            player_entity_index,
+            player_source_id,
+            position,
+        )?;
+        let burst = self
+            .death_bursts
+            .iter_mut()
+            .find(|burst| burst.source_entity_index == source_slot)
+            .expect("new player death burst remains in the live arena");
+        // `sub_5E310` adds byte[0] bit 0x80 after the generic model-1
+        // constructor, linking the player-death dynamic light.
+        burst.control_flags |= 0x80;
+        Some(source_slot)
+    }
+
+    /// Allocate remc2's class-10/model-40/action-42 player death marker.
+    /// The caller owns the action-2 retry rule: a failed allocation changes
+    /// neither the player action nor any model-39 owner relation.
+    pub fn allocate_player_death_marker(
+        &mut self,
+        trigger_player_entity_index: u16,
+        position: Position,
+    ) -> Option<Level2PlayerDeathMarker> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let marker = Level2PlayerDeathMarker {
+            source_entity_index,
+            entity_rng,
+            trigger_player_entity_index,
+            position,
+            dispatch_phase: source_entity_index as u8,
+            constructor_phase: u32::from(source_entity_index % 11),
+            byte_38: crate::level1_mission::PLAYER_DEATH_MARKER_BYTE_38,
+            max_life: crate::level1_mission::PLAYER_DEATH_MARKER_LIFE,
+            life: crate::level1_mission::PLAYER_DEATH_MARKER_LIFE,
+            particle_parameter_index: crate::level1_mission::PLAYER_DEATH_MARKER_PARTICLE_PARAMETER,
+            active: true,
+        };
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.source_owner.insert(source_entity_index, 0);
+        self.player_death_markers.push(marker);
+        Some(marker)
+    }
+
+    /// Rebind only live model-39 rows that still name the dying player in
+    /// source `playerEntityIndex_0x94`, after marker allocation succeeds.
+    pub fn redirect_player_mana_spheres_to_death_marker(
+        &mut self,
+        player_entity_index: u16,
+        marker_entity_index: u16,
+    ) {
+        for sphere in self.spheres.iter_mut().filter(|sphere| {
+            sphere.active
+                && !sphere.pending_delete
+                && sphere.player_entity_index == player_entity_index
+        }) {
+            sphere.player_entity_index = marker_entity_index;
+        }
+        self.refresh_owner_mana_rows();
+    }
+
+    /// Current reached action-42 state has no word-0x68 handoff relation, so
+    /// `sub_36AE0` performs only its unconditional terrain grounding write.
+    pub fn step_player_death_marker_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
+        let Some(marker) = self
+            .player_death_markers
+            .iter_mut()
+            .find(|marker| marker.active && marker.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        marker.position.z = terrain.ground_height(marker.position);
+        marker.dispatch_phase = marker.dispatch_phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: marker.position.x,
+                y: marker.position.y,
+            })
+            .is_ok()
+    }
+
     /// Advance the source class-10/model-1/action-1 burst.  ApplyEvents'
     /// model-1 fallthrough unconditionally disables the row after its action
     /// callback, so one live handler visit is the complete source lifetime.
@@ -1019,6 +1126,22 @@ impl Level2EconomyState {
             parent_entity_index: burst.parent_entity_index,
         });
         true
+    }
+
+    /// Return model-1 rows disabled by the preceding source pass. The slot is
+    /// not reusable during the callback that hid it; the next pass boundary
+    /// performs the source `sub_57F20` unlink/release.
+    pub(super) fn reclaim_death_burst_rows_at_source_boundary(&mut self) {
+        let reclaimed = self
+            .death_bursts
+            .iter()
+            .filter(|burst| !burst.active)
+            .map(|burst| (burst.source_entity_index, burst.entity_rng))
+            .collect::<Vec<_>>();
+        self.death_bursts.retain(|burst| burst.active);
+        for (slot, entity_rng) in reclaimed {
+            self.release_slot(slot, Some(entity_rng));
+        }
     }
 
     /// Apply the generation-time `ApplyEvents_498A0` terminal branch to one

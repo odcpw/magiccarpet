@@ -1363,6 +1363,78 @@ impl Level2SharedSpellResetSession {
     }
 
     #[must_use]
+    pub(super) const fn enabled_spell_holder_indices(&self) -> [u16; PLAYER_SPELL_COUNT] {
+        self.local_player.enabled_spell_holders
+    }
+
+    pub(super) fn set_enabled_spell_holder_index(&mut self, family: usize, value: u16) {
+        let Some(slot) = self.local_player.enabled_spell_holders.get_mut(family) else {
+            return;
+        };
+        *slot = value;
+        let offset = 268 + family * 2;
+        self.local_player.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        if let Some(player) = self
+            .players
+            .iter_mut()
+            .find(|player| player.slot == self.local_player.slot)
+        {
+            player.enabled_spell_holders[family] = value;
+            player.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    /// Replace every shared projection of one imported holder from the
+    /// authoritative source-arena row after the player-death release writes.
+    pub(super) fn sync_released_holder(&mut self, source: &EntitySnapshot) {
+        for entity in self
+            .pickups
+            .iter_mut()
+            .chain(self.dynamic_pickups.iter_mut())
+            .chain(self.holders.iter_mut())
+            .chain(self.player_entities.iter_mut())
+        {
+            if entity.index == source.index {
+                *entity = source.clone();
+            }
+        }
+    }
+
+    pub(super) fn increment_player_kill_score(&mut self, entity_index: u16, color: usize) -> bool {
+        let mut changed = false;
+        for player in &mut self.players {
+            if player.entity_index == entity_index {
+                changed |= player.increment_kill_score_for_color(color);
+                if player.slot == self.local_player.slot {
+                    self.local_player = player.clone();
+                }
+            }
+        }
+        changed
+    }
+
+    pub(super) fn sync_player_entity_from_authority(&mut self, source: &EntitySnapshot) {
+        if self.player_entity.index == source.index {
+            self.player_entity = source.clone();
+        }
+        for entity in &mut self.player_entities {
+            if entity.index == source.index {
+                *entity = source.clone();
+            }
+        }
+    }
+
+    pub(super) fn clear_local_player_banished_camera_feedback(&mut self) {
+        let local_slot = self.local_player.slot;
+        self.local_player.clear_banished_camera_feedback();
+        for player in &mut self.players {
+            if player.slot == local_slot {
+                player.clear_banished_camera_feedback();
+            }
+        }
+    }
+
+    #[must_use]
     pub const fn player_mana(&self) -> i32 {
         self.player_mana
     }

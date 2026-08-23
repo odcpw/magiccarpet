@@ -21,6 +21,7 @@ pub enum CampaignEffect {
     Dispatch(Level2DispatchEvent),
     SharedSpell(Level2SharedSpellEvent),
     Flight(FlightEvent),
+    SceneChange { scene: u8 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,6 +110,10 @@ impl EffectJournal {
         self.append(turn, CampaignEffect::Flight(event));
     }
 
+    pub(crate) fn append_scene_change(&mut self, turn: u32, scene: u8) {
+        self.append(turn, CampaignEffect::SceneChange { scene });
+    }
+
     fn append(&mut self, turn: u32, effect: CampaignEffect) {
         self.records.push(EffectRecord {
             sequence: self.next_sequence,
@@ -194,6 +199,9 @@ impl EffectJournal {
                 CampaignEffect::Flight(event) => {
                     hasher.update([3]);
                     hash_flight(&mut hasher, *event);
+                }
+                CampaignEffect::SceneChange { scene } => {
+                    hasher.update([4, *scene]);
                 }
             }
         }

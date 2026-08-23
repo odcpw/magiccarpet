@@ -117,6 +117,8 @@ impl Level2EconomyState {
         let mut state = Self {
             free_slots,
 
+            replacement_cursor_exclusions: BTreeSet::new(),
+
             slot_generations: BTreeMap::new(),
 
             slot_rng,
@@ -141,6 +143,8 @@ impl Level2EconomyState {
             spheres: static_spheres,
 
             death_bursts: Vec::new(),
+
+            player_death_markers: Vec::new(),
 
             spell_replacements: Vec::new(),
 
@@ -339,7 +343,9 @@ impl Level2EconomyState {
         // `sub_5FF50` cleans for Castle auxiliaries.
         let mut candidate = None;
         self.for_each_live_replaceable_arena_row(|slot, kind| {
-            if candidate.map_or(true, |(current, _)| slot < current) {
+            if !self.replacement_cursor_exclusions.contains(&slot)
+                && candidate.map_or(true, |(current, _)| slot < current)
+            {
                 candidate = Some((slot, kind));
             }
         });
@@ -452,6 +458,7 @@ impl Level2EconomyState {
     /// allocator from descending source-slot order without inventing a new
     /// pool or changing any live relation.
     pub(super) fn rebuild_free_arena(&mut self, reset_free_slots: &[u16]) {
+        self.replacement_cursor_exclusions.clear();
         self.reclaim_inactive_slots();
         let occupied = self
             .live_arena_cursor_rows()
@@ -479,14 +486,44 @@ impl Level2EconomyState {
                     .filter(|projectile| !projectile.active && projectile.drawing_disabled)
                     .map(|projectile| projectile.source_entity_index),
             )
+            .chain(
+                self.death_bursts
+                    .iter()
+                    .filter(|burst| !burst.active)
+                    .map(|burst| burst.source_entity_index),
+            )
             .collect::<BTreeSet<_>>();
+        // The source scans current class-zero rows. `free_slots` is the
+        // canonical Rust projection of that live set, including slots freed
+        // since reset; the reset pool remains a compatibility input for rows
+        // that have never been allocated in this bounded carrier.
         self.free_slots = reset_free_slots
             .iter()
+            .chain(self.free_slots.iter())
             .copied()
             .filter(|slot| !occupied.contains(slot))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
         self.free_slots
             .sort_unstable_by(|left, right| right.cmp(left));
+    }
+
+    /// Apply the unconditional `dword_0x11e6--` at the end of remc2's player
+    /// death contact. The skipped slot stays unavailable until sub_49F90
+    /// rebuilds the candidate array.
+    pub(super) fn decrement_replacement_cursor_after_player_contact(&mut self) {
+        let mut candidate = None;
+        self.for_each_live_replaceable_arena_row(|slot, _| {
+            if !self.replacement_cursor_exclusions.contains(&slot)
+                && candidate.is_none_or(|current| slot < current)
+            {
+                candidate = Some(slot);
+            }
+        });
+        if let Some(slot) = candidate {
+            self.replacement_cursor_exclusions.insert(slot);
+        }
     }
 
     #[must_use]
@@ -497,6 +534,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn death_bursts(&self) -> &[Level2DeathBurst] {
         &self.death_bursts
+    }
+
+    #[must_use]
+    pub fn player_death_markers(&self) -> &[Level2PlayerDeathMarker] {
+        &self.player_death_markers
     }
 
     #[must_use]
@@ -4544,6 +4586,16 @@ impl Level2EconomyState {
                 Level2DynamicArenaKind::DeathBurst,
             );
         }
+        for marker in self
+            .player_death_markers
+            .iter()
+            .filter(|marker| marker.active)
+        {
+            visit(
+                marker.source_entity_index,
+                Level2DynamicArenaKind::PlayerDeathMarker,
+            );
+        }
         for carrier in self.carriers.iter().filter(|carrier| carrier.active) {
             visit(
                 carrier.source_entity_index,
@@ -5212,16 +5264,9 @@ impl Level2EconomyState {
                 .insert(slot, target_top);
             self.release_slot(slot, Some(entity_rng));
         }
-        let reclaimed_bursts = self
-            .death_bursts
-            .iter()
-            .filter(|burst| !burst.active)
-            .map(|burst| (burst.source_entity_index, burst.entity_rng))
-            .collect::<Vec<_>>();
-        self.death_bursts.retain(|burst| burst.active);
-        for (slot, entity_rng) in reclaimed_bursts {
-            self.release_slot(slot, Some(entity_rng));
-        }
+        // A model-1 burst disabled by its callback remains reserved for the
+        // rest of that source pass. The next pass prologue owns its unlink
+        // and release through reclaim_death_burst_rows_at_source_boundary.
         let reclaimed_spell_replacements = self
             .spell_replacements
             .iter()
@@ -5781,6 +5826,9 @@ impl Level2EconomyState {
         for slot in &self.free_slots {
             hasher.update(slot.to_le_bytes());
         }
+        for slot in &self.replacement_cursor_exclusions {
+            hasher.update(slot.to_le_bytes());
+        }
         for (slot, rng) in &self.slot_rng {
             hasher.update(slot.to_le_bytes());
             hasher.update(rng.to_le_bytes());
@@ -5851,6 +5899,22 @@ impl Level2EconomyState {
             hasher.update(burst.subspell_index.to_le_bytes());
             hasher.update(burst.control_flags.to_le_bytes());
             hasher.update([u8::from(burst.active)]);
+        }
+        hasher.update(b"player-death-markers-v1");
+        for marker in &self.player_death_markers {
+            hasher.update(marker.source_entity_index.to_le_bytes());
+            hasher.update(marker.entity_rng.to_le_bytes());
+            hasher.update(marker.trigger_player_entity_index.to_le_bytes());
+            hasher.update(marker.position.x.to_le_bytes());
+            hasher.update(marker.position.y.to_le_bytes());
+            hasher.update(marker.position.z.to_le_bytes());
+            hasher.update([marker.dispatch_phase]);
+            hasher.update(marker.constructor_phase.to_le_bytes());
+            hasher.update([marker.byte_38]);
+            hasher.update(marker.max_life.to_le_bytes());
+            hasher.update(marker.life.to_le_bytes());
+            hasher.update(marker.particle_parameter_index.to_le_bytes());
+            hasher.update([u8::from(marker.active)]);
         }
         for replacement in &self.spell_replacements {
             hasher.update(replacement.source_entity_index.to_le_bytes());

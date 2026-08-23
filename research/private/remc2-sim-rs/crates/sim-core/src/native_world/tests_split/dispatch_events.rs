@@ -1981,18 +1981,61 @@ fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_vis
 }
 
 #[test]
-fn level_two_player_contact_lethal_visit_retains_owner_and_records_killer() {
+fn level_two_player_contact_runs_remc2_action2_death_lifecycle_on_following_visit() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 lethal contact session");
     let local_index = usize::from(session.state.entity_index);
-    let attacker = 222_u16;
+    let victim_color = usize::from(session.shared_spells.local_player.player_color_index());
+    let attacker_player = session
+        .players
+        .iter()
+        .find(|candidate| {
+            candidate.entity_index != session.state.entity_index
+                && candidate.type_str_164_auxiliary().is_some()
+                && session
+                    .economy
+                    .entities
+                    .get(usize::from(candidate.entity_index))
+                    .is_some_and(|entity| {
+                        entity.active && entity.class == 3 && matches!(entity.model, 0 | 1)
+                    })
+        })
+        .expect("qualified remote player can receive death score")
+        .clone();
+    let attacker = attacker_player.entity_index;
+    let score_before = attacker_player
+        .type_str_164_auxiliary()
+        .expect("remote score carrier")
+        .word_0x26_38[victim_color];
     session.player_life = 100;
     session.economy.entities[local_index].life = 100;
     session.economy.entities[local_index].record[12..16].copy_from_slice(&100_i32.to_le_bytes());
     session.shared_spells.set_player_entity_life(100);
+    let enabled_before = session.shared_spells.local_player.enabled_spell_holders;
+    let released_holder_index = enabled_before
+        .iter()
+        .copied()
+        .find(|index| *index > 1 && usize::from(*index) < session.economy.entities.len())
+        .expect("qualified player has a releasable spell holder");
+    let released_holder_before =
+        session.economy.entities[usize::from(released_holder_index)].clone();
+    // Deliberately stale the derived shared projection. sub_5E310 owns the
+    // source-arena entity and must not copy this older view back over it.
+    let shared = &mut session.shared_spells;
+    if let Some(stale) = shared
+        .pickups
+        .iter_mut()
+        .chain(shared.dynamic_pickups.iter_mut())
+        .chain(shared.holders.iter_mut())
+        .find(|holder| holder.index == released_holder_index)
+    {
+        stale.set_source_action(stale.action.wrapping_add(17));
+        stale.set_control_flags(stale.control_flags ^ 0x20);
+    }
+    let player_rng_before = session.economy.entities[local_index].entity_rng;
     session.queue_level2_player_contact_damage(200, attacker);
     session.step_outer_turn(PlayerCommand::default(), 0);
 
@@ -2020,15 +2063,168 @@ fn level_two_player_contact_lethal_visit_retains_owner_and_records_killer() {
             ..
         } if *attacker_entity_index == attacker
     )));
+    let death_sound = session
+        .effect_journal()
+        .records()
+        .iter()
+        .position(|record| matches!(
+            record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::PlayerDeath,
+                entity_index,
+                player_index: -1,
+                sound_id: 16,
+            }) if entity_index == session.state.entity_index
+        ))
+        .expect("lethal action-0 publishes the real player-death audio effect");
+    let dead_scene = session
+        .effect_journal()
+        .records()
+        .iter()
+        .position(|record| matches!(
+            record.effect,
+            crate::campaign::journal::CampaignEffect::SceneChange { scene: 4 }
+        ))
+        .expect("lethal action-0 publishes remc2 Scene::DEAD");
+    assert!(death_sound < dead_scene, "sound 16 precedes Scene::DEAD");
 
-    // Later source visits clear word-0x26 but do not reapply damage or
-    // clear the lethal mailbox owner, matching the life<0 branch.
+    // The following visit is selected as class-3/action-2. It runs sub_5D530
+    // without new input, falls to terrain, constructs the per-tick model-1
+    // burst, clears the complete mailbox, and advances only after the
+    // model-40 marker allocation succeeds.
     session.step_outer_turn(PlayerCommand::default(), 0);
     let player = &session.economy.entities[local_index];
-    assert_eq!(player.word_26(), 0);
+    assert_eq!(player.action, 3);
+    assert_eq!(player.word_26(), attacker);
     assert_eq!(
         u16::from_le_bytes(player.record_bytes()[102..104].try_into().unwrap()),
-        attacker
+        0
+    );
+    assert_eq!(player.source_dword_10(), 1_200);
+    assert_eq!(player.phase, session.state.entity_phase);
+    assert_eq!(player.record_bytes()[66], session.state.entity_phase);
+    assert_ne!(player.control_flags & 0x20, 0);
+    assert_eq!(player.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    let mut expected_rng = player_rng_before;
+    let mut first_release = None;
+    for holder_index in enabled_before {
+        if holder_index == 0 || usize::from(holder_index) >= session.economy.entities.len() {
+            continue;
+        }
+        expected_rng = level2_next_rng16(expected_rng);
+        let x_offset = i16::try_from(i32::from(expected_rng & 0x01ff) - 256).unwrap();
+        expected_rng = level2_next_rng16(expected_rng);
+        let y_offset = i16::try_from(i32::from(expected_rng & 0x01ff) - 256).unwrap();
+        expected_rng = level2_next_rng16(expected_rng);
+        let life = i32::from(expected_rng % 90) + 200;
+        if holder_index == released_holder_index {
+            first_release = Some((x_offset, y_offset, life));
+        }
+    }
+    assert_eq!(player.entity_rng, expected_rng);
+    for (family, holder_index) in enabled_before.into_iter().enumerate() {
+        assert_eq!(
+            session.shared_spells.local_player.enabled_spell_holders[family],
+            if holder_index == 0 || usize::from(holder_index) >= session.economy.entities.len() {
+                0
+            } else {
+                1
+            }
+        );
+    }
+    let released_holder = &session.economy.entities[usize::from(released_holder_index)];
+    let (x_offset, y_offset, expected_life) = first_release.expect("first holder RNG tuple");
+    assert_eq!(
+        released_holder.position,
+        Position {
+            x: player.position.x.wrapping_add_signed(x_offset),
+            y: player.position.y.wrapping_add_signed(y_offset),
+            z: player.position.z,
+        }
+    );
+    assert_eq!(released_holder.life, expected_life);
+    assert_eq!(
+        released_holder.action,
+        released_holder_before.action.wrapping_add(1)
+    );
+    assert_eq!(
+        released_holder.control_flags,
+        released_holder_before.control_flags & !1
+    );
+    assert!(session
+        .economy
+        .map_chains
+        .entity_chain(
+            released_holder.position.x.to_be_bytes()[0],
+            released_holder.position.y.to_be_bytes()[0],
+        )
+        .contains(&released_holder_index));
+    let core_attacker = session
+        .players
+        .iter()
+        .find(|candidate| candidate.entity_index == attacker)
+        .expect("scoring player remains present");
+    let shared_attacker = session
+        .shared_spells
+        .players
+        .iter()
+        .find(|candidate| candidate.entity_index == attacker)
+        .expect("shared scoring player remains present");
+    assert_eq!(
+        core_attacker
+            .type_str_164_auxiliary()
+            .expect("core score carrier")
+            .word_0x26_38[victim_color],
+        score_before.wrapping_add(1)
+    );
+    assert_eq!(
+        shared_attacker
+            .type_str_164_auxiliary()
+            .expect("shared score carrier")
+            .word_0x26_38[victim_color],
+        score_before.wrapping_add(1)
+    );
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::Economy {
+            event: Level2EconomyEvent::DeathBurstSpawned {
+                parent_entity_index,
+                id_entity_index,
+                ..
+            },
+            ..
+        } if *parent_entity_index == session.state.entity_index
+            && *id_entity_index == player.source_id
+    )));
+    let marker = session
+        .economy()
+        .player_death_markers()
+        .last()
+        .copied()
+        .expect("model-40 player death marker");
+    assert_eq!(
+        (
+            marker.trigger_player_entity_index,
+            marker.byte_38,
+            marker.max_life,
+            marker.life,
+            marker.particle_parameter_index,
+        ),
+        (
+            session.state.entity_index,
+            crate::level1_mission::PLAYER_DEATH_MARKER_BYTE_38,
+            crate::level1_mission::PLAYER_DEATH_MARKER_LIFE,
+            crate::level1_mission::PLAYER_DEATH_MARKER_LIFE,
+            crate::level1_mission::PLAYER_DEATH_MARKER_PARTICLE_PARAMETER,
+        )
+    );
+    assert_eq!(
+        session.player_death_notification,
+        Some(Level2PlayerDeathNotification {
+            id: 374,
+            state: 1,
+            timer: 100,
+        })
     );
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
@@ -2037,6 +2233,417 @@ fn level_two_player_contact_lethal_visit_retains_owner_and_records_killer() {
             ..
         }
     )));
+
+    // The next ordinary visit consumes the successful marker transition as
+    // action 3. An inactive-but-addressable killer remains the remc2 camera
+    // target; the callback clears linked player feedback and the scheduler
+    // advances the source phase exactly once.
+    session.economy.entities[usize::from(attacker)].active = false;
+    session.state.recoil_speed = 123;
+    let local_entity_index = session.state.entity_index;
+    for player_state in &mut session.players {
+        if player_state.entity_index == local_entity_index {
+            player_state.record[32..34].copy_from_slice(&123_i16.to_le_bytes());
+            player_state.record[46..48].copy_from_slice(&456_i16.to_le_bytes());
+            player_state.record[48..50].copy_from_slice(&789_i16.to_le_bytes());
+        }
+    }
+    session.shared_spells.local_player.record[32..34]
+        .copy_from_slice(&123_i16.to_le_bytes());
+    session.shared_spells.local_player.record[46..48]
+        .copy_from_slice(&456_i16.to_le_bytes());
+    session.shared_spells.local_player.record[48..50]
+        .copy_from_slice(&789_i16.to_le_bytes());
+    let phase_before_action3 = session.state.entity_phase;
+    let tick_before_action3 = session.state.tick;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let player = &session.economy.entities[local_index];
+    assert_eq!(player.action, 3);
+    assert_eq!(
+        session.state.entity_phase,
+        phase_before_action3.wrapping_add(1)
+    );
+    assert_eq!(session.state.tick, tick_before_action3.wrapping_add(1));
+    assert_eq!(player.phase, session.state.entity_phase);
+    assert_eq!(player.record_bytes()[66], session.state.entity_phase);
+    assert_eq!(session.state.recoil_speed, 0);
+    assert_eq!(player.pitch, 0);
+    assert_eq!(player.fov, session.state.entity_fov);
+    assert_eq!(
+        player.source_roll(),
+        i16::try_from(heading_for_positions(
+            player.position,
+            session.economy.entities[usize::from(attacker)].position,
+        ))
+        .expect("11-bit camera heading")
+    );
+    for player_state in session
+        .players
+        .iter()
+        .filter(|state| state.entity_index == session.state.entity_index)
+        .chain(std::iter::once(&session.shared_spells.local_player))
+    {
+        assert_eq!(&player_state.record_bytes()[32..34], &0_i16.to_le_bytes());
+        assert_eq!(&player_state.record_bytes()[46..48], &0_i16.to_le_bytes());
+        assert_eq!(&player_state.record_bytes()[48..50], &0_i16.to_le_bytes());
+    }
+}
+
+#[test]
+fn level_two_airborne_player_death_visit_uses_action2_body_and_player_burst() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 airborne death session");
+    let local_index = usize::from(session.state.entity_index);
+    let high_position = Position {
+        x: session.state.position.x,
+        y: session.state.position.y,
+        z: 4_000,
+    };
+    session.state.position = high_position;
+    session
+        .set_level2_entity_position(session.state.entity_index, high_position)
+        .expect("player position projection");
+    session.economy.entities[local_index].set_source_action(2);
+    session.economy.entities[local_index].set_source_word_2c(-10);
+    session.set_level2_player_menu_state(5);
+    session.state.actual_speed = 500;
+    session.state.target_speed = 500;
+    session.state.yaw = 0;
+    let player_source_id = session.economy.entities[local_index].source_id;
+    let player = session.economy.entities[local_index].clone();
+    session
+        .shared_spells
+        .sync_player_entity_from_authority(&player);
+
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 0x26,
+            argument_1: 127,
+            argument_2: -127,
+            roll: 96,
+            pitch: -96,
+            flags: 0x7f,
+            argument_6: u16::MAX,
+            argument_8: u16::MAX,
+        },
+        0,
+    );
+
+    let player = &session.economy.entities[local_index];
+    assert_eq!(player.action, 2, "airborne death remains in action 2");
+    assert_eq!(player.source_word_2c(), -12);
+    assert_eq!(player.phase, session.state.entity_phase);
+    assert_eq!(player.record_bytes()[66], session.state.entity_phase);
+    assert_ne!(
+        (player.position.x, player.position.y),
+        (high_position.x, high_position.y),
+        "sub_5D530 moves before the action-2 death tail"
+    );
+    assert!(session
+        .economy()
+        .map_chains
+        .entity_chain(
+            player.position.x.to_be_bytes()[0],
+            player.position.y.to_be_bytes()[0],
+        )
+        .contains(&session.state.entity_index));
+    assert_eq!(player.control_flags & 0x20, 0);
+    assert_eq!(session.level2_player_menu_state(), 0);
+    assert!(session.economy().player_death_markers().is_empty());
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::Economy {
+            event: Level2EconomyEvent::DeathBurstSpawned {
+                parent_entity_index,
+                id_entity_index,
+                ..
+            },
+            ..
+        } if *parent_entity_index == session.state.entity_index
+            && *id_entity_index == player_source_id
+    )));
+    assert!(!session.effect_journal().records().iter().any(|record| matches!(
+        record.effect,
+        crate::campaign::journal::CampaignEffect::Flight(
+            FlightEvent::RequestSpellActivation { .. }
+        )
+    )));
+}
+
+#[test]
+fn level_two_player_death_dispatch_rejects_wrong_selector_or_stale_identity() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let base = inspection
+        .level2_reset_session()
+        .expect("Level 2 player selector session");
+    let player_entity_index = base.state.entity_index;
+    let player_index = usize::from(player_entity_index);
+
+    let mut candidates = [base.clone(), base.clone(), base.clone(), base];
+    candidates[0].economy.entities[player_index].class = 4;
+    candidates[1].economy.entities[player_index].model = 1;
+    candidates[2].economy.entities[player_index].set_source_action(1);
+    candidates[3].economy.entities[player_index].index = player_entity_index.wrapping_add(1);
+    for candidate in &mut candidates {
+        if candidate.economy.entities[player_index].action == 0 {
+            candidate.economy.entities[player_index].set_source_action(2);
+        }
+        let source_id = candidate.economy.entities[player_index].source_id;
+        candidate.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!candidate.economy.death_bursts.iter().any(|burst| {
+            burst.parent_entity_index == player_entity_index && burst.id_entity_index == source_id
+        }));
+    }
+}
+
+#[test]
+fn level_two_player_dying_burst_adds_only_remc2_control_byte_bit_80() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 player-burst constructor session");
+    let player_entity_index = session.state.entity_index;
+    let source_id = session.economy.entities[usize::from(player_entity_index)].source_id;
+    let position = session.state.position;
+    let source_slot = session
+        .economy_mut()
+        .spawn_player_dying_burst(player_entity_index, source_id, position)
+        .expect("player death burst slot");
+    let burst = session
+        .economy()
+        .death_bursts()
+        .iter()
+        .find(|burst| burst.source_entity_index == source_slot)
+        .expect("player death burst carrier");
+    assert_eq!(burst.control_flags, SOURCE_REPLACEABLE_FLAG | 0x80);
+    assert_eq!(burst.id_entity_index, source_id);
+    assert_eq!(burst.position, position);
+}
+
+#[test]
+fn level_two_player_contact_rebuild_reuses_burst_then_skips_next_replaceable() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 replacement cursor session");
+    let economy = &mut session.economy;
+    economy.free_slots.clear();
+    economy.replacement_cursor_exclusions.clear();
+    economy.castle_children.clear();
+    economy.spheres.clear();
+    economy.death_bursts.clear();
+    economy.authored_model1.clear();
+    economy.model59_smoke_children.clear();
+    economy.authored_model5_water_splashes.clear();
+    economy.authored_model13.clear();
+    economy.authored_model6.clear();
+    economy.model13_spawned_children.clear();
+    economy.model17_spawned_children.clear();
+    economy.model76_tail_spawns.clear();
+    let position = Position {
+        x: 10_000,
+        y: 11_000,
+        z: 200,
+    };
+    for source_entity_index in [900_u16, 901, 902, 903] {
+        economy.death_bursts.push(Level2DeathBurst {
+            source_entity_index,
+            entity_rng: source_entity_index.wrapping_add(7),
+            parent_entity_index: 111,
+            id_entity_index: 111,
+            position,
+            max_life: 0,
+            life_ticks: 1,
+            subspell_index: 0,
+            control_flags: SOURCE_REPLACEABLE_FLAG,
+            active: true,
+        });
+    }
+
+    economy.free_slots = vec![951, 950];
+    let free_before = economy.free_slots.clone();
+    economy.decrement_replacement_cursor_after_player_contact();
+    assert_eq!(
+        economy.free_slots, free_before,
+        "the replacement cursor is independent of the ordinary free stack"
+    );
+    assert_eq!(economy.allocate_slot(), Some(950));
+    assert_eq!(economy.allocate_slot(), Some(951));
+    assert_eq!(
+        economy.allocate_slot(),
+        Some(901),
+        "only replacement candidate 900 was excluded"
+    );
+
+    economy.free_slots.clear();
+    economy.replacement_cursor_exclusions.clear();
+    economy.death_bursts.clear();
+    for source_entity_index in [900_u16, 901, 902, 903] {
+        economy.death_bursts.push(Level2DeathBurst {
+            source_entity_index,
+            entity_rng: source_entity_index.wrapping_add(7),
+            parent_entity_index: 111,
+            id_entity_index: 111,
+            position,
+            max_life: 0,
+            life_ticks: 1,
+            subspell_index: 0,
+            control_flags: SOURCE_REPLACEABLE_FLAG,
+            active: true,
+        });
+    }
+
+    let burst_slot = economy
+        .spawn_player_dying_burst(111, 777, position)
+        .expect("burst replaces the lowest candidate");
+    assert_eq!(burst_slot, 900);
+    economy.rebuild_free_arena(&[]);
+    let marker = economy
+        .allocate_player_death_marker(111, position)
+        .expect("marker reuses the rebuilt lowest replaceable");
+    assert_eq!(marker.source_entity_index, 900);
+    economy.decrement_replacement_cursor_after_player_contact();
+    assert_eq!(
+        economy.allocate_slot(),
+        Some(902),
+        "tail decrement excludes candidate 901, so the next allocation gets 902"
+    );
+
+    // sub_49F90 scans current class-zero rows, not only rows that were free
+    // at reset. A row reclaimed during this session must survive a later
+    // free-arena rebuild even when it is absent from the reset pool input.
+    economy.free_slots.clear();
+    economy.replacement_cursor_exclusions.clear();
+    economy.death_bursts.clear();
+    let runtime_reclaimed_slot = 940_u16;
+    economy.death_bursts.push(Level2DeathBurst {
+        source_entity_index: runtime_reclaimed_slot,
+        entity_rng: 88,
+        parent_entity_index: 111,
+        id_entity_index: 111,
+        position,
+        max_life: 0,
+        life_ticks: 1,
+        subspell_index: 0,
+        control_flags: SOURCE_REPLACEABLE_FLAG,
+        active: true,
+    });
+    assert!(economy.step_death_burst_slot(runtime_reclaimed_slot));
+    economy.reclaim_death_burst_rows_at_source_boundary();
+    assert!(economy.free_slots.contains(&runtime_reclaimed_slot));
+    economy.rebuild_free_arena(&[]);
+    assert_eq!(economy.allocate_slot(), Some(runtime_reclaimed_slot));
+}
+
+#[test]
+fn level_two_player_death_burst_slot_reclaims_only_at_following_boundary() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 burst reclaim session");
+    let slot = session
+        .economy
+        .free_slots
+        .first()
+        .copied()
+        .expect("qualified reset has an ordinary free slot");
+    session.economy.free_slots.retain(|candidate| *candidate != slot);
+    session.economy.death_bursts.push(Level2DeathBurst {
+        source_entity_index: slot,
+        entity_rng: 77,
+        parent_entity_index: 111,
+        id_entity_index: 111,
+        position: Position::default(),
+        max_life: 0,
+        life_ticks: 1,
+        subspell_index: 0,
+        control_flags: SOURCE_REPLACEABLE_FLAG,
+        active: true,
+    });
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session
+        .economy
+        .death_bursts
+        .iter()
+        .any(|burst| burst.source_entity_index == slot && !burst.active));
+    assert!(
+        !session.economy.free_slots.contains(&slot),
+        "ordinary pass tail keeps the disabled row reserved"
+    );
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(!session
+        .economy
+        .death_bursts
+        .iter()
+        .any(|burst| burst.source_entity_index == slot));
+    assert!(
+        session.economy.free_slots.contains(&slot),
+        "following ordinary pass prologue releases the row"
+    );
+}
+
+#[test]
+fn level_two_player_death_reset_replays_hash_events_and_audio_exactly() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 death replay session");
+    let baseline_hash = session.campaign_state_hash();
+    let baseline_economy_hash = session.economy().reset_hash();
+    let local_index = usize::from(session.state.entity_index);
+    let attacker = 222_u16;
+
+    session.player_life = 100;
+    session.economy.entities[local_index].life = 100;
+    session.economy.entities[local_index].record[12..16]
+        .copy_from_slice(&100_i32.to_le_bytes());
+    session.shared_spells.set_player_entity_life(100);
+    session.queue_level2_player_contact_damage(200, attacker);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let first = (
+        session.campaign_state_hash(),
+        session.economy().reset_hash(),
+        session.effect_journal().receipt(),
+        session.dispatch_events().to_vec(),
+        session.economy().player_death_markers().to_vec(),
+        session.player_death_notification,
+    );
+
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_hash);
+    assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
+    assert!(session.dispatch_events().is_empty());
+    assert!(session.economy().player_death_markers().is_empty());
+    assert_eq!(session.player_death_notification, None);
+
+    session.player_life = 100;
+    session.economy.entities[local_index].life = 100;
+    session.economy.entities[local_index].record[12..16]
+        .copy_from_slice(&100_i32.to_le_bytes());
+    session.shared_spells.set_player_entity_life(100);
+    session.queue_level2_player_contact_damage(200, attacker);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let replay = (
+        session.campaign_state_hash(),
+        session.economy().reset_hash(),
+        session.effect_journal().receipt(),
+        session.dispatch_events().to_vec(),
+        session.economy().player_death_markers().to_vec(),
+        session.player_death_notification,
+    );
+    assert_eq!(replay, first);
 }
 
 #[test]

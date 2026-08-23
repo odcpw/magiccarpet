@@ -2831,6 +2831,8 @@ impl Level2ResetSession {
             player_pending_damage: initial_player_pending_damage,
             player_pending_attacker: initial_player_pending_attacker,
             player_life: initial_player_life,
+            player_menu_state: 0,
+            player_death_notification: None,
             level2_group8_activated: false,
             // The qualified frame-zero model-32 row observes stage index 3's
             // source state 1; the switch completes only after that state is 2.
@@ -2902,6 +2904,12 @@ impl Level2ResetSession {
         Vec::push(&mut self.session.state.live.shared_spells.events, event);
     }
 
+    fn push_scene_change_effect(&mut self, scene: u8) {
+        self.flush_shared_effects();
+        let turn = self.session.state.live.core.runtime.global_turn;
+        self.effect_journal_mut().append_scene_change(turn, scene);
+    }
+
     fn append_context_effects(&mut self, events: Vec<FlightEvent>) {
         if events.is_empty() {
             return;
@@ -2936,6 +2944,9 @@ impl Level2ResetSession {
                 }
                 crate::campaign::journal::CampaignEffect::Flight(event) => {
                     journal.append_flight(turn, event);
+                }
+                crate::campaign::journal::CampaignEffect::SceneChange { scene } => {
+                    journal.append_scene_change(turn, scene);
                 }
             }
         }
@@ -3226,6 +3237,17 @@ impl Level2ResetSession {
     #[must_use]
     pub const fn level2_objective_done(&self) -> bool {
         self.session.state.live.level2_objective_done
+    }
+
+    /// Bind the source per-player `MenuState_0x3DF` consumed by the dying
+    /// callback. This is deliberately not the spell holder's menu-stage byte.
+    pub fn set_level2_player_menu_state(&mut self, menu_state: u8) {
+        self.session.state.live.player_menu_state = menu_state;
+    }
+
+    #[must_use]
+    pub const fn level2_player_menu_state(&self) -> u8 {
+        self.session.state.live.player_menu_state
     }
 
     /// Move one imported source entity through the lossless Level 2 seam.
@@ -6897,7 +6919,7 @@ impl Level2ResetSession {
         self.flush_shared_effects();
         let source_player_order = self.refresh_level2_spell_owner_candidates();
         let player_entity_index = self.session.state.live.core.state.entity_index;
-        let player_position = self.session.state.live.core.state.position;
+        let mut player_position = self.session.state.live.core.state.position;
         // Retain event chronology across all source slots in this pass;
         // individual handlers must not erase an earlier pickup row.
         self.session.state.live.shared_spells.pickup_events.clear();
@@ -6918,6 +6940,11 @@ impl Level2ResetSession {
             .live
             .economy
             .reclaim_fireball_rows_at_source_boundary();
+        self.session
+            .state
+            .live
+            .economy
+            .reclaim_death_burst_rows_at_source_boundary();
         // `UpdateEntities_57730` scans every hidden active entity and calls
         // `sub_57F20` before rebuilding lists or dispatching any root. Keep
         // this generic prepass independent of Castle root/model/parent state
@@ -7235,8 +7262,16 @@ impl Level2ResetSession {
                         .economy
                         .entities
                         .get(usize::from(player_entity_index))
-                        .is_some_and(|entity| entity.class == 3 && entity.model == 0);
+                        .is_some_and(|entity| {
+                            entity.index == player_entity_index
+                                && entity.class == 3
+                                && entity.model == 0
+                        });
                     if local_player_body {
+                        let player_action_at_visit = self.session.state.live.economy.entities
+                            [usize::from(player_entity_index)]
+                        .action;
+                        let mut lethal_at_visit = false;
                         // `AddPlayer03_00_5E010` tests the Castle shift AABB
                         // against the entity-111 position before the generic
                         // body updates position. Preserve that source-time
@@ -7258,71 +7293,116 @@ impl Level2ResetSession {
                                     .economy
                                     .player_castle_shift_aabb_overlap(player)
                             });
-                        if let Some((damage, attacker, lethal)) =
-                            self.consume_level2_player_damage()
-                        {
-                            self.session.state.live.economy.events.push(
-                                Level2EconomyEvent::DamageApplied {
-                                    target_entity_index: player_entity_index,
-                                    attacker_entity_index: attacker,
-                                    damage,
-                                    lethal,
-                                },
-                            );
+                        if player_action_at_visit == 0 {
+                            if let Some((damage, attacker, lethal)) =
+                                self.consume_level2_player_damage()
+                            {
+                                lethal_at_visit = lethal;
+                                self.session.state.live.economy.events.push(
+                                    Level2EconomyEvent::DamageApplied {
+                                        target_entity_index: player_entity_index,
+                                        attacker_entity_index: attacker,
+                                        damage,
+                                        lethal,
+                                    },
+                                );
+                            }
                         }
                         self.append_new_economy_events(pass, source_slot);
 
-                        // `UpdateEntities_57730` reaches the local player at
-                        // source slot 111 before the later Possession holder
-                        // (116) and Castle (117). Keep the complete generic
-                        // flight/player callback here so its selected spell,
-                        // movement, and upkeep writes are visible to those
-                        // later source handlers in this same pass.
-                        self.refresh_level2_spell_fire_holder_projection();
-                        let profile = self.session.definition.profile;
-                        let context_event_start = self.session.state.live.core.context.events.len();
-                        let campaign = Some(&mut self.session.state)
-                            .expect("Level 2 campaign state owns canonical runtime");
-                        let core = &mut campaign.live.core;
-                        let terrain = &campaign.live.terrain;
-                        evidence.push(crate::step_entity_pass_with_context(
-                            &mut core.state,
-                            latched_command,
-                            profile,
-                            terrain,
-                            &mut core.context,
-                        ));
-                        let context_events = self.session.state.live.core.context.events
-                            [context_event_start..]
-                            .to_vec();
-                        self.append_context_effects(context_events);
-                        self.sync_level2_spell_fire_authority(latched_command.flags);
-                        self.set_level2_entity_position(
-                            self.session.state.live.core.state.entity_index,
-                            self.session.state.live.core.state.position,
-                        )
-                        .expect("qualified Level 2 local-player map carrier remains valid");
-                        self.session
-                            .state
-                            .live
-                            .shared_spells
-                            .step_local_player_unboosted_upkeep(
-                                self.session.state.live.economy.player_castle_entity_index(),
-                                castle_shift_overlap,
-                                self.session
-                                    .state
-                                    .live
-                                    .economy
-                                    .owner_max_mana
-                                    .get(&self.session.state.live.core.state.entity_index)
-                                    .copied(),
-                            );
-                        self.session
-                            .state
-                            .live
-                            .shared_spells
-                            .sync_typed_spell_parent_caches_from_player_entity();
-                        self.sync_level2_spell_fire_context();
+                        if player_action_at_visit == 2 {
+                            // remc2 action 2 calls the recovered sub_5D530 body
+                            // directly: no new PlayerEvents input or spell-fire
+                            // command is latched while the player is dying.
+                            let profile = self.session.definition.profile;
+                            let context_event_start =
+                                self.session.state.live.core.context.events.len();
+                            let body = {
+                                let campaign = &mut self.session.state;
+                                let core = &mut campaign.live.core;
+                                let terrain = &campaign.live.terrain;
+                                crate::step_entity_body_with_context(
+                                    &mut core.state,
+                                    profile,
+                                    terrain,
+                                    &mut core.context,
+                                )
+                            };
+                            let context_events = self.session.state.live.core.context.events
+                                [context_event_start..]
+                                .to_vec();
+                            self.append_context_effects(context_events);
+                            self.step_level2_player_dying_action(pass, source_slot, body.proposed);
+                            player_position = self.session.state.live.core.state.position;
+                            evidence.push(body);
+                        } else if player_action_at_visit == 0 {
+                            // `UpdateEntities_57730` reaches the local player at
+                            // source slot 111 before the later Possession holder
+                            // (116) and Castle (117). Keep the complete generic
+                            // flight/player callback here so its selected spell,
+                            // movement, and upkeep writes are visible to those
+                            // later source handlers in this same pass.
+                            self.refresh_level2_spell_fire_holder_projection();
+                            let profile = self.session.definition.profile;
+                            let context_event_start =
+                                self.session.state.live.core.context.events.len();
+                            let campaign = Some(&mut self.session.state)
+                                .expect("Level 2 campaign state owns canonical runtime");
+                            let core = &mut campaign.live.core;
+                            let terrain = &campaign.live.terrain;
+                            evidence.push(crate::step_entity_pass_with_context(
+                                &mut core.state,
+                                latched_command,
+                                profile,
+                                terrain,
+                                &mut core.context,
+                            ));
+                            let context_events = self.session.state.live.core.context.events
+                                [context_event_start..]
+                                .to_vec();
+                            self.append_context_effects(context_events);
+                            self.sync_level2_spell_fire_authority(latched_command.flags);
+                            self.set_level2_entity_position(
+                                self.session.state.live.core.state.entity_index,
+                                self.session.state.live.core.state.position,
+                            )
+                            .expect("qualified Level 2 local-player map carrier remains valid");
+                            self.session
+                                .state
+                                .live
+                                .shared_spells
+                                .step_local_player_unboosted_upkeep(
+                                    self.session.state.live.economy.player_castle_entity_index(),
+                                    castle_shift_overlap,
+                                    self.session
+                                        .state
+                                        .live
+                                        .economy
+                                        .owner_max_mana
+                                        .get(&self.session.state.live.core.state.entity_index)
+                                        .copied(),
+                                );
+                            self.session
+                                .state
+                                .live
+                                .shared_spells
+                                .sync_typed_spell_parent_caches_from_player_entity();
+                            self.sync_level2_spell_fire_context();
+                            if lethal_at_visit {
+                                mark_source_audio_call(SourceAudioCallTag::PlayerDeath);
+                                self.push_flight_effect(FlightEvent::PrepareSound {
+                                    #[cfg(test)]
+                                    audio_site: crate::MissionAudioSite::PlayerDeath,
+                                    entity_index: player_entity_index,
+                                    player_index: -1,
+                                    sound_id: 16,
+                                });
+                                // `Scene::DEAD` is the fifth variant in the pinned remc2 enum.
+                                self.push_scene_change_effect(4);
+                            }
+                        } else if player_action_at_visit == 3 {
+                            self.step_level2_player_banished_action();
+                        }
                     }
                 }
                 0 => {
@@ -8907,6 +8987,12 @@ impl Level2ResetSession {
                 .live
                 .economy
                 .step_death_burst_slot(source_slot),
+            Level2DynamicArenaKind::PlayerDeathMarker => self
+                .session
+                .state
+                .live
+                .economy
+                .step_player_death_marker_slot(source_slot, &self.session.state.live.terrain),
             Level2DynamicArenaKind::SpellReplacement => self
                 .session
                 .state
@@ -10123,6 +10209,393 @@ impl Level2ResetSession {
             .then_some((damage, attacker, lethal))
     }
 
+    fn release_level2_player_spell_holders(&mut self, player_position: Position) {
+        let player_entity_index = self.session.state.live.core.state.entity_index;
+        let enabled = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .enabled_spell_holder_indices();
+        let mut rng =
+            self.session.state.live.economy.entities[usize::from(player_entity_index)].entity_rng;
+
+        for (family, holder_index) in enabled.into_iter().enumerate() {
+            if holder_index == 0
+                || usize::from(holder_index) >= self.session.state.live.economy.entities.len()
+            {
+                self.session
+                    .state
+                    .live
+                    .shared_spells
+                    .set_enabled_spell_holder_index(family, 0);
+                continue;
+            }
+
+            self.session
+                .state
+                .live
+                .shared_spells
+                .set_enabled_spell_holder_index(family, 1);
+            {
+                let holder =
+                    &mut self.session.state.live.economy.entities[usize::from(holder_index)];
+                holder.set_control_flags(holder.control_flags & !1);
+                holder.set_source_action(holder.action.wrapping_add(1));
+            }
+
+            rng = level2_next_rng16(rng);
+            self.session.state.live.economy.entities[usize::from(player_entity_index)]
+                .set_entity_rng(rng);
+            let x_offset = i16::try_from(i32::from(rng & 0x01ff) - 256)
+                .expect("nine-bit holder x offset fits i16");
+            rng = level2_next_rng16(rng);
+            self.session.state.live.economy.entities[usize::from(player_entity_index)]
+                .set_entity_rng(rng);
+            let y_offset = i16::try_from(i32::from(rng & 0x01ff) - 256)
+                .expect("nine-bit holder y offset fits i16");
+            let position = Position {
+                x: player_position.x.wrapping_add_signed(x_offset),
+                y: player_position.y.wrapping_add_signed(y_offset),
+                z: player_position.z,
+            };
+
+            let mut snapshot = {
+                let holder =
+                    &mut self.session.state.live.economy.entities[usize::from(holder_index)];
+                holder.set_position(position);
+                holder.clone()
+            };
+            self.session
+                .state
+                .live
+                .economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: holder_index,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .expect("released Level 2 holder source slot fits map chain");
+            self.session
+                .state
+                .live
+                .shared_spells
+                .sync_released_holder(&snapshot);
+
+            // Pinned sub_5E310 copies the released holder position before
+            // drawing the third random value and assigning its life.
+            rng = level2_next_rng16(rng);
+            self.session.state.live.economy.entities[usize::from(player_entity_index)]
+                .set_entity_rng(rng);
+            let life = i32::from(rng % 90) + 200;
+            snapshot.set_life(life);
+            self.session.state.live.economy.entities[usize::from(holder_index)] = snapshot.clone();
+            self.session
+                .state
+                .live
+                .shared_spells
+                .sync_released_holder(&snapshot);
+        }
+
+        self.session.state.live.economy.entities[usize::from(player_entity_index)]
+            .set_entity_rng(rng);
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() {
+            fire.enabled_holder_indices = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .enabled_spell_holder_indices();
+        }
+    }
+
+    fn step_level2_player_dying_action(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+        burst_position: Position,
+    ) {
+        const PLAYER_DEATH_NOTIFICATION_ID: u16 = 374;
+        const PLAYER_DEATH_NOTIFICATION_STATE: u8 = 1;
+        const PLAYER_DEATH_NOTIFICATION_TIMER: i16 = 100;
+        const PLAYER_BANISHED_ACTION_TIMER: i32 = 1_200;
+
+        let player_entity_index = self.session.state.live.core.state.entity_index;
+        let (old_fall_velocity, source_id, collision_vertical_offset) = {
+            let player =
+                &self.session.state.live.economy.entities[usize::from(player_entity_index)];
+            let collision_vertical_offset = player
+                .parameter_relation
+                .and_then(|index| {
+                    self.session
+                        .definition
+                        .presentation
+                        .entity_parameters
+                        .get(usize::from(index))
+                })
+                .map(|row| i16::from_le_bytes([row[12], row[13]]))
+                .expect("qualified Level 2 player parameter row remains present");
+            (
+                player.source_word_2c(),
+                player.source_id,
+                collision_vertical_offset,
+            )
+        };
+        let color_phase_6 =
+            ((self.session.state.live.shared_spells.local_player.turn / 6) & 1) != 0;
+        if color_phase_6
+            && let Some(effects) = self.session.state.live.core.context.effects.as_mut()
+        {
+            effects.palette_submode = 7;
+        }
+        if self.session.state.live.player_menu_state != 0 {
+            self.session.state.live.player_menu_state = 0;
+        }
+        let mut position = self.session.state.live.core.state.position;
+        position.z = position.z.wrapping_add(old_fall_velocity);
+        let next_fall_velocity = old_fall_velocity.wrapping_sub(2).clamp(-256, 0);
+        let ground = self
+            .session
+            .state
+            .live
+            .terrain
+            .ground_height(position)
+            .wrapping_add(collision_vertical_offset);
+        if position.z < ground {
+            position.z = ground;
+        }
+        {
+            let player =
+                &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
+            player.set_source_word_2c(next_fall_velocity);
+        }
+        self.set_level2_entity_position(player_entity_index, position)
+            .expect("qualified Level 2 player map carrier remains valid");
+
+        let _ = self.session.state.live.economy.spawn_player_dying_burst(
+            player_entity_index,
+            source_id,
+            burst_position,
+        );
+
+        if position.z == ground {
+            let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
+            self.session
+                .state
+                .live
+                .economy
+                .rebuild_free_arena(&reset_free_slots);
+
+            let killer = self.session.state.live.economy.entities[usize::from(player_entity_index)]
+                .word_24();
+            let victim_color = usize::from(
+                self.session
+                    .state
+                    .live
+                    .shared_spells
+                    .local_player
+                    .player_color_index(),
+            );
+            let qualifying_killer = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(killer))
+                .is_some_and(|entity| {
+                    killer != 0 && entity.class == 3 && matches!(entity.model, 0 | 1)
+                });
+            if victim_color < 8
+                && qualifying_killer
+                && let Some(player) = self
+                    .session
+                    .state
+                    .live
+                    .core
+                    .players
+                    .iter_mut()
+                    .find(|player| player.entity_index == killer)
+            {
+                let _ = player.increment_kill_score_for_color(victim_color);
+                let _ = self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .increment_player_kill_score(killer, victim_color);
+            }
+
+            self.session.state.live.player_pending_damage = 0;
+            self.session.state.live.player_pending_attacker = 0;
+            self.session.state.live.economy.entities[usize::from(player_entity_index)]
+                .clear_source_upkeep_mailbox();
+            self.session
+                .state
+                .live
+                .shared_spells
+                .set_player_entity_damage_mailbox(0, 0);
+            self.session.state.live.player_death_notification =
+                Some(Level2PlayerDeathNotification {
+                    id: PLAYER_DEATH_NOTIFICATION_ID,
+                    state: PLAYER_DEATH_NOTIFICATION_STATE,
+                    timer: PLAYER_DEATH_NOTIFICATION_TIMER,
+                });
+            self.release_level2_player_spell_holders(position);
+
+            if let Some(marker) = self
+                .session
+                .state
+                .live
+                .economy
+                .allocate_player_death_marker(player_entity_index, position)
+            {
+                let player =
+                    &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
+                player.set_source_action(3);
+                player.set_source_dword_10(PLAYER_BANISHED_ACTION_TIMER);
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .redirect_player_mana_spheres_to_death_marker(
+                        player_entity_index,
+                        marker.source_entity_index,
+                    );
+            }
+            self.session.state.live.economy.entities[usize::from(player_entity_index)]
+                .set_player_death_hidden_bit();
+            self.session
+                .state
+                .live
+                .economy
+                .decrement_replacement_cursor_after_player_contact();
+        }
+
+        let phase = self.session.state.live.core.state.entity_phase;
+        self.session.state.live.economy.entities[usize::from(player_entity_index)].set_phase(phase);
+        let player =
+            self.session.state.live.economy.entities[usize::from(player_entity_index)].clone();
+        self.session
+            .state
+            .live
+            .shared_spells
+            .sync_player_entity_from_authority(&player);
+        self.append_new_economy_events(pass, source_slot);
+    }
+
+    fn step_level2_player_banished_action(&mut self) {
+        let player_entity_index = self.session.state.live.core.state.entity_index;
+        let is_ai = self.session.state.live.shared_spells.local_player.is_ai;
+        if is_ai {
+            // The qualified owner route is human. Refuse to run the active
+            // flight body for an unclosed AI action-3 branch.
+            return;
+        }
+        if let Some(effects) = self.session.state.live.core.context.effects.as_mut() {
+            effects.palette_submode = 7;
+        }
+        self.session.state.live.core.state.recoil_speed = 0;
+        for player in &mut self.session.state.live.core.players {
+            if player.entity_index == player_entity_index {
+                player.clear_banished_camera_feedback();
+            }
+        }
+        self.session
+            .state
+            .live
+            .shared_spells
+            .clear_local_player_banished_camera_feedback();
+        let killer =
+            self.session.state.live.economy.entities[usize::from(player_entity_index)].word_24();
+        let target = (killer != 0)
+            .then(|| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get(usize::from(killer))
+                    .map(|entity| entity.position)
+            })
+            .flatten();
+        let state = &mut self.session.state.live.core.state;
+        let mut entity_roll = None;
+        let mut entity_fov = None;
+        if let Some(target) = target {
+            let desired_yaw = i16::try_from(heading_for_positions(state.position, target))
+                .expect("11-bit banished camera yaw");
+            let dx = i32::from(target.x.wrapping_sub(state.position.x).cast_signed());
+            let dy = i32::from(target.y.wrapping_sub(state.position.y).cast_signed());
+            let horizontal = i32::try_from(crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .cast_unsigned()
+                    .wrapping_add(dy.wrapping_mul(dy).cast_unsigned()),
+            ))
+            .expect("wrapped Level 2 camera distance fits i32");
+            let desired_pitch = crate::pitch_for_delta(
+                horizontal,
+                i32::from(target.z.wrapping_sub(state.position.z)),
+            );
+            entity_roll = Some(desired_yaw);
+            entity_fov = Some(desired_pitch);
+            state.entity_fov = desired_pitch;
+            state.yaw = state
+                .yaw
+                .wrapping_add(crate::turn_toward(state.yaw, desired_yaw, 22))
+                & 0x07ff;
+            state.pitch_accumulator = state.pitch_accumulator.wrapping_add(crate::turn_toward(
+                state.pitch_accumulator & 0x07ff,
+                desired_pitch,
+                22,
+            )) & 0x07ff;
+            state.position.z = self
+                .session
+                .state
+                .live
+                .terrain
+                .ground_height(state.position);
+        } else {
+            state.yaw = state.yaw.wrapping_add(5) & 0x07ff;
+            state.position.z = self
+                .session
+                .state
+                .live
+                .terrain
+                .ground_height(state.position)
+                .wrapping_add(256);
+        }
+        state.display_pitch = 0;
+        state.pitch_accumulator = 0;
+        state.roll_accumulator = 0;
+        state.entity_phase = state.entity_phase.wrapping_add(1);
+        state.tick = state.tick.wrapping_add(1);
+        let position = state.position;
+        let yaw = state.yaw;
+        let phase = state.entity_phase;
+        self.set_level2_entity_position(player_entity_index, position)
+            .expect("qualified Level 2 player map carrier remains valid");
+        let player =
+            &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
+        player.set_yaw(yaw);
+        player.set_pitch(0);
+        if let Some(roll) = entity_roll {
+            player.set_source_roll(roll);
+        }
+        if let Some(fov) = entity_fov {
+            player.set_fov(fov);
+        }
+        player.set_phase(phase);
+        let snapshot = player.clone();
+        self.session
+            .state
+            .live
+            .shared_spells
+            .sync_player_entity_from_authority(&snapshot);
+    }
+
     #[cfg(test)]
     pub(super) fn step_level2_source_pass(&mut self, pass: u8) {
         let mut evidence = Vec::new();
@@ -10519,6 +10992,102 @@ mod tests {
                 .possession_projectiles()
                 .iter()
                 .all(|projectile| !projectile.active)
+        );
+    }
+
+    #[test]
+    fn level_two_player_death_marker_failure_commits_contact_tail_and_retries_action2() {
+        let package = super::super::tests::level_two_fixture_path();
+        let mut session = NativeWorld::inspect_level2(package)
+            .expect("qualified Level 2 package")
+            .level2_reset_session()
+            .expect("Level 2 marker-failure session");
+        let player_entity_index = session.state.entity_index;
+        let player_index = usize::from(player_entity_index);
+        let parameter_relation = session.economy.entities[player_index]
+            .parameter_relation
+            .expect("player collision parameter");
+        let collision_offset = i16::from_le_bytes(
+            session.session.definition.presentation.entity_parameters
+                [usize::from(parameter_relation)][12..14]
+                .try_into()
+                .unwrap(),
+        );
+        let mut position = session.state.position;
+        position.z = session
+            .terrain
+            .ground_height(position)
+            .wrapping_add(collision_offset);
+        session.state.position = position;
+        session
+            .set_level2_entity_position(player_entity_index, position)
+            .expect("player map projection");
+        session.economy.entities[player_index].set_source_action(2);
+        session.economy.entities[player_index].set_source_word_2c(0);
+
+        // Force both NewEvent paths to fail. The source tail is deliberately
+        // not transactional: notification/holder/control writes commit and
+        // action 2 retries on the next visit.
+        std::sync::Arc::make_mut(&mut session.session.baseline)
+            .economy
+            .free_slots
+            .clear();
+        session.economy.free_slots.clear();
+        session.economy.replacement_cursor_exclusions.clear();
+        session.economy.castle_children.clear();
+        session.economy.spheres.clear();
+        session.economy.death_bursts.clear();
+        session.economy.authored_model1.clear();
+        session.economy.model59_smoke_children.clear();
+        session.economy.authored_model5_water_splashes.clear();
+        session.economy.authored_model13.clear();
+        session.economy.authored_model6.clear();
+        session.economy.model13_spawned_children.clear();
+        session.economy.model17_spawned_children.clear();
+        session.economy.model76_tail_spawns.clear();
+        let sphere_relations = session
+            .economy
+            .spheres
+            .iter()
+            .map(|sphere| sphere.player_entity_index)
+            .collect::<Vec<_>>();
+
+        session.step_level2_player_dying_action(0, player_entity_index, position);
+        assert_eq!(session.economy.entities[player_index].action, 2);
+        assert_ne!(
+            session.economy.entities[player_index].control_flags & 0x20,
+            0
+        );
+        assert!(session.economy.player_death_markers.is_empty());
+        assert!(session.economy.death_bursts.is_empty());
+        assert_eq!(
+            session.player_death_notification,
+            Some(Level2PlayerDeathNotification {
+                id: 374,
+                state: 1,
+                timer: 100,
+            })
+        );
+        assert_eq!(
+            session
+                .economy
+                .spheres
+                .iter()
+                .map(|sphere| sphere.player_entity_index)
+                .collect::<Vec<_>>(),
+            sphere_relations
+        );
+
+        session.step_level2_player_dying_action(0, player_entity_index, position);
+        assert_eq!(session.economy.entities[player_index].action, 2);
+        assert!(session.economy.player_death_markers.is_empty());
+        assert_eq!(
+            session.player_death_notification,
+            Some(Level2PlayerDeathNotification {
+                id: 374,
+                state: 1,
+                timer: 100,
+            })
         );
     }
 }

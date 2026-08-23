@@ -212,6 +212,12 @@ impl EntitySnapshot {
         self.record[32..34].copy_from_slice(&yaw.to_le_bytes());
     }
 
+    /// Keep the source entity pitch in lockstep with a callback write.
+    pub(super) fn set_pitch(&mut self, pitch: i16) {
+        self.pitch = pitch;
+        self.record[34..36].copy_from_slice(&pitch.to_le_bytes());
+    }
+
     /// Keep the source `roll_0x20_32` field in lockstep with the Nyphur
     /// movement helper's target-heading write.
     pub(super) fn set_source_roll(&mut self, roll: i16) {
@@ -221,6 +227,12 @@ impl EntitySnapshot {
     /// Raw source `roll_0x20_32`, kept separate from the exported fov word.
     pub(super) fn source_roll(&self) -> i16 {
         i16::from_le_bytes([self.record[36], self.record[37]])
+    }
+
+    /// Keep the source entity FOV word in lockstep with a callback write.
+    pub(super) fn set_fov(&mut self, fov: i16) {
+        self.fov = fov;
+        self.record[38..40].copy_from_slice(&fov.to_le_bytes());
     }
 
     /// Keep the source callback speed field in lockstep with its typed cache.
@@ -390,6 +402,25 @@ impl EntitySnapshot {
         self.action = 2;
         self.record[48..50].fill(0);
         self.record[73] = 2;
+    }
+
+    pub(super) fn source_word_2c(&self) -> i16 {
+        i16::from_le_bytes([self.record[48], self.record[49]])
+    }
+
+    pub(super) fn set_source_word_2c(&mut self, value: i16) {
+        self.record[48..50].copy_from_slice(&value.to_le_bytes());
+    }
+
+    pub(super) fn set_source_action(&mut self, action: u8) {
+        self.action = action;
+        self.record[73] = action;
+    }
+
+    /// Set source control byte[0] bit 0x20. This is deliberately not the
+    /// 0x400 bit installed by `DisableEntityDrawing04_57F10`.
+    pub(super) fn set_player_death_hidden_bit(&mut self) {
+        self.set_control_flags(self.control_flags | 0x20);
     }
 
     #[cfg(test)]
@@ -1621,6 +1652,27 @@ impl PlayerSnapshot {
     /// `sub_33340` writes.
     pub(super) fn set_roll_0x155(&mut self, value: i16) {
         self.record[46..48].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// Apply the linked player-state writes made by the human banished
+    /// camera: clear moveBoost, roll feedback, and pitch feedback.
+    pub(super) fn clear_banished_camera_feedback(&mut self) {
+        self.record[32..34].fill(0);
+        self.record[46..48].fill(0);
+        self.record[48..50].fill(0);
+    }
+
+    pub(super) fn increment_kill_score_for_color(&mut self, color: usize) -> bool {
+        let Some(auxiliary) = self.type_str_164_auxiliary.as_mut() else {
+            return false;
+        };
+        let Some(score) = auxiliary.word_0x26_38.get_mut(color) else {
+            return false;
+        };
+        *score = score.wrapping_add(1);
+        let offset = PLAYER_LEGACY_RECORD_BYTES + color * 2;
+        self.record[offset..offset + 2].copy_from_slice(&score.to_le_bytes());
+        true
     }
 }
 

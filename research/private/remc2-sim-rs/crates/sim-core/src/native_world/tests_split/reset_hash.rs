@@ -904,7 +904,12 @@ fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
     );
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session.economy().death_bursts().is_empty());
+    assert!(session
+        .economy()
+        .death_bursts()
+        .iter()
+        .any(|burst| burst.source_entity_index == burst_slot && !burst.active));
+    assert!(!session.economy().free_slots.contains(&burst_slot));
     assert!(
         !session
             .economy()
@@ -946,6 +951,10 @@ fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
         )
     }));
     assert_ne!(session.economy().reset_hash(), baseline_hash);
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.economy().death_bursts().is_empty());
+    assert!(session.economy().free_slots.contains(&burst_slot));
     session.reset();
     assert_eq!(session.economy().reset_hash(), baseline_hash);
 }

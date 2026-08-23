@@ -1242,6 +1242,32 @@ pub struct Level2DeathBurst {
     pub active: bool,
 }
 
+/// The class-10/model-40/action-42 row allocated by
+/// `sub_5E310_multiplayer_test_die` when a dying player reaches terrain.
+/// Allocation success is the source transaction boundary: only then does the
+/// player advance to action 3 and do live model-39 spheres rebind to this row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2PlayerDeathMarker {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub trigger_player_entity_index: u16,
+    pub position: Position,
+    pub dispatch_phase: u8,
+    pub constructor_phase: u32,
+    pub byte_38: u8,
+    pub max_life: i32,
+    pub life: i32,
+    pub particle_parameter_index: u16,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2PlayerDeathNotification {
+    pub id: u16,
+    pub state: u8,
+    pub timer: i16,
+}
+
 /// The class-15 row created by remc2 `sub_69250` through the family
 /// `arsub_2a881e`/`AddSpellXX_XX_51120` constructor.  It deliberately lives
 /// in the economy arena so it consumes and returns the same source slots as
@@ -2601,6 +2627,11 @@ pub enum Level2EconomyEvent {
 pub struct Level2EconomyState {
     free_slots: Vec<u16>,
 
+    /// Slots skipped by an explicit source replacement-cursor decrement.
+    /// `sub_5E310` performs one such decrement after its marker attempt;
+    /// `sub_49F90` rebuilds and clears the exclusion on the next rebuild.
+    replacement_cursor_exclusions: BTreeSet<u16>,
+
     slot_generations: BTreeMap<u16, u32>,
 
     slot_rng: BTreeMap<u16, u16>,
@@ -2627,6 +2658,8 @@ pub struct Level2EconomyState {
     spheres: Vec<ManaSphere>,
 
     death_bursts: Vec<Level2DeathBurst>,
+
+    player_death_markers: Vec<Level2PlayerDeathMarker>,
 
     spell_replacements: Vec<Level2SpellReplacement>,
 
@@ -2968,6 +3001,10 @@ pub struct Level2LiveState {
     pub(crate) player_pending_damage: i32,
     pub(crate) player_pending_attacker: u16,
     pub(crate) player_life: i32,
+    /// Source per-player `MenuState_0x3DF`, distinct from the spell-fire
+    /// holder's `spell_menu_stage` byte.
+    pub(crate) player_menu_state: u8,
+    pub(crate) player_death_notification: Option<Level2PlayerDeathNotification>,
     pub(crate) level2_group8_activated: bool,
     /// Mutable selected-objective stage state consumed by class-11/model-32
     /// switches.  The qualified reset starts at one; objective progression
@@ -3165,6 +3202,7 @@ pub enum Level2DynamicArenaKind {
     ManaSphere,
     ManaCarrier,
     DeathBurst,
+    PlayerDeathMarker,
     SpellReplacement,
     SpellPickup,
     AuthoredModel1,
@@ -3315,6 +3353,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::ManaSphere => 6,
         Level2DynamicArenaKind::ManaCarrier => 7,
         Level2DynamicArenaKind::DeathBurst => 8,
+        Level2DynamicArenaKind::PlayerDeathMarker => 43,
         Level2DynamicArenaKind::SpellReplacement => 9,
         Level2DynamicArenaKind::SpellPickup => 10,
         Level2DynamicArenaKind::AuthoredModel1 => 31,

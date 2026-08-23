@@ -654,6 +654,17 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
     hasher.update(state.player_pending_damage.to_le_bytes());
     hasher.update(state.player_pending_attacker.to_le_bytes());
     hasher.update(state.player_life.to_le_bytes());
+    hasher.update([state.player_menu_state]);
+    hasher.update(b"level2-player-death-notification-v1");
+    match state.player_death_notification {
+        Some(notification) => {
+            hasher.update([1]);
+            hasher.update(notification.id.to_le_bytes());
+            hasher.update([notification.state]);
+            hasher.update(notification.timer.to_le_bytes());
+        }
+        None => hasher.update([0]),
+    }
     hasher.update([
         u8::from(state.level2_group8_activated),
         state.level2_selected_objective_stage_state,
