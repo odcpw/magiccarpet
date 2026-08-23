@@ -2462,6 +2462,7 @@ fn level_two_player_contact_rebuild_reuses_burst_then_skips_next_replaceable() {
             life_ticks: 1,
             subspell_index: 0,
             control_flags: SOURCE_REPLACEABLE_FLAG,
+            source_byte_3e: source_entity_index as u8,
             active: true,
         });
     }
@@ -2495,6 +2496,7 @@ fn level_two_player_contact_rebuild_reuses_burst_then_skips_next_replaceable() {
             life_ticks: 1,
             subspell_index: 0,
             control_flags: SOURCE_REPLACEABLE_FLAG,
+            source_byte_3e: source_entity_index as u8,
             active: true,
         });
     }
@@ -2532,6 +2534,7 @@ fn level_two_player_contact_rebuild_reuses_burst_then_skips_next_replaceable() {
         life_ticks: 1,
         subspell_index: 0,
         control_flags: SOURCE_REPLACEABLE_FLAG,
+        source_byte_3e: runtime_reclaimed_slot as u8,
         active: true,
     });
     assert!(economy.step_death_burst_slot(runtime_reclaimed_slot));
@@ -2565,6 +2568,7 @@ fn level_two_player_death_burst_slot_reclaims_only_at_following_boundary() {
         life_ticks: 1,
         subspell_index: 0,
         control_flags: SOURCE_REPLACEABLE_FLAG,
+        source_byte_3e: slot as u8,
         active: true,
     });
 

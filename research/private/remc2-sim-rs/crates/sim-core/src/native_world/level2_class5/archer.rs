@@ -190,6 +190,104 @@ impl ArcherConstructorPayload {
 }
 
 impl Level2EconomyState {
+    fn commit_class9_model13_child(
+        &mut self,
+        request: ArcherChildRequest,
+        linked_parent_index: Option<usize>,
+        castle_auxiliary_tail: bool,
+    ) -> Option<ArcherChildPacket> {
+        let state_before = self.clone();
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut packet = archer_child_packet(source_entity_index, entity_rng, request);
+        if castle_auxiliary_tail {
+            // `sub_23E60` keeps AddEvent09_0D's NewEvent subspell (100),
+            // then copies the model-15 auxiliary's xtype/xsubtype (3/-1).
+            // The Archer-only sub_1CCE0 tail instead installs 250 and the
+            // target's class/model, so it cannot be reused unchanged.
+            packet.subspell_index = 100;
+            packet.xtype = 3;
+            packet.xsubtype = u8::MAX;
+        }
+        let position = Position {
+            x: request.parent_position.x,
+            y: request.parent_position.y,
+            z: request
+                .parent_position
+                .z
+                .wrapping_add(request.parent_fov / 2),
+        };
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            *self = state_before;
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        let next_entity_index = linked_parent_index
+            .map(|parent_index| self.authored_class5_archer[parent_index].word_0x34)
+            .unwrap_or(0);
+        if let Some(parent_index) = linked_parent_index {
+            self.authored_class5_archer[parent_index].word_0x34 = source_entity_index;
+        }
+        self.authored_class5_archer_children
+            .push(Level2AuthoredClass5ArcherChild {
+                source_entity_index: packet.source_entity_index,
+                entity_id: packet.entity_id,
+                entity_rng: packet.entity_rng,
+                parent_entity_index: packet.parent_entity_index,
+                parent_entity_id: packet.parent_entity_id,
+                slot_generation: self.slot_generation(source_entity_index),
+                word_0x32: 0,
+                word_0x34: next_entity_index,
+                word_0x24: 0,
+                pending_word_0x62: 0,
+                word_0x26: 0,
+                word_0x96: packet.word_0x96,
+                dword_0x10: packet.dword_0x10,
+                source_class: packet.source_class,
+                model: packet.model,
+                action: packet.action,
+                minimum_speed: packet.minimum_speed,
+                maximum_speed: packet.maximum_speed,
+                actual_speed: packet.actual_speed,
+                max_life: packet.max_life,
+                life: packet.life,
+                subspell_index: packet.subspell_index,
+                particle_index: packet.particle_index,
+                control_flags: packet.control_flags,
+                xtype: packet.xtype,
+                xsubtype: packet.xsubtype,
+                yaw: packet.yaw,
+                pitch: packet.pitch,
+                roll: packet.roll,
+                fov: packet.fov,
+                shift_rot_x: if castle_auxiliary_tail {
+                    0
+                } else {
+                    ARCHER_SHIFT_ROT_X
+                },
+                shift_rot_y: if castle_auxiliary_tail {
+                    0
+                } else {
+                    ARCHER_SHIFT_ROT_Y
+                },
+                position: packet.position,
+                source_byte_3e: packet.source_byte_3e,
+                phase: packet.phase,
+                drawing_enabled: packet.drawing_enabled,
+                active: packet.active,
+            });
+        Some(packet)
+    }
+
     /// Allocate one authored Archer through the real source free stack,
     /// NewEvent RNG, model-4 constructor counter, terrain/map projection, and
     /// reset-owned class-5 source arena.
@@ -936,7 +1034,9 @@ pub(crate) fn archer_child_packet(
         roll: request.parent_roll,
         fov: ARCHER_CHILD_PARTICLE_FOV,
         position,
-        source_byte_3e: 0,
+        // NewEvent seeds byte_0x3E from the fixed arena slot before the
+        // ordinary callback epilogue advances it.
+        source_byte_3e: child_source_entity_index as u8,
         phase: 0,
         drawing_enabled: true,
         active: true,
@@ -958,75 +1058,17 @@ impl Level2EconomyState {
                     source.active && source.source_entity_index == state.source_entity_index
                 })
         })?;
-        let state_before = self.clone();
-        let source_entity_index = self.allocate_slot()?;
-        let entity_rng = self.new_event_rng(source_entity_index);
-        let packet = archer_child_packet(source_entity_index, entity_rng, request);
-        let position = Position {
-            x: request.parent_position.x,
-            y: request.parent_position.y,
-            z: request
-                .parent_position
-                .z
-                .wrapping_add(request.parent_fov / 2),
-        };
-        if self
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_entity_index,
-                active: true,
-                x: position.x,
-                y: position.y,
-            })
-            .is_err()
-        {
-            *self = state_before;
-            return None;
-        }
-        self.source_rng.insert(source_entity_index, entity_rng);
-        let next_entity_index = self.authored_class5_archer[parent_index].word_0x34;
-        self.authored_class5_archer[parent_index].word_0x34 = source_entity_index;
-        self.authored_class5_archer_children
-            .push(Level2AuthoredClass5ArcherChild {
-                source_entity_index: packet.source_entity_index,
-                entity_id: packet.entity_id,
-                entity_rng: packet.entity_rng,
-                parent_entity_index: packet.parent_entity_index,
-                parent_entity_id: packet.parent_entity_id,
-                slot_generation: self.slot_generation(source_entity_index),
-                word_0x32: 0,
-                word_0x34: next_entity_index,
-                word_0x24: 0,
-                pending_word_0x62: 0,
-                word_0x26: 0,
-                word_0x96: packet.word_0x96,
-                dword_0x10: packet.dword_0x10,
-                source_class: packet.source_class,
-                model: packet.model,
-                action: packet.action,
-                minimum_speed: packet.minimum_speed,
-                maximum_speed: packet.maximum_speed,
-                actual_speed: packet.actual_speed,
-                max_life: packet.max_life,
-                life: packet.life,
-                subspell_index: packet.subspell_index,
-                particle_index: packet.particle_index,
-                control_flags: packet.control_flags,
-                xtype: packet.xtype,
-                xsubtype: packet.xsubtype,
-                yaw: packet.yaw,
-                pitch: packet.pitch,
-                roll: packet.roll,
-                fov: packet.fov,
-                shift_rot_x: ARCHER_SHIFT_ROT_X,
-                shift_rot_y: ARCHER_SHIFT_ROT_Y,
-                position: packet.position,
-                source_byte_3e: packet.source_byte_3e,
-                phase: packet.phase,
-                drawing_enabled: packet.drawing_enabled,
-                active: packet.active,
-            });
-        Some(packet)
+        self.commit_class9_model13_child(request, Some(parent_index), false)
+    }
+
+    /// Commit the same `IfSubtypeCallCreatingManaSphere(..., 9, 13)` product
+    /// without the Archer-only word-0x34 chain writes. Castle auxiliary action
+    /// 122 sets only id, aim, target, xtype/xsubtype and the raised Z position.
+    pub(crate) fn allocate_castle_auxiliary_projectile_packet(
+        &mut self,
+        request: ArcherChildRequest,
+    ) -> Option<ArcherChildPacket> {
+        self.commit_class9_model13_child(request, None, true)
     }
 }
 

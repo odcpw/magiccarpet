@@ -1103,7 +1103,12 @@
                     max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
                     speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                     target_sphere_slot: 0,
+                    pending_damage: 0,
+                    pending_attacker_entity_index: 0,
+                    damage_attacker_entity_index: 0,
+                    killer_entity_index: 0,
                     source_byte_3e: source_entity_index as u8,
+                    source_byte_39: 0,
                     source_byte_3b: 0,
                     cave_collision_cooldown: 0,
                     source_dword_10: 0,
@@ -1112,6 +1117,7 @@
                     source_subspell_index: 0,
                     yaw: 0,
                     roll: 0,
+                    visual_index: 0,
                     control_flags: 0,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,
@@ -1146,29 +1152,21 @@
             .expect("restore class/model guard child")
             .source_class = 5;
         for (index, slot) in slots.iter().enumerate() {
-            let reclaimed = if index == 0 {
-                assert!(
-                    session.economy_mut().step_castle_child_terminal_slot(*slot),
-                    "ApplyEvents disables and reclaims terminal child in one visit"
-                );
-                None
-            } else {
-                Some(
-                    session
-                        .economy_mut()
-                        .applyevents_terminal_reclaim_castle_child(*slot)
-                        .expect("terminal child reclaim returns source write"),
-                )
-            };
-            if let Some(reclaimed) = reclaimed {
-                assert_eq!(
-                    reclaimed.source_byte_3e,
+            let reclaimed = session
+                .economy_mut()
+                .applyevents_terminal_reclaim_castle_child(*slot)
+                .expect("ApplyEvents no-callback row returns its source write");
+            assert_eq!(
+                reclaimed.source_byte_3e,
+                if models[index] == 15 {
+                    u8::try_from(*slot).expect("class-5 source slot fits byte_0x3E")
+                } else {
                     u8::try_from(*slot)
-                        .expect("fixture terminal source slot fits byte_0x3E")
-                        .wrapping_add(1),
-                    "class-10 terminal row advances byte_0x3E before reclaim"
-                );
-            }
+                        .expect("class-10 source slot fits byte_0x3E")
+                        .wrapping_add(1)
+                },
+                "ApplyEvents advances the admitted class-10 epilogue but class 5 takes the no-call reclaim branch"
+            );
             assert!(
                 session
                     .economy()
@@ -1202,7 +1200,7 @@
     }
 
     #[test]
-    fn level_two_outer_turn_reclaims_model15_auxiliary_through_source_no_call_route() {
+    fn level_two_outer_turn_dispatches_model15_auxiliary_through_update_entities() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
@@ -1230,26 +1228,33 @@
             .auxiliary_slots[0];
         assert_ne!(auxiliary_slot, 0);
         let free_before = session.economy().free_slots.len();
+        let phase_before = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("live auxiliary before ordinary callback")
+            .source_byte_3e;
 
-        // ApplyEvents_498A0 does not call the action table for class-5 rows:
-        // it disables drawing and reclaims the model-15 row in this visit.
+        // The ordinary frame is UpdateEntities, where class5/action121 calls
+        // sub_23C40. ApplyEvents' class-5 no-call hide/reclaim is a separate
+        // event-generation schedule and must not be projected onto this walk.
         session.step_outer_turn(PlayerCommand::default(), 0);
 
-        assert!(
-            session
-                .economy()
-                .castle_children()
-                .iter()
-                .all(|child| child.source_entity_index != auxiliary_slot)
-        );
-        assert!(
-            !session
-                .economy()
-                .map_chains()
-                .linked_entity_indices()
-                .contains(&auxiliary_slot)
-        );
-        assert_eq!(session.economy().free_slots.len(), free_before + 1);
+        let auxiliary = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("ordinary action121 callback retains the auxiliary");
+        assert!(auxiliary.active);
+        assert_eq!(auxiliary.source_byte_3e, phase_before.wrapping_add(1));
+        assert_eq!(session.economy().free_slots.len(), free_before);
+        assert!(session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .contains(&auxiliary_slot));
         assert!(session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
@@ -1269,6 +1274,7 @@
         let mut session = inspection
             .level2_reset_session()
             .expect("auxiliary creation session");
+        let baseline_hash = session.economy().reset_hash();
         let root_position = Position {
             x: 0x20_00,
             y: 0x30_00,
@@ -1319,6 +1325,31 @@
             )
         );
         assert_eq!(
+            (
+                child.life,
+                child.max_life,
+                child.speed,
+                child.source_subspell_index,
+                child.source_dword_10,
+                child.source_byte_3e,
+                child.source_byte_39,
+                child.control_flags,
+                child.visual_index,
+            ),
+            (
+                LEVEL2_CASTLE_AUXILIARY_MAX_LIFE,
+                LEVEL2_CASTLE_AUXILIARY_MAX_LIFE,
+                LEVEL2_CASTLE_AUXILIARY_MINIMUM_SPEED,
+                500,
+                i32::from(auxiliary_slot % 100),
+                0,
+                LEVEL2_CASTLE_AUXILIARY_CADENCE + 4,
+                SOURCE_REPLACEABLE_FLAG | 0x8,
+                0,
+            ),
+            "sub_4C1E0 constructor fields remain distinct from the Castle root"
+        );
+        assert_eq!(
             child.position,
             Position {
                 x: root_position.x.wrapping_add(128),
@@ -1329,6 +1360,1232 @@
                     z: 0,
                 }),
             }
+        );
+
+        for _ in 0..2 {
+            session
+                .economy_mut()
+                .castle
+                .as_mut()
+                .expect("auxiliary Castle")
+                .auxiliary_cooldown = 0;
+            session.economy_mut().maintain_castle_defenders(castle_slot);
+        }
+        let created_hash = session.economy().reset_hash();
+        let constructor_fields = session
+            .economy()
+            .castle()
+            .expect("three-auxiliary Castle")
+            .auxiliary_slots[..3]
+            .iter()
+            .map(|slot| {
+                let child = session
+                    .economy()
+                    .castle_children()
+                    .iter()
+                    .find(|child| child.source_entity_index == *slot)
+                    .expect("constructor-counter auxiliary");
+                (child.source_byte_3e, child.source_byte_39)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(constructor_fields, vec![(0, 19), (1, 18), (2, 17)]);
+
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+        let replay_castle_slot = session
+            .economy_mut()
+            .build_castle(root_position, 111)
+            .expect("replayed auxiliary Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        for ordinal in 0..3 {
+            if ordinal != 0 {
+                session
+                    .economy_mut()
+                    .castle
+                    .as_mut()
+                    .expect("replayed Castle")
+                    .auxiliary_cooldown = 0;
+            }
+            session
+                .economy_mut()
+                .maintain_castle_defenders(replay_castle_slot);
+        }
+        assert_eq!(session.economy().reset_hash(), created_hash);
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_uses_pass_start_membership_with_live_target_fields() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary membership session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("membership Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        let auxiliary_id = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("auxiliary")
+            .id_entity_index;
+        let target_slot = 50_u16;
+        let auxiliary_position = Position {
+            x: 0x3000,
+            y: 0x3000,
+            z: 0,
+        };
+        let target_position = Position {
+            x: auxiliary_position.x.wrapping_add(256),
+            y: auxiliary_position.y,
+            z: 0,
+        };
+        let tied_target_slot = 51_u16;
+        let same_pass_birth_slot = 49_u16;
+        for entity in &mut session.economy.entities {
+            if entity.class == 3 {
+                entity.source_id = auxiliary_id;
+            }
+        }
+        let target = &mut session.economy.entities[usize::from(target_slot)];
+        target.index = target_slot;
+        target.active = true;
+        target.class = 3;
+        target.model = 0;
+        target.life = 100;
+        target.source_id = auxiliary_id.wrapping_add(1);
+        target.control_flags = 0;
+        target.position = target_position;
+        let tied_target = &mut session.economy.entities[usize::from(tied_target_slot)];
+        tied_target.index = tied_target_slot;
+        tied_target.active = true;
+        tied_target.class = 3;
+        tied_target.model = 0;
+        tied_target.life = 100;
+        tied_target.source_id = auxiliary_id.wrapping_add(2);
+        tied_target.control_flags = 0;
+        tied_target.position = target_position;
+        let same_pass_birth =
+            &mut session.economy.entities[usize::from(same_pass_birth_slot)];
+        same_pass_birth.index = same_pass_birth_slot;
+        same_pass_birth.active = true;
+        same_pass_birth.class = 2;
+        same_pass_birth.model = 0;
+        same_pass_birth.life = 100;
+        same_pass_birth.source_id = auxiliary_id.wrapping_add(3);
+        same_pass_birth.control_flags = 0;
+        same_pass_birth.position = Position {
+            x: auxiliary_position.x.wrapping_add(64),
+            y: auxiliary_position.y,
+            z: 0,
+        };
+        let membership = session
+            .economy
+            .economy
+            .castle_auxiliary_membership(&session.economy.entities);
+
+        // These fields change after the source list is built. sub_23C40 does
+        // not requalify class/life/draw state while traversing that list.
+        let target = &mut session.economy.entities[usize::from(target_slot)];
+        target.active = false;
+        target.life = -1;
+        target.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        // A nearer row that changes into class 3 after the source list was
+        // built is not eligible until the next UpdateEntities pass.
+        session.economy.entities[usize::from(same_pass_birth_slot)].class = 3;
+        {
+            let child = session
+                .economy
+                .economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("mutable auxiliary");
+            child.action = 121;
+            child.position = auxiliary_position;
+            child.yaw = u16::try_from(heading_for_positions(auxiliary_position, target_position))
+                .expect("target heading");
+            child.roll = child.yaw;
+            child.speed = 0;
+            child.source_byte_3e = LEVEL2_CASTLE_AUXILIARY_CADENCE;
+            child.source_byte_39 = 1;
+        }
+        session.economy.economy.begin_turn();
+        {
+            let live = &mut session.session.state.live;
+            assert!(live.economy.economy.step_castle_child_terminal_slot(
+                auxiliary_slot,
+                &mut live.economy.entities,
+                &membership,
+                &mut live.terrain,
+            ));
+        }
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("retained auxiliary");
+        assert_eq!((child.action, child.target_sphere_slot), (122, target_slot));
+        assert_eq!(
+            child.source_byte_3e,
+            LEVEL2_CASTLE_AUXILIARY_CADENCE.wrapping_add(1)
+        );
+        assert!(session.economy().events().is_empty());
+        // The equal-distance slot 51 was in the same pass-start list, but the
+        // source scan retains the first (lower) slot on a strict-distance tie.
+        session.economy.entities[usize::from(tied_target_slot)].control_flags |= 0x20;
+
+        // Reusing the same numeric slot after the rebuild must not alias the
+        // captured member identity.
+        let mut stale = session.clone();
+        stale
+            .economy
+            .economy
+            .slot_generations
+            .insert(target_slot, 1);
+        let child = stale
+            .economy
+            .economy
+            .castle_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("stale-generation auxiliary");
+        child.action = 121;
+        child.target_sphere_slot = 0;
+        child.source_byte_3e = LEVEL2_CASTLE_AUXILIARY_CADENCE;
+        let live = &mut stale.session.state.live;
+        assert!(live.economy.economy.step_castle_child_terminal_slot(
+            auxiliary_slot,
+            &mut live.economy.entities,
+            &membership,
+            &mut live.terrain,
+        ));
+        assert_eq!(
+            stale
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("stale-generation auxiliary retained")
+                .action,
+            121
+        );
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_action122_aims_before_rejecting_hidden_target() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary hidden-target session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("hidden-target Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        let target_slot = 50_u16;
+        let auxiliary_position = Position {
+            x: 0x1800,
+            y: 0x2000,
+            z: 128,
+        };
+        let target_position = Position {
+            x: 0x1a00,
+            y: 0x2100,
+            z: 96,
+        };
+        {
+            let target = &mut session.economy.entities[usize::from(target_slot)];
+            target.index = target_slot;
+            target.active = false;
+            target.class = 3;
+            target.model = 0;
+            target.life = -1;
+            target.source_id = 0x7777;
+            target.control_flags = ENTITY_DRAW_DISABLED_BIT;
+            target.position = target_position;
+        }
+        {
+            let child = session
+                .economy
+                .economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("mutable auxiliary");
+            child.action = 122;
+            child.target_sphere_slot = target_slot;
+            child.position = auxiliary_position;
+            child.roll = 0;
+            child.speed = 0;
+            child.source_byte_3e = 4;
+        }
+
+        assert!(session
+            .economy_mut()
+            .step_castle_child_terminal_slot(auxiliary_slot));
+        let auxiliary = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("rejected-target auxiliary");
+        assert_eq!(
+            auxiliary.roll,
+            u16::try_from(heading_for_positions(auxiliary_position, target_position))
+                .expect("hidden-target heading")
+        );
+        assert_eq!(
+            (
+                auxiliary.action,
+                auxiliary.speed,
+                auxiliary.source_byte_3e
+            ),
+            (121, LEVEL2_CASTLE_AUXILIARY_MINIMUM_SPEED, 5)
+        );
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_replacement_clears_later_pass_memberships() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary replacement-list session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("replacement-list Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("Castle")
+            .auxiliary_cooldown = 0;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slots = session
+            .economy()
+            .castle()
+            .expect("Castle")
+            .auxiliary_slots
+            .iter()
+            .copied()
+            .filter(|slot| *slot != 0)
+            .collect::<Vec<_>>();
+        assert!(auxiliary_slots.len() >= 2);
+        let earlier_slot = auxiliary_slots[0];
+        let later_slot = auxiliary_slots[1];
+        assert!(earlier_slot < later_slot);
+        let target_slot = 50_u16;
+        let target_position = Position {
+            x: 768,
+            y: 256,
+            z: 64,
+        };
+        {
+            let target = &mut session.economy.entities[usize::from(target_slot)];
+            target.index = target_slot;
+            target.active = true;
+            target.class = 3;
+            target.model = 0;
+            target.life = 100;
+            target.source_id = 0x7777;
+            target.control_flags = 0;
+            target.position = target_position;
+        }
+        let auxiliary_position = Position {
+            x: 512,
+            y: 256,
+            z: 64,
+        };
+        {
+            let economy = &mut session.economy.economy;
+            let earlier = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == earlier_slot)
+                .expect("earlier auxiliary");
+            earlier.action = 122;
+            earlier.target_sphere_slot = target_slot;
+            earlier.position = auxiliary_position;
+            earlier.source_byte_3e = 0;
+            let later = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == later_slot)
+                .expect("later auxiliary");
+            later.action = 121;
+            later.target_sphere_slot = 0;
+            later.position = auxiliary_position;
+            later.yaw = u16::try_from(heading_for_positions(
+                auxiliary_position,
+                target_position,
+            ))
+            .expect("target heading");
+            later.roll = later.yaw;
+            later.source_byte_3e = LEVEL2_CASTLE_AUXILIARY_CADENCE;
+            later.source_byte_39 = 1;
+        }
+        let mut ordinary = session.clone();
+        let ordinary_membership = ordinary
+            .economy
+            .economy
+            .castle_auxiliary_membership(&ordinary.economy.entities);
+        {
+            let live = &mut ordinary.session.state.live;
+            assert!(live.economy.economy.step_castle_child_terminal_slot(
+                earlier_slot,
+                &mut live.economy.entities,
+                &ordinary_membership,
+                &mut live.terrain,
+            ));
+            assert!(live.economy.economy.step_castle_child_terminal_slot(
+                later_slot,
+                &mut live.economy.entities,
+                &ordinary_membership,
+                &mut live.terrain,
+            ));
+        }
+        let ordinary_later = ordinary
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == later_slot)
+            .expect("later auxiliary after ordinary allocation");
+        assert_eq!(
+            (ordinary_later.action, ordinary_later.target_sphere_slot),
+            (122, target_slot),
+            "ordinary free-slot allocation preserves the rebuilt list heads"
+        );
+
+        session.economy.economy.free_slots.clear();
+        session.economy.economy.replacement_cursor_exclusions = (1_u16..1_000)
+            .filter(|slot| *slot != earlier_slot)
+            .collect();
+        let membership = session
+            .economy
+            .economy
+            .castle_auxiliary_membership(&session.economy.entities);
+        {
+            let live = &mut session.session.state.live;
+            assert!(live.economy.economy.step_castle_child_terminal_slot(
+                earlier_slot,
+                &mut live.economy.entities,
+                &membership,
+                &mut live.terrain,
+            ));
+            assert!(live.economy.economy.step_castle_child_terminal_slot(
+                later_slot,
+                &mut live.economy.entities,
+                &membership,
+                &mut live.terrain,
+            ));
+        }
+        let later = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == later_slot)
+            .expect("later auxiliary retained");
+        assert_eq!((later.action, later.target_sphere_slot), (121, 0));
+
+        let rebuilt_membership = session
+            .economy
+            .economy
+            .castle_auxiliary_membership(&session.economy.entities);
+        {
+            let later = session
+                .economy
+                .economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == later_slot)
+                .expect("later auxiliary for rebuilt list");
+            later.action = 121;
+            later.target_sphere_slot = 0;
+            later.position = auxiliary_position;
+            later.yaw = u16::try_from(heading_for_positions(
+                auxiliary_position,
+                target_position,
+            ))
+            .expect("rebuilt target heading");
+            later.roll = later.yaw;
+            later.source_byte_3e = LEVEL2_CASTLE_AUXILIARY_CADENCE;
+            later.source_byte_39 = 1;
+        }
+        let live = &mut session.session.state.live;
+        assert!(live.economy.economy.step_castle_child_terminal_slot(
+            later_slot,
+            &mut live.economy.entities,
+            &rebuilt_membership,
+            &mut live.terrain,
+        ));
+        let later = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == later_slot)
+            .expect("later auxiliary after rebuilt list");
+        assert_eq!((later.action, later.target_sphere_slot), (122, target_slot));
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_damage_chain_and_lethal_transition_are_source_ordered() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary damage session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("damage Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("Castle")
+            .auxiliary_cooldown = 0;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slots = session
+            .economy()
+            .castle()
+            .expect("Castle")
+            .auxiliary_slots
+            .iter()
+            .copied()
+            .filter(|slot| *slot != 0)
+            .collect::<Vec<_>>();
+        let source_slot = auxiliary_slots[0];
+        let linked_slot = auxiliary_slots[1];
+        let attacker_slot = 50_u16;
+        {
+            let attacker = &mut session.economy.entities[usize::from(attacker_slot)];
+            attacker.index = attacker_slot;
+            attacker.active = true;
+            attacker.class = 3;
+            attacker.model = 0;
+            attacker.life = 100;
+            attacker.source_id = 0x7777;
+            attacker.control_flags = 0;
+        }
+        {
+            let child = session
+                .economy
+                .economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == source_slot)
+                .expect("damage auxiliary");
+            child.action = 121;
+            child.source_byte_3e = 1;
+            child.chain_next_slot = 0;
+        }
+        let mut lethal = session.clone();
+
+        assert!(session.economy_mut().submit_damage(source_slot, 100, 49));
+        assert!(session
+            .economy_mut()
+            .submit_damage(source_slot, 150, attacker_slot));
+        assert!(session
+            .economy_mut()
+            .step_castle_child_terminal_slot(source_slot));
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == source_slot)
+            .expect("nonlethal auxiliary");
+        assert_eq!(
+            (
+                child.life,
+                child.pending_damage,
+                child.pending_attacker_entity_index,
+                child.damage_attacker_entity_index,
+                child.action,
+                child.target_sphere_slot,
+                child.killer_entity_index,
+                child.source_byte_3e,
+            ),
+            (750, 250, 0, attacker_slot, 122, attacker_slot, 0, 2)
+        );
+
+        {
+            let economy = &mut lethal.economy.economy;
+            let source = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == source_slot)
+                .expect("chain source auxiliary");
+            source.life = 1_000;
+            source.pending_damage = 0;
+            source.pending_attacker_entity_index = 0;
+            source.damage_attacker_entity_index = 0;
+            source.killer_entity_index = 0;
+            source.action = 121;
+            source.source_byte_3e = 1;
+            source.chain_next_slot = linked_slot;
+            let linked = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == linked_slot)
+                .expect("lethal linked auxiliary");
+            linked.life = -1;
+            linked.damage_attacker_entity_index = attacker_slot;
+        }
+        assert!(lethal
+            .economy_mut()
+            .step_castle_child_terminal_slot(source_slot));
+        let child = lethal
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == source_slot)
+            .expect("lethal auxiliary retained for action124");
+        assert_eq!(
+            (
+                child.life,
+                child.damage_attacker_entity_index,
+                child.killer_entity_index,
+                child.action,
+                child.source_byte_3e,
+            ),
+            (-1, attacker_slot, attacker_slot, 124, 2)
+        );
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_roam_rng_peer_and_cave_probe_are_exact() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary roam session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("roam Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        let mut child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .copied()
+            .expect("roaming auxiliary");
+        let mut terrain = session.canonical_terrain().clone();
+        terrain.planes.terrain_types.fill(0);
+        terrain.planes.ground_heights.fill(0);
+        let position = Position {
+            x: 0x2080,
+            y: 0x2080,
+            z: 0,
+        };
+        terrain.planes.terrain_types[terrain_index(0x20, 0x20)] = 21;
+        child.position = position;
+        child.action = 121;
+        child.yaw = 0;
+        child.roll = 0;
+        child.speed = LEVEL2_CASTLE_AUXILIARY_MINIMUM_SPEED;
+        child.source_byte_3e = 8;
+        child.entity_rng = 0x1234;
+        let mut expected_rng = child.entity_rng;
+        for _ in 0..4 {
+            expected_rng = level2_next_rng16(expected_rng);
+        }
+        level2_castle_auxiliary_roam(&mut child, &[], &terrain);
+        assert_eq!(child.entity_rng, expected_rng);
+        assert_eq!((child.action, child.yaw), (121, 0));
+        assert_ne!(child.position, position);
+
+        let mut material_rejected = child;
+        material_rejected.position = position;
+        material_rejected.action = 121;
+        material_rejected.source_byte_3e = 8;
+        let rng_before = material_rejected.entity_rng;
+        terrain.planes.terrain_types[terrain_index(0x20, 0x20)] = 0;
+        level2_castle_auxiliary_roam(&mut material_rejected, &[], &terrain);
+        assert_eq!((material_rejected.action, material_rejected.entity_rng), (124, rng_before));
+
+        let mut cave = session.canonical_terrain().clone();
+        cave.map_type = MapType::Cave;
+        cave.planes.terrain_types.fill(21);
+        cave.planes.ground_heights.fill(0);
+        cave.planes.secondary_heights.fill(4);
+        cave.planes.angles.fill(0);
+        assert!(!level2_castle_auxiliary_probe_blocked(&cave, position));
+        cave.planes.secondary_heights.fill(3);
+        assert!(level2_castle_auxiliary_probe_blocked(&cave, position));
+        cave.planes.secondary_heights.fill(255);
+        cave.planes.angles[terrain_index(0x20, 0x20)] = 8;
+        assert!(level2_castle_auxiliary_probe_blocked(&cave, position));
+        cave.planes.angles[terrain_index(0x20, 0x20)] = 0;
+        cave.planes.terrain_types[terrain_index(0x20, 0x20)] = 0;
+        assert!(level2_castle_auxiliary_probe_blocked(&cave, position));
+
+        let peer = Level2CastleAuxiliaryTarget {
+            source_entity_index: auxiliary_slot.wrapping_add(1),
+            source_id: child.id_entity_index.wrapping_add(1),
+            class: 5,
+            model: 15,
+            life: 100,
+            control_flags: 0,
+            position: Position {
+                x: position.x.wrapping_add(100),
+                ..position
+            },
+            imported: false,
+        };
+        let expected_roll = u16::try_from(heading_for_positions(peer.position, position))
+            .expect("peer avoidance heading");
+        assert_ne!(expected_roll, 0, "peer must force roll away from yaw");
+
+        // sub_24190 takes exactly one additional RNG draw when peer
+        // avoidance makes roll differ from yaw. A remainder <= 10 admits
+        // movement; a larger remainder retains the original position.
+        let mut peer_moves = child;
+        peer_moves.position = position;
+        peer_moves.source_byte_3e = 1;
+        peer_moves.yaw = 0;
+        peer_moves.roll = 0x0600;
+        peer_moves.entity_rng = 3;
+        let moving_rng = level2_next_rng16(peer_moves.entity_rng);
+        assert!(moving_rng % 20 <= 10);
+        level2_castle_auxiliary_roam(&mut peer_moves, &[peer], session.canonical_terrain());
+        assert_eq!((peer_moves.roll, peer_moves.entity_rng), (expected_roll, moving_rng));
+        assert_ne!(peer_moves.position, position);
+
+        let mut peer_stays = peer_moves;
+        peer_stays.position = position;
+        peer_stays.roll = 0x0600;
+        peer_stays.entity_rng = 0;
+        let staying_rng = level2_next_rng16(peer_stays.entity_rng);
+        assert!(staying_rng % 20 > 10);
+        level2_castle_auxiliary_roam(&mut peer_stays, &[peer], session.canonical_terrain());
+        assert_eq!((peer_stays.roll, peer_stays.entity_rng), (expected_roll, staying_rng));
+        assert_eq!(peer_stays.position, position);
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_action124_reaches_hidden_following_boundary_cleanup() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary action124 session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("action124 Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        let generation = session.economy().slot_generation(auxiliary_slot);
+        {
+            let child = session
+                .economy
+                .economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("action124 auxiliary");
+            child.action = 124;
+            child.source_byte_3e = 7;
+            child.control_flags |= 0x0010_0000;
+        }
+        assert!(session
+            .economy_mut()
+            .step_castle_child_terminal_slot(auxiliary_slot));
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("action125 auxiliary");
+        assert_eq!((child.action, child.source_byte_3e), (125, 8));
+        assert_eq!(child.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+
+        assert!(session
+            .economy_mut()
+            .step_castle_child_terminal_slot(auxiliary_slot));
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("hidden action125 auxiliary");
+        assert_eq!(child.source_byte_3e, 9);
+        assert_ne!(child.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert!(session.economy().map_chains().is_linked(auxiliary_slot));
+        assert!(!session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::DeathBurstSpawned { source_entity_index, .. }
+                if *source_entity_index == auxiliary_slot
+        )));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let retained_generation = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .map(|_| session.economy().slot_generation(auxiliary_slot));
+        assert!(retained_generation.is_none_or(|current| current > generation));
+        assert!(
+            session.economy().free_slots.contains(&auxiliary_slot)
+                || session.economy().slot_generation(auxiliary_slot) > generation
+        );
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_self_replacement_updates_the_current_fixed_row() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary self-replacement session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("self-replacement Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        let target_slot = 50_u16;
+        let target_position = Position {
+            x: 512,
+            y: 256,
+            z: 80,
+        };
+        {
+            let target = &mut session.economy.entities[usize::from(target_slot)];
+            target.index = target_slot;
+            target.active = true;
+            target.class = 3;
+            target.model = 0;
+            target.life = 100;
+            target.source_id = 0x7777;
+            target.control_flags = 0;
+            target.position = target_position;
+        }
+        {
+            let economy = &mut session.economy.economy;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("mutable auxiliary");
+            child.action = 122;
+            child.target_sphere_slot = target_slot;
+            child.position = Position {
+                x: 1_024,
+                y: 512,
+                z: 300,
+            };
+            child.source_byte_3e = 0;
+            economy.free_slots.clear();
+            economy.replacement_cursor_exclusions = (1_u16..1_000)
+                .filter(|slot| *slot != auxiliary_slot)
+                .collect();
+        }
+        let generation_before = session.economy().slot_generation(auxiliary_slot);
+        assert!(session
+            .economy_mut()
+            .step_castle_child_terminal_slot(auxiliary_slot));
+
+        assert_eq!(
+            session.economy().slot_generation(auxiliary_slot),
+            generation_before.wrapping_add(1)
+        );
+        assert!(session
+            .economy()
+            .castle_children()
+            .iter()
+            .all(|child| child.source_entity_index != auxiliary_slot));
+        let projectile = session
+            .economy()
+            .authored_class5_archer_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("self-replaced class9/model13 row");
+        let ground = session
+            .canonical_terrain()
+            .ground_height(Position::default());
+        let expected_z = if 30_i16 > ground {
+            26_i16.max(ground)
+        } else {
+            ground
+        };
+        assert_eq!(projectile.position, Position { x: 0, y: 0, z: expected_z });
+        assert_eq!(
+            projectile.yaw,
+            i16::try_from(heading_for_positions(Position::default(), target_position))
+                .expect("zero-origin target heading")
+        );
+        let horizontal = crate::legacy_sqrt(level2_wrapping_xy_distance(
+            Position::default(),
+            target_position,
+        ));
+        assert_eq!(
+            projectile.pitch,
+            crate::pitch_for_delta(
+                i32::try_from(horizontal).expect("horizontal distance"),
+                i32::from(target_position.z),
+            )
+        );
+        assert_eq!(
+            (
+                projectile.entity_id,
+                projectile.parent_entity_id,
+                projectile.word_0x96,
+                projectile.xtype,
+                projectile.xsubtype,
+                projectile.actual_speed,
+                projectile.particle_index,
+                projectile.shift_rot_x,
+                projectile.shift_rot_y,
+                projectile.fov,
+                projectile.source_byte_3e,
+                projectile.phase,
+            ),
+            (
+                auxiliary_slot,
+                auxiliary_slot,
+                0,
+                u8::MAX,
+                u8::MAX,
+                level2_class5::archer::ARCHER_CHILD_SPEED,
+                0,
+                0,
+                0,
+                125,
+                (auxiliary_slot as u8).wrapping_add(1),
+                0,
+            )
+        );
+        assert!(session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .contains(&auxiliary_slot));
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_self_replaced_burst_reclaims_on_following_boundary() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary death self-replacement session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("self-replacement Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        {
+            let economy = &mut session.economy.economy;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("mutable auxiliary");
+            child.action = 125;
+            child.source_byte_3e = 0;
+            child.position = Position {
+                x: 0x4000,
+                y: 0x5000,
+                z: 300,
+            };
+            economy.free_slots.clear();
+            economy.replacement_cursor_exclusions = (1_u16..1_000)
+                .filter(|slot| *slot != auxiliary_slot)
+                .collect();
+        }
+        assert!(session
+            .economy_mut()
+            .step_castle_child_terminal_slot(auxiliary_slot));
+        let burst = session
+            .economy()
+            .death_bursts()
+            .iter()
+            .find(|burst| burst.source_entity_index == auxiliary_slot)
+            .expect("self-replaced death burst");
+        assert_eq!(burst.position, Position::default());
+        assert_eq!(burst.id_entity_index, auxiliary_slot);
+        assert!(!burst.active);
+        assert_ne!(burst.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!(
+            burst.source_byte_3e,
+            (auxiliary_slot as u8).wrapping_add(1)
+        );
+        assert!(session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .contains(&auxiliary_slot));
+        assert!(!session.economy().free_slots.contains(&auxiliary_slot));
+        assert!(session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::DeathBurstSpawned {
+                source_entity_index,
+                id_entity_index,
+                ..
+            } if *source_entity_index == auxiliary_slot && *id_entity_index == auxiliary_slot
+        )));
+        assert!(!session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. }
+                if *source_entity_index == auxiliary_slot
+        )));
+
+        let replacement_generation = session.economy().slot_generation(auxiliary_slot);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session
+            .economy()
+            .death_bursts()
+            .iter()
+            .all(|burst| burst.source_entity_index != auxiliary_slot));
+        assert!(
+            session.economy().free_slots.contains(&auxiliary_slot)
+                || session.economy().slot_generation(auxiliary_slot) > replacement_generation,
+            "the following boundary either leaves the reclaimed slot free or a later source callback reuses it"
+        );
+        assert!(!session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. }
+                if *source_entity_index == auxiliary_slot
+        )));
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::DeathBurst,
+                ..
+            } if *source_slot == auxiliary_slot
+        )));
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_non_alias_and_allocator_failure_stay_distinct() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary allocation discriminator session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("allocation discriminator Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        let target_slot = 50_u16;
+        let target_position = Position {
+            x: 1_280,
+            y: 512,
+            z: 80,
+        };
+        {
+            let target = &mut session.economy.entities[usize::from(target_slot)];
+            target.index = target_slot;
+            target.active = true;
+            target.class = 3;
+            target.model = 0;
+            target.life = 100;
+            target.source_id = 0x7777;
+            target.control_flags = 0;
+            target.position = target_position;
+        }
+        let auxiliary_position = Position {
+            x: 1_024,
+            y: 512,
+            z: 300,
+        };
+        {
+            let economy = &mut session.economy.economy;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("mutable auxiliary");
+            child.action = 122;
+            child.target_sphere_slot = target_slot;
+            child.position = auxiliary_position;
+            child.source_byte_3e = 0;
+            economy.free_slots = vec![900];
+            economy.replacement_cursor_exclusions.clear();
+        }
+        assert!(session
+            .economy_mut()
+            .step_castle_child_terminal_slot(auxiliary_slot));
+        let projectile = session
+            .economy()
+            .authored_class5_archer_children()
+            .iter()
+            .find(|child| child.source_entity_index == 900)
+            .expect("ordinary-free projectile");
+        assert_eq!(
+            projectile.position,
+            Position {
+                x: auxiliary_position.x,
+                y: auxiliary_position.y,
+                z: auxiliary_position.z.wrapping_add(125 / 2),
+            }
+        );
+        assert_eq!(
+            (
+                projectile.entity_id,
+                projectile.word_0x96,
+                projectile.xtype,
+                projectile.xsubtype,
+                projectile.particle_index,
+                projectile.shift_rot_x,
+                projectile.shift_rot_y,
+                projectile.source_byte_3e,
+                projectile.phase,
+            ),
+            (
+                session
+                    .economy()
+                    .castle()
+                    .expect("Castle")
+                    .source_id_entity_index,
+                target_slot,
+                3,
+                u8::MAX,
+                level2_class5::archer::ARCHER_CHILD_PARTICLE_INDEX,
+                0,
+                0,
+                900_u16 as u8,
+                0,
+            )
+        );
+        assert_eq!(
+            i16::from_le_bytes(
+                session.economy.entities[usize::from(target_slot)].record_bytes()[58..60]
+                    .try_into()
+                    .expect("target timer bytes"),
+            ),
+            100
+        );
+
+        let mut exhausted = session.clone();
+        exhausted
+            .economy
+            .economy
+            .authored_class5_archer_children
+            .clear();
+        exhausted.economy.entities[usize::from(target_slot)].record[58..60]
+            .copy_from_slice(&7_i16.to_le_bytes());
+        let generation_before = exhausted.economy().slot_generation(auxiliary_slot);
+        let target_record_before = exhausted.economy.entities[usize::from(target_slot)]
+            .record_bytes()
+            .to_vec();
+        {
+            let economy = &mut exhausted.economy.economy;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("failure-path auxiliary");
+            child.action = 122;
+            child.target_sphere_slot = target_slot;
+            child.position = auxiliary_position;
+            child.source_byte_3e = 0;
+            economy.free_slots.clear();
+            economy.replacement_cursor_exclusions = (1_u16..1_000).collect();
+        }
+        assert!(exhausted
+            .economy_mut()
+            .step_castle_child_terminal_slot(auxiliary_slot));
+        assert_eq!(
+            exhausted.economy().slot_generation(auxiliary_slot),
+            generation_before
+        );
+        assert!(exhausted
+            .economy()
+            .authored_class5_archer_children()
+            .is_empty());
+        let auxiliary = exhausted
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("allocator failure retains auxiliary");
+        assert_eq!((auxiliary.action, auxiliary.source_byte_3e), (122, 1));
+        assert_eq!(
+            exhausted.economy.entities[usize::from(target_slot)].record_bytes(),
+            target_record_before,
+            "sub_5EF70 feedback is conditional on successful allocation"
+        );
+
+        let mut death_failure = exhausted.clone();
+        let generation_before = death_failure.economy().slot_generation(auxiliary_slot);
+        let events_before = death_failure.economy().events().len();
+        let burst_count_before = death_failure.economy().death_bursts().len();
+        {
+            let economy = &mut death_failure.economy.economy;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("death failure-path auxiliary");
+            child.action = 125;
+            child.source_byte_3e = 0;
+            child.control_flags &= !ENTITY_DRAW_DISABLED_BIT;
+            economy.free_slots.clear();
+            economy.replacement_cursor_exclusions = (1_u16..1_000).collect();
+        }
+        assert!(death_failure
+            .economy_mut()
+            .step_castle_child_terminal_slot(auxiliary_slot));
+        assert_eq!(
+            death_failure.economy().slot_generation(auxiliary_slot),
+            generation_before
+        );
+        assert_eq!(death_failure.economy().death_bursts().len(), burst_count_before);
+        assert_eq!(death_failure.economy().events().len(), events_before);
+        let auxiliary = death_failure
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("failed burst retains source row until the next boundary");
+        assert_ne!(auxiliary.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!((auxiliary.action, auxiliary.source_byte_3e), (125, 1));
+        assert!(!death_failure.economy().free_slots.contains(&auxiliary_slot));
+        assert!(death_failure
+            .economy()
+            .map_chains()
+            .is_linked(auxiliary_slot));
+
+        death_failure.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(death_failure
+            .economy()
+            .castle_children()
+            .iter()
+            .all(|child| child.source_entity_index != auxiliary_slot));
+        assert!(
+            death_failure.economy().free_slots.contains(&auxiliary_slot)
+                || death_failure.economy().slot_generation(auxiliary_slot) > generation_before,
+            "the following source boundary reclaims the hidden original before any later same-pass reuse"
         );
     }
 

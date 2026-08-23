@@ -1533,6 +1533,21 @@
             .iter()
             .map(|slot| (*slot, chain.economy().slot_generation(*slot)))
             .collect::<BTreeMap<_, _>>();
+        let auxiliary_source_bytes = auxiliary_slots
+            .iter()
+            .map(|slot| {
+                (
+                    *slot,
+                    chain
+                        .economy()
+                        .castle_children()
+                        .iter()
+                        .find(|child| child.source_entity_index == *slot)
+                        .expect("live auxiliary before teardown")
+                        .source_byte_3e,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         for slot in defender_slots.iter().chain(auxiliary_slots.iter()) {
             assert!(chain.economy().map_chains().is_linked(*slot));
         }
@@ -1575,40 +1590,29 @@
                     } if *source_slot == *slot
                 )
             }));
-            assert!(
-                chain
-                    .economy()
-                    .castle_children()
-                    .iter()
-                    .all(|child| child.source_entity_index != *slot || !child.active)
-            );
-            let live_row = chain
+            let auxiliary = chain
                 .economy()
-                .live_arena_cursor_rows()
-                .into_iter()
-                .find(|row| row.source_slot == *slot);
-            match live_row {
-                None => {
-                    assert!(!chain.economy().map_chains().is_linked(*slot));
-                    assert!(chain.economy().free_slots.contains(slot));
-                }
-                Some(row) => {
-                    // The source reclaim is immediately eligible for a
-                    // later constructor in this same outer pass. A reused
-                    // slot must carry a new generation and a coherent live
-                    // map row; it is not an orphaned auxiliary entity.
-                    assert_ne!(
-                        row.generation,
-                        auxiliary_generations
-                            .get(slot)
-                            .copied()
-                            .expect("auxiliary generation")
-                    );
-                    assert_eq!(row.kind, Level2DynamicArenaKind::ManaAttraction);
-                    assert!(!chain.economy().free_slots.contains(slot));
-                    assert!(chain.economy().map_chains().is_linked(*slot));
-                }
-            }
+                .castle_children()
+                .iter()
+                .find(|child| child.active && child.source_entity_index == *slot)
+                .expect("UpdateEntities retains and dispatches model-15 auxiliary");
+            assert_eq!(
+                chain.economy().slot_generation(*slot),
+                auxiliary_generations
+                    .get(slot)
+                    .copied()
+                    .expect("auxiliary generation")
+            );
+            assert_eq!(
+                auxiliary.source_byte_3e,
+                auxiliary_source_bytes
+                    .get(slot)
+                    .copied()
+                    .expect("auxiliary source byte")
+                    .wrapping_add(1)
+            );
+            assert!(chain.economy().map_chains().is_linked(*slot));
+            assert!(!chain.economy().free_slots.contains(slot));
         }
         let live_rows = chain.economy().live_arena_cursor_rows();
         let old_slot_states = old_controller_slots

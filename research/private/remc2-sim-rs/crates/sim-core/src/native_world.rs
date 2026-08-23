@@ -146,6 +146,13 @@ const LEVEL2_NYPHUR_SOURCE_SPELL_TIER_COUNT: i8 = 3;
 /// `dword_0x10_16` stage scalar when deciding whether to transfer mana.
 const LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE: i32 = 300;
 const LEVEL2_CASTLE_CHILD_DEFAULT_SPEED: i16 = 16;
+/// Pinned `sub_4C1E0` / descriptor-83 Castle auxiliary parameters.
+const LEVEL2_CASTLE_AUXILIARY_MAX_LIFE: i32 = 1_000;
+const LEVEL2_CASTLE_AUXILIARY_MINIMUM_SPEED: i16 = 30;
+const LEVEL2_CASTLE_AUXILIARY_CADENCE: u8 = 15;
+const LEVEL2_CASTLE_AUXILIARY_TARGET_RANGE: u32 = 0x0f00;
+const LEVEL2_CASTLE_AUXILIARY_TARGET_HALF_ANGLE: i16 = 0x0200;
+const LEVEL2_CASTLE_AUXILIARY_ALLOWED_MATERIALS: u32 = 0x0002_0000;
 /// `sub_4ABA0` writes maxMana=10000 for a Castle class-3/model-3 defender.
 const LEVEL2_CASTLE_DEFENDER_MAX_MANA: i32 = 10_000;
 /// The same constructor writes maxLife=10000 and actSpeed=48; these are not
@@ -1061,11 +1068,24 @@ pub struct Level2CastleChild {
     /// model-3/action-9 `AddBallon_60AB0` holder path.
     pub life: i32,
     pub max_life: i32,
+    /// Source `actSpeed_0x82_130`. Model-15 action 121 starts at its fixed
+    /// descriptor minimum of 30 and action 122 sets it to zero while aiming.
     pub speed: i16,
+    /// Source `word_0x96_150`. Castle defenders use it for a ManaSphere;
+    /// model-15 auxiliaries use the same raw relation for their player target.
     pub target_sphere_slot: u16,
+    /// Source damage mailbox `dword_0x5E_94` / `word_0x62_98` and the two
+    /// attacker relations written by `sub_23C40` / `sub_23E60`.
+    pub pending_damage: i32,
+    pub pending_attacker_entity_index: u16,
+    pub damage_attacker_entity_index: u16,
+    pub killer_entity_index: u16,
     /// Source `byte_0x3E_62`, used by `sub_5FF50`'s modulo cadence gate.
     /// This is explicitly injectable because it is not the Castle phase.
     pub source_byte_3e: u8,
+    /// Source constructor cadence byte `byte_0x39_57`. A non-zero value gates
+    /// the action-121 class-3 target scan.
+    pub source_byte_39: u8,
     /// Source `byte_0x3B_59`, kept distinct from the source map-chain byte.
     pub source_byte_3b: u8,
     /// Source `byte_0x46_70`: the MSPRD stage for class-10/model-41, or the
@@ -1082,6 +1102,8 @@ pub struct Level2CastleChild {
     pub source_subspell_index: u16,
     pub yaw: u16,
     pub roll: u16,
+    /// Source particle/visual selector written by `SetEntityIndexAndRot`.
+    pub visual_index: u16,
     pub control_flags: u32,
     /// Source `word_0x32_50` / `word_0x34_52` links.  `chain_previous_slot`
     /// is the root or prior model-79 child; `chain_next_slot` is updated on
@@ -1239,6 +1261,9 @@ pub struct Level2DeathBurst {
     pub life_ticks: i16,
     pub subspell_index: u16,
     pub control_flags: u32,
+    /// Source `byte_0x3E_62`, including the common UpdateEntities epilogue
+    /// when a callback replaces its own fixed slot with this row.
+    pub source_byte_3e: u8,
     pub active: bool,
 }
 
@@ -2632,6 +2657,11 @@ pub struct Level2EconomyState {
     /// `sub_49F90` rebuilds and clears the exclusion on the next rebuild.
     replacement_cursor_exclusions: BTreeSet<u16>,
 
+    /// Monotonic identity for remc2's rebuilt class/model list heads.
+    /// `NewEvent_4A050` clears every head when it takes the replacement path;
+    /// ordinary free-slot allocation leaves them intact.
+    replacement_list_epoch: u32,
+
     slot_generations: BTreeMap<u16, u32>,
 
     slot_rng: BTreeMap<u16, u16>,
@@ -2735,6 +2765,8 @@ pub struct Level2EconomyState {
     class5_model14_constructor_phase: u8,
 
     class5_model4_constructor_phase: u8,
+    /// Source `array_0x10[15]` constructor counter for Castle auxiliaries.
+    castle_auxiliary_constructor_phase: u8,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
     /// event and left unchanged by model 5.
     class14_model3_handle: u16,

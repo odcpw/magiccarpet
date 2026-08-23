@@ -4375,8 +4375,6 @@ impl Level2EconomyTestView<'_> {
         (source_slot: u16) -> bool);
     terrain_method!(step_authored_model13_slot,
         (source_slot: u16) -> bool);
-    terrain_method!(step_castle_child_terminal_slot,
-        (source_slot: u16) -> bool);
     terrain_method!(step_castle_defender_slot,
         (source_slot: u16) -> bool);
     terrain_method!(step_castle_projectile_slot,
@@ -4397,6 +4395,20 @@ impl Level2EconomyTestView<'_> {
         (sphere_slot: u16) -> bool);
     terrain_method!(step_mana_carrier_slot,
         (carrier_slot: u16) -> bool);
+
+    pub(crate) fn step_castle_child_terminal_slot(&mut self, source_slot: u16) -> bool {
+        let live = &mut self.session.session.state.live;
+        let auxiliary_membership = live
+            .economy
+            .economy
+            .castle_auxiliary_membership(&live.economy.entities);
+        live.economy.economy.step_castle_child_terminal_slot(
+            source_slot,
+            &mut live.economy.entities,
+            &auxiliary_membership,
+            &mut live.terrain,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -6819,6 +6831,7 @@ impl Level2ResetSession {
         player_position: Position,
         source_player_order: &[usize],
         sphere_membership: &BTreeSet<u16>,
+        auxiliary_membership: &level2_dynamic_economy::Level2CastleAuxiliaryMembership,
     ) {
         let source_slot = row.source_slot;
         if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
@@ -6858,6 +6871,7 @@ impl Level2ResetSession {
                 source_slot,
                 row.kind,
                 Some(sphere_membership),
+                Some(auxiliary_membership),
             )
         };
         self.append_new_economy_events(pass, source_slot);
@@ -7006,6 +7020,16 @@ impl Level2ResetSession {
             .filter(|row| row.kind == Level2DynamicArenaKind::ManaSphere)
             .map(|row| row.source_slot)
             .collect::<BTreeSet<_>>();
+        // UpdateEntities builds the class-3 and per-model class-5 linked
+        // memberships once at this same boundary. Callbacks resolve those
+        // fixed source slots against live row fields during the moving walk.
+        let pass_start_castle_auxiliary_membership = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .castle_auxiliary_membership(&self.session.state.live.economy.entities);
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
         for event in self
             .session
@@ -7228,6 +7252,7 @@ impl Level2ResetSession {
                     player_position,
                     &source_player_order,
                     &pass_start_mana_sphere_slots,
+                    &pass_start_castle_auxiliary_membership,
                 );
                 self.schedule_new_source_rows_in_source_order(
                     &live_dynamic_before,
@@ -7700,6 +7725,7 @@ impl Level2ResetSession {
                             source_slot,
                             row.kind,
                             Some(&pass_start_mana_sphere_slots),
+                            Some(&pass_start_castle_auxiliary_membership),
                         )
                     };
                     self.append_new_economy_events(pass, source_slot);
@@ -7918,6 +7944,7 @@ impl Level2ResetSession {
                 player_position,
                 &source_player_order,
                 &pass_start_mana_sphere_slots,
+                &pass_start_castle_auxiliary_membership,
             );
             self.schedule_new_source_rows_in_source_order(
                 &live_dynamic_before,
@@ -8903,7 +8930,20 @@ impl Level2ResetSession {
         source_slot: u16,
         kind: Level2DynamicArenaKind,
     ) -> bool {
-        self.step_level2_dynamic_arena_with_sphere_membership(pass, source_slot, kind, None)
+        let auxiliary_membership = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .castle_auxiliary_membership(&self.session.state.live.economy.entities);
+        self.step_level2_dynamic_arena_with_sphere_membership(
+            pass,
+            source_slot,
+            kind,
+            None,
+            Some(&auxiliary_membership),
+        )
     }
 
     fn step_level2_dynamic_arena_with_sphere_membership(
@@ -8912,6 +8952,7 @@ impl Level2ResetSession {
         source_slot: u16,
         kind: Level2DynamicArenaKind,
         sphere_membership: Option<&BTreeSet<u16>>,
+        auxiliary_membership: Option<&level2_dynamic_economy::Level2CastleAuxiliaryMembership>,
     ) -> bool {
         let live = match kind {
             Level2DynamicArenaKind::CastleProjectile => {
@@ -9505,12 +9546,24 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::CastleAuxiliary
             | Level2DynamicArenaKind::CastleChild
             | Level2DynamicArenaKind::CastleController => {
-                let terrain = &mut self.session.state.live.terrain;
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .step_castle_child_terminal_slot(source_slot, terrain)
+                let live = &mut self.session.state.live;
+                let current_membership;
+                let auxiliary_membership = match auxiliary_membership {
+                    Some(membership) => membership,
+                    None => {
+                        current_membership = live
+                            .economy
+                            .economy
+                            .castle_auxiliary_membership(&live.economy.entities);
+                        &current_membership
+                    }
+                };
+                live.economy.economy.step_castle_child_terminal_slot(
+                    source_slot,
+                    &mut live.economy.entities,
+                    auxiliary_membership,
+                    &mut live.terrain,
+                )
             }
             Level2DynamicArenaKind::CastleRoot => true,
         };

@@ -144,6 +144,139 @@ fn level2_entity_nearby_projectile(entity: &EntitySnapshot, position: Position) 
     dx <= i32::from(entity.array_pitch()) + 2_560 && dy <= i32::from(entity.array_roll()) + 2_560
 }
 
+fn level2_castle_auxiliary_settle(position: &mut Position, terrain: &SessionTerrain) {
+    // Descriptor 83 supplies word 0x0c = 0 and word 0x0e = -256 to
+    // `sub_1EEE0 -> sub_580E0`.
+    let ground = terrain.ground_height(*position);
+    if position.z > ground {
+        position.z = position.z.wrapping_sub(256);
+    }
+    if position.z <= ground {
+        position.z = ground;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Level2CastleAuxiliaryTarget {
+    source_entity_index: u16,
+    source_id: u16,
+    class: u8,
+    model: u8,
+    life: i32,
+    control_flags: u32,
+    position: Position,
+    imported: bool,
+}
+
+/// Fixed linked-list memberships rebuilt by `UpdateEntities_57730` before
+/// its ascending callback walk. Source callbacks read the pointed-to rows
+/// live, but rows born later in the same walk cannot join either list until
+/// the following rebuild.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Level2CastleAuxiliaryMembership {
+    replacement_list_epoch: u32,
+    class3_source_slots: Vec<crate::campaign::source_arena::SourceEntityHandle>,
+    model15_source_slots: Vec<crate::campaign::source_arena::SourceEntityHandle>,
+}
+
+fn level2_castle_auxiliary_probe_blocked(terrain: &SessionTerrain, candidate: Position) -> bool {
+    // `sub_102D0(..., 1)` samples this candidate once for descriptor 83.
+    // Particle 0 contributes a 125-unit FOV to the Cave ceiling test, while
+    // descriptor 83's dword 0x14 admits only the 0x0002_0000 material bit.
+    if terrain.material_mask(candidate) & !LEVEL2_CASTLE_AUXILIARY_ALLOWED_MATERIALS != 0 {
+        return true;
+    }
+    if terrain.map_type == MapType::Cave {
+        let tile = crate::Tile {
+            x: candidate.x.to_be_bytes()[0],
+            y: candidate.y.to_be_bytes()[0],
+        };
+        if terrain.angle_flags(tile) & 8 != 0 {
+            return true;
+        }
+        if let Some(ceiling) = terrain.ceiling_height(candidate) {
+            let ground = terrain.ground_height(candidate);
+            if i32::from(ground) + 125 > i32::from(ceiling) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn level2_castle_auxiliary_roam(
+    child: &mut Level2CastleChild,
+    peers: &[Level2CastleAuxiliaryTarget],
+    terrain: &SessionTerrain,
+) {
+    if child.source_byte_3e % 8 == 0 {
+        if terrain.material_mask(child.position) & !LEVEL2_CASTLE_AUXILIARY_ALLOWED_MATERIALS != 0 {
+            child.action = 124;
+            return;
+        }
+        let score_moduli = [0x1b58_u16, 0x1b58, 10, 0x1b58];
+        let mut best_score = 1_u16;
+        let mut heading = child.yaw;
+        for modulus in score_moduli {
+            let mut candidate = child.position;
+            crate::move_entity(
+                &mut candidate,
+                i16::try_from(heading).expect("auxiliary heading fits"),
+                0,
+                256,
+            );
+            child.entity_rng = level2_next_rng16(child.entity_rng);
+            let score = if level2_castle_auxiliary_probe_blocked(terrain, candidate) {
+                0
+            } else {
+                child.entity_rng % modulus + 2
+            };
+            if score > best_score {
+                best_score = score;
+                child.yaw = heading;
+            }
+            heading = heading.wrapping_add(0x0200) & 0x07ff;
+        }
+    }
+
+    let mut predicted = child.position;
+    if child.source_byte_3e % 16 == 0 {
+        match (child.yaw.wrapping_sub(256) >> 9) & 3 {
+            0 | 2 => predicted.y = (predicted.y >> 8 << 8).wrapping_add(128),
+            1 | 3 => predicted.x = (predicted.x >> 8 << 8).wrapping_add(128),
+            _ => unreachable!("two-bit auxiliary direction"),
+        }
+    }
+    if let Some(peer) = peers
+        .iter()
+        .filter(|peer| {
+            peer.source_id != child.id_entity_index
+                && child.position.x.abs_diff(peer.position.x) < 256
+                && child.position.y.abs_diff(peer.position.y) < 256
+        })
+        .min_by_key(|peer| peer.source_entity_index)
+    {
+        child.roll = u16::try_from(heading_for_positions(peer.position, child.position))
+            .expect("auxiliary peer heading fits");
+    }
+    let move_now = if child.roll == child.yaw {
+        true
+    } else {
+        child.entity_rng = level2_next_rng16(child.entity_rng);
+        child.entity_rng % 20 <= 10
+    };
+    if move_now {
+        crate::move_entity(
+            &mut predicted,
+            i16::try_from(child.yaw).expect("auxiliary yaw fits"),
+            0,
+            child.speed,
+        );
+        child.position = predicted;
+    }
+    level2_castle_auxiliary_settle(&mut child.position, terrain);
+}
+
 /// The source-shaped payload handed to `sub_69AB0`'s post-allocation
 /// `sub_68E50(parent, flyer, holder)` carrier. The parent/player route
 /// computes the hand displacement, terrain rollback, FOV Z offset, and
@@ -970,6 +1103,7 @@ impl Level2EconomyState {
             life_ticks: 1,
             subspell_index: PLAYER_DEATH_BURST_SUBSPELL_INDEX,
             control_flags: SOURCE_REPLACEABLE_FLAG,
+            source_byte_3e: source_entity_index as u8,
             active: true,
         };
         self.map_chains
@@ -1112,6 +1246,7 @@ impl Level2EconomyState {
             return false;
         };
         burst.life_ticks = burst.life_ticks.wrapping_sub(1);
+        burst.source_byte_3e = burst.source_byte_3e.wrapping_add(1);
         burst.active = false;
         self.map_chains
             .sync_entity(RenderableMapSeed {
@@ -1178,15 +1313,594 @@ impl Level2EconomyState {
         Some(child)
     }
 
+    fn consume_castle_auxiliary_damage(&mut self, child_index: usize) -> u8 {
+        let mut state = 0_u8;
+        let pending_attacker = self.castle_children[child_index].pending_attacker_entity_index;
+        if pending_attacker != 0 {
+            let damage = self.castle_children[child_index].pending_damage;
+            let child = &mut self.castle_children[child_index];
+            child.life = child.life.wrapping_sub(damage);
+            child.pending_attacker_entity_index = 0;
+            child.damage_attacker_entity_index = pending_attacker;
+            state = 1;
+        } else {
+            self.castle_children[child_index].damage_attacker_entity_index = 0;
+        }
+
+        let mut linked_slot = self.castle_children[child_index].chain_next_slot;
+        let mut visited = BTreeSet::new();
+        while linked_slot != 0 && visited.insert(linked_slot) {
+            let Some(linked) = self
+                .castle_children
+                .iter()
+                .find(|candidate| candidate.active && candidate.source_entity_index == linked_slot)
+                .copied()
+            else {
+                break;
+            };
+            if linked.life < self.castle_children[child_index].life {
+                let child = &mut self.castle_children[child_index];
+                child.life = linked.life;
+                child.damage_attacker_entity_index = linked.damage_attacker_entity_index;
+                state = 1;
+                break;
+            }
+            linked_slot = linked.chain_next_slot;
+        }
+        if self.castle_children[child_index].life < 0 {
+            state = 2;
+            self.castle_children[child_index].killer_entity_index =
+                self.castle_children[child_index].damage_attacker_entity_index;
+        }
+        state
+    }
+
+    fn castle_auxiliary_target_at(
+        &self,
+        source_slot: u16,
+        entities: &[EntitySnapshot],
+    ) -> Option<Level2CastleAuxiliaryTarget> {
+        if let Some(castle) = self
+            .castle
+            .filter(|castle| castle.source_entity_index == source_slot)
+        {
+            return Some(Level2CastleAuxiliaryTarget {
+                source_entity_index: source_slot,
+                source_id: castle.source_id_entity_index,
+                class: castle.source_class,
+                model: castle.source_model,
+                life: castle.life,
+                control_flags: castle.control_flags,
+                position: castle.position,
+                imported: false,
+            });
+        }
+        if let Some(child) = self
+            .castle_children
+            .iter()
+            .find(|child| child.source_entity_index == source_slot)
+        {
+            return Some(Level2CastleAuxiliaryTarget {
+                source_entity_index: source_slot,
+                source_id: child.id_entity_index,
+                class: child.source_class,
+                model: child.model,
+                life: child.life,
+                control_flags: child.control_flags,
+                position: child.position,
+                imported: false,
+            });
+        }
+        if let Some(carrier) = self
+            .carriers
+            .iter()
+            .find(|carrier| carrier.source_entity_index == source_slot)
+        {
+            return Some(Level2CastleAuxiliaryTarget {
+                source_entity_index: source_slot,
+                source_id: carrier.owner_entity_index,
+                class: 3,
+                model: 3,
+                life: carrier.life,
+                control_flags: 0,
+                position: carrier.position,
+                imported: false,
+            });
+        }
+        // A generation entry means NewEvent has owned this fixed source slot.
+        // If no typed row remains, do not fall through to the stale imported
+        // reset projection that the allocation replaced.
+        if self.slot_generations.contains_key(&source_slot) {
+            return None;
+        }
+        entities
+            .get(usize::from(source_slot))
+            .map(|entity| Level2CastleAuxiliaryTarget {
+                source_entity_index: source_slot,
+                source_id: entity.source_id,
+                class: entity.class,
+                model: entity.model,
+                life: entity.life,
+                control_flags: entity.control_flags,
+                position: entity.position,
+                imported: true,
+            })
+    }
+
+    pub(crate) fn castle_auxiliary_membership(
+        &self,
+        entities: &[EntitySnapshot],
+    ) -> Level2CastleAuxiliaryMembership {
+        let mut class3_source_slots = entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.class == 3
+                    && entity.life >= 0
+                    && !self.slot_generations.contains_key(&entity.index)
+            })
+            .map(|entity| entity.index)
+            .collect::<BTreeSet<_>>();
+        if let Some(castle) = self
+            .castle
+            .filter(|castle| castle.active && castle.source_class == 3 && castle.life >= 0)
+        {
+            class3_source_slots.insert(castle.source_entity_index);
+        }
+        class3_source_slots.extend(
+            self.castle_children
+                .iter()
+                .filter(|child| child.active && child.source_class == 3 && child.life >= 0)
+                .map(|child| child.source_entity_index),
+        );
+        class3_source_slots.extend(
+            self.carriers
+                .iter()
+                .filter(|carrier| carrier.active && carrier.life >= 0)
+                .map(|carrier| carrier.source_entity_index),
+        );
+        let model15_source_slots = self
+            .castle_children
+            .iter()
+            .filter(|child| {
+                child.active
+                    && child.life >= 0
+                    && child.source_class == 5
+                    && child.model == 15
+                    && !matches!(child.action, 180 | 232 | 234)
+            })
+            .map(|child| child.source_entity_index)
+            .collect::<BTreeSet<_>>();
+        Level2CastleAuxiliaryMembership {
+            replacement_list_epoch: self.replacement_list_epoch,
+            class3_source_slots: class3_source_slots
+                .into_iter()
+                .map(
+                    |source_slot| crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot,
+                        generation: self.slot_generation(source_slot),
+                    },
+                )
+                .collect(),
+            model15_source_slots: model15_source_slots
+                .into_iter()
+                .map(
+                    |source_slot| crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot,
+                        generation: self.slot_generation(source_slot),
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    fn castle_auxiliary_target_scan(
+        &self,
+        child: Level2CastleChild,
+        entities: &[EntitySnapshot],
+        membership: &Level2CastleAuxiliaryMembership,
+    ) -> Option<u16> {
+        if membership.replacement_list_epoch != self.replacement_list_epoch {
+            return None;
+        }
+        let range_squared =
+            LEVEL2_CASTLE_AUXILIARY_TARGET_RANGE.wrapping_mul(LEVEL2_CASTLE_AUXILIARY_TARGET_RANGE);
+        let mut best_slot = None;
+        let mut best_distance = u32::MAX;
+        for handle in &membership.class3_source_slots {
+            if self.slot_generation(handle.source_slot) != handle.generation {
+                continue;
+            }
+            let Some(target) = self.castle_auxiliary_target_at(handle.source_slot, entities) else {
+                continue;
+            };
+            if target.source_id == child.id_entity_index || target.control_flags & 0x20 != 0 {
+                continue;
+            }
+            let distance = level2_wrapping_xy_distance(child.position, target.position);
+            let heading = heading_for_positions(child.position, target.position);
+            if distance <= range_squared
+                && crate::angle_distance(i32::from(child.yaw), heading)
+                    < LEVEL2_CASTLE_AUXILIARY_TARGET_HALF_ANGLE
+                && distance < best_distance
+            {
+                best_slot = Some(target.source_entity_index);
+                best_distance = distance;
+            }
+        }
+        best_slot
+    }
+
+    fn castle_auxiliary_live_peers(
+        &self,
+        entities: &[EntitySnapshot],
+        membership: &Level2CastleAuxiliaryMembership,
+    ) -> Vec<Level2CastleAuxiliaryTarget> {
+        if membership.replacement_list_epoch != self.replacement_list_epoch {
+            return Vec::new();
+        }
+        membership
+            .model15_source_slots
+            .iter()
+            .filter(|handle| self.slot_generation(handle.source_slot) == handle.generation)
+            .filter_map(|handle| self.castle_auxiliary_target_at(handle.source_slot, entities))
+            .collect()
+    }
+
+    fn aim_castle_auxiliary(&mut self, child_index: usize) {
+        let child = &mut self.castle_children[child_index];
+        child.entity_rng = level2_next_rng16(child.entity_rng);
+        child.speed = 0;
+        child.visual_index = if child.entity_rng % 20 <= 10 { 206 } else { 1 };
+    }
+
+    fn reset_castle_auxiliary_to_roam(&mut self, child_index: usize) {
+        let child = &mut self.castle_children[child_index];
+        child.speed = LEVEL2_CASTLE_AUXILIARY_MINIMUM_SPEED;
+        child.visual_index = 0;
+    }
+
+    fn finish_self_replaced_castle_auxiliary_projectile(
+        &mut self,
+        source_slot: u16,
+        target: Level2CastleAuxiliaryTarget,
+        terrain: &SessionTerrain,
+    ) {
+        let Some(child) = self
+            .authored_class5_archer_children
+            .iter_mut()
+            .find(|child| child.active && child.source_entity_index == source_slot)
+        else {
+            return;
+        };
+        // NewEvent overwrote the aliased `a1x` record before sub_23E60's
+        // post-constructor copies. Those reads therefore observe the new
+        // row's defaults, not the former model-15 fields.
+        child.entity_id = source_slot;
+        child.parent_entity_id = source_slot;
+        child.word_0x96 = 0;
+        child.xtype = u8::MAX;
+        child.xsubtype = u8::MAX;
+        // sub_23E60 retained only a pointer to the old a1x position. NewEvent
+        // memsets the aliased fixed row before AddEventToMap reads it, so the
+        // replacement is born at zero and is aimed from that zero position.
+        child.position = Position::default();
+        child.position.z = child
+            .position
+            .z
+            .wrapping_add(level2_class5::archer::ARCHER_CHILD_PARTICLE_FOV / 2);
+        child.yaw = i16::try_from(heading_for_positions(Position::default(), target.position))
+            .expect("self-replaced auxiliary projectile heading fits");
+        let horizontal = crate::legacy_sqrt(level2_wrapping_xy_distance(
+            Position::default(),
+            target.position,
+        ));
+        child.pitch = crate::pitch_for_delta(
+            i32::try_from(horizontal).expect("self-replaced horizontal distance fits"),
+            i32::from(target.position.z),
+        );
+
+        // `sub_1EEE0` now sees NewEvent descriptor 59 (wordC=0,
+        // wordE=-4), then LABEL_26 sees action 13 and runs sub_24150 on the
+        // replacement: minimum speed plus particle-0 presentation.
+        let ground = terrain.ground_height(child.position);
+        if child.position.z > ground {
+            child.position.z = child.position.z.wrapping_sub(4);
+        }
+        if child.position.z <= ground {
+            child.position.z = ground;
+        }
+        child.actual_speed = child.minimum_speed;
+        child.particle_index = 0;
+        child.shift_rot_x = 0;
+        child.shift_rot_y = 0;
+        child.fov = level2_class5::archer::ARCHER_POSE_FOV;
+    }
+
+    fn finish_castle_auxiliary_source_visit(&mut self, source_slot: u16) -> bool {
+        if let Some(child) = self
+            .castle_children
+            .iter_mut()
+            .find(|child| child.active && child.source_entity_index == source_slot)
+        {
+            child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
+            let child = *child;
+            self.source_rng.insert(source_slot, child.entity_rng);
+            self.sync_castle_child_map(child);
+            return true;
+        }
+        if let Some(child) = self
+            .authored_class5_archer_children
+            .iter_mut()
+            .find(|child| child.active && child.source_entity_index == source_slot)
+        {
+            child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
+            let child = *child;
+            self.source_rng.insert(source_slot, child.entity_rng);
+            return self
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: child.position.x,
+                    y: child.position.y,
+                })
+                .is_ok();
+        }
+        if let Some(burst) = self
+            .death_bursts
+            .iter_mut()
+            .find(|burst| burst.source_entity_index == source_slot)
+        {
+            burst.source_byte_3e = burst.source_byte_3e.wrapping_add(1);
+            self.source_rng.insert(source_slot, burst.entity_rng);
+            return true;
+        }
+        false
+    }
+
+    fn spawn_castle_auxiliary_projectile(
+        &mut self,
+        child: Level2CastleChild,
+        target: Level2CastleAuxiliaryTarget,
+    ) -> Option<u16> {
+        let fov = if child.visual_index == 206 { 120 } else { 125 };
+        self.allocate_castle_auxiliary_projectile_packet(
+            level2_class5::archer::ArcherChildRequest {
+                parent_entity_index: 0,
+                parent_entity_id: child.id_entity_index,
+                parent_word_0x96: child.target_sphere_slot,
+                parent_roll: 0,
+                parent_position: child.position,
+                parent_fov: fov,
+                target_entity_index: target.source_entity_index,
+                target_class: target.class,
+                target_model: target.model,
+                target_position: target.position,
+            },
+        )
+        .map(|packet| packet.source_entity_index)
+    }
+
+    fn step_castle_auxiliary_action121(
+        &mut self,
+        child_index: usize,
+        entities: &[EntitySnapshot],
+        membership: &Level2CastleAuxiliaryMembership,
+        terrain: &SessionTerrain,
+    ) {
+        let damage_state = self.consume_castle_auxiliary_damage(child_index);
+        match damage_state {
+            0 => {
+                let peers = self.castle_auxiliary_live_peers(entities, membership);
+                level2_castle_auxiliary_roam(
+                    &mut self.castle_children[child_index],
+                    &peers,
+                    terrain,
+                );
+                let child = self.castle_children[child_index];
+                if child.source_byte_3e % LEVEL2_CASTLE_AUXILIARY_CADENCE == 0
+                    && child.source_byte_39 != 0
+                    && let Some(target_slot) =
+                        self.castle_auxiliary_target_scan(child, entities, membership)
+                {
+                    self.castle_children[child_index].action = 122;
+                    self.castle_children[child_index].target_sphere_slot = target_slot;
+                }
+            }
+            1 => {
+                let attacker = self.castle_children[child_index].damage_attacker_entity_index;
+                if self
+                    .castle_auxiliary_target_at(attacker, entities)
+                    .is_some_and(|entity| {
+                        entity.class == 3
+                            && entity.source_id != self.castle_children[child_index].id_entity_index
+                    })
+                {
+                    self.castle_children[child_index].action = 122;
+                    self.castle_children[child_index].target_sphere_slot = attacker;
+                }
+                level2_castle_auxiliary_settle(
+                    &mut self.castle_children[child_index].position,
+                    terrain,
+                );
+            }
+            2 => self.castle_children[child_index].action = 124,
+            _ => unreachable!("three-state auxiliary damage result"),
+        }
+        if self.castle_children[child_index].action == 122 {
+            self.aim_castle_auxiliary(child_index);
+        }
+    }
+
+    fn step_castle_auxiliary_action122(
+        &mut self,
+        child_index: usize,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+    ) {
+        let damage_state = self.consume_castle_auxiliary_damage(child_index);
+        if damage_state == 2 {
+            self.castle_children[child_index].action = 124;
+            self.reset_castle_auxiliary_to_roam(child_index);
+            return;
+        }
+
+        let target_slot = self.castle_children[child_index].target_sphere_slot;
+        let Some(target) = self.castle_auxiliary_target_at(target_slot, entities) else {
+            self.castle_children[child_index].action = 121;
+            self.reset_castle_auxiliary_to_roam(child_index);
+            return;
+        };
+        // `sub_23E60` resolves word96 and updates roll before it checks the
+        // target's life/draw-disable state. A retained hidden row therefore
+        // still affects this write during the pass in which it was hidden.
+        if self.castle_children[child_index].source_byte_3e & 3 == 0 {
+            self.castle_children[child_index].roll = u16::try_from(heading_for_positions(
+                self.castle_children[child_index].position,
+                target.position,
+            ))
+            .expect("auxiliary target heading fits");
+        }
+        if target.life < 0 || target.control_flags & ENTITY_DRAW_DISABLED_BIT != 0 {
+            self.castle_children[child_index].action = 121;
+            self.reset_castle_auxiliary_to_roam(child_index);
+            return;
+        }
+        if self.castle_children[child_index].source_byte_3e % LEVEL2_CASTLE_AUXILIARY_CADENCE == 0 {
+            if crate::legacy_sqrt(level2_wrapping_source_distance_3d(
+                self.castle_children[child_index].position,
+                target.position,
+            )) >= LEVEL2_CASTLE_AUXILIARY_TARGET_RANGE
+            {
+                self.castle_children[child_index].action = 121;
+                self.reset_castle_auxiliary_to_roam(child_index);
+                return;
+            }
+            let child = self.castle_children[child_index];
+            if let Some(projectile_slot) = self.spawn_castle_auxiliary_projectile(child, target) {
+                if target.imported
+                    && let Some(target) = entities.get_mut(usize::from(target.source_entity_index))
+                {
+                    target.apply_source_sub_5ef70();
+                }
+                if projectile_slot == child.source_entity_index {
+                    self.finish_self_replaced_castle_auxiliary_projectile(
+                        projectile_slot,
+                        target,
+                        terrain,
+                    );
+                    return;
+                }
+            }
+        }
+        level2_castle_auxiliary_settle(&mut self.castle_children[child_index].position, terrain);
+    }
+
+    fn step_castle_auxiliary_slot(
+        &mut self,
+        child_index: usize,
+        entities: &mut [EntitySnapshot],
+        membership: &Level2CastleAuxiliaryMembership,
+        terrain: &SessionTerrain,
+    ) -> bool {
+        let source_slot = self.castle_children[child_index].source_entity_index;
+        match self.castle_children[child_index].action {
+            121 => {
+                self.step_castle_auxiliary_action121(child_index, entities, membership, terrain);
+            }
+            122 => self.step_castle_auxiliary_action122(child_index, entities, terrain),
+            124 => {
+                let mut linked_slot = self.castle_children[child_index].chain_next_slot;
+                let mut visited = BTreeSet::new();
+                while linked_slot != 0 && visited.insert(linked_slot) {
+                    let Some(linked_index) = self
+                        .castle_children
+                        .iter()
+                        .position(|child| child.active && child.source_entity_index == linked_slot)
+                    else {
+                        break;
+                    };
+                    let next_slot = self.castle_children[linked_index].chain_next_slot;
+                    self.castle_children[linked_index].action = 125;
+                    if self.castle_children[linked_index].killer_entity_index != 0 {
+                        self.castle_children[child_index].killer_entity_index =
+                            self.castle_children[linked_index].killer_entity_index;
+                    }
+                    linked_slot = next_slot;
+                }
+                self.castle_children[child_index].action = 125;
+            }
+            125 => {
+                if self.castle_children[child_index].source_byte_3e & 7 == 0 {
+                    let child = self.castle_children[child_index];
+                    let mut replacement_slot = None;
+                    if child.control_flags & 0x0010_0000 == 0 {
+                        replacement_slot = self.spawn_death_burst_from_death_with_id(
+                            child.source_entity_index,
+                            child.id_entity_index,
+                            child.position,
+                        );
+                    }
+                    if replacement_slot == Some(source_slot) {
+                        if let Some(burst) = self
+                            .death_bursts
+                            .iter_mut()
+                            .find(|burst| burst.source_entity_index == source_slot)
+                        {
+                            // KillEntity continues through its aliased source
+                            // pointer after NewEvent overwrites the row.
+                            burst.id_entity_index = source_slot;
+                            burst.position = Position::default();
+                            burst.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+                            burst.active = false;
+                        }
+                        if let Some(Level2EconomyEvent::DeathBurstSpawned {
+                            id_entity_index, ..
+                        }) = self.events.iter_mut().rev().find(|event| {
+                            matches!(
+                                event,
+                                Level2EconomyEvent::DeathBurstSpawned {
+                                    source_entity_index,
+                                    ..
+                                } if *source_entity_index == source_slot
+                            )
+                        }) {
+                            *id_entity_index = source_slot;
+                        }
+                        self.map_chains
+                            .sync_entity(RenderableMapSeed {
+                                entity_index: source_slot,
+                                active: true,
+                                x: 0,
+                                y: 0,
+                            })
+                            .expect("self-replaced death burst stays map-linked until prepass");
+                    } else if let Some(child) = self
+                        .castle_children
+                        .iter_mut()
+                        .find(|child| child.source_entity_index == source_slot)
+                    {
+                        child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+                    }
+                }
+            }
+            _ => return false,
+        }
+        self.finish_castle_auxiliary_source_visit(source_slot)
+    }
+
     /// Advance one dynamic Castle child through its source callback or the
     /// terminal no-callback branch. Model 79/action 0x56 is the live
     /// `sub_3AF00` Castle-defend callback; model 42/action 44 is the
     /// BUILD-backed 37BC0 callback; model 41/action 43 remains the separate
     /// MSPRD-backed 377F0 callback. Other terminal rows retain source
     /// disable/reclaim.
-    pub fn step_castle_child_terminal_slot(
+    pub(crate) fn step_castle_child_terminal_slot(
         &mut self,
         source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        auxiliary_membership: &Level2CastleAuxiliaryMembership,
         terrain: &mut SessionTerrain,
     ) -> bool {
         let Some(child_index) = self.castle_children.iter().position(|child| {
@@ -1203,6 +1917,14 @@ impl Level2EconomyState {
             // `UpdateEntities_57730` hidden-row prepass. That prepass runs
             // before the next dispatch walk, independently of this root.
             return true;
+        }
+        if child.source_class == 5 && child.model == 15 {
+            return self.step_castle_auxiliary_slot(
+                child_index,
+                entities,
+                auxiliary_membership,
+                terrain,
+            );
         }
         if child.source_class == 10 && child.model == 79 && child.action == 0x56 {
             return self.step_castle_controller_slot(child_index, terrain);
@@ -2876,7 +3598,12 @@ impl Level2EconomyState {
             max_life: 8,
             speed: 0,
             target_sphere_slot: 0,
+            pending_damage: 0,
+            pending_attacker_entity_index: 0,
+            damage_attacker_entity_index: 0,
+            killer_entity_index: 0,
             source_byte_3e: 0,
+            source_byte_39: 0,
             source_byte_3b: 0,
             cave_collision_cooldown: 0,
             source_dword_10: 0,
@@ -2885,6 +3612,7 @@ impl Level2EconomyState {
             source_subspell_index: 64_000,
             yaw: 512,
             roll: 512,
+            visual_index: 0,
             control_flags: 1,
             chain_previous_slot: 0,
             chain_next_slot: 0,
@@ -3729,7 +4457,12 @@ impl Level2EconomyState {
                 max_life: 100_000,
                 speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                 target_sphere_slot: 0,
+                pending_damage: 0,
+                pending_attacker_entity_index: 0,
+                damage_attacker_entity_index: 0,
+                killer_entity_index: 0,
                 source_byte_3e: stage_slot as u8,
+                source_byte_39: 0,
                 source_byte_3b: 0,
                 cave_collision_cooldown: 0,
                 source_dword_10: 0,
@@ -3738,6 +4471,7 @@ impl Level2EconomyState {
                 source_subspell_index: 0,
                 yaw: 0,
                 roll: 0,
+                visual_index: 0,
                 control_flags: 0,
                 chain_previous_slot: previous_slot,
                 chain_next_slot: 0,
@@ -3901,7 +4635,12 @@ impl Level2EconomyState {
                     max_life: LEVEL2_CASTLE_DEFENDER_MAX_LIFE,
                     speed: LEVEL2_CASTLE_DEFENDER_SPEED,
                     target_sphere_slot: 0,
+                    pending_damage: 0,
+                    pending_attacker_entity_index: 0,
+                    damage_attacker_entity_index: 0,
+                    killer_entity_index: 0,
                     source_byte_3e: snapshot.phase,
+                    source_byte_39: 0,
                     source_byte_3b: 0,
                     cave_collision_cooldown: 0,
                     source_dword_10: 0,
@@ -3910,6 +4649,7 @@ impl Level2EconomyState {
                     source_subspell_index: 0,
                     yaw: 0,
                     roll: 0,
+                    visual_index: 0,
                     control_flags: 0,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,
@@ -4077,6 +4817,15 @@ impl Level2EconomyState {
                         ..child_position
                     };
                     if let Some(slot) = self.allocate_slot() {
+                        // `sub_4C1E0` consumes the shared per-model counter,
+                        // then derives byte 0x39 from descriptor 83 before
+                        // `sub_5FF50` overwrites the live yaw/roll/position.
+                        let source_byte_3e = self.castle_auxiliary_constructor_phase;
+                        self.castle_auxiliary_constructor_phase =
+                            self.castle_auxiliary_constructor_phase.wrapping_add(1);
+                        let source_byte_39 = LEVEL2_CASTLE_AUXILIARY_CADENCE
+                            .wrapping_sub(source_byte_3e % LEVEL2_CASTLE_AUXILIARY_CADENCE)
+                            .wrapping_add(4);
                         let child = Level2CastleChild {
                             source_entity_index: slot,
                             entity_rng: self.new_event_rng(slot),
@@ -4093,23 +4842,29 @@ impl Level2EconomyState {
                             action: 121,
                             mana: 0,
                             max_mana: 0,
-                            life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
-                            max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
-                            speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
+                            life: LEVEL2_CASTLE_AUXILIARY_MAX_LIFE,
+                            max_life: LEVEL2_CASTLE_AUXILIARY_MAX_LIFE,
+                            speed: LEVEL2_CASTLE_AUXILIARY_MINIMUM_SPEED,
                             target_sphere_slot: 0,
-                            source_byte_3e: slot as u8,
+                            pending_damage: 0,
+                            pending_attacker_entity_index: 0,
+                            damage_attacker_entity_index: 0,
+                            killer_entity_index: 0,
+                            source_byte_3e,
+                            source_byte_39,
                             source_byte_3b: 0,
                             cave_collision_cooldown: 0,
-                            source_dword_10: 0,
+                            source_dword_10: i32::from(slot % 100),
                             source_word_2e: 0,
                             construction_target_height: 0,
-                            source_subspell_index: 0,
+                            source_subspell_index: 500,
                             yaw: 512,
                             roll: 512,
+                            visual_index: 0,
                             // `sub_4C1E0` sets byte[2] & 2, making this
                             // class-5/model-15 row eligible for the
                             // `NewEvent_4A050` replaceable fallback.
-                            control_flags: SOURCE_REPLACEABLE_FLAG,
+                            control_flags: SOURCE_REPLACEABLE_FLAG | 0x8,
                             chain_previous_slot: 0,
                             chain_next_slot: 0,
                             source_byte_43: 0,
@@ -4227,7 +4982,12 @@ impl Level2EconomyState {
                     max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
                     speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                     target_sphere_slot: 0,
+                    pending_damage: 0,
+                    pending_attacker_entity_index: 0,
+                    damage_attacker_entity_index: 0,
+                    killer_entity_index: 0,
                     source_byte_3e: child_slot as u8,
+                    source_byte_39: 0,
                     // `sub_50370` sets byte 0x3B before dispatching 37BC0;
                     // that selects the -25 negative hold after BUILD pass 1.
                     source_byte_3b: 1,
@@ -4238,6 +4998,7 @@ impl Level2EconomyState {
                     source_subspell_index: 0,
                     yaw: 0,
                     roll: 0,
+                    visual_index: 0,
                     // Source flags retain bit 0 and 37BC0 adds bit 2 on its
                     // first callback.
                     control_flags: 1,
@@ -4305,7 +5066,12 @@ impl Level2EconomyState {
                             max_life: 100_000,
                             speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                             target_sphere_slot: 0,
+                            pending_damage: 0,
+                            pending_attacker_entity_index: 0,
+                            damage_attacker_entity_index: 0,
+                            killer_entity_index: 0,
                             source_byte_3e: stage_slot as u8,
+                            source_byte_39: 0,
                             source_byte_3b: 0,
                             cave_collision_cooldown: 0,
                             source_dword_10: 0,
@@ -4314,6 +5080,7 @@ impl Level2EconomyState {
                             source_subspell_index: 0,
                             yaw: 0,
                             roll: 0,
+                            visual_index: 0,
                             control_flags: 0,
                             chain_previous_slot: previous_slot,
                             chain_next_slot: 0,
@@ -4437,7 +5204,12 @@ impl Level2EconomyState {
                     max_life: 100_000,
                     speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                     target_sphere_slot: 0,
+                    pending_damage: 0,
+                    pending_attacker_entity_index: 0,
+                    damage_attacker_entity_index: 0,
+                    killer_entity_index: 0,
                     source_byte_3e: child_slot as u8,
+                    source_byte_39: 0,
                     source_byte_3b: 0,
                     cave_collision_cooldown: snapshot.level.max(1),
                     source_dword_10: 0,
@@ -4446,6 +5218,7 @@ impl Level2EconomyState {
                     source_subspell_index: 0,
                     yaw: 0,
                     roll: 0,
+                    visual_index: 0,
                     control_flags: 0,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,
@@ -4877,6 +5650,22 @@ impl Level2EconomyState {
     pub fn submit_damage(&mut self, target_slot: u16, damage: i32, attacker: u16) -> bool {
         if damage <= 0 || attacker == 0 {
             return false;
+        }
+        if let Some(auxiliary) = self.castle_children.iter_mut().find(|child| {
+            child.active
+                && child.life >= 0
+                && child.source_entity_index == target_slot
+                && child.source_class == 5
+                && child.model == 15
+                && matches!(child.action, 121 | 122)
+        }) {
+            auxiliary.pending_damage = if auxiliary.pending_attacker_entity_index == 0 {
+                damage
+            } else {
+                auxiliary.pending_damage.wrapping_add(damage)
+            };
+            auxiliary.pending_attacker_entity_index = attacker;
+            return true;
         }
         if let Some(carrier) = self.carriers.iter_mut().find(|carrier| {
             carrier.active && carrier.life >= 0 && carrier.source_entity_index == target_slot

@@ -119,6 +119,8 @@ impl Level2EconomyState {
 
             replacement_cursor_exclusions: BTreeSet::new(),
 
+            replacement_list_epoch: 0,
+
             slot_generations: BTreeMap::new(),
 
             slot_rng,
@@ -220,6 +222,8 @@ impl Level2EconomyState {
             class5_model14_constructor_phase: 0,
 
             class5_model4_constructor_phase: 0,
+
+            castle_auxiliary_constructor_phase: 0,
 
             class14_model3_handle: 0,
 
@@ -412,6 +416,11 @@ impl Level2EconomyState {
         self.source_rng.remove(&slot);
         let generation = self.slot_generations.entry(slot).or_default();
         *generation = generation.wrapping_add(1);
+        // The fallback branch zeroes every rebuilt model/class list head.
+        // A later callback in this same UpdateEntities walk must therefore
+        // observe empty membership even when its individual handles did not
+        // change generation.
+        self.replacement_list_epoch = self.replacement_list_epoch.wrapping_add(1);
         Some(slot)
     }
 
@@ -5829,6 +5838,8 @@ impl Level2EconomyState {
         for slot in &self.replacement_cursor_exclusions {
             hasher.update(slot.to_le_bytes());
         }
+        hasher.update(b"replacement-list-epoch-v1");
+        hasher.update(self.replacement_list_epoch.to_le_bytes());
         for (slot, rng) in &self.slot_rng {
             hasher.update(slot.to_le_bytes());
             hasher.update(rng.to_le_bytes());
@@ -5898,7 +5909,7 @@ impl Level2EconomyState {
             hasher.update(burst.life_ticks.to_le_bytes());
             hasher.update(burst.subspell_index.to_le_bytes());
             hasher.update(burst.control_flags.to_le_bytes());
-            hasher.update([u8::from(burst.active)]);
+            hasher.update([burst.source_byte_3e, u8::from(burst.active)]);
         }
         hasher.update(b"player-death-markers-v1");
         for marker in &self.player_death_markers {
@@ -6544,6 +6555,8 @@ impl Level2EconomyState {
             self.class5_model9_constructor_phase,
             self.class5_model14_constructor_phase,
         ]);
+        hasher.update(b"castle-auxiliary-constructor-phase-v1");
+        hasher.update([self.castle_auxiliary_constructor_phase]);
         for source in &self.authored_class5 {
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
@@ -7045,8 +7058,13 @@ impl Level2EconomyState {
             hasher.update(child.max_life.to_le_bytes());
             hasher.update(child.speed.to_le_bytes());
             hasher.update(child.target_sphere_slot.to_le_bytes());
+            hasher.update(child.pending_damage.to_le_bytes());
+            hasher.update(child.pending_attacker_entity_index.to_le_bytes());
+            hasher.update(child.damage_attacker_entity_index.to_le_bytes());
+            hasher.update(child.killer_entity_index.to_le_bytes());
             hasher.update([
                 child.source_byte_3e,
+                child.source_byte_39,
                 child.source_byte_3b,
                 child.cave_collision_cooldown,
             ]);
@@ -7056,6 +7074,7 @@ impl Level2EconomyState {
             hasher.update(child.source_subspell_index.to_le_bytes());
             hasher.update(child.yaw.to_le_bytes());
             hasher.update(child.roll.to_le_bytes());
+            hasher.update(child.visual_index.to_le_bytes());
             hasher.update(child.control_flags.to_le_bytes());
             hasher.update(child.chain_previous_slot.to_le_bytes());
             hasher.update(child.chain_next_slot.to_le_bytes());
