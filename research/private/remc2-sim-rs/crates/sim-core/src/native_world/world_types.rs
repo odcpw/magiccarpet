@@ -3077,18 +3077,25 @@ pub struct RuntimeSnapshot {
     pub local_player_slot: u8,
     pub player_count: u8,
     pub maptype_music: i32,
-    pub stage_index: u8,
-    /// `byte_0x36E02`, consumed by remc2's objective-presentation service.
-    pub objective_presentation_phase: u8,
-    /// Remaining objective-textbox presentation ticks. The atlas identifies
-    /// source byte `byte_counter_current_objective_box_0x36E04` as a countdown,
-    /// not an objective row selector.
-    pub objective_textbox_ticks: u8,
+    pub objective_state: crate::campaign::objectives::ObjectiveState,
     pub stages: Box<[RuntimeStage]>,
     pub stage_variables: Box<[RuntimeStageVariable]>,
-    pub objectives: Box<[RuntimeObjective]>,
     pub player_inputs: [PlayerCommand; PLAYER_COUNT],
     pub(super) bytes: Box<[u8]>,
+}
+
+impl std::ops::Deref for RuntimeSnapshot {
+    type Target = crate::campaign::objectives::ObjectiveState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.objective_state
+    }
+}
+
+impl std::ops::DerefMut for RuntimeSnapshot {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.objective_state
+    }
 }
 
 impl RuntimeSnapshot {

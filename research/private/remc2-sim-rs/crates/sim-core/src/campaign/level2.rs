@@ -1309,7 +1309,7 @@ impl Level2ResetSession {
                             }
                         }
                         mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
-                        self.shared_spells.events.push(FlightEvent::PrepareSound {
+                        self.push_flight_effect(FlightEvent::PrepareSound {
                             #[cfg(test)]
                             audio_site: crate::MissionAudioSite::FireballLaunch,
                             entity_index: spawned_slot,
@@ -1568,7 +1568,7 @@ impl Level2ResetSession {
                     if let Some(spawned_slot) = spawned {
                         self.nyphur_dispatcher.clear_source_byte_0x154();
                         mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
-                        self.shared_spells.events.push(FlightEvent::PrepareSound {
+                        self.push_flight_effect(FlightEvent::PrepareSound {
                             #[cfg(test)]
                             audio_site: crate::MissionAudioSite::FireballLaunch,
                             entity_index: spawned_slot,
@@ -1740,7 +1740,7 @@ impl Level2ResetSession {
                                 SourceAudioCallTag::PossessionLaunchTiered
                             },
                         );
-                        self.shared_spells.events.push(FlightEvent::PrepareSound {
+                        self.push_flight_effect(FlightEvent::PrepareSound {
                             #[cfg(test)]
                             audio_site: crate::MissionAudioSite::PossessionLaunch,
                             entity_index: spawned_slot,
@@ -1941,7 +1941,7 @@ impl Level2ResetSession {
                         }
                     }
                     mark_source_audio_call(SourceAudioCallTag::InitialCastleLaunch);
-                    self.shared_spells.events.push(FlightEvent::PrepareSound {
+                    self.push_flight_effect(FlightEvent::PrepareSound {
                         #[cfg(test)]
                         audio_site: crate::MissionAudioSite::InitialCastleLaunch,
                         entity_index: spawned_slot,
@@ -2297,6 +2297,7 @@ impl Level2ResetSession {
                 players,
                 runtime,
                 context,
+                effect_journal: crate::campaign::journal::EffectJournal::default(),
             }),
             presentation,
             baseline_bad_stones: bad_stones.clone(),
@@ -2396,6 +2397,88 @@ impl Level2ResetSession {
         self.campaign_state
             .as_mut()
             .expect("Level 2 campaign state installed after construction")
+    }
+
+    /// Borrow the one generation-bound production journal. During constructor
+    /// bootstrap it lives in the same handoff carrier as the other core state;
+    /// every usable session resolves it from `CampaignState`.
+    #[must_use]
+    pub(crate) fn effect_journal(&self) -> &crate::campaign::journal::EffectJournal {
+        if let Some(campaign) = &self.campaign_state {
+            &campaign.core().effect_journal
+        } else {
+            &self
+                .bootstrap_core
+                .as_ref()
+                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
+                .effect_journal
+        }
+    }
+
+    fn effect_journal_mut(&mut self) -> &mut crate::campaign::journal::EffectJournal {
+        if let Some(campaign) = &mut self.campaign_state {
+            &mut campaign.core_mut().effect_journal
+        } else {
+            &mut self
+                .bootstrap_core
+                .as_mut()
+                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
+                .effect_journal
+        }
+    }
+
+    /// Append to the canonical journal before updating the legacy Level 2
+    /// event slice. The latter remains a compatibility projection until the
+    /// generic CF-12 reader replaces it.
+    fn push_dispatch_effect(&mut self, event: Level2DispatchEvent) {
+        self.flush_shared_effects();
+        let turn = self.runtime().global_turn;
+        self.effect_journal_mut()
+            .append_dispatch(turn, event.clone());
+        Vec::push(&mut self.dispatch_events, event);
+    }
+
+    /// Record an authoritative flight/audio effect before retaining the old
+    /// per-subsystem projection consumed by existing qualification tools.
+    fn push_flight_effect(&mut self, event: FlightEvent) {
+        self.flush_shared_effects();
+        let turn = self.runtime().global_turn;
+        self.effect_journal_mut().append_flight(turn, event);
+        Vec::push(&mut self.shared_spells.events, event);
+    }
+
+    fn append_context_effects(&mut self, events: Vec<FlightEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        self.flush_shared_effects();
+        let turn = self.runtime().global_turn;
+        let journal = self.effect_journal_mut();
+        for event in events {
+            journal.append_flight(turn, event);
+        }
+    }
+
+    fn flush_shared_effects(&mut self) {
+        let effects = self.shared_spells.drain_pending_effects();
+        if effects.is_empty() {
+            return;
+        }
+        let turn = self.runtime().global_turn;
+        let journal = self.effect_journal_mut();
+        for effect in effects {
+            match effect {
+                crate::campaign::journal::CampaignEffect::Dispatch(event) => {
+                    journal.append_dispatch(turn, event);
+                }
+                crate::campaign::journal::CampaignEffect::SharedSpell(event) => {
+                    journal.append_shared_spell(turn, event);
+                }
+                crate::campaign::journal::CampaignEffect::Flight(event) => {
+                    journal.append_flight(turn, event);
+                }
+            }
+        }
     }
 
     #[must_use]
@@ -3989,7 +4072,7 @@ impl Level2ResetSession {
         self.economy_event_cursor = events.len();
         for event in pending {
             let source_slot = level2_economy_event_source_slot(event, fallback_source_slot);
-            self.dispatch_events.push(Level2DispatchEvent::Economy {
+            self.push_dispatch_effect(Level2DispatchEvent::Economy {
                 pass,
                 source_slot,
                 event,
@@ -4050,7 +4133,7 @@ impl Level2ResetSession {
             .min_by_key(|entity| entity.index)
             .map(|entity| entity.index)
         else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: 0,
                 message: "Level 2 stage-tag root source row is absent".to_owned(),
@@ -4058,7 +4141,7 @@ impl Level2ResetSession {
             return;
         };
         let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(8) else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 activation artifact has no group-8 membership".to_owned(),
@@ -4076,7 +4159,7 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>();
         if group_rows.len() != 2 {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
@@ -4126,7 +4209,7 @@ impl Level2ResetSession {
         if let Err(error) = result {
             self.economy = economy_before;
             self.shared_spells = shared_before;
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: error.to_string(),
@@ -4143,17 +4226,16 @@ impl Level2ResetSession {
         self.level2_objective_done = true;
         self.runtime
             .mark_level2_objective_done_for(completed_owner_color);
-        self.dispatch_events
-            .push(Level2DispatchEvent::AuthoredGroupActivated {
-                pass,
-                source_slot: root_slot,
-                group: 8,
-                authored_indices: constructed
-                    .into_iter()
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            });
+        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+            pass,
+            source_slot: root_slot,
+            group: 8,
+            authored_indices: constructed
+                .into_iter()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        });
     }
 
     /// Run the bounded Level 2 model-4 exit-switch trigger for group 31.
@@ -4221,7 +4303,7 @@ impl Level2ResetSession {
         let mut group_rows = group_rows;
         group_rows.sort_unstable_by_key(|feature| feature.index);
         if group_rows.len() != 15 {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
@@ -4236,7 +4318,7 @@ impl Level2ResetSession {
             .copied()
             .find(|feature| feature.kind == 11 && feature.subtype == 12 && feature.index == 209)
         else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 stage-tag group 31 is missing model-12 row 209".to_string(),
@@ -4248,7 +4330,7 @@ impl Level2ResetSession {
             .copied()
             .find(|feature| feature.kind == 14 && feature.subtype == 3 && feature.index == 244)
         else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 stage-tag group 31 is missing class-14/model-3 row 244"
@@ -4268,7 +4350,7 @@ impl Level2ResetSession {
             .map(|feature| feature.index)
             .ne(GROUP31_TREE_ROWS.into_iter())
         {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 stage-tag group 31 tree rows are not the qualified source set"
@@ -4281,7 +4363,7 @@ impl Level2ResetSession {
             .copied()
             .find(|feature| feature.kind == 11 && feature.subtype == 0 && feature.index == 274)
         else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 stage-tag group 31 is missing model-0 switch row 274".to_string(),
@@ -4289,7 +4371,7 @@ impl Level2ResetSession {
             return;
         };
         let Some(switch_stage_tag) = u16::try_from(switch_row.stage_tag).ok() else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 row 274 has an invalid stage tag".to_string(),
@@ -4297,7 +4379,7 @@ impl Level2ResetSession {
             return;
         };
         let Some(switch_word_10) = i16::try_from(switch_row.word_10).ok() else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 row 274 has an invalid word_10".to_string(),
@@ -4323,7 +4405,7 @@ impl Level2ResetSession {
                 .expect("Level 2 campaign state is initialized")
                 .terrain(),
         ) else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 authored model-12 row 209 could not allocate".to_string(),
@@ -4337,7 +4419,7 @@ impl Level2ResetSession {
             self.level2_switch_producers_activated = switch_producers_before;
             self.level2_class14_activated = class14_before;
             self.level2_tree_activated = tree_before;
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
@@ -4355,7 +4437,7 @@ impl Level2ResetSession {
                 self.level2_switch_producers_activated = switch_producers_before;
                 self.level2_class14_activated = class14_before;
                 self.level2_tree_activated = tree_before;
-                self.dispatch_events.push(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: root_slot,
                     message: format!(
@@ -4387,7 +4469,7 @@ impl Level2ResetSession {
             self.level2_switch_producers_activated = switch_producers_before;
             self.level2_class14_activated = class14_before;
             self.level2_tree_activated = tree_before;
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 authored model-0 row 274 could not allocate".to_string(),
@@ -4399,17 +4481,16 @@ impl Level2ResetSession {
         if let Some(root) = self.economy.entities.get_mut(usize::from(root_slot)) {
             root.disable_drawing();
         }
-        self.dispatch_events
-            .push(Level2DispatchEvent::AuthoredGroupActivated {
-                pass,
-                source_slot: root_slot,
-                group: 31,
-                authored_indices: group_rows
-                    .iter()
-                    .map(|feature| feature.index)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            });
+        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+            pass,
+            source_slot: root_slot,
+            group: 31,
+            authored_indices: group_rows
+                .iter()
+                .map(|feature| feature.index)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        });
         debug_assert!(
             self.economy()
                 .authored_class14()
@@ -4445,7 +4526,7 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>();
         if all_rows.is_empty() {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -4475,7 +4556,7 @@ impl Level2ResetSession {
             let Some(source_slot) = self.allocate_level2_authored_class14(feature.index) else {
                 self.economy = economy_before;
                 self.level2_class14_activated = activated_before;
-                self.dispatch_events.push(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -4488,17 +4569,16 @@ impl Level2ResetSession {
             self.level2_class14_activated.insert(feature.index);
             activated_rows.push((feature.index, source_slot.source_entity_index));
         }
-        self.dispatch_events
-            .push(Level2DispatchEvent::AuthoredGroupActivated {
-                pass,
-                source_slot: producer_slot,
-                group: target_group,
-                authored_indices: activated_rows
-                    .iter()
-                    .map(|(index, _)| *index)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            });
+        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+            pass,
+            source_slot: producer_slot,
+            group: target_group,
+            authored_indices: activated_rows
+                .iter()
+                .map(|(index, _)| *index)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        });
         debug_assert!(activated_rows.iter().all(|(_, source_slot)| {
             self.economy
                 .authored_class14()
@@ -4617,7 +4697,7 @@ impl Level2ResetSession {
         target_group: u16,
     ) {
         let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(target_group) else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -4653,13 +4733,12 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        self.dispatch_events
-            .push(Level2DispatchEvent::AuthoredGroupActivated {
-                pass,
-                source_slot: producer_slot,
-                group: target_group,
-                authored_indices,
-            });
+        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+            pass,
+            source_slot: producer_slot,
+            group: target_group,
+            authored_indices,
+        });
     }
 
     /// Consume authored class-5/model-14 rows through the typed AddTrader
@@ -4673,7 +4752,7 @@ impl Level2ResetSession {
         target_group: u16,
     ) {
         let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(target_group) else {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -4716,7 +4795,7 @@ impl Level2ResetSession {
             else {
                 self.economy = economy_before;
                 self.level2_class5_activated = activated_before;
-                self.dispatch_events.push(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -4729,17 +4808,16 @@ impl Level2ResetSession {
             self.level2_class5_activated.insert(feature.index);
             activated.push((feature.index, source.source_entity_index));
         }
-        self.dispatch_events
-            .push(Level2DispatchEvent::AuthoredGroupActivated {
-                pass,
-                source_slot: producer_slot,
-                group: target_group,
-                authored_indices: activated
-                    .into_iter()
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            });
+        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+            pass,
+            source_slot: producer_slot,
+            group: target_group,
+            authored_indices: activated
+                .into_iter()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        });
     }
 
     /// Materialize the next authored producer group selected by a live
@@ -4830,7 +4908,7 @@ impl Level2ResetSession {
                     self.economy
                         .allocate_authored_model1(feature.index, position, terrain)
                 else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -4859,7 +4937,7 @@ impl Level2ResetSession {
                     self.economy
                         .allocate_authored_class5(feature.index, 4, position, terrain)
                 else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -4888,7 +4966,7 @@ impl Level2ResetSession {
                     self.economy
                         .allocate_authored_class5(feature.index, 3, position, terrain)
                 else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -4907,7 +4985,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model22(feature.index) else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -4926,7 +5004,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model76(feature.index) else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -4955,7 +5033,7 @@ impl Level2ResetSession {
                     self.economy
                         .allocate_authored_model39(feature.index, producer_slot, position)
                 else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -4974,7 +5052,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model6(feature.index) else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -4993,7 +5071,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model59(feature.index) else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -5012,7 +5090,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model53(feature.index) else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -5037,7 +5115,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model32(feature.index) else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -5081,7 +5159,7 @@ impl Level2ResetSession {
                     .expect("Level 2 campaign state is initialized")
                     .terrain(),
             ) else {
-                self.dispatch_events.push(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -5095,17 +5173,16 @@ impl Level2ResetSession {
             activated.push((feature.index, source.source_entity_index));
         }
         if !activated.is_empty() {
-            self.dispatch_events
-                .push(Level2DispatchEvent::AuthoredGroupActivated {
-                    pass,
-                    source_slot: producer_slot,
-                    group: target_group,
-                    authored_indices: activated
-                        .into_iter()
-                        .map(|(index, _)| index)
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice(),
-                });
+            self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+                pass,
+                source_slot: producer_slot,
+                group: target_group,
+                authored_indices: activated
+                    .into_iter()
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            });
             // A source callback invokes `sub_4A1E0` synchronously. Re-run the
             // already-owned downstream stage-tag consumers so rows such as
             // group-5 class-14/model-54 become visible in this same pass.
@@ -5227,7 +5304,7 @@ impl Level2ResetSession {
                 .collect::<Vec<_>>();
             for feature in rows {
                 let Some(source_slot) = allocate(self, feature.index) else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -5237,13 +5314,12 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.dispatch_events
-                    .push(Level2DispatchEvent::AuthoredGroupActivated {
-                        pass,
-                        source_slot: producer_slot,
-                        group: producer_group,
-                        authored_indices: vec![feature.index].into_boxed_slice(),
-                    });
+                self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+                    pass,
+                    source_slot: producer_slot,
+                    group: producer_group,
+                    authored_indices: vec![feature.index].into_boxed_slice(),
+                });
                 debug_assert!(already_seen(self, feature.index));
                 debug_assert!(source_slot != 0);
             }
@@ -5399,7 +5475,7 @@ impl Level2ResetSession {
                     .allocate_level2_authored_model76(switch.authored_index)
                     .map(|source| source.source_entity_index)
                 else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: switch.source_slot,
                         message: format!(
@@ -5436,13 +5512,12 @@ impl Level2ResetSession {
                 {
                     entity.disable_drawing();
                 }
-                self.dispatch_events
-                    .push(Level2DispatchEvent::AuthoredGroupActivated {
-                        pass,
-                        source_slot: switch.source_slot,
-                        group: switch.target_group,
-                        authored_indices: vec![switch.authored_index].into_boxed_slice(),
-                    });
+                self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+                    pass,
+                    source_slot: switch.source_slot,
+                    group: switch.target_group,
+                    authored_indices: vec![switch.authored_index].into_boxed_slice(),
+                });
                 debug_assert!(
                     self.economy()
                         .authored_model76()
@@ -5540,7 +5615,7 @@ impl Level2ResetSession {
             ) else {
                 self.economy = economy_before;
                 self.level2_class5_activated = activated_before;
-                self.dispatch_events.push(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -5553,17 +5628,16 @@ impl Level2ResetSession {
             self.level2_class5_activated.insert(feature.index);
             activated.push((feature.index, source.source_entity_index));
         }
-        self.dispatch_events
-            .push(Level2DispatchEvent::AuthoredGroupActivated {
-                pass,
-                source_slot: producer_slot,
-                group: target_group,
-                authored_indices: activated
-                    .into_iter()
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            });
+        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+            pass,
+            source_slot: producer_slot,
+            group: target_group,
+            authored_indices: activated
+                .into_iter()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        });
     }
 
     pub(super) fn activate_level2_authored_spell_group(
@@ -5587,7 +5661,7 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>();
         if rows.len() != 1 {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -5599,7 +5673,7 @@ impl Level2ResetSession {
         }
         let feature = rows[0];
         if !matches!((feature.kind, feature.subtype), (15, 6 | 11)) {
-            self.dispatch_events.push(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -5625,7 +5699,7 @@ impl Level2ResetSession {
             Err(error) => {
                 self.economy = economy_before;
                 self.shared_spells = shared_before;
-                self.dispatch_events.push(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: error.to_string(),
@@ -5654,7 +5728,7 @@ impl Level2ResetSession {
             {
                 self.economy = economy_before;
                 self.shared_spells = shared_before;
-                self.dispatch_events.push(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -5670,13 +5744,12 @@ impl Level2ResetSession {
         if let Some(companion) = companion {
             activated_indices.push(companion.index);
         }
-        self.dispatch_events
-            .push(Level2DispatchEvent::AuthoredGroupActivated {
-                pass,
-                source_slot: producer_slot,
-                group: target_group,
-                authored_indices: activated_indices.into_boxed_slice(),
-            });
+        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+            pass,
+            source_slot: producer_slot,
+            group: target_group,
+            authored_indices: activated_indices.into_boxed_slice(),
+        });
         debug_assert!(
             self.economy
                 .spell_pickups()
@@ -5746,12 +5819,11 @@ impl Level2ResetSession {
         };
         self.append_new_economy_events(pass, source_slot);
         if live {
-            self.dispatch_events
-                .push(Level2DispatchEvent::DynamicArena {
-                    pass,
-                    source_slot,
-                    kind: row.kind,
-                });
+            self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                pass,
+                source_slot,
+                kind: row.kind,
+            });
         }
     }
 
@@ -5801,6 +5873,7 @@ impl Level2ResetSession {
         latched_command: crate::LatchedCommand,
         evidence: &mut Vec<crate::StepEvidence>,
     ) {
+        self.flush_shared_effects();
         let source_player_order = self.refresh_level2_spell_owner_candidates();
         let player_entity_index = self.state.entity_index;
         let player_position = self.state.position;
@@ -6088,6 +6161,7 @@ impl Level2ResetSession {
                         // later source handlers in this same pass.
                         self.refresh_level2_spell_fire_holder_projection();
                         let profile = self.profile;
+                        let context_event_start = self.context.events.len();
                         let campaign = self
                             .campaign_state
                             .as_mut()
@@ -6101,6 +6175,8 @@ impl Level2ResetSession {
                             terrain,
                             &mut core.context,
                         ));
+                        let context_events = self.context.events[context_event_start..].to_vec();
+                        self.append_context_effects(context_events);
                         self.sync_level2_spell_fire_authority(latched_command.flags);
                         self.set_level2_entity_position(
                             self.state.entity_index,
@@ -6134,14 +6210,13 @@ impl Level2ResetSession {
                     );
                     match result {
                         Ok(result) => {
-                            self.dispatch_events
-                                .push(Level2DispatchEvent::SharedPickup {
-                                    pass,
-                                    source_slot,
-                                    result,
-                                })
+                            self.push_dispatch_effect(Level2DispatchEvent::SharedPickup {
+                                pass,
+                                source_slot,
+                                result,
+                            })
                         }
-                        Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                        Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message: error.to_string(),
@@ -6170,15 +6245,14 @@ impl Level2ResetSession {
                             &source_player_order,
                         ) {
                         Ok(result) => {
-                            self.dispatch_events
-                                .push(Level2DispatchEvent::SpellAcquisition {
-                                    pass,
-                                    source_slot,
-                                    family,
-                                    result,
-                                })
+                            self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
+                                pass,
+                                source_slot,
+                                family,
+                                result,
+                            })
                         }
-                        Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                        Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message: error.to_string(),
@@ -6199,10 +6273,10 @@ impl Level2ResetSession {
                     }
                 }
                 1 => match self.step_bad_stone_action_9(source_slot) {
-                    Ok(step) => self
-                        .dispatch_events
-                        .push(Level2DispatchEvent::BadStone { pass, step }),
-                    Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                    Ok(step) => {
+                        self.push_dispatch_effect(Level2DispatchEvent::BadStone { pass, step })
+                    }
+                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot,
                         message: error.to_string(),
@@ -6233,7 +6307,7 @@ impl Level2ResetSession {
                     match result {
                         Ok(()) => {
                             self.append_new_economy_events(pass, source_slot);
-                            self.dispatch_events.push(Level2DispatchEvent::House {
+                            self.push_dispatch_effect(Level2DispatchEvent::House {
                                 pass,
                                 source_slot,
                                 events: events.into_boxed_slice(),
@@ -6247,7 +6321,7 @@ impl Level2ResetSession {
                                 .as_mut()
                                 .expect("Level 2 campaign state owns canonical terrain")
                                 .terrain_mut() = terrain_before;
-                            self.dispatch_events.push(Level2DispatchEvent::Error {
+                            self.push_dispatch_effect(Level2DispatchEvent::Error {
                                 pass,
                                 source_slot,
                                 message: format!("Level 2 House sink failed: {error}"),
@@ -6289,7 +6363,7 @@ impl Level2ResetSession {
                         }
                     }
                     self.append_new_economy_events(pass, source_slot);
-                    self.dispatch_events.push(Level2DispatchEvent::Villager {
+                    self.push_dispatch_effect(Level2DispatchEvent::Villager {
                         pass,
                         source_slot,
                         effects: effects.into_boxed_slice(),
@@ -6302,10 +6376,10 @@ impl Level2ResetSession {
                         .expect("Level 2 campaign state owns canonical terrain")
                         .terrain();
                     match self.ordinary.step_dolmen_action_6(source_slot, terrain) {
-                        Ok(step) => self
-                            .dispatch_events
-                            .push(Level2DispatchEvent::Dolmen { pass, step }),
-                        Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                        Ok(step) => {
+                            self.push_dispatch_effect(Level2DispatchEvent::Dolmen { pass, step })
+                        }
+                        Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message: error.to_string(),
@@ -6326,7 +6400,7 @@ impl Level2ResetSession {
                     // the coarse Castle wrapper, matching the handler-first
                     // ApplyEvents cursor order used by dynamic rows.
                     self.append_new_economy_events(pass, source_slot);
-                    self.dispatch_events.push(Level2DispatchEvent::Castle {
+                    self.push_dispatch_effect(Level2DispatchEvent::Castle {
                         pass,
                         source_slot,
                         advanced,
@@ -6399,12 +6473,11 @@ impl Level2ResetSession {
                     };
                     self.append_new_economy_events(pass, source_slot);
                     if live {
-                        self.dispatch_events
-                            .push(Level2DispatchEvent::DynamicArena {
-                                pass,
-                                source_slot,
-                                kind: row.kind,
-                            });
+                        self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                            pass,
+                            source_slot,
+                            kind: row.kind,
+                        });
                     }
                 }
                 7 => {
@@ -6420,7 +6493,7 @@ impl Level2ResetSession {
                     );
                     self.apply_level2_goat_economy_events(&events);
                     self.append_new_economy_events(pass, source_slot);
-                    self.dispatch_events.push(Level2DispatchEvent::Goat {
+                    self.push_dispatch_effect(Level2DispatchEvent::Goat {
                         pass,
                         source_slot,
                         events: events.into_boxed_slice(),
@@ -6453,7 +6526,7 @@ impl Level2ResetSession {
                         active_level_color_index,
                     ) {
                         Ok((_snapshot, trace)) => self.nyphur_dispatch_traces.push(trace),
-                        Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                        Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message: error.to_string(),
@@ -6597,6 +6670,7 @@ impl Level2ResetSession {
         }
         self.economy.reclaim_inactive_slots_after_source_pass();
         self.goats.finish_source_turn();
+        self.flush_shared_effects();
     }
 
     pub(super) fn step_level2_dynamic_spell_pickup(
@@ -6631,15 +6705,13 @@ impl Level2ResetSession {
                 terrain,
                 source_player_order,
             ) {
-            Ok(result) => self
-                .dispatch_events
-                .push(Level2DispatchEvent::SpellAcquisition {
-                    pass,
-                    source_slot,
-                    family,
-                    result,
-                }),
-            Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+            Ok(result) => self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
+                pass,
+                source_slot,
+                family,
+                result,
+            }),
+            Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: error.to_string(),
@@ -6691,15 +6763,13 @@ impl Level2ResetSession {
                     terrain,
                     source_player_order,
                 ) {
-                Ok(result) => self
-                    .dispatch_events
-                    .push(Level2DispatchEvent::SpellAcquisition {
-                        pass,
-                        source_slot,
-                        family,
-                        result,
-                    }),
-                Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                Ok(result) => self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
+                    pass,
+                    source_slot,
+                    family,
+                    result,
+                }),
+                Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot,
                     message: error.to_string(),
@@ -7402,7 +7472,7 @@ impl Level2ResetSession {
                     .step_fireball_projectile_slot(source_slot, terrain);
                 if step.impact_sound {
                     mark_source_audio_call(SourceAudioCallTag::Class10Action00FirstEligibleSound);
-                    self.shared_spells.events.push(FlightEvent::PrepareSound {
+                    self.push_flight_effect(FlightEvent::PrepareSound {
                         #[cfg(test)]
                         audio_site: crate::MissionAudioSite::FireballImpact,
                         entity_index: source_slot,
@@ -8464,9 +8534,12 @@ impl Level2ResetSession {
         self.level2_day_hud_color_phase_2 = color_phase_2;
         self.sync_level2_day_hud_player_projection();
         self.sync_level2_spell_fire_context();
+        let context_event_start = self.context.events.len();
         let core = self.campaign_state_mut().core_mut();
         let latched_command =
             crate::latch_command_with_context(&mut core.state, command, &mut core.context);
+        let context_events = self.context.events[context_event_start..].to_vec();
+        self.append_context_effects(context_events);
         self.reconcile_level2_spell_menu_command(command);
         let mut evidence = Vec::new();
         for pass in 0..crate::entity_passes_for_speed_index(speed_index) {
@@ -8488,6 +8561,7 @@ impl Level2ResetSession {
         // ordering so model-32 sees the newly completed stage only on the
         // following turn, exactly as the source does.
         self.advance_level2_objectives();
+        self.flush_shared_effects();
         evidence
     }
 
@@ -8528,7 +8602,7 @@ impl Level2ResetSession {
         let written = encode_reset_v1_into(&observed, output).map_err(CampaignStepError::Encode)?;
         let campaign = candidate.campaign_state_mut();
         campaign.scratch.valid = true;
-        campaign.scratch.dispatch_receipt = observed.effect_journal.receipt;
+        campaign.scratch.dispatch_receipt = observed.core.effect_journal.receipt();
         campaign.live = observed;
         *self = candidate;
         Ok((evidence, written))

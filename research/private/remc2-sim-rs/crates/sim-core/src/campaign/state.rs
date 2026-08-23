@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use sha2::{Digest as _, Sha256};
 
-use super::source_arena::SourceArena;
+use super::{journal::EffectJournal, source_arena::SourceArena};
 
 use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, SpellFireContext, SpellFireSource,
@@ -19,8 +19,7 @@ use crate::{
     mission_content::MissionContentSession,
     native_world::{
         Level2BadStone, Level2NyphurDispatchTrace, Level2OrdinaryResetSession, Level2ResetSession,
-        Level2SharedSpellResetSession, PlayerSnapshot, RuntimeObjective, RuntimeSnapshot,
-        SessionTerrain,
+        Level2SharedSpellResetSession, PlayerSnapshot, RuntimeSnapshot, SessionTerrain,
     },
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash,
@@ -48,6 +47,11 @@ impl CanonicalDigest {
     #[must_use]
     pub const fn as_bytes(self) -> [u8; 32] {
         self.0
+    }
+
+    #[must_use]
+    pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
     }
 }
 
@@ -91,6 +95,7 @@ pub struct CanonicalRuntimeState {
     pub players: Box<[PlayerSnapshot]>,
     pub runtime: RuntimeSnapshot,
     pub context: FlightContext,
+    pub effect_journal: EffectJournal,
 }
 
 /// Immutable receipts for the canonical live `SourceArena`.
@@ -127,19 +132,6 @@ pub struct NyphurState {
     pub state_hash: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ObjectiveState {
-    pub stage_index: u8,
-    pub objectives: Box<[RuntimeObjective]>,
-}
-
-/// The ordered journal receipt is resettable live state.  Scratch traces and
-/// presentation buffers are intentionally not part of this carrier.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct EffectJournalState {
-    pub receipt: CanonicalDigest,
-}
-
 /// The complete resettable live carrier, grouped according to the census.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResetState {
@@ -147,8 +139,6 @@ pub struct ResetState {
     pub source_arena: SourceArenaState,
     pub terrain: SessionTerrain,
     pub source_sidecars: SourceSidecarsState,
-    pub objectives: ObjectiveState,
-    pub effect_journal: EffectJournalState,
 }
 
 /// No current census field is proven to survive `Level2ResetSession::reset`.
@@ -219,7 +209,12 @@ impl CampaignState {
 
     /// Restore the migrated domains from one immutable aggregate baseline.
     pub(crate) fn reset_core(&mut self) {
+        let next_journal_generation = self.live.core.effect_journal.generation().wrapping_add(1);
         self.live.core = (*self.baseline_core).clone();
+        self.live
+            .core
+            .effect_journal
+            .reset_to_generation(next_journal_generation);
         self.scratch.invalidate();
     }
 
@@ -311,7 +306,12 @@ impl CampaignSession {
     pub fn from_level2(session: &Level2ResetSession) -> Self {
         let mut baseline_authority = session.clone();
         baseline_authority.reset();
-        let baseline = Arc::new(ResetState::from_level2(&baseline_authority));
+        let mut baseline = ResetState::from_level2(&baseline_authority);
+        baseline
+            .core
+            .effect_journal
+            .reset_to_generation(session.effect_journal().generation());
+        let baseline = Arc::new(baseline);
         let live = ResetState::from_level2(session);
         let definition = Arc::new(CampaignDefinition::from_level2(session));
         let baseline_hash = ResetReceipt::from_state(&baseline);
@@ -340,7 +340,19 @@ impl CampaignSession {
 
     /// Shell-only reset semantics; this does not reset the old authority.
     pub fn reset(&mut self) {
+        let next_journal_generation = self
+            .state
+            .live
+            .core
+            .effect_journal
+            .generation()
+            .wrapping_add(1);
         self.state.live = (*self.baseline).clone();
+        self.state
+            .live
+            .core
+            .effect_journal
+            .reset_to_generation(next_journal_generation);
         self.state.baseline_core = Arc::new(self.baseline.core.clone());
         self.state.scratch.invalidate();
         self.generation = self.generation.wrapping_add(1);
@@ -398,15 +410,13 @@ impl ResetState {
             },
             legacy_campaign_state_hash: session.campaign_state_hash_with_terrain(terrain),
         };
-        let effect_journal = EffectJournalState {
-            receipt: digest_effect_journal(session),
-        };
         Self {
             core: CanonicalRuntimeState {
                 state: session.state,
                 players: session.players().to_vec().into_boxed_slice(),
                 runtime: session.runtime().clone(),
                 context: session.context.clone(),
+                effect_journal: session.effect_journal().clone(),
             },
             source_arena: SourceArenaState {
                 arena_receipt: digest_live_source_arena(session.source_arena()),
@@ -418,12 +428,7 @@ impl ResetState {
                 ),
             },
             terrain: terrain.clone(),
-            objectives: ObjectiveState {
-                stage_index: session.runtime().stage_index,
-                objectives: session.runtime().objectives.clone(),
-            },
             source_sidecars: sidecars,
-            effect_journal,
         }
     }
 }
@@ -434,7 +439,7 @@ impl ScratchState {
         Self {
             validity_epoch: generation,
             valid: true,
-            dispatch_receipt: digest_effect_journal(session),
+            dispatch_receipt: session.effect_journal().receipt(),
         }
     }
 }
@@ -513,8 +518,8 @@ fn reset_component_digests(
             &state.terrain,
         ),
         state.source_arena.source_rng_receipt,
-        digest_objectives(&state.objectives),
-        state.effect_journal.receipt,
+        digest_objectives(&state.core.runtime.objective_state),
+        state.core.effect_journal.receipt(),
     ]
 }
 
@@ -784,7 +789,7 @@ fn digest_source_rng_inputs(
 }
 
 #[must_use]
-fn digest_objectives(objectives: &ObjectiveState) -> CanonicalDigest {
+fn digest_objectives(objectives: &super::objectives::ObjectiveState) -> CanonicalDigest {
     digest_with(|hasher| {
         hasher.update([objectives.stage_index]);
         append_len(hasher, objectives.objectives.len());
@@ -813,17 +818,6 @@ pub(crate) fn digest_topology(links: &[SourceLink]) -> CanonicalDigest {
 }
 
 #[must_use]
-fn digest_effect_journal(session: &Level2ResetSession) -> CanonicalDigest {
-    digest_with(|hasher| {
-        append_string(hasher, &session.dispatch_observability_hash());
-        append_len(hasher, session.dispatch_events().len());
-        append_len(hasher, session.economy().events().len());
-        append_len(hasher, session.shared_spells().activation_events().len());
-        append_len(hasher, session.shared_spells().pickup_events().len());
-        append_len(hasher, session.context.events.len());
-    })
-}
-
 fn append_len(hasher: &mut Sha256, length: usize) {
     hasher.update(
         u32::try_from(length)
@@ -905,6 +899,7 @@ mod tests {
             observer.baseline_hash,
             ResetReceipt::from_state(&observer.state.live)
         );
+        assert_eq!(observer.state.live.core.effect_journal.generation(), 0);
         assert_dual_observer_equal(&session);
 
         session.step_outer_turn(
@@ -939,10 +934,12 @@ mod tests {
             observer.state.live,
             LegacyResetObservation::from_level2(&session).reset
         );
-        assert_eq!(
+        assert_ne!(
             observer.baseline_hash,
-            ResetReceipt::from_state(&observer.state.live)
+            ResetReceipt::from_state(&observer.state.live),
+            "reset generation must distinguish the new cursor lifetime"
         );
+        assert_eq!(observer.state.live.core.effect_journal.generation(), 1);
         observer.observe_level2(&session);
         assert!(observer.state.scratch.valid);
         assert_dual_observer_equal(&session);
@@ -952,13 +949,17 @@ mod tests {
     fn cf04_omitted_field_is_detected() {
         let session = level_two_session();
         let old = LegacyResetObservation::from_level2(&session);
-        assert_ne!(old.reset.effect_journal.receipt, CanonicalDigest::zero());
+        assert_ne!(
+            old.reset.core.effect_journal.receipt(),
+            CanonicalDigest::zero()
+        );
 
-        let mut omitted = old.reset.clone();
-        omitted.effect_journal.receipt = CanonicalDigest::zero();
+        let mut omitted = encode_reset_v1(&old.reset);
+        let journal_component_offset = RESET_V1_ENCODED_LEN - 32;
+        omitted[journal_component_offset..].fill(0);
         assert_ne!(
             old.receipt.bytes(),
-            encode_reset_v1(&omitted),
+            omitted,
             "omitting the effect-journal field must change the canonical receipt"
         );
     }

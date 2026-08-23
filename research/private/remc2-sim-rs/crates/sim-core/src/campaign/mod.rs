@@ -6,6 +6,8 @@
 //! registry, scheduler, or ABI semantics.
 
 pub mod dispatch;
+pub mod journal;
+pub mod objectives;
 #[doc(hidden)]
 pub mod source_arena;
 pub mod source_facts;

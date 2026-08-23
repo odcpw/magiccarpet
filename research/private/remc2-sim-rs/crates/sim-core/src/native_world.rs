@@ -706,6 +706,11 @@ pub struct Level2SharedSpellResetSession {
     player_entity_sha256: String,
     events: Vec<FlightEvent>,
     pickup_events: Vec<Level2SharedSpellEvent>,
+    /// Ordered producer outbox drained into the canonical campaign journal at
+    /// the source-handler boundary. Unlike the two compatibility vectors
+    /// above, this preserves cross-domain chronology and is never exposed as
+    /// replay authority.
+    pending_effects: Vec<crate::campaign::journal::CampaignEffect>,
 }
 
 /// Mutable ownership projection for the authored Speed pickup. These fields
@@ -7273,12 +7278,14 @@ fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
         local_player_slot: u8::try_from(local_player).expect("validated player slot"),
         player_count: u8::try_from(player_count).expect("validated player count"),
         maptype_music: read_i32(bytes, 32, "runtime maptype music")?,
-        stage_index: read_u8(bytes, 65, "runtime stage index")?,
-        objective_presentation_phase: read_u8(bytes, 67, "runtime objective presentation phase")?,
-        objective_textbox_ticks: read_u8(bytes, 69, "runtime objective textbox ticks")?,
+        objective_state: crate::campaign::objectives::ObjectiveState::new(
+            read_u8(bytes, 65, "runtime stage index")?,
+            read_u8(bytes, 67, "runtime objective presentation phase")?,
+            read_u8(bytes, 69, "runtime objective textbox ticks")?,
+            objectives.into_boxed_slice(),
+        ),
         stages: stages.into_boxed_slice(),
         stage_variables: stage_variables.into_boxed_slice(),
-        objectives: objectives.into_boxed_slice(),
         player_inputs,
         bytes: bytes.to_vec().into_boxed_slice(),
     })

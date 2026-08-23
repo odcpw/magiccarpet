@@ -230,6 +230,7 @@ impl Level2SharedSpellResetSession {
             player_entity_sha256: LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256.to_owned(),
             events: Vec::new(),
             pickup_events: Vec::new(),
+            pending_effects: Vec::new(),
         };
         if let Some((economy, wizard)) = starting_spells {
             session.materialize_direct_starting_spells(economy, wizard)?;
@@ -550,7 +551,9 @@ impl Level2SharedSpellResetSession {
         let Some(shield) = self.shield.as_mut() else {
             return false;
         };
+        let event_start = self.events.len();
         let activated = shield.activate(direction_mask, help_enabled, &mut self.events);
+        self.capture_activation_effects(event_start);
         self.sync_shield_projection();
         activated
     }
@@ -621,12 +624,11 @@ impl Level2SharedSpellResetSession {
         }
         let damage = self.shield.as_mut()?.absorb_damage(raw_damage);
         self.sync_shield_projection();
-        self.pickup_events
-            .push(Level2SharedSpellEvent::ShieldDamageApplied {
-                target_entity_index,
-                attacker_entity_index,
-                damage,
-            });
+        self.emit_shared_spell_effect(Level2SharedSpellEvent::ShieldDamageApplied {
+            target_entity_index,
+            attacker_entity_index,
+            damage,
+        });
         Some(damage)
     }
 
@@ -642,12 +644,11 @@ impl Level2SharedSpellResetSession {
         };
         self.shield_damage_mailbox = None;
         if let Some(damage) = self.absorb_shield_damage(mailbox.damage) {
-            self.pickup_events
-                .push(Level2SharedSpellEvent::ShieldDamageApplied {
-                    target_entity_index: mailbox.target_entity_index,
-                    attacker_entity_index: mailbox.attacker_entity_index,
-                    damage,
-                });
+            self.emit_shared_spell_effect(Level2SharedSpellEvent::ShieldDamageApplied {
+                target_entity_index: mailbox.target_entity_index,
+                attacker_entity_index: mailbox.attacker_entity_index,
+                damage,
+            });
         }
     }
 
@@ -682,7 +683,9 @@ impl Level2SharedSpellResetSession {
         let Some(invisible) = self.invisible.as_mut() else {
             return false;
         };
+        let event_start = self.events.len();
         let activated = invisible.activate(direction_mask, help_enabled, &mut self.events);
+        self.capture_activation_effects(event_start);
         self.sync_invisible_projection();
         activated
     }
@@ -941,7 +944,9 @@ impl Level2SharedSpellResetSession {
         let Some(beyond_sight) = self.beyond_sight.as_mut() else {
             return false;
         };
+        let event_start = self.events.len();
         let activated = beyond_sight.activate(direction_mask, help_enabled, &mut self.events);
+        self.capture_activation_effects(event_start);
         self.sync_beyond_sight_projection();
         activated
     }
@@ -1587,6 +1592,7 @@ impl Level2SharedSpellResetSession {
     /// reset data.
     pub fn activate_fireball(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
         self.events.clear();
+        let event_start = self.events.len();
         let activated = activate_spell(
             &mut self.caster,
             Some(&mut self.fireball),
@@ -1594,12 +1600,14 @@ impl Level2SharedSpellResetSession {
             help_enabled,
             &mut self.events,
         );
+        self.capture_activation_effects(event_start);
         self.player_mana = self.caster.mana;
         activated
     }
 
     pub fn activate_possession(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
         self.events.clear();
+        let event_start = self.events.len();
         let activated = activate_spell(
             &mut self.caster,
             Some(&mut self.possession),
@@ -1607,12 +1615,14 @@ impl Level2SharedSpellResetSession {
             help_enabled,
             &mut self.events,
         );
+        self.capture_activation_effects(event_start);
         self.player_mana = self.caster.mana;
         activated
     }
 
     pub fn activate_speed(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
         self.events.clear();
+        let event_start = self.events.len();
         let activated = activate_spell(
             &mut self.caster,
             Some(&mut self.speed),
@@ -1620,6 +1630,7 @@ impl Level2SharedSpellResetSession {
             help_enabled,
             &mut self.events,
         );
+        self.capture_activation_effects(event_start);
         self.player_mana = self.caster.mana;
         activated
     }
@@ -1652,6 +1663,33 @@ impl Level2SharedSpellResetSession {
     #[must_use]
     pub fn pickup_events(&self) -> &[Level2SharedSpellEvent] {
         &self.pickup_events
+    }
+
+    pub(super) fn drain_pending_effects(
+        &mut self,
+    ) -> Vec<crate::campaign::journal::CampaignEffect> {
+        std::mem::take(&mut self.pending_effects)
+    }
+
+    fn emit_flight_effect(&mut self, event: FlightEvent) {
+        self.pending_effects
+            .push(crate::campaign::journal::CampaignEffect::Flight(event));
+        Vec::push(&mut self.events, event);
+    }
+
+    fn emit_shared_spell_effect(&mut self, event: Level2SharedSpellEvent) {
+        self.pending_effects
+            .push(crate::campaign::journal::CampaignEffect::SharedSpell(event));
+        Vec::push(&mut self.pickup_events, event);
+    }
+
+    fn capture_activation_effects(&mut self, event_start: usize) {
+        self.pending_effects.extend(
+            self.events[event_start..]
+                .iter()
+                .copied()
+                .map(crate::campaign::journal::CampaignEffect::Flight),
+        );
     }
 
     #[must_use]
@@ -1703,12 +1741,11 @@ impl Level2SharedSpellResetSession {
         }
         if unlocked != previous_unlocked && source_family_enabled {
             mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
-            self.pickup_events
-                .push(Level2SharedSpellEvent::AbilityImproved {
-                    source_family: BEYOND_SIGHT_FAMILY,
-                    tier: unlocked,
-                });
-            self.events.push(FlightEvent::PrepareSound {
+            self.emit_shared_spell_effect(Level2SharedSpellEvent::AbilityImproved {
+                source_family: BEYOND_SIGHT_FAMILY,
+                tier: unlocked,
+            });
+            self.emit_flight_effect(FlightEvent::PrepareSound {
                 #[cfg(test)]
                 audio_site: crate::MissionAudioSite::AbilityImproved,
                 entity_index: 0,
@@ -1772,11 +1809,10 @@ impl Level2SharedSpellResetSession {
         let Some(first_collision_entity) = first_collision_entity else {
             return false;
         };
-        self.pickup_events
-            .push(Level2SharedSpellEvent::ExperienceScrollCollected {
-                source_slot,
-                player_entity_index: first_collision_entity,
-            });
+        self.emit_shared_spell_effect(Level2SharedSpellEvent::ExperienceScrollCollected {
+            source_slot,
+            player_entity_index: first_collision_entity,
+        });
         if local_collision {
             let owner_index =
                 local_player_index.expect("local player is present for a local collision");
@@ -1816,7 +1852,7 @@ impl Level2SharedSpellResetSession {
             }
             self.players[owner_index] = owner.clone();
             mark_source_audio_call(SourceAudioCallTag::ExperienceScrollPickup);
-            self.events.push(FlightEvent::PrepareSound {
+            self.emit_flight_effect(FlightEvent::PrepareSound {
                 #[cfg(test)]
                 audio_site: crate::MissionAudioSite::ExperienceScroll,
                 entity_index: local_player_entity_index,
@@ -1825,12 +1861,11 @@ impl Level2SharedSpellResetSession {
             });
             for (family, tier) in improved {
                 mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
-                self.pickup_events
-                    .push(Level2SharedSpellEvent::AbilityImproved {
-                        source_family: family,
-                        tier,
-                    });
-                self.events.push(FlightEvent::PrepareSound {
+                self.emit_shared_spell_effect(Level2SharedSpellEvent::AbilityImproved {
+                    source_family: family,
+                    tier,
+                });
+                self.emit_flight_effect(FlightEvent::PrepareSound {
                     #[cfg(test)]
                     audio_site: crate::MissionAudioSite::AbilityImproved,
                     entity_index: local_player_entity_index,
@@ -2134,15 +2169,14 @@ impl Level2SharedSpellResetSession {
             self.beyond_sight = Some(beyond_sight);
             self.sync_beyond_sight_projection();
         }
-        self.pickup_events
-            .push(Level2SharedSpellEvent::SpellAcquired {
-                source_slot: outcome.source_slot,
-                player_entity_index: owner_entity_index,
-                family,
-                holder_action: outcome.holder_action,
-            });
+        self.emit_shared_spell_effect(Level2SharedSpellEvent::SpellAcquired {
+            source_slot: outcome.source_slot,
+            player_entity_index: owner_entity_index,
+            family,
+            holder_action: outcome.holder_action,
+        });
         mark_source_audio_call(SourceAudioCallTag::SpeedPickup);
-        self.events.push(FlightEvent::PrepareSound {
+        self.emit_flight_effect(FlightEvent::PrepareSound {
             #[cfg(test)]
             audio_site: crate::MissionAudioSite::SpeedPickup,
             entity_index: owner_entity_index,
@@ -2704,14 +2738,16 @@ impl Level2SharedSpellResetSession {
         self.speed.model = SPEED_SPELL_FAMILY;
         self.speed.activation_value = SPEED_SPELL_ACTIVATION_TICKS;
         self.speed.mana_cost = SPEED_SPELL_MANA_COST;
-        self.pickup_events
-            .push(Level2SharedSpellEvent::SpellCollected {
-                source_slot: pickup.index,
-                player_entity_index,
-                family: SPEED_SPELL_FAMILY,
-            });
+        let source_slot = pickup.index;
+        let action = pickup.action;
+        let phase = pickup.phase;
+        self.emit_shared_spell_effect(Level2SharedSpellEvent::SpellCollected {
+            source_slot,
+            player_entity_index,
+            family: SPEED_SPELL_FAMILY,
+        });
         mark_source_audio_call(SourceAudioCallTag::SpeedPickup);
-        self.events.push(FlightEvent::PrepareSound {
+        self.emit_flight_effect(FlightEvent::PrepareSound {
             #[cfg(test)]
             audio_site: crate::MissionAudioSite::SpeedPickup,
             entity_index: player_entity_index,
@@ -2719,12 +2755,12 @@ impl Level2SharedSpellResetSession {
             sound_id: 18,
         });
         Ok(Level2SpeedPickupStep {
-            source_slot: pickup.index,
+            source_slot,
             player_entity_index,
             previous_action,
-            action: pickup.action,
+            action,
             previous_phase,
-            phase: pickup.phase,
+            phase,
             collected: true,
         })
     }
@@ -3104,6 +3140,7 @@ impl Level2SharedSpellResetSession {
         self.spell_levels = self.baseline_spell_levels;
         self.events.clear();
         self.pickup_events.clear();
+        self.pending_effects.clear();
     }
 }
 
