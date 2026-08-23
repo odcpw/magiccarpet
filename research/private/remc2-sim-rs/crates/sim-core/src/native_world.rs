@@ -21,6 +21,7 @@ use crate::{
     PlayerCommand, Position, SOURCE_SPELL_INDEX_MAP, SourceAudioCallTag, SpellFireContext,
     angle_distance,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
+    campaign::spec::CampaignDefinition as ValidatedCampaignDefinition,
     collision_mask::{
         CollisionMaskBank, CollisionMaskLookupError, LEVEL2_COLLISION_MASK_BANK_BYTES,
     },
@@ -3995,6 +3996,123 @@ impl NativeWorld {
         Self::inspect_level2_internal(package_dir.as_ref(), Some(owner_cache.as_ref()))
     }
 
+    /// Decode the reset members selected by a fully validated campaign
+    /// definition. Unlike [`Self::inspect_level2`], this path never consults
+    /// the legacy owner-export manifest or chooses a friendly level profile.
+    /// The descriptor has already established the exact member set, hashes,
+    /// identity, source facts, operations, and compiled live-root capabilities.
+    pub(crate) fn inspect_campaign_level2(
+        definition: &ValidatedCampaignDefinition,
+    ) -> Result<NativeWorldInspection> {
+        Self::inspect_campaign_level2_internal(definition, None)
+    }
+
+    pub(crate) fn inspect_campaign_level2_with_owner_cache(
+        definition: &ValidatedCampaignDefinition,
+        owner_cache: &Path,
+    ) -> Result<NativeWorldInspection> {
+        Self::inspect_campaign_level2_internal(definition, Some(owner_cache))
+    }
+
+    fn inspect_campaign_level2_internal(
+        definition: &ValidatedCampaignDefinition,
+        owner_cache: Option<&Path>,
+    ) -> Result<NativeWorldInspection> {
+        let read = |name: &str| {
+            definition.read_member(name).map_err(|error| {
+                NativeWorldError::new(format!("campaign member read failed: {error}"))
+            })
+        };
+        let authored = read("authored-level.bin")?;
+        let entities_bytes = read("entities.bin")?;
+        let players_bytes = read("players.bin")?;
+        let runtime_bytes = read("runtime.bin")?;
+        let terrain_bytes = read("terrain.bin")?;
+        let presentation_bytes = read("presentation.bin")?;
+        let feature_end = read("feature-end.bin")?;
+        let collision_mask_bytes = read("collision-masks.bin")?;
+
+        let map_type = MapType::decode(
+            definition.identity.map_type_id,
+            &definition.campaign_spec.presentation_recipe.map_type,
+        )?;
+        let vga_resolution_selector = u8::try_from(
+            definition
+                .campaign_spec
+                .presentation_recipe
+                .vga_resolution_selector,
+        )
+        .map_err(|_| NativeWorldError::new("campaign presentation VGA selector does not fit u8"))?;
+        let metadata = LevelMetadata {
+            external_level: definition.identity.external_level,
+            internal_level: definition.identity.internal_level,
+            map_type,
+            // Contract v1 intentionally carries no host capture metadata.
+            // These compatibility-only fields are not authoritative or
+            // included in simulation receipts.
+            capture_site: String::new(),
+            capture_frame: 0,
+            vga_resolution_selector,
+        };
+        validate_profile(&metadata, OwnerPackageProfile::Level2)?;
+
+        let terrain_planes = parse_terrain(&terrain_bytes)?;
+        let terrain_rng = read_u16(&feature_end, 8, "Level 2 feature-end terrain RNG")?;
+        let terrain = LegacyTerrain::new(
+            terrain_planes.terrain_types.to_vec(),
+            terrain_planes.ground_heights.to_vec(),
+            (map_type == MapType::Cave).then(|| terrain_planes.secondary_heights.to_vec()),
+            terrain_planes.angles.to_vec(),
+        )
+        .map_err(NativeWorldError::new)?;
+        let entities = parse_entities(&entities_bytes)?;
+        let players = parse_players(
+            &players_bytes,
+            OwnerPackageProfile::Level2,
+            OwnerPackageSchema::V5,
+        )?;
+        let runtime = parse_runtime(&runtime_bytes)?;
+        validate_level_two_runtime(&runtime, &players, &entities)?;
+        let presentation = parse_presentation(&presentation_bytes)?;
+        let reset_state = Some(parse_level_two_reset_state(
+            &entities_bytes,
+            &players_bytes,
+            &runtime_bytes,
+        )?);
+        let collision_masks = Some(
+            CollisionMaskBank::parse_source_exact(&collision_mask_bytes).map_err(|error| {
+                NativeWorldError::new(format!(
+                    "qualified Level 2 collision-mask bank rejected: {error:?}"
+                ))
+            })?,
+        );
+        let (level2_castle_stage_footprints, level2_house_build_footprints) = owner_cache
+            .map(|owner_cache| {
+                load_level2_castle_stage_footprints(owner_cache, &definition.package_sha256)
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(NativeWorldInspection {
+            profile: OwnerPackageProfile::Level2,
+            schema: OwnerPackageSchema::V5,
+            metadata,
+            package_sha256: definition.package_sha256.clone(),
+            terrain_planes,
+            terrain,
+            entities: entities.into_boxed_slice(),
+            players: players.into_boxed_slice(),
+            runtime,
+            presentation,
+            terrain_rng,
+            reset_state,
+            authored_level: authored.into_boxed_slice(),
+            collision_masks,
+            level2_castle_stage_footprints,
+            level2_house_build_footprints,
+        })
+    }
+
     fn inspect_level2_internal(
         package_dir: &Path,
         owner_cache: Option<&Path>,
@@ -6176,12 +6294,10 @@ fn validate_profile(metadata: &LevelMetadata, profile: OwnerPackageProfile) -> R
     Ok(())
 }
 
-fn validate_level_two_profile(
-    manifest: &serde_json::Map<String, Value>,
+fn validate_level_two_runtime(
     runtime: &RuntimeSnapshot,
     players: &[PlayerSnapshot],
     entities: &[EntitySnapshot],
-    schema: OwnerPackageSchema,
 ) -> Result<()> {
     if runtime.local_player_slot != 0 || runtime.player_count != 2 || runtime.maptype_music != 2 {
         return Err(NativeWorldError::new(
@@ -6205,6 +6321,17 @@ fn validate_level_two_profile(
             )));
         }
     }
+    Ok(())
+}
+
+fn validate_level_two_profile(
+    manifest: &serde_json::Map<String, Value>,
+    runtime: &RuntimeSnapshot,
+    players: &[PlayerSnapshot],
+    entities: &[EntitySnapshot],
+    schema: OwnerPackageSchema,
+) -> Result<()> {
+    validate_level_two_runtime(runtime, players, entities)?;
     let dependencies = require_object(manifest, "presentation_dependencies", "manifest")?;
     if require_string(dependencies, "map_type", "presentation_dependencies")? != "Day"
         || as_u8(

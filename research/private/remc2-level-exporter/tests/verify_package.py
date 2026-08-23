@@ -1616,28 +1616,23 @@ def _campaign_behavior_key(site: int, row: dict) -> tuple[int, int, int, int]:
 def _campaign_required_behaviors(rows: list[dict]) -> tuple[list[dict], set[tuple[int, int, int, int]]]:
     provenance: dict[tuple[int, int, int, int], dict] = {}
     for row in rows:
+        # GOLDEN-CHANGE (operator-approved, 2026-08-23): campaign package v1
+        # contains a post-GenerateEvents reset snapshot.  Only live reset rows
+        # are runtime roots; dormant authored rows remain an inventory until a
+        # later descriptor graph makes them reachable.
+        if row["initial_source_slot"] is None:
+            continue
         source = {
             "authored_record": row["authored_record"],
             "initial_source_slot": row["initial_source_slot"],
         }
-        for site in row["initial_dispatch_sites"]:
-            key = _campaign_behavior_key(site, row)
-            provenance.setdefault(key, source)
-            if site == 1:
-                following = (2, 1, row["class"], row["action"])
-                provenance.setdefault(following, {
-                    "predecessor": {"dispatch_site": 1, "selector": _campaign_selector(key)}
-                })
+        key = (2, 1, row["class"], row["action"])
+        provenance.setdefault(key, source)
     requirements = []
     for key in sorted(provenance):
-        if key[0] == 2 and key[1] == 1:
-            predecessor = (1, 1, key[2], key[3])
-            sources = [{"predecessor": {"dispatch_site": 1, "selector": _campaign_selector(predecessor)}}]
-        else:
-            sources = [provenance[key]]
         requirements.append({
             "dispatch_site": key[0],
-            "provenance": sources,
+            "provenance": [provenance[key]],
             "selector": _campaign_selector(key),
         })
     return requirements, set(provenance)
@@ -2001,9 +1996,10 @@ def verify_campaign_package(
     _campaign_validate_operations(spec, authored, files, package)
     _campaign_validate_presentation(spec["presentation_recipe"], files)
 
-    # Stage 8: source-derived transitive closure, then compiled capabilities.
+    # Stage 8: source-derived post-GenerateEvents runtime roots, then compiled
+    # capabilities. Later selectors remain fail-closed at the source scheduler.
     expected_requirements, expected_keys = _campaign_required_behaviors(behavior_rows)
-    require(_strict_equal(root["required_behaviors"], expected_requirements), "declared required behavior closure differs from source-derived fixpoint")
+    require(_strict_equal(root["required_behaviors"], expected_requirements), "declared required behavior roots differ from the live reset selectors")
     capabilities = expected_keys if campaign_capabilities is None else campaign_capabilities
     missing = sorted(expected_keys - capabilities)
     require(not missing, f"campaign compiled capability is missing required behavior {missing[0] if missing else ''}")

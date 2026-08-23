@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     FlightWorld,
+    campaign::spec::{CampaignDefinition, CampaignSelection},
     level1_mission::{
         AUTHORED_FEATURE_BYTES, AUTHORED_FEATURE_COUNT, AuthoredFeature, Level1MissionTemplate,
         Level1ResetSourceSlot, parse_authored_features,
@@ -457,6 +458,35 @@ impl MissionContentProfile {
         Ok(profile)
     }
 
+    /// Select the compiled decoder from a fully validated campaign
+    /// definition. This is the production Level 2 selector; metadata-only
+    /// selection remains solely for the sealed Level 1 and legacy Level 2
+    /// compatibility adapters.
+    pub fn from_campaign_definition(
+        definition: &CampaignDefinition,
+    ) -> Result<Self, MissionContentError> {
+        if definition.identity != CampaignSelection::LEVEL2 {
+            return Err(MissionContentError::InvalidProfile(format!(
+                "unsupported campaign definition external={} internal={} map_type_id={}",
+                definition.identity.external_level,
+                definition.identity.internal_level,
+                definition.identity.map_type_id
+            )));
+        }
+        let authored = &definition.campaign_spec.authored_records;
+        if authored.count != Some(AUTHORED_FEATURE_COUNT as u64)
+            || authored.record_bytes != Some(AUTHORED_FEATURE_BYTES as u64)
+            || definition.campaign_spec.presentation_recipe.map_type != "Day"
+            || !definition.campaign_spec.initial_activation.is_empty()
+        {
+            return Err(MissionContentError::InvalidProfile(
+                "campaign definition is not compatible with the compiled Level 2 decoder"
+                    .to_owned(),
+            ));
+        }
+        Ok(Self::LEVEL2)
+    }
+
     #[must_use]
     pub const fn is_level2(self) -> bool {
         matches!(self.level, CampaignLevel::Level2)
@@ -527,6 +557,18 @@ pub struct MissionContentTemplate {
 }
 
 impl MissionContentTemplate {
+    /// Decode through the validated descriptor rather than a friendly
+    /// per-level profile selected by the caller.
+    pub fn decode_campaign_definition(
+        definition: &CampaignDefinition,
+        authored: &[u8],
+        reset_source_slots: &[Level1ResetSourceSlot],
+        initial_global_rng: u32,
+    ) -> Result<Self, MissionContentError> {
+        let profile = MissionContentProfile::from_campaign_definition(definition)?;
+        Self::decode(profile, authored, reset_source_slots, initial_global_rng)
+    }
+
     pub fn decode(
         profile: MissionContentProfile,
         authored: &[u8],

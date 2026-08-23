@@ -298,7 +298,7 @@ compiled_registry! {
         (Model6ProjectileChild, 9, [15]);
         (ProjectileFamily, 9, [18]);
         (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 83, 86, 98]);
-        (SwitchProducers, 11, [0, 1, 12]);
+        (SwitchProducers, 11, [0, 1, 4, 12]);
         (ObjectiveSwitch, 11, [32]);
         (Class14Events, 14, [8, 10]);
         (SpellHolderAndPickup, 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 18, 19, 20, 33, 34, 35, 36, 37, 38, 78]);
@@ -326,7 +326,7 @@ compiled_registry! {
         (Model6ProjectileChild, 9, [14]);
         (ProjectileFamily, 9, [17]);
         (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 79, 91]);
-        (SwitchProducers, 11, [0, 1, 12]);
+        (SwitchProducers, 11, [0, 1, 4, 12]);
         (ObjectiveSwitch, 11, [32]);
         (Class14Events, 14, [3, 5]);
         (SpellHolderAndPickup, 15, [0, 1, 2, 3, 6, 11, 12]);
@@ -563,6 +563,7 @@ mod tests {
                 "level2-bee-family",
             ),
             (5, &[121, 122, 124, 125][..], "level2-castle-auxiliary"),
+            (11, &[4][..], "level2-switch-producers"),
         ] {
             for action in actions {
                 for site in ["ApplyEvents", "UpdateEntities"] {
@@ -574,6 +575,10 @@ mod tests {
         expected.insert(
             "Constructor:ClassModel:5:15".to_owned(),
             "level2-castle-auxiliary",
+        );
+        expected.insert(
+            "Constructor:ClassModel:11:4".to_owned(),
+            "level2-switch-producers",
         );
         expected
     }
@@ -596,7 +601,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 349);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 352);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -670,7 +675,7 @@ mod tests {
         }
         assert_eq!(expected_handlers.len(), 315);
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 349);
+        assert_eq!(expected_handlers.len(), 352);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

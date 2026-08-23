@@ -194,16 +194,9 @@ def test_campaign_package_v1_full_planted_negative_set(campaign_twins: tuple[Pat
         package,
         lambda candidate: rewrite_definition(
             candidate,
-            lambda definition: definition["required_behaviors"].__delitem__(
-                next(
-                    index
-                    for index, requirement in enumerate(definition["required_behaviors"])
-                    if requirement["dispatch_site"] == 2
-                    and "predecessor" in requirement["provenance"][0]
-                )
-            ),
+            lambda definition: definition["required_behaviors"].__delitem__(0),
         ),
-        "transitive|required behavior closure",
+        "required behavior roots",
     )
 
 

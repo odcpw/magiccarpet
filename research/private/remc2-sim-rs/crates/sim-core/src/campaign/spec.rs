@@ -283,6 +283,7 @@ pub struct CampaignDefinition {
     pub required_behaviors: Vec<BehaviorRequirement>,
     pub reset_state_receipt: ResetStatePreflightReceipt,
     pub completed_stage: ValidationStage,
+    member_hashes: BTreeMap<String, String>,
 }
 
 impl CampaignDefinition {
@@ -679,13 +680,15 @@ impl CampaignDefinition {
         let (initial_rng, objectives) =
             validate_operations(spec_value, authored, &files, &members)?;
 
-        // Stage 8: source-derived fixpoint, exact declaration, compiled keys.
+        // Stage 8: source-derived post-GenerateEvents runtime roots, exact
+        // declaration, and compiled keys. Any later selector is independently
+        // fail-closed by the source scheduler before callback or epilogue.
         let expected_requirements = expected_behavior_requirements(&declared_rows);
         let declared_requirements = parse_behavior_requirements(&definition["required_behaviors"])?;
         if declared_requirements != expected_requirements {
             return fail(
                 ValidationStage::BehaviorClosure,
-                "declared required behavior closure differs from source-derived fixpoint",
+                "declared required behavior roots differ from the live reset selectors",
             );
         }
         for requirement in &declared_requirements {
@@ -744,6 +747,10 @@ impl CampaignDefinition {
             required_behaviors: declared_requirements,
             reset_state_receipt,
             completed_stage: ValidationStage::ResetState,
+            member_hashes: files
+                .into_iter()
+                .map(|(name, (_, sha256))| (name, sha256))
+                .collect(),
         })
     }
 
@@ -751,6 +758,36 @@ impl CampaignDefinition {
         self.required_behaviors
             .iter()
             .map(|requirement| &requirement.key)
+    }
+
+    /// Re-read one validated package member for a session consumer.
+    ///
+    /// Preflight validates the complete package before a session can exist,
+    /// but the decoder still has to read the bytes afterwards. Rechecking the
+    /// descriptor-bound hash here closes that read boundary instead of
+    /// trusting a path whose contents may have changed after preflight.
+    pub(crate) fn read_member(&self, name: &str) -> Result<Vec<u8>> {
+        let Some(expected_sha256) = self.member_hashes.get(name) else {
+            return fail(
+                ValidationStage::MemberHashes,
+                format!("campaign definition does not declare member {name}"),
+            );
+        };
+        let bytes =
+            fs::read(self.package_root.join(name)).map_err(|error| CampaignPackageError {
+                stage: ValidationStage::MemberHashes,
+                message: format!("cannot re-read {name}: {error}"),
+            })?;
+        let actual_sha256 = sha256_hex(&bytes);
+        if &actual_sha256 != expected_sha256 {
+            return fail(
+                ValidationStage::MemberHashes,
+                format!(
+                    "campaign member {name} changed after preflight: expected {expected_sha256}, got {actual_sha256}"
+                ),
+            );
+        }
+        Ok(bytes)
     }
 }
 
@@ -2050,62 +2087,34 @@ fn validate_operations(
     Ok((initial_rng, declared))
 }
 
-fn behavior_key(site: u16, row: &AuthoredBehaviorRow) -> BehaviorKey {
-    let selector = match site {
-        3 => BehaviorSelector::ClassModel {
-            class: row.class,
-            model: row.model,
-        },
-        4 => BehaviorSelector::TypeSubtype {
-            type_id: row.class,
-            subtype: row.subtype,
-        },
-        _ => BehaviorSelector::ClassAction {
-            class: row.class,
-            action: row.action,
-        },
-    };
-    BehaviorKey {
-        dispatch_site: site,
-        selector,
-    }
-}
-
 fn expected_behavior_requirements(rows: &[AuthoredBehaviorRow]) -> Vec<BehaviorRequirement> {
     let mut provenance = BTreeMap::<BehaviorKey, BehaviorProvenance>::new();
     for row in rows {
+        // GOLDEN-CHANGE (operator-approved, 2026-08-23): schema v1 binds a
+        // post-GenerateEvents reset snapshot. Only live reset rows are
+        // executable runtime roots. Dormant authored rows remain exact
+        // inventory until a later descriptor graph makes them reachable.
+        if row.initial_source_slot.is_none() {
+            continue;
+        }
         let source = BehaviorProvenance::AuthoredRecord {
             authored_record: row.authored_record,
             initial_source_slot: row.initial_source_slot,
         };
-        for site in &row.initial_dispatch_sites {
-            let key = behavior_key(*site, row);
-            provenance.entry(key.clone()).or_insert(source.clone());
-            if *site == 1 {
-                let following = BehaviorKey {
-                    dispatch_site: 2,
-                    selector: key.selector.clone(),
-                };
-                provenance
-                    .entry(following)
-                    .or_insert_with(|| BehaviorProvenance::Predecessor(key));
-            }
-        }
+        let key = BehaviorKey {
+            dispatch_site: 2,
+            selector: BehaviorSelector::ClassAction {
+                class: row.class,
+                action: row.action,
+            },
+        };
+        provenance.entry(key).or_insert(source);
     }
     provenance
         .into_iter()
-        .map(|(key, source)| {
-            let provenance = if key.dispatch_site == 2
-                && matches!(key.selector, BehaviorSelector::ClassAction { .. })
-            {
-                vec![BehaviorProvenance::Predecessor(BehaviorKey {
-                    dispatch_site: 1,
-                    selector: key.selector.clone(),
-                })]
-            } else {
-                vec![source]
-            };
-            BehaviorRequirement { key, provenance }
+        .map(|(key, source)| BehaviorRequirement {
+            key,
+            provenance: vec![source],
         })
         .collect()
 }

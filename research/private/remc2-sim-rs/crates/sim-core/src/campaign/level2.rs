@@ -27,6 +27,7 @@ enum Level2SourceRoute {
     House,
     Villager,
     Dolmen,
+    ExitSwitch,
     CastleRoot,
     Dynamic(Level2DynamicArenaCursorRow),
     Goat,
@@ -277,7 +278,6 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             PassPhase::PreDispatch => {
                 self.owner.step_level2_imported_switch_roots(self.pass);
                 self.owner.activate_level2_authored_group8(self.pass);
-                self.owner.activate_level2_authored_group31(self.pass);
                 self.owner.step_level2_group10_switch25(self.pass);
                 self.owner.activate_level2_authored_bees(self.pass);
                 self.owner.activate_level2_authored_model13(self.pass);
@@ -379,6 +379,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 let epilogue = match visit.route {
                     Level2SourceRoute::Nyphur
                     | Level2SourceRoute::Dolmen
+                    | Level2SourceRoute::ExitSwitch
                     | Level2SourceRoute::PossessionHolder
                     | Level2SourceRoute::CastleHolder
                     | Level2SourceRoute::FireballHolder => Level2EpiloguePolicy::SchedulerAdvance {
@@ -5660,7 +5661,7 @@ impl Level2ResetSession {
     /// the twelve class-2/model-0 tree rows and the model-0 row-274 switch.
     /// Their constructors are kept on the shared typed arena so the source
     /// order and all-or-nothing allocation boundary remain observable.
-    pub(super) fn activate_level2_authored_group31(&mut self, pass: u8) {
+    pub(super) fn activate_level2_authored_group31(&mut self, pass: u8, root_slot: u16) {
         if self
             .session
             .state
@@ -5703,26 +5704,25 @@ impl Level2ResetSession {
         if !any_player_is_level_end_candidate {
             return;
         }
-        let Some(root_slot) = self
+        let root_is_live = self
             .session
             .state
             .live
             .economy
             .entities
-            .iter()
-            .filter(|entity| {
+            .get(usize::from(root_slot))
+            .is_some_and(|entity| {
                 entity.active
+                    && entity.index == root_slot
                     && entity.class == 11
                     && entity.model == 4
                     && entity.action == 4
                     && entity.source_id == 31
                     && !entity.drawing_disabled()
-            })
-            .min_by_key(|entity| entity.index)
-            .map(|entity| entity.index)
-        else {
+            });
+        if !root_is_live {
             return;
-        };
+        }
         let group_rows = self
             .session
             .state
@@ -7592,6 +7592,14 @@ impl Level2ResetSession {
                 stone.entity.class,
                 stone.entity.action,
             ))
+        } else if let Some(exit_switch) = live.economy.entities.iter().find(|entity| {
+            entity.active && entity.index == source_slot && entity.class == 11 && entity.model == 4
+        }) {
+            Some((
+                Level2SourceRoute::ExitSwitch,
+                exit_switch.class,
+                exit_switch.action,
+            ))
         } else if let Some(house) = live
             .ordinary
             .houses()
@@ -7694,7 +7702,9 @@ impl Level2ResetSession {
     fn level2_source_phase(&self, source_slot: u16, route: Level2SourceRoute) -> Option<u8> {
         let live = &self.session.state.live;
         match route {
-            Level2SourceRoute::Player | Level2SourceRoute::Nyphur => live
+            Level2SourceRoute::Player
+            | Level2SourceRoute::Nyphur
+            | Level2SourceRoute::ExitSwitch => live
                 .economy
                 .entities
                 .iter()
@@ -7949,13 +7959,9 @@ impl Level2ResetSession {
                 .iter()
                 .find(|row| row.entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Player => live
-                .economy
-                .entities
-                .iter()
-                .find(|row| row.index == source_slot)
-                .map(|row| row.phase),
-            Level2SourceRoute::Nyphur => live
+            Level2SourceRoute::Player
+            | Level2SourceRoute::Nyphur
+            | Level2SourceRoute::ExitSwitch => live
                 .economy
                 .entities
                 .iter()
@@ -8119,7 +8125,9 @@ impl Level2ResetSession {
                 .chain(live.shared_spells.dynamic_pickups.iter_mut())
                 .find(|row| row.index == source_slot)
                 .map(|row| &mut row.phase),
-            Level2SourceRoute::Nyphur | Level2SourceRoute::Player => live
+            Level2SourceRoute::Nyphur
+            | Level2SourceRoute::Player
+            | Level2SourceRoute::ExitSwitch => live
                 .economy
                 .entities
                 .iter_mut()
@@ -8348,7 +8356,9 @@ impl Level2ResetSession {
                     row.record[66] = advanced;
                 }
             }
-            Level2SourceRoute::Nyphur | Level2SourceRoute::Player => {
+            Level2SourceRoute::Nyphur
+            | Level2SourceRoute::Player
+            | Level2SourceRoute::ExitSwitch => {
                 if let Some(row) = live
                     .economy
                     .entities
@@ -8421,6 +8431,7 @@ impl Level2ResetSession {
                     | ExistingHandler::TraderFamily
             ),
             Level2SourceRoute::Dolmen => handler == ExistingHandler::Dolmen,
+            Level2SourceRoute::ExitSwitch => handler == ExistingHandler::SwitchProducers,
             Level2SourceRoute::CastleRoot => handler == ExistingHandler::CastleRoot,
             Level2SourceRoute::Goat => handler == ExistingHandler::GoatFamily,
             Level2SourceRoute::Player => handler == ExistingHandler::PlayerFlight,
@@ -8885,6 +8896,9 @@ impl Level2ResetSession {
                         message: error.to_string(),
                     }),
                 }
+            }
+            (ExistingHandler::SwitchProducers, Level2SourceRoute::ExitSwitch) => {
+                self.activate_level2_authored_group31(pass, source_slot);
             }
             (ExistingHandler::CastleRoot, Level2SourceRoute::CastleRoot) => {
                 let construction_completion =

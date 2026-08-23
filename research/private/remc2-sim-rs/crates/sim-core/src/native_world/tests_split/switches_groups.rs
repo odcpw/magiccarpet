@@ -719,6 +719,19 @@ fn level_two_model4_group31_activates_for_level_end_local_model_zero_player() {
         session.economy.entities()[usize::from(session.state.entity_index)].model,
         0
     );
+    let (root_slot, root_phase) = session
+        .economy
+        .entities()
+        .iter()
+        .find(|entity| {
+            entity.active
+                && entity.class == 11
+                && entity.model == 4
+                && entity.action == 4
+                && entity.source_id == 31
+        })
+        .map(|entity| (entity.index, entity.phase))
+        .expect("live model-4 group-31 switch before source dispatch");
 
     session.runtime.set_level2_is_level_end(1);
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -776,6 +789,8 @@ fn level_two_model4_group31_activates_for_level_end_local_model_zero_player() {
                 && entity.source_id == 31
         })
         .expect("live model-4 group-31 switch");
+    assert_eq!(switch.index, root_slot);
+    assert_eq!(switch.phase, root_phase.wrapping_add(1));
     assert!(switch.drawing_disabled());
 }
 
@@ -855,6 +870,10 @@ fn level_two_model12_group31_rolls_back_when_row244_cannot_allocate() {
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 model-12 rollback group-31 session");
+    // Let unrelated reset-time producers consume their ordinary first-pass
+    // work before constraining the arena. Group 31 is still latent because no
+    // player has reached the level-end objective yet.
+    session.step_outer_turn(PlayerCommand::default(), 0);
     let saved_free_slots = session.economy().free_slots.clone();
     session.economy_mut().free_slots.truncate(1);
     session.runtime.set_level2_is_level_end(1);

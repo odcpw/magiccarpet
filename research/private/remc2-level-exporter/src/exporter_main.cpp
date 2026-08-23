@@ -1611,21 +1611,6 @@ canonical_json campaign_behavior_selector(const CampaignBehaviorKey& key) {
     }
 }
 
-CampaignBehaviorKey campaign_behavior_key(
-    std::uint16_t dispatch_site,
-    const CampaignBehaviorRow& row) {
-    if (dispatch_site == 3) {
-        return {dispatch_site, 2, row.class_id, row.model};
-    }
-    if (dispatch_site == 4) {
-        return {dispatch_site, 3, row.class_id, row.subtype};
-    }
-    if (dispatch_site == 1 || dispatch_site == 2) {
-        return {dispatch_site, 1, row.class_id, row.action};
-    }
-    throw std::runtime_error("campaign behavior dispatch site is not compiled");
-}
-
 canonical_json campaign_row_provenance(const CampaignBehaviorRow& row) {
     return {
         {"authored_record", row.authored_record},
@@ -1727,34 +1712,19 @@ canonical_json campaign_behavior_rows_json(const std::vector<CampaignBehaviorRow
 canonical_json campaign_required_behaviors(const std::vector<CampaignBehaviorRow>& rows) {
     std::map<CampaignBehaviorKey, canonical_json> provenance;
     for (const auto& row : rows) {
-        for (const std::uint16_t site : row.initial_dispatch_sites) {
-            const auto key = campaign_behavior_key(site, row);
-            provenance.try_emplace(key, campaign_row_provenance(row));
-            if (site == 1) {
-                const CampaignBehaviorKey following{2, 1, row.class_id, row.action};
-                provenance.try_emplace(
-                    following,
-                    canonical_json{{"predecessor", {
-                        {"dispatch_site", 1},
-                        {"selector", campaign_behavior_selector(key)}
-                    }}});
-            }
-        }
+        // GOLDEN-CHANGE (operator-approved, 2026-08-23): campaign package v1
+        // is captured after GenerateEvents/ApplyEvents has completed.  The
+        // executable runtime roots are therefore the live reset arena's
+        // UpdateEntities selectors.  Authored rows without a source slot are
+        // retained as the exact content inventory, but are not falsely
+        // advertised as already-reachable runtime capabilities.
+        if (!row.has_initial_source_slot) continue;
+        const CampaignBehaviorKey key{2, 1, row.class_id, row.action};
+        provenance.try_emplace(key, campaign_row_provenance(row));
     }
     canonical_json result = canonical_json::array();
     for (const auto& [key, source] : provenance) {
-        canonical_json sources = canonical_json::array();
-        if (key.dispatch_site == 2 && key.selector_kind == 1) {
-            const CampaignBehaviorKey predecessor{1, 1, key.first, key.second};
-            sources.push_back({
-                {"predecessor", {
-                    {"dispatch_site", predecessor.dispatch_site},
-                    {"selector", campaign_behavior_selector(predecessor)}
-                }}
-            });
-        } else {
-            sources.push_back(source);
-        }
+        canonical_json sources = canonical_json::array({source});
         result.push_back({
             {"dispatch_site", key.dispatch_site},
             {"provenance", sources},

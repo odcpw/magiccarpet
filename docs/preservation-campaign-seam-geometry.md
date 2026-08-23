@@ -90,7 +90,7 @@ after its own dependencies and operator gate are satisfied.
 | ID | Binding decision | Decisive measured evidence | Falsifier | Input status |
 |---|---|---|---|---|
 | D1 | Reuse the structurally generic campaign v2 selection, lifecycle, step snapshot, and world projections for descriptor-backed campaigns. Keep every family/Day query as a frozen Level 2 adapter. Add campaign-handle bridges for the generic effect journal and presentation frame; do not add a per-level ABI or a second selection layout. | `McCampaignSelectionV2` already carries external level, internal level, and map type (`research/private/remc2-sim-rs/crates/sim-capi/include/mc_sim_level2.h:19-28`), but the implementation still stores an explicit Level1/Level2 enum (`research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:7954-7965`), reset mutates only Level 2 (`native_v2.rs:8371-8388`), and step rejects every non-Level-2 campaign (`native_v2.rs:9237-9243`). | A validated remaining-realm package needs identity-critical open input that cannot be derived from the package plus the existing selection triple, or a real common consumer cannot be expressed by the retained projections plus journal/frame bridges. Then add one versioned generic field/layout, not a level API. | Decision complete; remaining-realm census `mc-iol7n` is missing, so the falsifier has not yet been exercised on Level 3+. |
-| D2 | Introduce one hash-bound `campaign-definition.json` member inside a fail-closed campaign package. It contains a typed `CampaignSpec`, immutable `SourceFacts` index, and conservative required-behavior closure. Owner bytes stay in separately hashed members; presentation materialization cannot feed simulation. | The exporter already hashes every member and the ordered member identity (`research/private/remc2-level-exporter/src/exporter_main.cpp:1900-1930`) and emits level identity (`exporter_main.cpp:1946-1953`). Collision masks already demonstrate a simulation fact selected from authored rows, with typed bytes and source-file hashes (`exporter_main.cpp:411-425`, `433-525`). The Rust loader rejects unknown members, sizes, member hashes, and package-hash drift (`research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs:27150-27242`). | A reached callback reads owner data that cannot be represented as a bounded immutable typed fact or reset state without evaluating arbitrary executable package content. The schema then blocks; it does not admit a DSL. | Envelope complete. Level 2 operation kinds can land from accepted Level 2 source evidence; remaining-realm operation kinds and final coverage await `mc-iol7n`. Transitive closure evidence also awaits `mc-campaign-rw-inventory-sh828` and `mc-campaign-registry-probe-udemg`. |
+| D2 | Introduce one hash-bound `campaign-definition.json` member inside a fail-closed campaign package. It contains a typed `CampaignSpec`, immutable `SourceFacts` index, and the exact executable reset-root requirements for the captured post-`GenerateEvents` state. Owner bytes stay in separately hashed members; presentation materialization cannot feed simulation. | The exporter already hashes every member and the ordered member identity (`research/private/remc2-level-exporter/src/exporter_main.cpp:1900-1930`) and emits level identity (`exporter_main.cpp:1946-1953`). Collision masks already demonstrate a simulation fact selected from authored rows, with typed bytes and source-file hashes (`exporter_main.cpp:411-425`, `433-525`). The Rust loader rejects unknown members, sizes, member hashes, and package-hash drift (`research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs:27150-27242`). | A reached callback reads owner data that cannot be represented as a bounded immutable typed fact or reset state without evaluating arbitrary executable package content. The schema then blocks; it does not admit a DSL. | Envelope complete. `GOLDEN-CHANGE` approved 2026-08-23: dormant pre-generation authored rows are inventory, not executable requirements. Later runtime selectors remain compiled-registry authority and fail transactionally before callback/epilogue when unknown. |
 | D3 | Use an explicit, compiled Rust registry as production authority, keyed by source dispatch site plus the selector shape used at that site. Use a deterministic read-only extractor only as a provenance/drift cross-check; it MUST NOT emit behavior code. | Pinned remc2 has a static 17-row class table (`upstream/magic-carpet-2-hd/remc2/engine/EventsFunctions.cpp:2060-2078`). `ApplyEvents_498A0` indexes it by class/action inside a rescan loop (`upstream/magic-carpet-2-hd/remc2/engine/Events.cpp:410-470`), while `UpdateEntities_57730` performs prepasses and independently indexes the same table (`EventsFunctions.cpp:40093-40172`). Current Rust instead constructs a Level-2-only route vector and numeric route tags (`research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs:21728-21910`). | The registry probe demonstrates that an explicit registry cannot be kept complete by a deterministic cross-check, while a source-derived declaration generator can emit stable selector declarations without generating behavior or erasing dispatch sites. Only declaration generation may then replace hand-authored keys. | Architectural choice complete; empirical drift counts from `mc-campaign-registry-probe-udemg` are missing. |
 | D4 | A `CampaignSession` owns immutable `Arc<CampaignDefinition>` and `Arc<ResetState>` plus one live `CampaignState`. `PersistentState`, `ResetState`, and `ScratchState` are disjoint. Transactional step clones only live state; reset restores the one baseline and invalidates scratch. | `Level2ResetSession` interleaves baseline/live twins across its outer fields (`native_world.rs:16692-16810`), copies terrain into three nested domains before dispatch (`native_world.rs:20078-20086`), and restores fields manually (`native_world.rs:24010-24063`). The ABI currently clones the entire reset session and commits only after bounded output succeeds (`native_v2.rs:9282-9339`). | The state census finds a source-observable value that cannot be assigned exactly once to immutable definition, persistent state, reset state, canonical topology, journal, or derived scratch; or replay requires two writable mirrors. Migration stops until the ownership model is refined. | Carrier and proof relation complete; the field-by-field classification in `mc-campaign-state-census-dxvvd` is missing. |
 | D5 | Land milestone 0 as the sealed Level 1 facade, then land the semantic fold as the dependency graph below: evidence seal, pure moves, descriptor/registry, one carrier cut at a time, scheduler cutover, generic ABI, managed consumer, folded Level 2 close, Level 3+ saturation, and terminal Level 1 re-expression. No leaf combines a physical move with a semantic ownership change. | Current source pass mixes prepasses, route construction, dispatch, reconciliation, and player stepping in one method (`native_world.rs:21728-21977`); outer-turn ordering and reset are adjacent but distinct (`native_world.rs:23950-24063`). The C ABI/managed boundary is a separate transaction and compatibility surface (`mc_sim_level2.h:667-815`; `research/private/remc2-unity-native/Assets/Scripts/NativeCampaignSession.cs:95-176`). The sealed Level 1 implementation already has one owned `SessionRecord` with open/reset/step entry points (`native_v2.rs:2469-2508`, `8176-8208`, `10538-10548`, `10712-10726`). | A proposed leaf cannot be landed and reverted independently, needs two simultaneous writers on one logical carrier, or has no old/new observation test. Split or reorder that leaf before dispatch. | Proposal complete; milestone 0 is `mc-fold0-level1-facade-uf827`; the remaining graph is adopted by `mc-campaign-fold-contract-r78sq`. |
@@ -500,7 +500,8 @@ mask semantics.
 
 ### BehaviorRequirement schema
 
-Required behavior is a sorted conservative closure, never a source address:
+Required behavior is a sorted exact set of executable roots in the captured
+post-`GenerateEvents` reset state, never a source address:
 
 ```text
 BehaviorRequirement {
@@ -514,12 +515,18 @@ BehaviorRequirement {
 }
 ```
 
-The exporter/census starts with authored/reset rows, follows every known
-constructor, spawn, action transition, and same/following-pass cleanup edge to
-a fixpoint, and emits the union. Declaration order cannot affect the result.
-Model/subtype is a key only when the pinned source table or constructor selects
-on it; a guard inside a class/action callback remains handler logic. Missing
-dynamic closure is a validation failure, not an accepted runtime surprise.
+The exporter derives roots only from live reset rows and retains dormant
+authored rows as an exact inventory. This is deliberate because schema v1
+packages capture the state after remc2's load-time `GenerateEvents` and
+`ApplyEvents` phases; treating dormant pre-generation rows as live callbacks
+produced false requirements such as class-0 actions. Declaration order cannot
+affect the root set. Model/subtype is a key only when the pinned source table or
+constructor selects on it; a guard inside a class/action callback remains
+handler logic. Later selectors are selected solely by the source-keyed compiled
+registry and an unknown selector rolls the candidate step back before callback
+or epilogue. Contract v1 therefore claims exact preconstruction coverage of the
+reset roots plus fail-closed runtime coverage, not a package-supplied executable
+transition graph.
 
 ### Fail-closed validation order
 
@@ -537,8 +544,10 @@ Open performs these stages before inserting a handle or mutating global state:
 6. validate every `SourceFact` reference and kind-specific payload without
    consulting presentation output;
 7. validate typed initialization/objective operations;
-8. compute the transitive required-behavior set and require equality with the
-   declared sorted closure, then require every key in the compiled registry;
+8. compute the live post-`GenerateEvents` reset-root set and require equality
+   with the declared sorted requirements, then require every root in the
+   compiled registry; later runtime selectors remain exact-keyed and
+   transactional at the source scheduler;
 9. construct one `ResetState`, run structural invariants, and compute the
    canonical baseline receipt; and
 10. only then allocate the `CampaignSession` handle and materialize optional
@@ -604,8 +613,9 @@ callback identity/address token, and pinned commit. A test compares:
 - implemented registry keys present at the corresponding source site;
 - implemented keys absent from the source inventory (hard failure);
 - source keys not implemented (explicit bounded backlog); and
-- transitive package requirements absent from the implementation (hard
-  preflight failure).
+- live package roots absent from the implementation (hard preflight failure),
+  while later reached unknown selectors are hard transactional scheduler
+  failures.
 
 It MUST NOT emit Rust handlers, infer semantic equivalence from addresses, fold
 distinct dispatch sites, or turn source addresses into package ABI. The pending
@@ -622,7 +632,7 @@ CampaignDefinition                         immutable, shareable
   identity + package identity
   CampaignSpec
   SourceFacts
-  validated required behavior closure
+  validated required behavior roots
 
 CampaignSession
   definition: Arc<CampaignDefinition>
@@ -755,7 +765,7 @@ rather than being reimplemented by the fold graph.
 | FOLD-0 Sealed Level 1 internal facade (`mc-fold0-level1-facade-uf827`) | this memo only; explicit operator gate exemption | internal static adapter beside the existing Level 1 `SessionRecord` and its tests; route existing open/step/reset through the adapter with no public ABI or state change | complete existing Level 1 corpus, byte-identical replay/reset hashes, invalid-key pre-mutation negative, focused Level 2 guards, format/lint | does not migrate Level 1 or begin the semantic fold; retires only at terminal Level 1 descriptor equality |
 | CF-00 Seal fold inputs and Omega | frozen pre-fold Level 2 surface plus every accepted transition-style Level 2 receipt; `mc-campaign-rw-inventory-sh828`, `mc-campaign-state-census-dxvvd`, `mc-campaign-registry-probe-udemg`, `mc-iol7n`; operator adoption | conformance/trace tests and bounded checked-in inventory only; freeze the old observation vector, exact evidence revision, state classification, registry counts, and remaining-realm capability census | two deterministic runs; planted missing state/transition/effect/capability fails; no production mutation; sealed Level 1 corpus remains green | does not close Level 2 or refactor; retires when all later leaves cite the sealed receipt set |
 | CF-01 Pure campaign module extraction | CF-00 | one writer owns `native_world.rs` extraction plus new `sim-core/src/campaign/` facade; move code only, preserve visibility and call order | format, focused sim-core route/reset/hash tests, workspace lane; byte-identical Omega | no new carrier, descriptor, dispatch, or ABI semantics; retires after moved facade is canonical |
-| CF-02 Package descriptor and SourceFacts v1 | CF-01; accepted Level 2 source/operation evidence; collision fact accepted | exporter schema/emission, package verifier, `campaign/spec.rs`, `campaign/source_facts.rs`; admit only proven Level 2 operation/fact kinds; no scheduler/state edits | two byte-identical Level 2 exports; exact-set/hash/identity checks; planted unknown field, source-fact mutation, traversal, missing capability, and missing transitive handler reject before session construction | proves Level 2 package validation, not later-realm schema completeness, behavior, or playability; retires at schema v1 consumer |
+| CF-02 Package descriptor and SourceFacts v1 | CF-01; accepted Level 2 source/operation evidence; collision fact accepted | exporter schema/emission, package verifier, `campaign/spec.rs`, `campaign/source_facts.rs`; admit only proven Level 2 operation/fact kinds; no scheduler/state edits | two byte-identical Level 2 exports; exact-set/hash/identity checks; planted unknown field, source-fact mutation, traversal, and missing live-root capability reject before session construction; later unknown selectors roll back before callback/epilogue | proves Level 2 package validation and reset-root capability coverage, not later-realm schema completeness, static transition-graph completeness, behavior, or playability; retires at schema v1 consumer |
 | CF-03 Static registry and drift guard | CF-01; registry probe | `campaign/dispatch.rs` plus read-only atlas extractor artifact/test; compiled entries initially delegate to existing handlers | all implemented keys match pinned site inventory; missing source key/extra Rust key/site flattening planted failures; no dynamic registration | no scheduler cutover or new behavior; extractor never emits handlers; retires when registry is build-gated |
 | CF-04 Carrier shell and dual observer | CF-01; state census; CF-00 | `campaign/state.rs` and tests; introduce definition/baseline/live/persistent/scratch types and canonical encoder, but keep old authority | frame-zero/step/reset dual-observer equality; planted omitted field fails; public hashes unchanged | no ownership cutover; retire observer only after CF-09 |
 | CF-05 Terrain single-owner cutover | CF-04 | canonical terrain field and all terrain borrows; delete tick-time copies only after cutover; one writer owns affected behavior call sites | source-order terrain writes/reads, reset/hash, replay, and negative stale-cache test; zero `synchronize_level2_terrain` copies remain | terrain only; no arena/RNG/journal move |

@@ -208,28 +208,15 @@ fn cf02_real_package_and_full_planted_negative_set_are_preconstruction() {
         ValidationStage::BehaviorClosure,
     );
 
-    let missing_transitive = TempPackage::copy_from(&fixture(), "missing-transitive-handler");
-    missing_transitive.rewrite_definition(|definition| {
+    let missing_declared_root = TempPackage::copy_from(&fixture(), "missing-runtime-root");
+    missing_declared_root.rewrite_definition(|definition| {
         let requirements = definition["required_behaviors"]
             .as_array_mut()
             .expect("required_behaviors array");
-        let index = requirements
-            .iter()
-            .position(|requirement| {
-                requirement["dispatch_site"].as_u64() == Some(2)
-                    && requirement["provenance"]
-                        .as_array()
-                        .is_some_and(|provenance| {
-                            provenance
-                                .iter()
-                                .any(|row| row.get("predecessor").is_some())
-                        })
-            })
-            .expect("real package has a transitive following-pass requirement");
-        requirements.remove(index);
+        requirements.remove(0);
     });
     expect_preconstruction_rejection(
-        &missing_transitive.root,
+        &missing_declared_root.root,
         &accept_all,
         ValidationStage::BehaviorClosure,
     );

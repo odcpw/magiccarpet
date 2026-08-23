@@ -3483,8 +3483,35 @@ impl NativeWorldInspection {
     /// any Level 2 behavior dispatcher is selected.
     pub fn mission_content_template(&self) -> Result<MissionContentTemplate> {
         let profile = self.mission_content_profile()?;
-        let slots = self
-            .entities
+        let slots = self.mission_reset_slots();
+        MissionContentTemplate::decode(
+            profile,
+            &self.authored_level,
+            &slots,
+            self.runtime.random_state,
+        )
+        .map_err(|error| NativeWorldError::new(error.to_string()))
+    }
+
+    /// Build the mission template selected by a validated campaign
+    /// definition. The descriptor identity and package hash, rather than the
+    /// compatibility `OwnerPackageProfile`, choose the compiled decoder.
+    pub(crate) fn mission_content_template_from_definition(
+        &self,
+        definition: &ValidatedCampaignDefinition,
+    ) -> Result<MissionContentTemplate> {
+        self.validate_campaign_definition_binding(definition)?;
+        MissionContentTemplate::decode_campaign_definition(
+            definition,
+            &self.authored_level,
+            &self.mission_reset_slots(),
+            self.runtime.random_state,
+        )
+        .map_err(|error| NativeWorldError::new(error.to_string()))
+    }
+
+    fn mission_reset_slots(&self) -> Vec<Level1ResetSourceSlot> {
+        self.entities
             .iter()
             .map(|entity| Level1ResetSourceSlot {
                 index: entity.index,
@@ -3496,14 +3523,23 @@ impl NativeWorldInspection {
                 entity_rng: entity.entity_rng,
                 control_flags: entity.control_flags,
             })
-            .collect::<Vec<_>>();
-        MissionContentTemplate::decode(
-            profile,
-            &self.authored_level,
-            &slots,
-            self.runtime.random_state,
-        )
-        .map_err(|error| NativeWorldError::new(error.to_string()))
+            .collect()
+    }
+
+    fn validate_campaign_definition_binding(
+        &self,
+        definition: &ValidatedCampaignDefinition,
+    ) -> Result<()> {
+        if self.package_sha256 != definition.package_sha256
+            || self.metadata.external_level != definition.identity.external_level
+            || self.metadata.internal_level != definition.identity.internal_level
+            || self.metadata.map_type.id() != definition.identity.map_type_id
+        {
+            return Err(NativeWorldError::new(
+                "campaign definition identity/package does not match decoded inspection",
+            ));
+        }
+        Ok(())
     }
 
     /// Construct an isolated deterministic session from the generic profile.
@@ -3515,6 +3551,26 @@ impl NativeWorldInspection {
     /// state is cloned from this validated inspection; no implementation
     /// fixture or stale Level 1 reset projection is consulted.
     pub fn level2_reset_session(&self) -> Result<Level2ResetSession> {
+        let mission = self.mission_content_template()?.session();
+        self.build_level2_reset_session(mission)
+    }
+
+    /// Construct the Level 2 compatibility session beneath the neutral,
+    /// descriptor-backed campaign owner.
+    pub(crate) fn level2_reset_session_from_definition(
+        &self,
+        definition: &ValidatedCampaignDefinition,
+    ) -> Result<Level2ResetSession> {
+        let mission = self
+            .mission_content_template_from_definition(definition)?
+            .session();
+        self.build_level2_reset_session(mission)
+    }
+
+    fn build_level2_reset_session(
+        &self,
+        mission: MissionContentSession,
+    ) -> Result<Level2ResetSession> {
         if self.profile != OwnerPackageProfile::Level2 {
             return Err(NativeWorldError::new(
                 "Level 2 reset session requested for a non-Level 2 package",
@@ -3543,7 +3599,6 @@ impl NativeWorldInspection {
         let state = self
             .reset_state
             .ok_or_else(|| NativeWorldError::new("validated Level 2 package has no reset state"))?;
-        let mission = self.mission_content_template()?.session();
         let nyphur_dispatcher = Level2NyphurDispatcher::from_qualified_reset(
             &self.players,
             &self.entities,
