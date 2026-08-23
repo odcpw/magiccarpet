@@ -794,11 +794,20 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
 
     let pickups = session.economy().spell_pickups();
     let constructor_global = level2_next_rng32(global_before);
-    assert!(
-        session.economy().authored_model45().is_empty(),
-        "action-51 rows reclaim in the same ApplyEvents pass: {:?}",
-        session.dispatch_events()
-    );
+    let hidden_model45_slots = session
+        .economy()
+        .authored_model45()
+        .iter()
+        .map(|source| {
+            assert!(!source.drawing_enabled);
+            assert!(session
+                .economy()
+                .map_chains()
+                .is_linked(source.source_entity_index));
+            source.source_entity_index
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(hidden_model45_slots.len(), 2);
     assert_eq!(pickups.len(), 2, "events: {:?}", session.dispatch_events());
     assert_eq!(pickups[0].authored_index, 155);
     assert_eq!(pickups[1].authored_index, 156);
@@ -858,6 +867,13 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
             ..
         } if *source_slot == pickups[0].source_entity_index
     )));
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.economy().authored_model45().is_empty());
+    assert!(hidden_model45_slots.iter().all(|slot| {
+        session.economy().free_slots.contains(slot)
+            || session.economy().slot_generation(*slot) > 1
+    }));
 
     session.reset();
     assert!(session.economy().spell_pickups().is_empty());
@@ -2050,6 +2066,93 @@ fn level_two_economy_dispatch_cursor_isolated_and_reset_replays_payloads() {
 }
 
 #[test]
+fn level_two_raw_source_phase_sidecars_initialize_hash_and_reset_for_exact_carriers() {
+    let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level2-day-owner-cache/components/gameplay");
+    let inspection = NativeWorld::inspect_level2_with_owner_cache(
+        level_two_fixture_path(),
+        &gameplay_cache,
+    )
+    .expect("qualified Level 2 gameplay component");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("raw source-phase carrier session");
+    let baseline_hash = session.economy().reset_hash();
+    let owner_entity_index = session.state.entity_index;
+    let holder_slot = session
+        .shared_spells()
+        .dynamic_pickups()
+        .iter()
+        .find(|holder| holder.model == 2)
+        .expect("qualified family-2 holder")
+        .index;
+
+    let projectile_slot = session
+        .economy_mut()
+        .spawn_castle_projectile(
+            Position::default(),
+            owner_entity_index,
+            holder_slot,
+            0,
+            0,
+            0,
+        )
+        .expect("Castle projectile carrier");
+    let carrier_slot = session
+        .economy_mut()
+        .spawn_mana_carrier(Position::default(), owner_entity_index, 0)
+        .expect("mana-carrier source phase");
+    let pulse_slot = session
+        .economy_mut()
+        .allocate_beyond_sight_pulse_effect(
+            holder_slot,
+            owner_entity_index,
+            owner_entity_index,
+            0,
+            16,
+            0,
+            0,
+            Position::default(),
+            Position::default(),
+            0,
+            0,
+        )
+        .expect("Beyond Sight pulse carrier")
+        .source_entity_index;
+    let attraction_slot = session
+        .allocate_level2_mana_attraction_field(16, MANA_ATTRACTION_ACTION)
+        .expect("mana-attraction source phase");
+    let slots = [projectile_slot, carrier_slot, pulse_slot, attraction_slot];
+    for slot in slots {
+        assert_eq!(
+            session.economy().source_phase_sidecar(slot),
+            Some(slot as u8),
+            "NewEvent initializes byte 0x3E from the exact numeric source slot"
+        );
+    }
+
+    let allocated_hash = session.economy().reset_hash();
+    assert_ne!(allocated_hash, baseline_hash);
+    assert_eq!(
+        session
+            .economy_mut()
+            .advance_source_phase_sidecar(projectile_slot),
+        Some((projectile_slot as u8).wrapping_add(1))
+    );
+    assert_ne!(
+        session.economy().reset_hash(),
+        allocated_hash,
+        "the raw source phase is part of deterministic state identity"
+    );
+
+    session.reset();
+    assert_eq!(session.economy().reset_hash(), baseline_hash);
+    for slot in slots {
+        assert_eq!(session.economy().source_phase_sidecar(slot), None);
+    }
+}
+
+#[test]
 fn level_two_mana_attraction_field_targets_spheres_in_source_order_and_expires() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
@@ -2172,6 +2275,24 @@ fn level_two_mana_attraction_field_targets_spheres_in_source_order_and_expires()
         .find(|field| field.source_entity_index == field_slot)
         .expect("field remains live")
         .life = -1;
+    let phase_before = session
+        .economy()
+        .source_phase_sidecar(field_slot)
+        .expect("field common source phase");
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let hidden = session
+        .economy()
+        .mana_attraction_fields()
+        .iter()
+        .find(|field| field.source_entity_index == field_slot)
+        .expect("field remains allocated through its callback pass");
+    assert!(!hidden.active);
+    assert!(session.economy().map_chains().is_linked(field_slot));
+    assert!(!session.economy().free_slots.contains(&field_slot));
+    assert_eq!(
+        session.economy().source_phase_sidecar(field_slot),
+        Some(phase_before.wrapping_add(1))
+    );
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session
@@ -2180,6 +2301,8 @@ fn level_two_mana_attraction_field_targets_spheres_in_source_order_and_expires()
             .iter()
             .all(|field| field.source_entity_index != field_slot)
     );
+    assert!(!session.economy().map_chains().is_linked(field_slot));
+    assert!(session.economy().free_slots.contains(&field_slot));
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
     assert!(session.economy().mana_attraction_fields().is_empty());
@@ -2367,28 +2490,29 @@ fn level_two_mana_carrier_dynamic_handler_collects_and_reclaims_sphere() {
     let carrier = session.economy().carrier().expect("live carrier");
     assert_eq!(carrier.source_entity_index, carrier_slot);
     assert_eq!(carrier.carried_mana, 10);
-    assert!(
-        session
-            .economy()
-            .spheres()
-            .iter()
-            .all(|sphere| sphere.source_entity_index != u16::try_from(sphere_slot).unwrap())
+    let sphere_slot = u16::try_from(sphere_slot).expect("sphere slot fits");
+    let hidden_sphere = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.source_entity_index == sphere_slot)
+        .copied()
+        .expect("collected sphere remains allocated through the callback pass");
+    assert_ne!(
+        hidden_sphere.control_flags & ENTITY_DRAW_DISABLED_BIT,
+        0
     );
-    assert!(
-        !session
-            .economy()
-            .map_chains()
-            .linked_entity_indices()
-            .contains(&u16::try_from(sphere_slot).expect("sphere slot fits"))
-    );
-    assert!(!session.dispatch_events().iter().any(|event| {
+    assert!(hidden_sphere.pending_delete);
+    assert!(session.economy().map_chains().is_linked(sphere_slot));
+    assert!(!session.economy().free_slots.contains(&sphere_slot));
+    assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
             Level2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::ManaSphere,
                 ..
-            } if *source_slot == u16::try_from(sphere_slot).expect("sphere slot fits")
+            } if *source_slot == sphere_slot
         )
     }));
     assert!(session.economy().events().iter().any(|event| {
@@ -2398,6 +2522,14 @@ fn level_two_mana_carrier_dynamic_handler_collects_and_reclaims_sphere() {
                 if *carrier_id == u32::from(carrier_slot) && *mana == 10
         )
     }));
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session
+        .economy()
+        .spheres()
+        .iter()
+        .all(|sphere| sphere.source_entity_index != sphere_slot));
+    assert!(!session.economy().map_chains().is_linked(sphere_slot));
+    assert!(session.economy().free_slots.contains(&sphere_slot));
     assert_ne!(session.economy().reset_hash(), baseline_hash);
     session.reset();
     assert_eq!(session.economy().reset_hash(), baseline_hash);

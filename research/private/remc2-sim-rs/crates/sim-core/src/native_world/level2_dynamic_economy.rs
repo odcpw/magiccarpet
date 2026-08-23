@@ -2854,15 +2854,7 @@ impl Level2EconomyState {
             sphere_state.assigned_carrier_id = 0;
             sphere_state.assigned_defender_slot = 0;
             sphere_state.pending_delete = true;
-            sphere_state.active = false;
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: sphere.source_entity_index,
-                    active: false,
-                    x: sphere.position.x,
-                    y: sphere.position.y,
-                })
-                .expect("Level 2 defender sphere source slot fits the map chain");
+            sphere_state.control_flags |= ENTITY_DRAW_DISABLED_BIT;
             self.events
                 .push(Level2EconomyEvent::CastleDefenderCollectedSphere {
                     defender_slot: source_slot,
@@ -2975,15 +2967,7 @@ impl Level2EconomyState {
                             life = original.max_life;
                             target_sphere_id = 0;
                             self.spheres[sphere_index].pending_delete = true;
-                            self.spheres[sphere_index].active = false;
-                            self.map_chains
-                                .sync_entity(RenderableMapSeed {
-                                    entity_index: sphere.source_entity_index,
-                                    active: false,
-                                    x: sphere.position.x,
-                                    y: sphere.position.y,
-                                })
-                                .expect("Level 2 sphere source slot fits the map chain");
+                            self.spheres[sphere_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
                             self.events.push(Level2EconomyEvent::ManaSphereCollected {
                                 sphere_id: sphere.id,
                                 carrier_id: original.id,
@@ -3176,15 +3160,7 @@ impl Level2EconomyState {
         sphere_state.assigned_carrier_id = 0;
         sphere_state.assigned_defender_slot = 0;
         sphere_state.pending_delete = true;
-        sphere_state.active = false;
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: sphere.source_entity_index,
-                active: false,
-                x: sphere.position.x,
-                y: sphere.position.y,
-            })
-            .expect("Level 2 sphere source slot fits the map chain");
+        sphere_state.control_flags |= ENTITY_DRAW_DISABLED_BIT;
         self.events.push(Level2EconomyEvent::ManaSphereCollected {
             sphere_id: sphere.id,
             carrier_id: carrier.id,
@@ -3221,6 +3197,8 @@ impl Level2EconomyState {
             pending_attacker_entity_index: 0,
             active: true,
         };
+        self.source_phase_sidecars
+            .insert(source_entity_index, source_entity_index as u8);
         self.carriers.push(carrier);
         self.refresh_owner_mana_rows();
         self.events.push(Level2EconomyEvent::ManaCarrierSpawned {
@@ -3378,6 +3356,8 @@ impl Level2EconomyState {
             return None;
         }
         self.castle_projectiles.push(projectile);
+        self.source_phase_sidecars
+            .insert(source_entity_index, source_entity_index as u8);
         self.source_owner
             .insert(source_entity_index, payload.source_id_entity_index);
         Some(source_entity_index)
@@ -5355,7 +5335,7 @@ impl Level2EconomyState {
                 let castle = self.castle.as_mut().expect("Castle remains installed");
                 castle.mana = castle.mana.wrapping_add(sphere.mana);
                 self.spheres[sphere_index].pending_delete = true;
-                self.spheres[sphere_index].active = false;
+                self.spheres[sphere_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
                 self.events.push(Level2EconomyEvent::ManaSphereCollected {
                     sphere_id: sphere.id,
                     carrier_id: u32::from(castle.source_entity_index),

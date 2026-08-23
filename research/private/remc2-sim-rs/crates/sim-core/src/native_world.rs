@@ -14,6 +14,8 @@ use std::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use crate::goat::LEVEL_TWO_GOAT_INDICES;
 use crate::{
     FlightContext, FlightEffectsContext, FlightEvent, FlightProfile, FlightState, FlightWorld,
     PlayerCommand, Position, SOURCE_SPELL_INDEX_MAP, SourceAudioCallTag, SpellFireContext,
@@ -31,7 +33,7 @@ use crate::{
     goat::{
         GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_PATROL_ACTION, GOAT_RENDER_PARAMETER_INDEX,
         GOAT_STAGE_POINT, GoatBehaviorConfig, GoatFamily, GoatPlayerTarget, GoatState,
-        GoatStepEvent, LEVEL_ONE_GOAT_INDICES, LEVEL_TWO_GOAT_INDICES, LiveWorldState,
+        GoatStepEvent, LEVEL_ONE_GOAT_INDICES, LiveWorldState,
     },
     goat_tmap::{
         GOAT_TMAP_SELECTORS, GOAT_TMAP_STATE_COUNT, GoatTmapBank, GoatTmapClocks, GoatTmapFrame,
@@ -1385,7 +1387,8 @@ pub struct Level2AuthoredModel45Source {
     pub byte_0x46: u8,
     /// Source `word_0x96_150`, zero for `AddTerrainModification_50250`.
     pub parent_entity_index: u16,
-    /// Source `byte_0x3E_62`, incremented after every ApplyEvents callback.
+    /// Source `byte_0x3E_62`, incremented by the active source scheduler after
+    /// every admitted callback.
     pub source_byte_3e: u8,
     pub position: Position,
     pub drawing_enabled: bool,
@@ -2265,6 +2268,10 @@ pub struct Level2AuthoredClass14Source {
     pub stage_tag: i16,
     pub position: Position,
     pub phase: u8,
+    /// Source byte-1 bit 4 (`DisableEntityDrawing04_57F10`).  This is
+    /// distinct from allocation/liveness until the next UpdateEntities
+    /// reclaim prologue clears the fixed row.
+    pub drawing_enabled: bool,
     pub active: bool,
 }
 
@@ -2672,6 +2679,12 @@ pub struct Level2EconomyState {
     sentinel_rng: u16,
 
     source_rng: BTreeMap<u16, u16>,
+
+    /// Raw common-header byte 0x3E for Level 2 carriers whose reused typed
+    /// domain payload does not otherwise expose that source coordinate.
+    /// NewEvent initializes it from the numeric slot and UpdateEntities
+    /// advances it after the callback, including on a retained tombstone.
+    source_phase_sidecars: BTreeMap<u16, u8>,
 
     source_owner: BTreeMap<u16, u16>,
 

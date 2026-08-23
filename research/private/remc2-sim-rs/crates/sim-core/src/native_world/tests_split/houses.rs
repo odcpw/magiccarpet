@@ -443,7 +443,7 @@ fn level_two_bad_stone_constructor_rejects_wrong_model_action_parameter_and_cros
 }
 
 #[test]
-fn level_two_authored_subtype45_runs_action51_and_reclaims_immediately() {
+fn level_two_authored_subtype45_runs_action51_and_reclaims_at_following_boundary() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
     let mut session = inspection
@@ -503,16 +503,29 @@ fn level_two_authored_subtype45_runs_action51_and_reclaims_immediately() {
         (2560, 0, 256, 2560)
     );
 
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let hidden = session
+        .economy()
+        .authored_model45()
+        .iter()
+        .find(|row| row.source_entity_index == source_slot)
+        .expect("model-45 row remains allocated through its callback pass");
+    assert!(hidden.active);
+    assert!(!hidden.drawing_enabled);
+    assert_eq!(hidden.source_byte_3e, source.source_byte_3e.wrapping_add(1));
     assert!(session
-        .economy_mut()
-        .step_authored_model45_slot(source_slot));
-    assert!(session.economy().authored_model45().is_empty());
-    assert!(!session
         .economy()
         .map_chains()
         .linked_entity_indices()
         .contains(&source_slot));
-    assert!(session.economy().free_slots.contains(&source_slot));
+    assert!(!session.economy().free_slots.contains(&source_slot));
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session
+        .economy()
+        .authored_model45()
+        .iter()
+        .all(|row| row.source_entity_index != source_slot));
 }
 
 #[test]
@@ -640,6 +653,7 @@ fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
         .allocate_level2_authored_class14(248)
         .expect("authored subtype-5 row");
     let source_slot = source.source_entity_index;
+    let source_phase = source.phase;
     let scroll_position = source.position;
     session
         .shared_spells_mut()
@@ -679,11 +693,26 @@ fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
         };
         assert_eq!(session.shared_spells().spell_experience()[family], expected);
     }
+    let hidden = session
+        .economy()
+        .authored_class14()
+        .iter()
+        .find(|source| source.source_entity_index == source_slot)
+        .copied()
+        .expect("collected scroll remains allocated through its callback pass");
+    assert!(hidden.active);
+    assert!(!hidden.drawing_enabled);
+    assert_eq!(hidden.phase, source_phase.wrapping_add(1));
+    assert!(session.economy().map_chains().is_linked(source_slot));
+    assert!(!session.economy().free_slots.contains(&source_slot));
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(!session
         .economy()
         .authored_class14()
         .iter()
         .any(|source| source.source_entity_index == source_slot));
+    assert!(!session.economy().map_chains().is_linked(source_slot));
     assert!(session.economy().free_slots.contains(&source_slot));
 }
 
@@ -773,7 +802,19 @@ fn level_two_authored_class14_model5_scans_past_remote_collision_for_local_xp() 
                 player_entity_index,
             } if *observed == source_slot && *player_entity_index == remote_entity_index
         )));
+    let hidden = session
+        .economy()
+        .authored_class14()
+        .iter()
+        .find(|source| source.source_entity_index == source_slot)
+        .expect("collected remote scroll remains until the following prologue");
+    assert!(!hidden.drawing_enabled);
+    assert!(session.economy().map_chains().is_linked(source_slot));
+    assert!(!session.economy().free_slots.contains(&source_slot));
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.economy().free_slots.contains(&source_slot));
+    assert!(!session.economy().map_chains().is_linked(source_slot));
 }
 
 #[test]
@@ -2150,11 +2191,22 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
         .economy()
         .castle()
         .expect("following flyer callback allocates a class-3/model-2 Castle seed");
-    assert_eq!(session.economy().player_castle_entity_index(), 0);
     assert_eq!((root.source_class, root.source_model), (3, 2));
     assert_eq!(root.action, 5);
-    assert_eq!(root.source_word_2e, 0);
-    assert_eq!(root.level, 0);
+    assert_eq!(root.source_word_2e, 4);
+    assert_eq!(root.level, 1);
+    assert_eq!(
+        session.economy().player_castle_entity_index(),
+        root.source_entity_index,
+        "the higher-slot root callback runs in the allocation pass and publishes its child relation"
+    );
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::DynamicArena {
+            kind: Level2DynamicArenaKind::CastleChild,
+            ..
+        }
+    )));
     assert!(session
         .economy()
         .events()
@@ -2636,7 +2688,11 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .castle_projectiles()
         .iter()
         .any(|projectile| projectile.active));
-    root_failed.economy_mut().free_slots = free_slots;
+    root_failed.economy_mut().free_slots = vec![
+        *free_slots
+            .last()
+            .expect("the qualified arena retains a root retry slot"),
+    ];
     let mut root = None;
     for _ in 0..32 {
         root_failed.step_outer_turn(PlayerCommand::default(), 0);
@@ -2677,6 +2733,11 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .expect("root remains after child allocation failure");
     assert_eq!(failed_root.source_entity_index, root_slot);
     assert_eq!(failed_root.source_word_2e, 0);
+    assert_eq!(
+        failed_root.phase,
+        (root_slot as u8).wrapping_add(1),
+        "the initial Castle callback's allocation-failure return still receives the common source epilogue"
+    );
     assert_eq!(child_failed.economy().player_castle_entity_index(), 0);
     assert!(!child_failed
         .economy()
@@ -2780,35 +2841,12 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .castle()
         .expect("completed callback root");
     assert_eq!((completed_root.action, completed_root.build_state), (4, 0));
-    let completed_child = occupied
-        .economy()
-        .castle_children()
-        .iter()
-        .find(|child| {
-            child.active
-                && child.source_entity_index == construction_slot
-                && child.source_class == construction_child_before_turn.source_class
-                && child.model == construction_child_before_turn.model
-                && child.action == construction_child_before_turn.action
-                && child.id_entity_index == construction_child_before_turn.id_entity_index
-                && child.owner_entity_index == construction_child_before_turn.owner_entity_index
-                && child.parent_entity_index == construction_child_before_turn.parent_entity_index
-        })
-        .copied()
-        .expect("completed BUILD row remains through its hiding pass");
-    assert_eq!(
-        occupied.economy().slot_generation(construction_slot),
-        construction_generation,
-        "the callback's same-pass hide keeps the old source generation"
-    );
-    assert_ne!(completed_child.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
-    assert!(!occupied.economy().map_chains().is_linked(construction_slot));
-
-    // The generic UpdateEntities prepass ran at the start of the
-    // completion turn. Reclaim therefore occurs on this additional
-    // ordinary pass, independent of the Castle root handler.
-    let mut following = occupied.clone();
-    following.step_outer_turn(PlayerCommand::default(), 0);
+    // The higher-slot BUILD callback hides the child after the lower-slot
+    // root was already visited. On the next UpdateEntities invocation the
+    // prologue reclaims that hidden row, then the root consumes build-state 2
+    // and enters action 4. Therefore observing the completed root also means
+    // the old child identity has already crossed its following-pass boundary.
+    let following = occupied.clone();
     let old_identity_still_live = following.economy().castle_children().iter().any(|child| {
         child.active
             && child.source_entity_index == construction_slot

@@ -3149,6 +3149,48 @@ fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
     assert_eq!(stepped_child.actual_speed, 124);
     assert!(stepped_child.position.z >= child.position.z);
 
+    session
+        .economy_mut()
+        .model6_spawned_children
+        .iter_mut()
+        .find(|candidate| candidate.source_entity_index == child.source_entity_index)
+        .expect("spawned child remains mutable for expiry")
+        .life = -1;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let hidden_child = session
+        .economy()
+        .model6_spawned_children()
+        .iter()
+        .find(|candidate| candidate.source_entity_index == child.source_entity_index)
+        .copied()
+        .expect("expired child remains allocated through its callback pass");
+    assert!(!hidden_child.active);
+    assert_ne!(hidden_child.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    assert!(session
+        .economy()
+        .map_chains()
+        .is_linked(child.source_entity_index));
+    assert!(!session
+        .economy()
+        .free_slots
+        .contains(&child.source_entity_index));
+    session
+        .economy_mut()
+        .reclaim_inactive_slots_at_source_boundary();
+    assert!(session
+        .economy()
+        .model6_spawned_children()
+        .iter()
+        .all(|candidate| candidate.source_entity_index != child.source_entity_index));
+    assert!(!session
+        .economy()
+        .map_chains()
+        .is_linked(child.source_entity_index));
+    assert!(session
+        .economy()
+        .free_slots
+        .contains(&child.source_entity_index));
+
     // `sub_104D0_terrain_tile_is_water` disables drawing after the
     // height projection. Force the live second source onto a source water
     // tile to exercise that real branch before reclaim.
@@ -3202,6 +3244,22 @@ fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
         .find(|source| source.source_entity_index == first.source_entity_index)
         .expect("model-6 parent for expiry")
         .life = -1;
+    let parent_phase_before = session
+        .economy()
+        .authored_model6()
+        .iter()
+        .find(|source| source.source_entity_index == first.source_entity_index)
+        .expect("model-6 parent before expiry")
+        .phase;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let hidden_parent = session
+        .economy()
+        .authored_model6()
+        .iter()
+        .find(|source| source.source_entity_index == first.source_entity_index)
+        .expect("model-6 parent remains allocated through its callback pass");
+    assert!(!hidden_parent.active);
+    assert_eq!(hidden_parent.phase, parent_phase_before.wrapping_add(1));
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session
@@ -3375,6 +3433,22 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
         .find(|source| source.source_entity_index == meteor.source_entity_index)
         .expect("Meteor parent for expiry")
         .life = -1;
+    let parent_phase_before = session
+        .economy()
+        .authored_model17()
+        .iter()
+        .find(|source| source.source_entity_index == meteor.source_entity_index)
+        .expect("Meteor parent before expiry")
+        .phase;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let hidden_parent = session
+        .economy()
+        .authored_model17()
+        .iter()
+        .find(|source| source.source_entity_index == meteor.source_entity_index)
+        .expect("Meteor parent remains allocated through its callback pass");
+    assert!(!hidden_parent.active);
+    assert_eq!(hidden_parent.phase, parent_phase_before.wrapping_add(1));
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session
@@ -3497,7 +3571,8 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
             .find(|child| child.source_entity_index == first_child.source_entity_index)
             .expect("Wind child remains linked")
             .phase,
-        first_child.phase.wrapping_add(1)
+        first_child.phase,
+        "UpdateEntities action 82 has a matching selector word but a null callback"
     );
     let stepped_child = session
         .economy()
@@ -3508,7 +3583,7 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
         .expect("Wind child after action-82 writeback");
     assert_eq!(stepped_child.action, 82);
     assert_eq!((stepped_child.max_life, stepped_child.life), (500, 500));
-    assert!(!stepped_child.drawing_enabled);
+    assert!(stepped_child.drawing_enabled);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::DynamicArena {
@@ -3517,7 +3592,7 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
             ..
         } if *source_slot == wind.source_entity_index
     )));
-    assert!(session.dispatch_events().iter().any(|event| matches!(
+    assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
         Level2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::Model22SpawnedChild,
@@ -3533,8 +3608,9 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
     assert_eq!(session.economy().authored_model22().len(), parent_count);
     session.economy_mut().free_slots = saved_free_slots;
 
-    // The parent callback disables the entire linked chain; reclaim then
-    // returns every map-linked source slot to the shared arena.
+    // The parent callback disables the entire linked chain. UpdateEntities'
+    // common epilogue advances the parent in that pass; the next pass
+    // prologue returns every map-linked source slot to the shared arena.
     session
         .economy_mut()
         .authored_model22
@@ -3542,6 +3618,35 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
         .find(|source| source.source_entity_index == wind.source_entity_index)
         .expect("Wind parent for expiry")
         .life = -1;
+    let parent_phase_before = session
+        .economy()
+        .authored_model22()
+        .iter()
+        .find(|source| source.source_entity_index == wind.source_entity_index)
+        .expect("Wind parent before expiry")
+        .phase;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let hidden_parent = session
+        .economy()
+        .authored_model22()
+        .iter()
+        .find(|source| source.source_entity_index == wind.source_entity_index)
+        .expect("Wind parent remains allocated through its callback pass");
+    assert!(hidden_parent.active);
+    assert_ne!(
+        hidden_parent.control_flags & ENTITY_DRAW_DISABLED_BIT,
+        0
+    );
+    assert!(session
+        .economy()
+        .map_chains()
+        .is_linked(hidden_parent.source_entity_index));
+    assert_eq!(hidden_parent.phase, parent_phase_before.wrapping_add(1));
+    assert!(session
+        .economy()
+        .model22_spawned_children()
+        .iter()
+        .all(|child| !child.active));
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session
@@ -3638,14 +3743,18 @@ fn level_two_whirlwind_action82_player_handoff_is_exact() {
     assert_eq!(session.economy().events, economy_events_before);
     assert_eq!(session.economy().global_rng, global_rng_before);
 
-    // The ordinary Level 2 source cursor reaches the same row, then reset
-    // and replay reproduce the complete campaign hash.
+    // The ordinary Level 2 source cursor sees the same selector, but unlike
+    // the direct ApplyEvents helper above, UpdateEntities finds a matching
+    // action-table word and a null callback address. The parent still owns
+    // linked-chain motion; the child itself is retained without dispatch,
+    // phase advance, or hiding.
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
     let replay_once = session
         .allocate_level2_authored_model22(110)
         .expect("first production Whirlwind replay");
-    let replay_child_slot = session.economy().model22_spawned_children()[0].source_entity_index;
+    let replay_child_before = session.economy().model22_spawned_children()[0];
+    let replay_child_slot = replay_child_before.source_entity_index;
     session.step_outer_turn(PlayerCommand::default(), 0);
     let first_hash = session.campaign_state_hash();
     assert!(
@@ -3657,10 +3766,11 @@ fn level_two_whirlwind_action82_player_handoff_is_exact() {
                 |candidate| candidate.source_entity_index == replay_child_slot
                     && candidate.action == 82
                     && candidate.life == 500
-                    && !candidate.drawing_enabled
+                    && candidate.drawing_enabled
+                    && candidate.phase == replay_child_before.phase
             )
     );
-    assert!(session.dispatch_events().iter().any(|event| matches!(
+    assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
         Level2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::Model22SpawnedChild,
@@ -5696,4 +5806,37 @@ fn level_two_fireball_collision_rejects_invalid_targets_and_duplicate_mailbox() 
             .pending_damage,
         250
     );
+}
+
+#[test]
+fn cf10_unknown_reached_selector_rolls_back_outer_turn_before_later_callbacks() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 session");
+    session.select_level2_campaign_entry_stage();
+    let player_slot = session.state.entity_index;
+    session.session.state.live.economy.entities[usize::from(player_slot)]
+        .set_source_action(u8::MAX);
+
+    let hash_before = session.campaign_state_hash();
+    let rng_before = session.cf07_rng_observation();
+    let journal_before = session.effect_journal().receipt();
+    let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+
+    assert!(evidence.is_empty());
+    assert_eq!(session.campaign_state_hash(), hash_before);
+    assert_eq!(session.cf07_rng_observation(), rng_before);
+    assert_eq!(session.effect_journal().receipt(), journal_before);
+    assert_eq!(session.dispatch_events().len(), 1);
+    assert!(matches!(
+        &session.dispatch_events()[0],
+        Level2DispatchEvent::Error {
+            source_slot,
+            message,
+            ..
+        } if *source_slot == player_slot
+            && message.contains("unregistered UpdateEntities selector 3:255")
+    ));
 }

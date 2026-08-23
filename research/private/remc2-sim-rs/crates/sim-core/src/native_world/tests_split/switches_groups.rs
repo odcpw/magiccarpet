@@ -524,13 +524,24 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
         .expect("live row-110 wind parent")
         .life = 0;
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(
-        session
-            .economy()
-            .authored_model22()
-            .iter()
-            .all(|source| source.authored_index != 110)
+    let hidden_wind = session
+        .economy()
+        .authored_model22()
+        .iter()
+        .find(|source| source.authored_index == 110)
+        .expect("expired wind parent remains allocated through its callback pass");
+    assert_ne!(
+        hidden_wind.control_flags & ENTITY_DRAW_DISABLED_BIT,
+        0
     );
+    assert!(session.economy().map_chains().is_linked(wind_slot));
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session
+        .economy()
+        .authored_model22()
+        .iter()
+        .all(|source| source.authored_index != 110));
+    assert!(!session.economy().map_chains().is_linked(wind_slot));
     session.state.position = Position {
         x: root.position.x.wrapping_add(4_096),
         y: root.position.y,
@@ -1071,14 +1082,23 @@ fn level_two_group31_switch274_activates_group28_on_strict_overlap() {
         })
         .collect::<BTreeSet<_>>();
     assert_eq!(collected_scroll_slots.len(), expected_group28.len());
-    assert!(
-        !session
-            .economy()
-            .authored_class14()
-            .iter()
-            .any(|row| row.authored_index == 275)
-    );
+    let hidden_scroll = session
+        .economy()
+        .authored_class14()
+        .iter()
+        .find(|row| row.authored_index == 275)
+        .expect("collected group-28 row remains through the callback pass");
+    assert!(!hidden_scroll.drawing_enabled);
+    assert!(session
+        .economy()
+        .map_chains()
+        .is_linked(hidden_scroll.source_entity_index));
     session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(!session
+        .economy()
+        .authored_class14()
+        .iter()
+        .any(|row| row.authored_index == 275));
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated { group: 28, .. }

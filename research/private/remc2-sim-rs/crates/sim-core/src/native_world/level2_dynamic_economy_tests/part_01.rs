@@ -1441,8 +1441,19 @@
                 .economy_mut()
                 .absorb_sphere_into_carrier(sphere_slot, carrier_slot)
         );
-        assert_eq!(first.economy().spheres()[0].active, false);
-        assert_eq!(first.economy().spheres()[0].assigned_carrier_id, 0);
+        let collected_sphere = first
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("collected sphere remains allocated through its callback");
+        assert!(collected_sphere.active);
+        assert!(collected_sphere.pending_delete);
+        assert_ne!(
+            collected_sphere.control_flags & ENTITY_DRAW_DISABLED_BIT,
+            0
+        );
+        assert_eq!(collected_sphere.assigned_carrier_id, 0);
         assert_eq!(
             first.economy().carrier().expect("carrier").carried_mana,
             321
@@ -1455,6 +1466,16 @@
                 mana: 321,
             }
         );
+        first
+            .economy_mut()
+            .reclaim_inactive_slots_at_source_boundary();
+        assert!(!first
+            .economy()
+            .spheres()
+            .iter()
+            .any(|sphere| sphere.source_entity_index == sphere_slot));
+        assert!(!first.economy().map_chains().is_linked(sphere_slot));
+        assert!(first.economy().free_slots.contains(&sphere_slot));
 
         let castle_slot = first
             .economy_mut()
@@ -2106,14 +2127,17 @@
             action4_session.economy().castle().expect("Castle").mana,
             100
         );
-        assert!(
-            !action4_session
-                .economy()
-                .spheres()
-                .iter()
-                .find(|sphere| sphere.id == action4_sphere)
-                .expect("absorbed sphere")
-                .active
+        let absorbed_sphere = action4_session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.id == action4_sphere)
+            .expect("absorbed sphere remains allocated through its callback");
+        assert!(absorbed_sphere.active);
+        assert!(absorbed_sphere.pending_delete);
+        assert_ne!(
+            absorbed_sphere.control_flags & ENTITY_DRAW_DISABLED_BIT,
+            0
         );
         // Source EndOfCastleProjectile calls sub_609E0 before the stage
         // maintenance chain. A non-lethal hit from the root's source ID sets
@@ -2967,15 +2991,15 @@
                 mana: 321,
             }]
         );
-        assert!(
-            !session
-                .economy()
-                .spheres()
-                .iter()
-                .find(|sphere| sphere.id == valid)
-                .expect("valid sphere")
-                .active
-        );
+        let collected = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.id == valid)
+            .expect("valid sphere remains allocated through its callback");
+        assert!(collected.active);
+        assert!(collected.pending_delete);
+        assert_ne!(collected.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
         assert_eq!(
             session
                 .economy()
@@ -2983,8 +3007,19 @@
                 .iter()
                 .filter(|sphere| sphere.active)
                 .count(),
-            3
+            4
         );
+        let collected_slot = collected.source_entity_index;
+        session
+            .economy_mut()
+            .reclaim_inactive_slots_at_source_boundary();
+        assert!(!session
+            .economy()
+            .spheres()
+            .iter()
+            .any(|sphere| sphere.source_entity_index == collected_slot));
+        assert!(!session.economy().map_chains().is_linked(collected_slot));
+        assert!(session.economy().free_slots.contains(&collected_slot));
     }
 
     #[test]
@@ -3055,15 +3090,15 @@
         assert!(action4.economy_mut().step_castle_action(action4_slot));
         assert_eq!(action4.economy().castle().expect("Castle").mana, 100);
         assert_eq!(action4.economy().castle().expect("Castle").phase, 1);
-        assert!(
-            !action4
-                .economy()
-                .spheres()
-                .iter()
-                .find(|sphere| sphere.id == action4_sphere)
-                .expect("action-4 sphere")
-                .active
-        );
+        let collected = action4
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.id == action4_sphere)
+            .expect("action-4 sphere remains allocated through its callback");
+        assert!(collected.active);
+        assert!(collected.pending_delete);
+        assert_ne!(collected.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
         assert_eq!(
             action4.economy().events(),
             &[Level2EconomyEvent::ManaSphereCollected {
@@ -3072,6 +3107,17 @@
                 mana: 100,
             }]
         );
+        let collected_slot = collected.source_entity_index;
+        action4
+            .economy_mut()
+            .reclaim_inactive_slots_at_source_boundary();
+        assert!(!action4
+            .economy()
+            .spheres()
+            .iter()
+            .any(|sphere| sphere.source_entity_index == collected_slot));
+        assert!(!action4.economy().map_chains().is_linked(collected_slot));
+        assert!(action4.economy().free_slots.contains(&collected_slot));
 
         // With a free slot, sub_5FCA0 emits destruction sound before the
         // stage-destroyed and final Castle-destroyed events. This is a source
@@ -3736,8 +3782,127 @@
         );
         session.reset();
 
-        // Exhaustion rejects action-53's multi-resident transaction without
-        // committing House state, arena allocation, RNG, or map surgery.
+        // A rejected NewEvent allocation drops only the requested resident.
+        // The live House callback has already consumed its damage mailbox,
+        // changed life/occupancy, and reached the common byte-0x3E epilogue.
+        assert_eq!(
+            session
+                .ordinary_mut()
+                .houses
+                .try_enter_resident(house.entity_index),
+            HouseResidentEntry::Entered
+        );
+        session.economy.economy.free_slots.clear();
+        session.economy.economy.replacement_cursor_exclusions = (1_u16..1_000).collect();
+        let damage_before = session
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .expect("damage-exhaustion House row");
+        let damage_terrain_before = session.terrain_hash();
+        session
+            .ordinary_mut()
+            .inject_house_damage(house.entity_index, 1, 111)
+            .expect("damage-exhaustion mailbox");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let damage_after = session
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .expect("damage-exhaustion House result");
+        assert_eq!(damage_after.life, damage_before.life.wrapping_sub(1));
+        assert_eq!(damage_after.occupants, damage_before.occupants - 1);
+        assert_eq!(damage_after.pending_damage, 0);
+        assert_eq!(damage_after.pending_attacker, 0);
+        assert_eq!(damage_after.phase, damage_before.phase.wrapping_add(1));
+        assert_eq!(session.terrain_hash(), damage_terrain_before);
+        assert!(session.economy().house_residents().is_empty());
+        assert!(session.economy().map_chains().is_linked(house.entity_index));
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Error { source_slot, .. }
+                if *source_slot == house.entity_index
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::House { source_slot, events, .. }
+                if *source_slot == house.entity_index
+                    && events.iter().any(|event| matches!(
+                        event,
+                        HouseStepEvent::ResidentRequested {
+                            attacker_entity_index: 111,
+                            ..
+                        }
+                    ))
+        )));
+        session.reset();
+
+        // The periodic source branch consumes an eligibility draw and then a
+        // resident-selection draw before NewEvent is attempted. Exhausting the
+        // allocator must not rewind either draw.
+        let periodic_capacity = house.capacity;
+        assert!(periodic_capacity > 5);
+        let periodic_seed = (0..=u16::MAX)
+            .find(|seed| {
+                let after_eligibility = level2_next_rng16(*seed);
+                i32::from(after_eligibility % periodic_capacity.cast_unsigned())
+                    > i32::from(periodic_capacity)
+                        - (i32::from(periodic_capacity) >> 4)
+                        - 2
+            })
+            .expect("qualified House has an eligible periodic RNG seed");
+        {
+            let mut ordinary = session.ordinary_mut();
+            let periodic = ordinary
+                .house_mut(house.entity_index)
+                .expect("periodic House row");
+            periodic.phase = 0;
+            periodic.occupants = i32::from(periodic_capacity);
+            periodic.rng = periodic_seed;
+        }
+        session.economy.economy.free_slots.clear();
+        session.economy.economy.replacement_cursor_exclusions = (1_u16..1_000).collect();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let periodic_after = session
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .expect("periodic House result");
+        assert_eq!(
+            periodic_after.rng,
+            level2_next_rng16(level2_next_rng16(periodic_seed))
+        );
+        assert_eq!(periodic_after.occupants, i32::from(periodic_capacity));
+        assert_eq!(periodic_after.phase, 1);
+        assert!(session.economy().house_residents().is_empty());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Error { source_slot, .. }
+                if *source_slot == house.entity_index
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::House { source_slot, events, .. }
+                if *source_slot == house.entity_index
+                    && events.iter().any(|event| matches!(
+                        event,
+                        HouseStepEvent::ResidentRequested {
+                            attacker_entity_index: 0,
+                            ..
+                        }
+                    ))
+        )));
+        session.reset();
+
+        // Source NewEvent exhaustion skips only the requested resident. The
+        // House occupant/RNG mutation, terrain removal, draw-disable, and
+        // UpdateEntities byte-0x3E epilogue remain committed.
         session
             .ordinary_mut()
             .inject_house_damage(house.entity_index, house.life.wrapping_add(1), 111)
@@ -3750,7 +3915,121 @@
             .copied()
             .find(|candidate| candidate.entity_index == house.entity_index)
             .expect("failed House source row");
-        session.economy_mut().free_slots.clear();
+        let mut expected_removal_terrain = session.canonical_terrain().clone();
+        let expected_removal = expected_removal_terrain
+            .apply_house_removal(
+                failed_house.position,
+                failed_house.rng,
+                failed_house.occupants,
+                failed_house.parameter.produces_villagers(),
+                inspection
+                    .level2_house_build_footprints
+                    .get(&failed_house.building_index)
+                    .expect("qualified removal footprint"),
+            )
+            .expect("independent source-shaped House removal result");
+
+        // Definition/terrain failures are different from ordinary NewEvent
+        // exhaustion: they abort the scheduler visit and restore the complete
+        // pre-turn simulation snapshot, leaving only one typed error receipt.
+        let mut malformed = session.clone();
+        assert!(malformed
+            .ordinary_mut()
+            .house_build_footprints
+            .remove(&house.building_index)
+            .is_some());
+        let malformed_live_before = malformed.session.state.live.clone();
+        let malformed_terrain_before = malformed.terrain_hash();
+        let malformed_ordinary_before = malformed.ordinary().reset_hash();
+        let malformed_economy_before = malformed.economy().reset_hash();
+        let malformed_map_before = malformed.economy().map_chains().linked_entity_indices();
+        let malformed_house_before = malformed
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .expect("malformed-footprint House before visit");
+        malformed.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(malformed.session.state.live, malformed_live_before);
+        assert_eq!(malformed.terrain_hash(), malformed_terrain_before);
+        assert_eq!(malformed.ordinary().reset_hash(), malformed_ordinary_before);
+        assert_eq!(malformed.economy().reset_hash(), malformed_economy_before);
+        assert_eq!(
+            malformed.economy().map_chains().linked_entity_indices(),
+            malformed_map_before
+        );
+        assert_eq!(
+            malformed
+                .ordinary()
+                .houses()
+                .iter()
+                .copied()
+                .find(|candidate| candidate.entity_index == house.entity_index),
+            Some(malformed_house_before)
+        );
+        assert_eq!(
+            malformed
+                .dispatch_events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Error { source_slot, .. }
+                        if *source_slot == house.entity_index
+                ))
+                .count(),
+            1
+        );
+        assert!(!malformed.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::House { source_slot, .. }
+                if *source_slot == house.entity_index
+        )));
+
+        let mut prefix = session.clone();
+        let prefix_slot = *prefix
+            .economy()
+            .free_slots
+            .last()
+            .expect("one ordinary NewEvent slot for prefix proof");
+        prefix.economy.economy.free_slots = vec![prefix_slot];
+        prefix.economy.economy.replacement_cursor_exclusions = (1_u16..1_000).collect();
+        prefix.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(prefix.canonical_terrain(), &expected_removal_terrain);
+        let prefix_house = prefix
+            .ordinary()
+            .houses()
+            .iter()
+            .copied()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .expect("one-slot prefix House tombstone");
+        assert_eq!(prefix_house.rng, expected_removal.final_rng);
+        assert_eq!(prefix_house.occupants, expected_removal.final_occupants);
+        let prefix_residents = prefix
+            .economy()
+            .house_residents()
+            .iter()
+            .filter(|resident| resident.parent_house_entity_index == house.entity_index)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(prefix_residents.len(), 1);
+        assert_eq!(prefix_residents[0].source_entity_index, prefix_slot);
+        assert_eq!((prefix_residents[0].model, prefix_residents[0].action), (4, 33));
+        assert!(prefix
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(
+                event,
+                Level2DispatchEvent::House { source_slot, events, .. }
+                    if *source_slot == house.entity_index
+                        && events.iter().any(|event| matches!(
+                            event,
+                            HouseStepEvent::RemoveFootprint { .. }
+                        ))
+            )));
+
+        session.economy.economy.free_slots.clear();
+        session.economy.economy.replacement_cursor_exclusions = (1_u16..1_000).collect();
         let failed_terrain_hash = session.terrain_hash();
         let failed_map = session.economy().map_chains().linked_entity_indices();
         let failed_source_rng = session.economy().source_rng.clone();
@@ -3758,31 +4037,37 @@
         let failed_live_arena = session.economy().live_arena_slots();
         let failed_house_owner = session.economy().source_owner(house.entity_index);
         session.step_outer_turn(PlayerCommand::default(), 0);
-        assert!(session.dispatch_events().iter().any(|event| {
-            matches!(
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::Error { source_slot, .. }
                 if *source_slot == house.entity_index
-            )
-        }));
-        assert!(!session.dispatch_events().iter().any(|event| {
+        )));
+        assert!(session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::House { source_slot, .. }
+                Level2DispatchEvent::House { source_slot, events, .. }
                     if *source_slot == house.entity_index
+                        && events.iter().any(|event| matches!(
+                            event,
+                            HouseStepEvent::RemoveFootprint { .. }
+                        ))
             )
         }));
-        assert_eq!(
-            session
-                .ordinary()
-                .houses()
-                .iter()
-                .find(|candidate| candidate.entity_index == house.entity_index)
-                .copied(),
-            Some(failed_house)
-        );
+        let removed_house = session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .copied()
+            .expect("removed House tombstone");
+        assert!(!removed_house.active);
+        assert_eq!(removed_house.action, 53);
+        assert_eq!(removed_house.phase, failed_house.phase.wrapping_add(1));
+        assert_eq!(removed_house.rng, expected_removal.final_rng);
+        assert_eq!(removed_house.occupants, expected_removal.final_occupants);
         assert_eq!(session.economy().house_residents().len(), 0);
-        assert_eq!(session.terrain_hash(), failed_terrain_hash);
+        assert_eq!(session.canonical_terrain(), &expected_removal_terrain);
+        assert_ne!(session.terrain_hash(), failed_terrain_hash);
         assert_eq!(session.economy().source_rng, failed_source_rng);
         assert_eq!(
             session.economy().global_rng,
@@ -3795,7 +4080,37 @@
         );
         assert_eq!(
             session.economy().map_chains().linked_entity_indices(),
-            failed_map
+            failed_map,
+            "DisableEntityDrawing retains the House map link through the dispatch pass"
+        );
+        let hidden_raw = &session.economy.entities[usize::from(house.entity_index)];
+        assert!(hidden_raw.active);
+        assert_eq!(hidden_raw.class, 10);
+        assert!(hidden_raw.drawing_disabled());
+        assert_eq!(
+            session.economy.economy.owner_class.get(&house.entity_index),
+            Some(&10)
+        );
+        assert!(!session.economy().free_slots.contains(&house.entity_index));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session
+            .economy()
+            .map_chains()
+            .is_linked(house.entity_index));
+        assert!(session.economy().free_slots.contains(&house.entity_index));
+        let reclaimed_raw = &session.economy.entities[usize::from(house.entity_index)];
+        assert!(!reclaimed_raw.active);
+        assert_eq!(reclaimed_raw.class, 0);
+        assert!(!session
+            .economy
+            .economy
+            .owner_class
+            .contains_key(&house.entity_index));
+        assert_eq!(session.economy().source_owner(house.entity_index), 0);
+        assert_eq!(
+            session.economy().slot_rng.get(&house.entity_index),
+            Some(&expected_removal.final_rng),
+            "sub_57F20 preserves the reclaimed House RNG in the free-row carrier"
         );
         session.reset();
         assert_eq!(session.terrain_hash(), baseline_terrain_hash);

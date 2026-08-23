@@ -462,6 +462,24 @@ impl HouseFamily {
         &self.houses
     }
 
+    #[cfg(test)]
+    pub(crate) fn house_mut(&mut self, entity_index: u16) -> Option<&mut HouseState> {
+        self.houses
+            .iter_mut()
+            .find(|house| house.entity_index == entity_index)
+    }
+
+    /// Apply the common UpdateEntities byte-0x3E epilogue to an allocated
+    /// house row, including a row whose callback just disabled it.
+    pub(crate) fn advance_source_phase(&mut self, source_entity_index: u16) -> Option<u8> {
+        let house = self
+            .houses
+            .iter_mut()
+            .find(|house| house.entity_index == source_entity_index)?;
+        house.phase = house.phase.wrapping_add(1);
+        Some(house.phase)
+    }
+
     /// Install the class-10/model-45 row produced by Builder action 96.
     ///
     /// `NewEvent_4A050` may reuse a reclaimed source slot, so an inactive

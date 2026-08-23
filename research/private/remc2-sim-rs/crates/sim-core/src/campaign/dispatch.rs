@@ -81,6 +81,8 @@ pub enum ExistingHandler {
     ObjectiveSwitch = 22,
     Class14Events = 23,
     SpellHolderAndPickup = 24,
+    BeeFamily = 25,
+    CastleAuxiliary = 26,
 }
 
 impl ExistingHandler {
@@ -110,6 +112,8 @@ impl ExistingHandler {
             Self::ObjectiveSwitch => "qualified Level 2 model-32 objective switch",
             Self::Class14Events => "qualified Level 2 class-14 constructors",
             Self::SpellHolderAndPickup => "accepted spell holder and pickup constructors",
+            Self::BeeFamily => "accepted Level 2 Bee reset rows and spawned children",
+            Self::CastleAuxiliary => "accepted Level 2 Castle auxiliary constructor",
         }
     }
 
@@ -140,6 +144,8 @@ impl ExistingHandler {
             Self::ObjectiveSwitch => "level2-objective-switch",
             Self::Class14Events => "level2-class14-events",
             Self::SpellHolderAndPickup => "spell-holder-and-pickup-family",
+            Self::BeeFamily => "level2-bee-family",
+            Self::CastleAuxiliary => "level2-castle-auxiliary",
         }
     }
 }
@@ -272,9 +278,11 @@ compiled_registry! {
         (BadStone, 2, [9]);
         (PlayerFlight, 3, [0]);
         (NyphurPlayer, 3, [1]);
-        (CastleRoot, 3, [5]);
+        (PlayerFlight, 3, [2, 3]);
+        (CastleRoot, 3, [4, 5, 6]);
         (ManaCarrier, 3, [9]);
         (GoatFamily, 5, [9, 10, 11, 12, 13, 14, 15]);
+        (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
         (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
         (ArcherFamily, 5, [33, 34, 35, 36, 37, 38, 39]);
         (Model9Family, 5, [72, 73]);
@@ -283,6 +291,7 @@ compiled_registry! {
         (BuilderVillagerPostBuild, 5, [105]);
         (VillagerFamily, 5, [106, 107, 108, 109, 110, 111]);
         (TraderFamily, 5, [112, 113, 114, 115, 116, 117, 118, 119]);
+        (CastleAuxiliary, 5, [121, 122, 124, 125]);
         (FireflyFamily, 5, [153, 154, 155, 156, 157, 159]);
         (MultipartFamily, 5, [232]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
@@ -304,12 +313,14 @@ compiled_registry! {
         (CastleRoot, 3, [2]);
         (ManaCarrier, 3, [3]);
         (GoatFamily, 5, [1]);
+        (BeeFamily, 5, [2]);
         (MultipartFamily, 5, [3]);
         (ArcherFamily, 5, [4]);
         (Model9Family, 5, [9]);
         (BuilderFamily, 5, [12]);
         (VillagerFamily, 5, [13]);
         (TraderFamily, 5, [14]);
+        (CastleAuxiliary, 5, [15]);
         (FireflyFamily, 5, [19]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
         (Model6ProjectileChild, 9, [14]);
@@ -541,6 +552,32 @@ mod tests {
             .collect()
     }
 
+    fn cf10_supplemental_handlers() -> BTreeMap<String, &'static str> {
+        let mut expected = BTreeMap::new();
+        for (class, actions, handler) in [
+            (3_u16, &[2_u16, 3][..], "player-flight"),
+            (3, &[4, 6][..], "castle-root"),
+            (
+                5,
+                &[16, 17, 18, 19, 20, 21, 22, 23][..],
+                "level2-bee-family",
+            ),
+            (5, &[121, 122, 124, 125][..], "level2-castle-auxiliary"),
+        ] {
+            for action in actions {
+                for site in ["ApplyEvents", "UpdateEntities"] {
+                    expected.insert(format!("{site}:ClassAction:{class}:{action}"), handler);
+                }
+            }
+        }
+        expected.insert("Constructor:ClassModel:5:2".to_owned(), "level2-bee-family");
+        expected.insert(
+            "Constructor:ClassModel:5:15".to_owned(),
+            "level2-castle-auxiliary",
+        );
+        expected
+    }
+
     #[test]
     fn cf03_compiled_registry_matches_source_sites() {
         let inventory: Value = serde_json::from_str(INVENTORY).expect("checked inventory JSON");
@@ -559,7 +596,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 315);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 349);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -574,7 +611,20 @@ mod tests {
             .iter()
             .map(|entry| source_key(&entry.key))
             .collect::<BTreeSet<_>>();
-        assert_eq!(compiled_keys, report_keys);
+        assert!(
+            report_keys.is_subset(&compiled_keys),
+            "the sealed CF03 archaeology receipt remains a compiled subset"
+        );
+        let supplemental_keys = compiled_keys
+            .difference(&report_keys)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let supplemental_handlers = cf10_supplemental_handlers();
+        assert_eq!(
+            supplemental_keys,
+            supplemental_handlers.keys().cloned().collect(),
+            "only source-backed handlers accepted after the CF03 receipt may extend the registry"
+        );
 
         let mut expected_handlers = BTreeMap::new();
         for group in registry["entries"].as_array().expect("registry entries") {
@@ -619,6 +669,8 @@ mod tests {
             );
         }
         assert_eq!(expected_handlers.len(), 315);
+        expected_handlers.extend(supplemental_handlers);
+        assert_eq!(expected_handlers.len(), 349);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

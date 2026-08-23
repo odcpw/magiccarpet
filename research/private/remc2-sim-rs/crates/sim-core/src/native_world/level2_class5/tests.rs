@@ -79,12 +79,22 @@ fn configure_three_level_two_creature_sounds(session: &mut Level2ResetSession) {
         if selected.contains(&goat.entity_index) {
             continue;
         }
-        goat.action = 0;
+        // Keep muted rows on a compiled Goat callback. Action 0 is a real
+        // source callback that this bounded Goat implementation has not
+        // closed, so using it as a fake no-op would let the old friendly route
+        // vector bypass the registry. This action-9 seed advances without a
+        // bleat or perception turn.
+        goat.action = 9;
         goat.pending_damage = 0;
         goat.pending_attacker = 0;
         goat.current_attacker = 0;
         goat.partner_entity_index = None;
         goat.target_entity_index = None;
+        goat.actual_speed = 0;
+        goat.rng = 0;
+        goat.phase = 1;
+        goat.proximity_countdown = 0;
+        goat.proximity_subcounter = 0;
         assert!(session.goats.replace_goat_for_test(goat));
     }
 
@@ -451,6 +461,10 @@ fn archer_root_and_child_allocation_failures_are_atomic() {
 fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
     let (mut session, _) = activate_group20_archers();
     let (root_slot, child_slot, _) = produce_archer_child(&mut session);
+    assert!(
+        child_slot > root_slot,
+        "this receipt specifically proves the parent-before-child source order"
+    );
     let mut economy_view = session.economy_mut();
     let root = economy_view
         .authored_class5
@@ -461,6 +475,26 @@ fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
     root.dword_0x10 = 0;
 
     session.step_outer_turn(PlayerCommand::default(), 0);
+    let child_receipts = session.cf10_production_schedule_receipts();
+    assert!(child_receipts.iter().any(|receipt| matches!(
+        receipt,
+        crate::campaign::schedule::ScheduleReceipt::SlotResolved {
+            slot,
+            kind: crate::campaign::schedule::VisitKind::Terminal,
+            ..
+        } if *slot == child_slot
+    )));
+    assert!(child_receipts.iter().any(|receipt| matches!(
+        receipt,
+        crate::campaign::schedule::ScheduleReceipt::CleanupCompleted { slot, .. }
+            if *slot == child_slot
+    )));
+    assert!(!child_receipts.iter().any(|receipt| matches!(
+        receipt,
+        crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+            | crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. }
+            if *slot == child_slot
+    )));
     assert_eq!(
         session
             .economy()
@@ -481,6 +515,16 @@ fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
             .action,
         super::archer::ARCHER_ACTION_KILL
     );
+    assert!(
+        !session
+            .economy()
+            .authored_class5_archer_children()
+            .iter()
+            .find(|child| child.source_entity_index == child_slot)
+            .expect("higher-slot child is visited after pre-kill")
+            .drawing_enabled,
+        "class 9/action 37 is an invalid selector: UpdateEntities hides it without a callback"
+    );
 
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
@@ -493,24 +537,6 @@ fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
             .drawing_enabled
     );
     assert!(
-        !session
-            .economy()
-            .authored_class5_archer_children()
-            .iter()
-            .find(|child| child.source_entity_index == child_slot)
-            .expect("child after terminal kill")
-            .drawing_enabled
-    );
-
-    session
-        .economy_mut()
-        .authored_class5
-        .iter_mut()
-        .find(|source| source.source_entity_index == root_slot)
-        .expect("root for reclaim")
-        .active = false;
-    session.economy_mut().reclaim_inactive_slots();
-    assert!(
         session
             .economy()
             .authored_class5_archer_children()
@@ -522,8 +548,134 @@ fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
             .economy()
             .live_arena_slots()
             .iter()
-            .all(|(slot, _)| *slot != child_slot && *slot != root_slot)
+            .any(|(slot, _)| *slot == root_slot),
+        "the root hidden by KillArcher remains allocated until the next UpdateEntities prologue"
     );
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session
+            .economy()
+            .authored_class5()
+            .iter()
+            .all(|source| source.source_entity_index != root_slot)
+    );
+    assert!(
+        session
+            .economy()
+            .authored_class5_archer_children()
+            .iter()
+            .all(|child| child.source_entity_index != child_slot)
+    );
+}
+
+#[test]
+fn archer_action37_cadence_advances_rng_copies_owner_and_preserves_life() {
+    let (mut session, _) = activate_group20_archers();
+    let root_slot = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.authored_index == 232)
+        .expect("group-20 row 232 Archer root")
+        .source_entity_index;
+    let owner_entity_index = session.state.entity_index;
+    let initial_rng = 0x3456_u16;
+    let retained_life = 777_i32;
+    let initial_sphere_slots = session
+        .economy()
+        .spheres()
+        .iter()
+        .map(|sphere| sphere.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    let initial_burst_slots = session
+        .economy()
+        .death_bursts()
+        .iter()
+        .map(|burst| burst.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    {
+        let mut economy = session.economy_mut();
+        let source = economy
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.source_entity_index == root_slot)
+            .expect("Archer root remains mutable");
+        source.action = super::archer::ARCHER_ACTION_KILL;
+        source.source_byte_3e = 1;
+        source.phase = 1;
+        source.entity_rng = initial_rng;
+        source.mana = 321;
+        source.life = retained_life;
+        economy.source_owner.insert(root_slot, owner_entity_index);
+    }
+
+    for expected_source_byte in 2_u8..=8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == root_slot)
+            .expect("off-cadence Archer remains live");
+        assert!(source.drawing_enabled);
+        assert_eq!(source.life, retained_life);
+        assert_eq!(source.entity_rng, initial_rng);
+        assert_eq!(source.source_byte_3e, expected_source_byte);
+        assert_eq!(source.phase, expected_source_byte);
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .map(|sphere| sphere.source_entity_index)
+                .collect::<BTreeSet<_>>(),
+            initial_sphere_slots
+        );
+        assert_eq!(
+            session
+                .economy()
+                .death_bursts()
+                .iter()
+                .map(|burst| burst.source_entity_index)
+                .collect::<BTreeSet<_>>(),
+            initial_burst_slots
+        );
+    }
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let source = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == root_slot)
+        .expect("phase-zero Archer remains addressable until the next prologue");
+    assert!(!source.drawing_enabled);
+    assert_eq!(source.life, retained_life);
+    assert_eq!(source.entity_rng, level2_next_rng16(initial_rng));
+    assert_eq!(source.source_byte_3e, 9);
+    assert_eq!(source.phase, 9);
+    assert_eq!(session.economy().source_owner(root_slot), 0);
+    let target = session
+        .level2_archer_target(root_slot)
+        .expect("hidden Archer remains addressable in the current pass");
+    assert_ne!(target.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+
+    let sphere = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| !initial_sphere_slots.contains(&sphere.source_entity_index))
+        .expect("phase-zero Archer produces one mana sphere");
+    assert_eq!(sphere.owner_entity_index, owner_entity_index);
+    assert_eq!(sphere.player_entity_index, owner_entity_index);
+    let burst = session
+        .economy()
+        .death_bursts()
+        .iter()
+        .find(|burst| !initial_burst_slots.contains(&burst.source_entity_index))
+        .expect("phase-zero Archer produces the ordered death burst");
+    assert_eq!(burst.parent_entity_index, root_slot);
 }
 
 #[test]
@@ -1263,10 +1415,11 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
     }
 
     // The model-27 action family is not a model-3 carrier. A malformed
-    // action-217 root therefore remains inert, and the sixteen action-232
-    // children retain their fields and never enter action 233.
+    // action-217 selector must fail closed and roll back the complete outer
+    // turn; it is not a friendly no-op route. Snapshot the child immediately
+    // before that turn so prior valid action-232 phase advances are not
+    // confused with mutation by the rejected selector.
     let child_slot = chain[0].source_entity_index;
-    let child_before = chain[0];
     {
         let mut economy_view = session.economy_mut();
         let root = economy_view
@@ -1277,7 +1430,15 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
         root.action = 217;
         root.dword_0x10 = 9;
     }
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    let child_before = session
+        .economy()
+        .authored_class5_model3_children()
+        .iter()
+        .find(|child| child.source_entity_index == child_slot)
+        .copied()
+        .expect("model-3 child before rejected selector");
+    let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(evidence.is_empty());
     let inert_root = session
         .economy()
         .authored_class5()
@@ -1312,6 +1473,15 @@ fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
             },
             ..
         } if *source_entity_index == root_slot
+    )));
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::Error {
+            source_slot,
+            message,
+            ..
+        } if *source_slot == root_slot
+            && message.contains("unregistered UpdateEntities selector 5:217")
     )));
 
     // Action 26 is reached through the ordinary production arena route. At

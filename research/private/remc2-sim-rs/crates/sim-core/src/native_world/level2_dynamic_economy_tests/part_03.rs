@@ -819,20 +819,20 @@
         assert_eq!(child.player_entity_index, child.id_entity_index);
         assert_eq!(child.target_sphere_slot, 0);
         assert_ne!(child.position.x, target_position.x);
-        assert!(
-            session
-                .economy()
-                .spheres()
-                .iter()
-                .all(|sphere| sphere.source_entity_index != sphere_slot)
+        let hidden_sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .copied()
+            .expect("collected defender sphere remains allocated through the callback pass");
+        assert_ne!(
+            hidden_sphere.control_flags & ENTITY_DRAW_DISABLED_BIT,
+            0
         );
-        assert!(
-            !session
-                .economy()
-                .map_chains()
-                .linked_entity_indices()
-                .contains(&sphere_slot)
-        );
+        assert!(hidden_sphere.pending_delete);
+        assert!(session.economy().map_chains().is_linked(sphere_slot));
+        assert!(!session.economy().free_slots.contains(&sphere_slot));
         let economy_index = session
             .dispatch_events()
             .iter()
@@ -867,6 +867,14 @@
             })
             .expect("defender dynamic dispatch");
         assert!(economy_index < defender_index);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session
+            .economy()
+            .spheres()
+            .iter()
+            .all(|sphere| sphere.source_entity_index != sphere_slot));
+        assert!(!session.economy().map_chains().is_linked(sphere_slot));
+        assert!(session.economy().free_slots.contains(&sphere_slot));
         assert_ne!(session.economy().reset_hash(), baseline_hash);
         session.reset();
         assert_eq!(session.economy().reset_hash(), baseline_hash);
@@ -1317,6 +1325,11 @@
         let mut rebuild = inspection
             .level2_reset_session()
             .expect("allocator-rebuild session");
+        // Materialize one-time authored sources before restricting the free
+        // arena. The callback under test must be the sole consumer of the row
+        // reclaimed by the next UpdateEntities prologue.
+        rebuild.select_level2_campaign_entry_stage();
+        rebuild.step_outer_turn(PlayerCommand::default(), 0);
         let rebuild_castle_slot = rebuild
             .economy_mut()
             .build_castle(Position::default(), 111)
@@ -1354,7 +1367,6 @@
             castle.action = 4;
             castle.phase = 0;
         }
-        rebuild.select_level2_campaign_entry_stage();
         rebuild.step_outer_turn(PlayerCommand::default(), 0);
         assert!(rebuild.dispatch_events().iter().any(|event| {
             matches!(

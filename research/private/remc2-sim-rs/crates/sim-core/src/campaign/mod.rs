@@ -8,6 +8,7 @@
 pub mod dispatch;
 pub mod journal;
 pub mod objectives;
+pub mod schedule;
 #[doc(hidden)]
 pub mod source_arena;
 pub mod source_facts;

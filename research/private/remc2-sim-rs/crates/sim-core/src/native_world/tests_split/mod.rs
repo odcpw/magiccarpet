@@ -248,12 +248,20 @@ fn configure_level2_scheduler_audio_rows(session: &mut Level2ResetSession) {
         if selected.contains(&goat.entity_index) {
             continue;
         }
-        goat.action = 0;
+        // Action 0 is a real, still-unclosed class-5 callback. Use a compiled
+        // action-9 row whose local RNG seed is discriminatingly non-audio so
+        // the registry cannot be bypassed by a synthetic no-op selector.
+        goat.action = 9;
         goat.pending_damage = 0;
         goat.pending_attacker = 0;
         goat.current_attacker = 0;
         goat.partner_entity_index = None;
         goat.target_entity_index = None;
+        goat.actual_speed = 0;
+        goat.rng = 0;
+        goat.phase = 1;
+        goat.proximity_countdown = 0;
+        goat.proximity_subcounter = 0;
         assert!(session.goats.replace_goat_for_test(goat));
     }
 

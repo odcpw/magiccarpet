@@ -6,8 +6,672 @@ use crate::campaign::state::{
     CampaignDefinition, CampaignSession, CampaignState, CampaignStepError, CanonicalRuntimeState,
     ResetReceipt, ResetState, encode_reset_v1_into,
 };
+use crate::campaign::{
+    dispatch::{CAMPAIGN_BEHAVIOR_REGISTRY, DispatchSite, ExistingHandler},
+    schedule::{
+        CurrentOccupant, PassPhase, ScheduleError, ScheduleReceipt, SlotResolution, SourcePass,
+        SourceSchedulerWorld, VisitKind, VisitPlan, run_update_entities,
+    },
+    spec::{BehaviorKey, BehaviorSelector},
+};
+
+/// Typed payload selected from the fixed numeric source slot at visit time.
+///
+/// This replaces the former friendly `u8` route tags.  The payload locates
+/// the authoritative carrier; the compiled registry remains the authority
+/// that selects which accepted handler family may receive it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Level2SourceRoute {
+    SpeedPickup,
+    BadStone,
+    House,
+    Villager,
+    Dolmen,
+    CastleRoot,
+    Dynamic(Level2DynamicArenaCursorRow),
+    Goat,
+    GenericPickup,
+    Player,
+    Nyphur,
+    PossessionHolder,
+    CastleHolder,
+    FireballHolder,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level2ResolvedSourceVisit {
+    key: BehaviorKey,
+    handler: ExistingHandler,
+    route: Level2SourceRoute,
+    phase: Option<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(private_interfaces)]
+pub(crate) enum Level2ResolvedSourcePlan {
+    Callback(Level2ResolvedSourceVisit),
+    /// A live selector whose UpdateEntities table word matches but whose
+    /// callback address is null. The numeric cursor retains it unchanged.
+    NoCallback {
+        key: BehaviorKey,
+        route: Level2SourceRoute,
+        phase: Option<u8>,
+    },
+    /// A live row whose class/action selector does not match any entry in its
+    /// source action table. `UpdateEntities_57730` disables drawing without
+    /// invoking a callback or advancing byte 0x3E, then the following pass
+    /// prologue reclaims the row.
+    InvalidSelectorHide {
+        key: BehaviorKey,
+        route: Level2SourceRoute,
+        phase: Option<u8>,
+    },
+    /// A live row whose selector is not admitted by the compiled registry, or
+    /// whose retained carrier cannot lawfully feed the selected handler.
+    Unknown {
+        key: BehaviorKey,
+        route: Level2SourceRoute,
+        phase: Option<u8>,
+        message: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Level2EpiloguePolicy {
+    /// The source callback body is deliberately phase-free; the scheduler
+    /// advances the current occupant after callback return.
+    SchedulerAdvance {
+        before: u8,
+        route: Level2SourceRoute,
+    },
+    /// Retained delegates still contain their historical common increment.
+    /// The scheduler verifies exactly one advance and supplies it only when a
+    /// bounded callback exit returned before that common tail. Dynamic slot
+    /// generation distinguishes a retained row from NewEvent replacement.
+    EnsureDelegateAdvanced {
+        before: u8,
+        route: Level2SourceRoute,
+        generation: Option<u32>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Level2CleanupPolicy {
+    HideInvalidSelector,
+}
 
 impl Level2ResetSession {
+    fn hide_level2_invalid_selector(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
+        self.session
+            .state
+            .live
+            .economy
+            .hide_authored_class5_archer_child_invalid_selector(source_slot)
+            .then_some(())
+            .ok_or_else(|| {
+                format!(
+                    "invalid-selector cleanup lost the live Archer child at source slot {source_slot}"
+                )
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cf10_probe_invalid_selector_cleanup(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
+        self.hide_level2_invalid_selector(source_slot)
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static CF10_PRODUCTION_SCHEDULE_RECEIPTS:
+        std::cell::RefCell<Vec<ScheduleReceipt<Level2ResolvedSourcePlan>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct Level2SourceSchedulerWorld<'session, 'evidence> {
+    owner: &'session mut Level2ResetSession,
+    pass: u8,
+    latched_command: crate::LatchedCommand,
+    evidence: &'evidence mut Vec<crate::StepEvidence>,
+    source_player_order: Vec<usize>,
+    player_entity_index: u16,
+    player_position: Position,
+    goat_players: Vec<GoatPlayerTarget>,
+    pass_start_mana_sphere_slots: BTreeSet<u16>,
+    pass_start_castle_auxiliary_membership: level2_dynamic_economy::Level2CastleAuxiliaryMembership,
+    pass_start_castle_root_slot: Option<u16>,
+    goat_begin_events: BTreeMap<u16, Vec<GoatStepEvent>>,
+}
+
+fn level2_update_key(class: u8, action: u8) -> BehaviorKey {
+    BehaviorKey {
+        dispatch_site: DispatchSite::UpdateEntities.id(),
+        selector: BehaviorSelector::ClassAction { class, action },
+    }
+}
+
+impl Level2ResolvedSourcePlan {
+    fn route(&self) -> Level2SourceRoute {
+        match self {
+            Self::Callback(visit) => visit.route,
+            Self::NoCallback { route, .. }
+            | Self::InvalidSelectorHide { route, .. }
+            | Self::Unknown { route, .. } => *route,
+        }
+    }
+
+    fn phase(&self) -> Option<u8> {
+        match self {
+            Self::Callback(visit) => visit.phase,
+            Self::NoCallback { phase, .. }
+            | Self::InvalidSelectorHide { phase, .. }
+            | Self::Unknown { phase, .. } => *phase,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registry_key(&self) -> &BehaviorKey {
+        match self {
+            Self::Callback(visit) => &visit.key,
+            Self::NoCallback { key, .. }
+            | Self::InvalidSelectorHide { key, .. }
+            | Self::Unknown { key, .. } => key,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observed_phase(&self) -> Option<u8> {
+        self.phase()
+    }
+}
+
+impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
+    type Selector = Level2ResolvedSourcePlan;
+    type Epilogue = Level2EpiloguePolicy;
+    type Cleanup = Level2CleanupPolicy;
+    type Progress = ();
+    type Error = String;
+
+    fn phase(
+        &mut self,
+        pass: SourcePass,
+        phase: PassPhase,
+    ) -> std::result::Result<(), Self::Error> {
+        debug_assert_eq!(pass, SourcePass::UpdateEntities);
+        match phase {
+            PassPhase::RngPrepass => {
+                self.owner.flush_shared_effects();
+                self.source_player_order = self.owner.refresh_level2_spell_owner_candidates();
+                self.player_entity_index = self.owner.session.state.live.core.state.entity_index;
+                self.player_position = self.owner.session.state.live.core.state.position;
+                // Retain event chronology across all source slots in this pass;
+                // individual handlers must not erase an earlier pickup row.
+                self.owner
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .pickup_events
+                    .clear();
+                self.goat_players = self.owner.level2_goat_player_targets();
+                self.owner.session.state.live.economy.advance_global_rng();
+            }
+            PassPhase::FollowingPassCleanup => {
+                let hidden_house_slots = {
+                    let live = &self.owner.session.state.live;
+                    live.ordinary
+                        .houses()
+                        .iter()
+                        .filter(|house| {
+                            !house.active
+                                && live
+                                    .economy
+                                    .entities
+                                    .get(usize::from(house.entity_index))
+                                    .is_some_and(|entity| {
+                                        entity.active && entity.drawing_disabled()
+                                    })
+                        })
+                        .map(|house| (house.entity_index, house.rng))
+                        .collect::<Vec<_>>()
+                };
+                for (source_slot, source_rng) in hidden_house_slots {
+                    let live = &mut self.owner.session.state.live;
+                    live.economy.entities[usize::from(source_slot)].reclaim_source_row();
+                    live.economy
+                        .economy
+                        .reclaim_house_source_slot_at_source_boundary(source_slot, source_rng);
+                }
+                let economy = &mut self.owner.session.state.live.economy;
+                economy.reclaim_deferred_authored_bees_at_source_boundary();
+                economy.reclaim_possession_rows_at_source_boundary();
+                economy.reclaim_fireball_rows_at_source_boundary();
+                economy.reclaim_death_burst_rows_at_source_boundary();
+                economy.reclaim_hidden_authored_model45_rows_at_source_boundary();
+                // `UpdateEntities_57730` runs sub_57F20 for hidden rows before
+                // rebuilding lists or dispatching any callback.
+                economy.reclaim_hidden_castle_rows_at_source_boundary();
+                economy.reclaim_hidden_archer_rows_at_source_boundary();
+                economy.reclaim_inactive_slots_at_source_boundary();
+            }
+            PassPhase::RebuildMemberships => {
+                let economy = &mut self.owner.session.state.live.economy;
+                economy.rebuild_possession_guidance_source_slots();
+                economy.rebuild_owner_mana_projection_at_source_boundary();
+                let reset_owner_max_mana = self
+                    .owner
+                    .session
+                    .baseline
+                    .economy
+                    .economy
+                    .owner_max_mana
+                    .clone();
+                economy.rebuild_owner_max_mana_projection(&reset_owner_max_mana);
+            }
+            PassPhase::PreDispatch => {
+                self.owner.step_level2_imported_switch_roots(self.pass);
+                self.owner.activate_level2_authored_group8(self.pass);
+                self.owner.activate_level2_authored_group31(self.pass);
+                self.owner.step_level2_group10_switch25(self.pass);
+                self.owner.activate_level2_authored_bees(self.pass);
+                self.owner.activate_level2_authored_model13(self.pass);
+                self.owner.activate_level2_authored_model76(self.pass);
+                self.owner.activate_level2_authored_class14(self.pass);
+                self.owner.sync_level2_model76_targets_from_entities();
+                self.owner
+                    .activate_level2_authored_mana_attraction_fields(self.pass);
+                self.pass_start_mana_sphere_slots = self
+                    .owner
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .live_arena_cursor_rows()
+                    .into_iter()
+                    .filter(|row| row.kind == Level2DynamicArenaKind::ManaSphere)
+                    .map(|row| row.source_slot)
+                    .collect();
+                self.pass_start_castle_auxiliary_membership = self
+                    .owner
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .castle_auxiliary_membership(&self.owner.session.state.live.economy.entities);
+                self.pass_start_castle_root_slot = self
+                    .owner
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .castle()
+                    .filter(|castle| castle.active)
+                    .map(|castle| castle.source_entity_index);
+                self.goat_begin_events.clear();
+                let begin_events = self
+                    .owner
+                    .session
+                    .state
+                    .live
+                    .goats
+                    .begin_source_turn(&self.goat_players);
+                for event in begin_events {
+                    if let GoatStepEvent::Reclaimed { entity_index } = event {
+                        // The reclaimed row is no longer eligible for the
+                        // numeric callback scan, so publish its prologue
+                        // receipt at the real reclaim seam rather than
+                        // waiting for a callback that cannot occur.
+                        self.owner.push_dispatch_effect(Level2DispatchEvent::Goat {
+                            pass: self.pass,
+                            source_slot: entity_index,
+                            events: vec![event].into_boxed_slice(),
+                        });
+                    } else {
+                        self.goat_begin_events.entry(0).or_default().push(event);
+                    }
+                }
+            }
+            PassPhase::PostDispatch => {
+                self.owner.session.state.live.goats.finish_source_turn();
+                self.owner.flush_shared_effects();
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve(
+        &self,
+        _pass: SourcePass,
+        _scan: u16,
+        slot: u16,
+    ) -> SlotResolution<Self::Selector, Self::Epilogue, Self::Cleanup> {
+        let Some(plan) = self
+            .owner
+            .resolve_level2_source_plan(slot, self.player_entity_index)
+        else {
+            return SlotResolution::Inactive;
+        };
+        match plan {
+            Level2ResolvedSourcePlan::Callback(ref visit)
+                if Level2ResetSession::level2_route_accepts_handler(visit.route, visit.handler) =>
+            {
+                let Some(before) = visit.phase else {
+                    let message = format!(
+                        "UpdateEntities selector {:?} at source slot {slot} has no authoritative byte-0x3E carrier",
+                        visit.key.selector
+                    );
+                    return SlotResolution::Unknown {
+                        selector: Level2ResolvedSourcePlan::Unknown {
+                            key: visit.key.clone(),
+                            route: visit.route,
+                            phase: None,
+                            message,
+                        },
+                    };
+                };
+                let epilogue = match visit.route {
+                    Level2SourceRoute::Nyphur
+                    | Level2SourceRoute::Dolmen
+                    | Level2SourceRoute::PossessionHolder
+                    | Level2SourceRoute::CastleHolder
+                    | Level2SourceRoute::FireballHolder => Level2EpiloguePolicy::SchedulerAdvance {
+                        before,
+                        route: visit.route,
+                    },
+                    Level2SourceRoute::Player
+                        if visit.key.selector
+                            == (BehaviorSelector::ClassAction {
+                                class: 3,
+                                action: 0,
+                            }) =>
+                    {
+                        Level2EpiloguePolicy::SchedulerAdvance {
+                            before,
+                            route: visit.route,
+                        }
+                    }
+                    Level2SourceRoute::Dynamic(row)
+                        if matches!(
+                            row.kind,
+                            Level2DynamicArenaKind::AuthoredClass5Model3Child
+                                | Level2DynamicArenaKind::AuthoredModel32
+                                | Level2DynamicArenaKind::AuthoredModel45
+                                | Level2DynamicArenaKind::CastleDefender
+                                | Level2DynamicArenaKind::CastleProjectile
+                                | Level2DynamicArenaKind::ManaCarrier
+                                | Level2DynamicArenaKind::Model6SpawnedChild
+                                | Level2DynamicArenaKind::BeyondSightPulseEffect
+                                | Level2DynamicArenaKind::ManaAttraction
+                        ) =>
+                    {
+                        Level2EpiloguePolicy::SchedulerAdvance {
+                            before,
+                            route: visit.route,
+                        }
+                    }
+                    _ => Level2EpiloguePolicy::EnsureDelegateAdvanced {
+                        before,
+                        route: visit.route,
+                        generation: match visit.route {
+                            Level2SourceRoute::Dynamic(row) => Some(row.generation),
+                            _ => None,
+                        },
+                    },
+                };
+                SlotResolution::Eligible(VisitPlan {
+                    selector: plan,
+                    kind: VisitKind::Callback,
+                    epilogue: Some(epilogue),
+                    cleanup: None,
+                })
+            }
+            Level2ResolvedSourcePlan::Callback(visit) => {
+                let message = format!(
+                    "registry handler {:?} cannot consume {:?} for {:?}",
+                    visit.handler, visit.route, visit.key.selector
+                );
+                SlotResolution::Unknown {
+                    selector: Level2ResolvedSourcePlan::Unknown {
+                        key: visit.key,
+                        route: visit.route,
+                        phase: visit.phase,
+                        message,
+                    },
+                }
+            }
+            Level2ResolvedSourcePlan::NoCallback { .. } => SlotResolution::Eligible(VisitPlan {
+                selector: plan,
+                kind: VisitKind::NoCallback,
+                epilogue: None,
+                cleanup: None,
+            }),
+            Level2ResolvedSourcePlan::InvalidSelectorHide { .. } => {
+                SlotResolution::Eligible(VisitPlan {
+                    selector: plan,
+                    kind: VisitKind::Terminal,
+                    epilogue: None,
+                    cleanup: Some(Level2CleanupPolicy::HideInvalidSelector),
+                })
+            }
+            Level2ResolvedSourcePlan::Unknown { .. } => SlotResolution::Unknown { selector: plan },
+        }
+    }
+
+    fn callback(
+        &mut self,
+        _pass: SourcePass,
+        _scan: u16,
+        slot: u16,
+        selector: &Self::Selector,
+    ) -> std::result::Result<(), Self::Error> {
+        let Level2ResolvedSourcePlan::Callback(visit) = selector else {
+            return Err("scheduler attempted callback for a non-callback selector".to_owned());
+        };
+        self.owner.dispatch_level2_source_visit(
+            self.pass,
+            self.latched_command,
+            self.evidence,
+            slot,
+            visit,
+            self.player_entity_index,
+            &mut self.player_position,
+            &self.source_player_order,
+            &self.goat_players,
+            &self.pass_start_mana_sphere_slots,
+            &self.pass_start_castle_auxiliary_membership,
+            self.pass_start_castle_root_slot,
+            &mut self.goat_begin_events,
+        )
+    }
+
+    fn epilogue(
+        &mut self,
+        _pass: SourcePass,
+        _scan: u16,
+        slot: u16,
+        instruction: &Self::Epilogue,
+        current: &CurrentOccupant<Self::Selector>,
+    ) -> std::result::Result<(), Self::Error> {
+        match *instruction {
+            Level2EpiloguePolicy::SchedulerAdvance { before, route } => {
+                let current_route = match current {
+                    CurrentOccupant::Known { selector, .. } => selector.route(),
+                    CurrentOccupant::Inactive => route,
+                };
+                self.owner
+                    .advance_level2_outer_owned_phase(slot, current_route)?;
+                let after = self
+                    .owner
+                    .resolve_level2_source_plan(slot, self.player_entity_index)
+                    .and_then(|plan| plan.phase())
+                    .or_else(|| self.owner.level2_retained_source_phase(slot, current_route))
+                    .ok_or_else(|| format!("source slot {slot} lost its phase after epilogue"))?;
+                if after != before.wrapping_add(1) {
+                    return Err(format!(
+                        "scheduler epilogue at source slot {slot} advanced phase {before} -> {after}, expected {}",
+                        before.wrapping_add(1)
+                    ));
+                }
+            }
+            Level2EpiloguePolicy::EnsureDelegateAdvanced {
+                before,
+                route,
+                generation,
+            } => {
+                let current_generation = generation.map(|_| {
+                    self.owner
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .slot_generation(slot)
+                });
+                let replaced = generation
+                    .zip(current_generation)
+                    .is_some_and(|(original, current)| current != original);
+                let current_route = match current {
+                    CurrentOccupant::Known { selector, .. } => selector.route(),
+                    CurrentOccupant::Inactive if replaced => {
+                        let economy = &self.owner.session.state.live.economy.economy;
+                        if economy
+                            .death_bursts()
+                            .iter()
+                            .any(|row| row.source_entity_index == slot)
+                        {
+                            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                                source_slot: slot,
+                                generation: current_generation.unwrap_or_default(),
+                                kind: Level2DynamicArenaKind::DeathBurst,
+                            })
+                        } else {
+                            route
+                        }
+                    }
+                    CurrentOccupant::Inactive => route,
+                };
+                let mut after = match current {
+                    CurrentOccupant::Known { selector, .. } => selector.phase(),
+                    CurrentOccupant::Inactive => None,
+                }
+                .or_else(|| {
+                    self.owner
+                        .level2_retained_source_phase(slot, current_route)
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "delegate-owned epilogue at source slot {slot} has no observable current phase: original={route:?} current={current:?} generation={generation:?}->{current_generation:?}"
+                    )
+                })?;
+                let current_before = if replaced { slot as u8 } else { before };
+                if after == current_before {
+                    self.owner
+                        .advance_level2_outer_owned_phase(slot, current_route)?;
+                    after = self
+                        .owner
+                        .level2_retained_source_phase(slot, current_route)
+                        .or_else(|| {
+                            self.owner
+                                .resolve_level2_source_plan(slot, self.player_entity_index)
+                                .and_then(|plan| plan.phase())
+                        })
+                        .ok_or_else(|| {
+                            format!(
+                                "source slot {slot} lost its current phase after the scheduler supplied the common epilogue"
+                            )
+                        })?;
+                }
+                if after != current_before.wrapping_add(1) {
+                    return Err(format!(
+                        "delegate-owned epilogue at source slot {slot} advanced phase {current_before} -> {after}, expected {}",
+                        current_before.wrapping_add(1)
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup(
+        &mut self,
+        _pass: SourcePass,
+        _scan: u16,
+        slot: u16,
+        instruction: &Self::Cleanup,
+        _current: &CurrentOccupant<Self::Selector>,
+    ) -> std::result::Result<(), Self::Error> {
+        match instruction {
+            Level2CleanupPolicy::HideInvalidSelector => {
+                self.owner.hide_level2_invalid_selector(slot)
+            }
+        }
+    }
+
+    fn progress(&self, _pass: SourcePass) -> Self::Progress {}
+
+    fn record(&mut self, receipt: ScheduleReceipt<Self::Selector>) {
+        #[cfg(test)]
+        CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow_mut().push(receipt));
+        #[cfg(not(test))]
+        let _ = receipt;
+    }
+}
+
+impl Level2ResetSession {
+    #[cfg(test)]
+    pub(crate) fn cf10_production_schedule_receipts(
+        &self,
+    ) -> Vec<ScheduleReceipt<Level2ResolvedSourcePlan>> {
+        CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cf10_set_model22_child_action(&mut self, source_slot: u16, action: u8) -> bool {
+        let Some(child) = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .model22_spawned_children
+            .iter_mut()
+            .find(|child| child.active && child.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        child.action = action;
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cf10_first_model22_child_slot(&self) -> Option<u16> {
+        self.session
+            .state
+            .live
+            .economy
+            .economy
+            .model22_spawned_children
+            .iter()
+            .find(|child| child.active)
+            .map(|child| child.source_entity_index)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cf10_live_source_phase(&self, source_slot: u16) -> Option<u8> {
+        self.resolve_level2_source_plan(
+            source_slot,
+            self.session.state.live.core.state.entity_index,
+        )
+        .and_then(|plan| plan.phase())
+    }
+
     #[cfg(test)]
     pub(crate) fn cf07_rng_observation(&self) -> (u32, u32, u32, u16, Box<[(u16, u16)]>) {
         let effect_rng = self
@@ -256,7 +920,11 @@ impl Level2ResetSession {
                 action: source.action,
                 active: source.active,
                 life: source.life,
-                control_flags: 0,
+                control_flags: if source.drawing_enabled {
+                    0
+                } else {
+                    ENTITY_DRAW_DISABLED_BIT
+                },
                 minimum_speed: source.minimum_speed,
                 maximum_speed: source.maximum_speed,
                 actual_speed: source.actual_speed,
@@ -283,7 +951,12 @@ impl Level2ResetSession {
                 action: child.action,
                 active: child.active,
                 life: i32::from(child.life),
-                control_flags: child.control_flags,
+                control_flags: child.control_flags
+                    | if child.drawing_enabled {
+                        0
+                    } else {
+                        ENTITY_DRAW_DISABLED_BIT
+                    },
                 minimum_speed: child.minimum_speed,
                 maximum_speed: child.maximum_speed,
                 actual_speed: child.actual_speed,
@@ -6818,693 +7491,1261 @@ impl Level2ResetSession {
         }
     }
 
-    /// Dispatch one newly allocated dynamic row before the source cursor
-    /// reaches the next existing slot. The ordinary gameplay cursor admits
-    /// every higher-slot source-active birth, including authored switches,
-    /// model-39 spheres/fields, and the existing projectile families. This is
-    /// one ascending cursor, not a late ApplyEvents-style resweep.
-    pub(super) fn step_level2_pending_source_row(
-        &mut self,
-        pass: u8,
-        row: Level2DynamicArenaCursorRow,
-        player_entity_index: u16,
-        player_position: Position,
-        source_player_order: &[usize],
-        sphere_membership: &BTreeSet<u16>,
-        auxiliary_membership: &level2_dynamic_economy::Level2CastleAuxiliaryMembership,
-    ) {
-        let source_slot = row.source_slot;
-        if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
-            if let Some(target_group) = self
-                .session
-                .state
-                .live
-                .economy
-                .authored_model45()
-                .iter()
-                .find(|source| source.source_entity_index == source_slot)
-                .map(|source| source.target_group)
-                .filter(|target_group| *target_group != 0)
-            {
-                self.activate_level2_authored_spell_group(pass, source_slot, target_group);
-            }
-        }
-        let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
-            self.step_level2_dynamic_spell_pickup(
-                pass,
-                source_slot,
-                player_entity_index,
-                player_position,
-                source_player_order,
-            )
-        } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
-            self.step_level2_dynamic_spell_replacement(
-                pass,
-                source_slot,
-                player_entity_index,
-                player_position,
-                source_player_order,
-            )
-        } else {
-            self.step_level2_dynamic_arena_with_sphere_membership(
-                pass,
-                source_slot,
-                row.kind,
-                Some(sphere_membership),
-                Some(auxiliary_membership),
-            )
-        };
-        self.append_new_economy_events(pass, source_slot);
-        if live {
-            self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
-                pass,
-                source_slot,
-                kind: row.kind,
-            });
-        }
-    }
-
-    /// Record every newly allocated source-active row against the still-moving
-    /// cursor. Rows at or below the callback that allocated them are deferred
-    /// to the next outer pass; a higher row is inserted before the next
-    /// existing source slot, exactly as `UpdateEntities_57730`'s ascending
-    /// array walk observes it.
-    pub(super) fn schedule_new_source_rows_in_source_order(
+    fn resolve_level2_source_plan(
         &self,
-        live_before: &BTreeSet<(u16, u32)>,
         source_slot: u16,
-        dispatched_dynamic_slots: &BTreeSet<(u16, u32)>,
-        deferred_dynamic_slots: &mut BTreeSet<(u16, u32)>,
-        pending_source_rows: &mut BTreeMap<(u16, u32), Level2DynamicArenaCursorRow>,
-    ) {
-        for arena_row in self.session.state.live.economy.cursor_rows() {
-            let row = Level2DynamicArenaCursorRow {
-                source_slot: arena_row.handle.source_slot,
-                generation: arena_row.handle.generation,
-                kind: arena_row.kind,
-            };
-            let key = (row.source_slot, row.generation);
-            if live_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
-                continue;
+        player_entity_index: u16,
+    ) -> Option<Level2ResolvedSourcePlan> {
+        let live = &self.session.state.live;
+
+        let route_and_selector = if source_slot == player_entity_index {
+            live.economy
+                .entities
+                .get(usize::from(source_slot))
+                .filter(|row| row.active && row.index == source_slot)
+                .map(|row| (Level2SourceRoute::Player, row.class, row.action))
+        } else if source_slot == 75 {
+            live.shared_spells
+                .pickups()
+                .iter()
+                .chain(live.shared_spells.dynamic_pickups())
+                .find(|row| row.active && row.index == source_slot)
+                .map(|row| (Level2SourceRoute::SpeedPickup, row.class, row.action))
+        } else if source_slot == 38 {
+            live.shared_spells
+                .pickups()
+                .iter()
+                .chain(live.shared_spells.dynamic_pickups())
+                .find(|row| row.active && row.index == source_slot)
+                .map(|row| (Level2SourceRoute::GenericPickup, row.class, row.action))
+        } else if let Some(holder) = live.shared_spells.dynamic_pickups().iter().find(|holder| {
+            holder.active
+                && holder.index == source_slot
+                && holder.class == 15
+                && holder.model == POSSESSION_SPELL_FAMILY
+                && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                && holder.source_spell_parent_entity_index() == player_entity_index
+        }) {
+            Some((
+                Level2SourceRoute::PossessionHolder,
+                holder.class,
+                holder.action,
+            ))
+        } else if let Some(holder) = live.shared_spells.dynamic_pickups().iter().find(|holder| {
+            holder.active
+                && holder.index == source_slot
+                && holder.class == 15
+                && holder.model == FIREBALL_SPELL_FAMILY
+                && holder.action == 0
+                && holder.source_spell_parent_entity_index() == player_entity_index
+        }) {
+            Some((
+                Level2SourceRoute::FireballHolder,
+                holder.class,
+                holder.action,
+            ))
+        } else if let Some(holder) = live.economy.entities.iter().find(|holder| {
+            holder.active
+                && holder.index == source_slot
+                && holder.index == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                && holder.class == 15
+                && holder.model == POSSESSION_SPELL_FAMILY
+                && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                && holder.source_spell_parent_entity_index() == LEVEL2_NYPHUR_ENTITY_INDEX
+                && holder.active_value > 0
+        }) {
+            Some((
+                Level2SourceRoute::PossessionHolder,
+                holder.class,
+                holder.action,
+            ))
+        } else if let Some(holder) = live.economy.entities.iter().find(|holder| {
+            holder.active
+                && holder.index == source_slot
+                && holder.index == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+                && holder.class == 15
+                && holder.model == FIREBALL_SPELL_FAMILY
+                && holder.action == 0
+                && holder.source_spell_parent_entity_index() == LEVEL2_NYPHUR_ENTITY_INDEX
+                && holder.active_value > 0
+        }) {
+            Some((
+                Level2SourceRoute::FireballHolder,
+                holder.class,
+                holder.action,
+            ))
+        } else if let Some(holder) = live.shared_spells.dynamic_pickups().iter().find(|holder| {
+            holder.active
+                && holder.index == source_slot
+                && holder.class == 15
+                && holder.model == CASTLE_SPELL_FAMILY
+                && holder.action == CASTLE_SPELL_FAMILY.saturating_mul(3)
+        }) {
+            Some((Level2SourceRoute::CastleHolder, holder.class, holder.action))
+        } else if let Some(stone) = live
+            .bad_stones
+            .iter()
+            .find(|stone| stone.entity.active && stone.entity.index == source_slot)
+        {
+            Some((
+                Level2SourceRoute::BadStone,
+                stone.entity.class,
+                stone.entity.action,
+            ))
+        } else if let Some(house) = live
+            .ordinary
+            .houses()
+            .iter()
+            .find(|house| house.active && house.entity_index == source_slot)
+        {
+            Some((Level2SourceRoute::House, 10, house.action))
+        } else if let Some(villager) = live
+            .ordinary
+            .villagers()
+            .iter()
+            .find(|villager| villager.active && villager.entity_index == source_slot)
+        {
+            Some((Level2SourceRoute::Villager, 5, villager.action))
+        } else if let Some(dolmen) = live
+            .ordinary
+            .dolmens()
+            .iter()
+            .find(|dolmen| dolmen.entity.active && dolmen.entity.index == source_slot)
+        {
+            Some((
+                Level2SourceRoute::Dolmen,
+                dolmen.entity.class,
+                dolmen.entity.action,
+            ))
+        } else if let Some(castle) = live
+            .economy
+            .castle()
+            .filter(|castle| castle.active && castle.source_entity_index == source_slot)
+        {
+            Some((
+                Level2SourceRoute::CastleRoot,
+                castle.source_class,
+                castle.action,
+            ))
+        } else if let Some(goat) = live
+            .goats
+            .goats()
+            .iter()
+            .find(|goat| goat.active && goat.entity_index == source_slot)
+        {
+            Some((Level2SourceRoute::Goat, 5, goat.action))
+        } else if let Some(nyphur) = live.economy.entities.iter().find(|entity| {
+            entity.active && entity.index == source_slot && entity.class == 3 && entity.model == 1
+        }) {
+            Some((Level2SourceRoute::Nyphur, nyphur.class, nyphur.action))
+        } else if let Some(row) = live
+            .economy
+            .live_arena_cursor_rows()
+            .into_iter()
+            .find(|row| row.source_slot == source_slot)
+        {
+            live.economy
+                .economy
+                .live_arena_class_action(source_slot, row.kind)
+                .map(|(class, action)| (Level2SourceRoute::Dynamic(row), class, action))
+        } else {
+            None
+        };
+
+        let Some((route, class, action)) = route_and_selector else {
+            return None;
+        };
+        let key = level2_update_key(class, action);
+        let phase = self.level2_source_phase(source_slot, route);
+        if matches!(
+            route,
+            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                kind: Level2DynamicArenaKind::AuthoredClass5ArcherChild,
+                ..
+            })
+        ) && class == level2_class5::archer::ARCHER_CHILD_SOURCE_CLASS
+            && action == level2_class5::archer::ARCHER_ACTION_KILL
+        {
+            return Some(Level2ResolvedSourcePlan::InvalidSelectorHide { key, route, phase });
+        }
+        if class == 10 && matches!(action, 82 | 84) {
+            return Some(Level2ResolvedSourcePlan::NoCallback { key, route, phase });
+        }
+        let Some(entry) = CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key) else {
+            return Some(Level2ResolvedSourcePlan::Unknown {
+                key,
+                route,
+                phase,
+                message: format!(
+                    "unregistered UpdateEntities selector {class}:{action} at source slot {source_slot}"
+                ),
+            });
+        };
+        Some(Level2ResolvedSourcePlan::Callback(
+            Level2ResolvedSourceVisit {
+                key,
+                handler: entry.handler,
+                route,
+                phase,
+            },
+        ))
+    }
+
+    fn level2_source_phase(&self, source_slot: u16, route: Level2SourceRoute) -> Option<u8> {
+        let live = &self.session.state.live;
+        match route {
+            Level2SourceRoute::Player | Level2SourceRoute::Nyphur => live
+                .economy
+                .entities
+                .iter()
+                .find(|row| row.active && row.index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::SpeedPickup
+            | Level2SourceRoute::GenericPickup
+            | Level2SourceRoute::CastleHolder => live
+                .shared_spells
+                .pickups()
+                .iter()
+                .chain(live.shared_spells.dynamic_pickups())
+                .find(|row| row.active && row.index == source_slot)
+                .map(|row| row.phase)
+                .or_else(|| {
+                    live.economy
+                        .entities
+                        .iter()
+                        .find(|row| row.active && row.index == source_slot)
+                        .map(|row| row.phase)
+                }),
+            Level2SourceRoute::PossessionHolder | Level2SourceRoute::FireballHolder => {
+                if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                    || source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+                {
+                    live.economy
+                        .entities
+                        .iter()
+                        .find(|row| row.active && row.index == source_slot)
+                        .map(|row| row.phase)
+                } else {
+                    live.shared_spells
+                        .dynamic_pickups()
+                        .iter()
+                        .find(|row| row.active && row.index == source_slot)
+                        .map(|row| row.phase)
+                }
             }
-            // The source pointer walk cannot revisit the current numeric slot
-            // after its callback returns, even when that slot is reclaimed and
-            // reused with a new generation. Every lower/equal birth therefore
-            // waits for the following UpdateEntities invocation.
-            if row.source_slot <= source_slot {
-                deferred_dynamic_slots.insert(key);
-            } else {
-                pending_source_rows.insert(key, row);
+            Level2SourceRoute::BadStone => live
+                .bad_stones
+                .iter()
+                .find(|row| row.entity.active && row.entity.index == source_slot)
+                .map(|row| row.entity.phase),
+            Level2SourceRoute::House => live
+                .ordinary
+                .houses()
+                .iter()
+                .find(|row| row.active && row.entity_index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Villager => live
+                .ordinary
+                .villagers()
+                .iter()
+                .find(|row| row.active && row.entity_index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Dolmen => live
+                .ordinary
+                .dolmens()
+                .iter()
+                .find(|row| row.entity.active && row.entity.index == source_slot)
+                .map(|row| row.entity.phase),
+            Level2SourceRoute::CastleRoot => live
+                .economy
+                .castle()
+                .filter(|row| row.active && row.source_entity_index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Goat => live
+                .goats
+                .goats()
+                .iter()
+                .find(|row| row.active && row.entity_index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Dynamic(cursor) => {
+                let economy = &live.economy.economy;
+                macro_rules! row_phase {
+                    ($rows:expr, $field:ident) => {
+                        $rows
+                            .iter()
+                            .find(|row| row.active && row.source_entity_index == source_slot)
+                            .map(|row| row.$field)
+                    };
+                }
+                match cursor.kind {
+                    Level2DynamicArenaKind::CastleProjectile
+                    | Level2DynamicArenaKind::ManaCarrier
+                    | Level2DynamicArenaKind::Model6SpawnedChild
+                    | Level2DynamicArenaKind::BeyondSightPulseEffect
+                    | Level2DynamicArenaKind::ManaAttraction => {
+                        economy.source_phase_sidecar(source_slot)
+                    }
+                    Level2DynamicArenaKind::FireballProjectile => {
+                        row_phase!(economy.fireball_projectiles, phase)
+                    }
+                    Level2DynamicArenaKind::PossessionProjectile => {
+                        row_phase!(economy.possession_projectiles, phase)
+                    }
+                    Level2DynamicArenaKind::PossessionEffect => {
+                        row_phase!(economy.possession_effects, phase)
+                    }
+                    Level2DynamicArenaKind::CastleRoot => economy
+                        .castle
+                        .filter(|row| row.active && row.source_entity_index == source_slot)
+                        .map(|row| row.phase),
+                    Level2DynamicArenaKind::CastleChild
+                    | Level2DynamicArenaKind::CastleAuxiliary
+                    | Level2DynamicArenaKind::CastleDefender
+                    | Level2DynamicArenaKind::CastleController => {
+                        row_phase!(economy.castle_children, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::ManaSphere => row_phase!(economy.spheres, phase),
+                    Level2DynamicArenaKind::DeathBurst => {
+                        row_phase!(economy.death_bursts, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::PlayerDeathMarker => {
+                        row_phase!(economy.player_death_markers, dispatch_phase)
+                    }
+                    Level2DynamicArenaKind::SpellReplacement => {
+                        row_phase!(economy.spell_replacements, phase)
+                    }
+                    Level2DynamicArenaKind::SpellPickup => {
+                        row_phase!(economy.spell_pickups, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel1 => {
+                        row_phase!(economy.authored_model1, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel45 => {
+                        row_phase!(economy.authored_model45, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel13 => {
+                        row_phase!(economy.authored_model13, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredBee => {
+                        row_phase!(economy.authored_bees, phase)
+                    }
+                    Level2DynamicArenaKind::Model13SpawnedChild => {
+                        row_phase!(economy.model13_spawned_children, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel6 => {
+                        row_phase!(economy.authored_model6, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel17 => {
+                        row_phase!(economy.authored_model17, phase)
+                    }
+                    Level2DynamicArenaKind::Model17SpawnedChild => {
+                        row_phase!(economy.model17_spawned_children, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel22 => {
+                        row_phase!(economy.authored_model22, phase)
+                    }
+                    Level2DynamicArenaKind::Model22SpawnedChild => {
+                        row_phase!(economy.model22_spawned_children, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel76 => {
+                        row_phase!(economy.authored_model76, phase)
+                    }
+                    Level2DynamicArenaKind::Model76Child => {
+                        row_phase!(economy.model76_children, phase)
+                    }
+                    Level2DynamicArenaKind::Model76TailSpawn => {
+                        row_phase!(economy.model76_tail_spawns, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass14 => {
+                        row_phase!(economy.authored_class14, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass5 => {
+                        row_phase!(economy.authored_class5, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
+                        row_phase!(economy.authored_class5_archer_children, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass5Model3Child => {
+                        row_phase!(economy.authored_class5_model3_children, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::HouseResident => {
+                        row_phase!(economy.house_residents, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredSwitchProducer => {
+                        row_phase!(economy.authored_switch_producers, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredTree => {
+                        row_phase!(economy.authored_trees, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel32 => {
+                        row_phase!(economy.authored_model32, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel59 => {
+                        row_phase!(economy.authored_model59, phase)
+                    }
+                    Level2DynamicArenaKind::Model59SmokeChild => {
+                        row_phase!(economy.model59_smoke_children, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel53 => {
+                        row_phase!(economy.authored_model53, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel5WaterSplash => {
+                        row_phase!(economy.authored_model5_water_splashes, phase)
+                    }
+                }
             }
         }
     }
 
-    /// Dispatch the authored Level 2 rows in source-slot order alongside the
-    /// generic player-flight pass. Each typed family remains authoritative for
-    /// its own mutable state; unknown mission rows are not coerced into a
-    /// neighboring Level 1 handler. The generic player callback is spliced at
-    /// its source row (111), before later holder/Castle rows.
-    pub(super) fn step_level2_source_pass_with_player(
+    /// Read byte 0x3E from a retained tombstone after a callback disables its
+    /// row. `UpdateEntities_57730` advances that same numeric row before the
+    /// following pass reclaims it, so active-only selector resolution is too
+    /// narrow for epilogue verification.
+    fn level2_retained_source_phase(
+        &self,
+        source_slot: u16,
+        route: Level2SourceRoute,
+    ) -> Option<u8> {
+        let live = &self.session.state.live;
+        match route {
+            Level2SourceRoute::SpeedPickup
+            | Level2SourceRoute::GenericPickup
+            | Level2SourceRoute::PossessionHolder
+            | Level2SourceRoute::CastleHolder
+            | Level2SourceRoute::FireballHolder => live
+                .shared_spells
+                .pickups()
+                .iter()
+                .chain(live.shared_spells.dynamic_pickups())
+                .find(|row| row.index == source_slot)
+                .map(|row| row.phase)
+                .or_else(|| {
+                    live.economy
+                        .entities
+                        .iter()
+                        .find(|row| row.index == source_slot)
+                        .map(|row| row.phase)
+                }),
+            Level2SourceRoute::BadStone => live
+                .bad_stones
+                .iter()
+                .find(|row| row.entity.index == source_slot)
+                .map(|row| row.entity.phase),
+            Level2SourceRoute::House => live
+                .ordinary
+                .houses()
+                .iter()
+                .find(|row| row.entity_index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Villager => live
+                .ordinary
+                .villagers()
+                .iter()
+                .find(|row| row.entity_index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Goat => live
+                .goats
+                .goats()
+                .iter()
+                .find(|row| row.entity_index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Player => live
+                .economy
+                .entities
+                .iter()
+                .find(|row| row.index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Nyphur => live
+                .economy
+                .entities
+                .iter()
+                .find(|row| row.index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Dolmen => live
+                .ordinary
+                .dolmens()
+                .iter()
+                .find(|row| row.entity.index == source_slot)
+                .map(|row| row.entity.phase),
+            Level2SourceRoute::CastleRoot => live
+                .economy
+                .economy
+                .castle
+                .filter(|row| row.source_entity_index == source_slot)
+                .map(|row| row.phase),
+            Level2SourceRoute::Dynamic(cursor) => {
+                let economy = &live.economy.economy;
+                macro_rules! retained_phase {
+                    ($rows:expr, $field:ident) => {
+                        $rows
+                            .iter()
+                            .find(|row| row.source_entity_index == source_slot)
+                            .map(|row| row.$field)
+                    };
+                }
+                match cursor.kind {
+                    Level2DynamicArenaKind::CastleProjectile
+                    | Level2DynamicArenaKind::ManaCarrier
+                    | Level2DynamicArenaKind::Model6SpawnedChild
+                    | Level2DynamicArenaKind::BeyondSightPulseEffect
+                    | Level2DynamicArenaKind::ManaAttraction => {
+                        economy.source_phase_sidecar(source_slot)
+                    }
+                    Level2DynamicArenaKind::FireballProjectile => {
+                        retained_phase!(economy.fireball_projectiles, phase)
+                    }
+                    Level2DynamicArenaKind::PossessionProjectile => {
+                        retained_phase!(economy.possession_projectiles, phase)
+                    }
+                    Level2DynamicArenaKind::PossessionEffect => {
+                        retained_phase!(economy.possession_effects, phase)
+                    }
+                    Level2DynamicArenaKind::CastleRoot => economy
+                        .castle
+                        .filter(|row| row.source_entity_index == source_slot)
+                        .map(|row| row.phase),
+                    Level2DynamicArenaKind::CastleChild
+                    | Level2DynamicArenaKind::CastleAuxiliary
+                    | Level2DynamicArenaKind::CastleDefender
+                    | Level2DynamicArenaKind::CastleController => {
+                        retained_phase!(economy.castle_children, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::ManaSphere => {
+                        retained_phase!(economy.spheres, phase)
+                    }
+                    Level2DynamicArenaKind::DeathBurst => {
+                        retained_phase!(economy.death_bursts, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::PlayerDeathMarker => {
+                        retained_phase!(economy.player_death_markers, dispatch_phase)
+                    }
+                    Level2DynamicArenaKind::SpellReplacement => {
+                        retained_phase!(economy.spell_replacements, phase)
+                    }
+                    Level2DynamicArenaKind::SpellPickup => {
+                        retained_phase!(economy.spell_pickups, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel1 => {
+                        retained_phase!(economy.authored_model1, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel45 => {
+                        retained_phase!(economy.authored_model45, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel13 => {
+                        retained_phase!(economy.authored_model13, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredBee => {
+                        retained_phase!(economy.authored_bees, phase)
+                    }
+                    Level2DynamicArenaKind::Model13SpawnedChild => {
+                        retained_phase!(economy.model13_spawned_children, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel6 => {
+                        retained_phase!(economy.authored_model6, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel17 => {
+                        retained_phase!(economy.authored_model17, phase)
+                    }
+                    Level2DynamicArenaKind::Model17SpawnedChild => {
+                        retained_phase!(economy.model17_spawned_children, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel22 => {
+                        retained_phase!(economy.authored_model22, phase)
+                    }
+                    Level2DynamicArenaKind::Model22SpawnedChild => {
+                        retained_phase!(economy.model22_spawned_children, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel76 => {
+                        retained_phase!(economy.authored_model76, phase)
+                    }
+                    Level2DynamicArenaKind::Model76Child => {
+                        retained_phase!(economy.model76_children, phase)
+                    }
+                    Level2DynamicArenaKind::Model76TailSpawn => {
+                        retained_phase!(economy.model76_tail_spawns, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass14 => {
+                        retained_phase!(economy.authored_class14, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass5 => {
+                        retained_phase!(economy.authored_class5, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
+                        retained_phase!(economy.authored_class5_archer_children, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass5Model3Child => {
+                        retained_phase!(economy.authored_class5_model3_children, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::HouseResident => {
+                        retained_phase!(economy.house_residents, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredSwitchProducer => {
+                        retained_phase!(economy.authored_switch_producers, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredTree => {
+                        retained_phase!(economy.authored_trees, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel32 => {
+                        retained_phase!(economy.authored_model32, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel59 => {
+                        retained_phase!(economy.authored_model59, phase)
+                    }
+                    Level2DynamicArenaKind::Model59SmokeChild => {
+                        retained_phase!(economy.model59_smoke_children, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel53 => {
+                        retained_phase!(economy.authored_model53, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel5WaterSplash => {
+                        retained_phase!(economy.authored_model5_water_splashes, phase)
+                    }
+                }
+            }
+        }
+    }
+
+    fn advance_level2_outer_owned_phase(
+        &mut self,
+        source_slot: u16,
+        route: Level2SourceRoute,
+    ) -> std::result::Result<(), String> {
+        let live = &mut self.session.state.live;
+        let phase = match route {
+            Level2SourceRoute::SpeedPickup | Level2SourceRoute::GenericPickup => live
+                .shared_spells
+                .pickups
+                .iter_mut()
+                .chain(live.shared_spells.dynamic_pickups.iter_mut())
+                .find(|row| row.index == source_slot)
+                .map(|row| &mut row.phase),
+            Level2SourceRoute::Nyphur | Level2SourceRoute::Player => live
+                .economy
+                .entities
+                .iter_mut()
+                .find(|row| row.index == source_slot)
+                .map(|row| &mut row.phase),
+            Level2SourceRoute::House => {
+                return live
+                    .ordinary
+                    .advance_house_source_phase(source_slot)
+                    .map(|_| ())
+                    .ok_or_else(|| {
+                        format!(
+                            "scheduler cannot resolve House source slot {source_slot} for its common phase epilogue"
+                        )
+                    });
+            }
+            Level2SourceRoute::Dolmen => live
+                .ordinary
+                .dolmens
+                .iter_mut()
+                .find(|row| row.entity.index == source_slot)
+                .map(|row| &mut row.entity.phase),
+            Level2SourceRoute::CastleRoot => live
+                .economy
+                .economy
+                .castle
+                .as_mut()
+                .filter(|row| row.source_entity_index == source_slot)
+                .map(|row| &mut row.phase),
+            Level2SourceRoute::PossessionHolder | Level2SourceRoute::FireballHolder => {
+                if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                    || source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+                {
+                    live.economy
+                        .entities
+                        .iter_mut()
+                        .find(|row| row.index == source_slot)
+                        .map(|row| &mut row.phase)
+                } else {
+                    live.shared_spells
+                        .dynamic_pickups
+                        .iter_mut()
+                        .find(|row| row.index == source_slot)
+                        .map(|row| &mut row.phase)
+                }
+            }
+            Level2SourceRoute::CastleHolder => live
+                .shared_spells
+                .dynamic_pickups
+                .iter_mut()
+                .find(|row| row.index == source_slot)
+                .map(|row| &mut row.phase),
+            Level2SourceRoute::Dynamic(row) => {
+                macro_rules! dynamic_phase_mut {
+                    ($rows:expr, $field:ident) => {
+                        $rows
+                            .iter_mut()
+                            .find(|row| row.source_entity_index == source_slot)
+                            .map(|row| &mut row.$field)
+                    };
+                }
+                match row.kind {
+                    Level2DynamicArenaKind::CastleProjectile
+                    | Level2DynamicArenaKind::ManaCarrier
+                    | Level2DynamicArenaKind::Model6SpawnedChild
+                    | Level2DynamicArenaKind::BeyondSightPulseEffect
+                    | Level2DynamicArenaKind::ManaAttraction => {
+                        return live
+                            .economy
+                            .economy
+                            .advance_source_phase_sidecar(source_slot)
+                            .map(|_| ())
+                            .ok_or_else(|| {
+                                format!(
+                                    "scheduler cannot resolve the source byte-0x3E sidecar for {:?} at source slot {source_slot}",
+                                    row.kind
+                                )
+                            });
+                    }
+                    Level2DynamicArenaKind::FireballProjectile => {
+                        dynamic_phase_mut!(live.economy.economy.fireball_projectiles, phase)
+                    }
+                    Level2DynamicArenaKind::PossessionProjectile => {
+                        dynamic_phase_mut!(live.economy.economy.possession_projectiles, phase)
+                    }
+                    Level2DynamicArenaKind::PossessionEffect => {
+                        dynamic_phase_mut!(live.economy.economy.possession_effects, phase)
+                    }
+                    Level2DynamicArenaKind::CastleRoot => live
+                        .economy
+                        .economy
+                        .castle
+                        .as_mut()
+                        .filter(|row| row.source_entity_index == source_slot)
+                        .map(|row| &mut row.phase),
+                    Level2DynamicArenaKind::CastleChild
+                    | Level2DynamicArenaKind::CastleAuxiliary
+                    | Level2DynamicArenaKind::CastleDefender
+                    | Level2DynamicArenaKind::CastleController => dynamic_phase_mut!(
+                        live.economy.economy.castle_children,
+                        source_byte_3e
+                    ),
+                    Level2DynamicArenaKind::ManaSphere => {
+                        dynamic_phase_mut!(live.economy.economy.spheres, phase)
+                    }
+                    Level2DynamicArenaKind::DeathBurst => dynamic_phase_mut!(
+                        live.economy.economy.death_bursts,
+                        source_byte_3e
+                    ),
+                    Level2DynamicArenaKind::PlayerDeathMarker => dynamic_phase_mut!(
+                        live.economy.economy.player_death_markers,
+                        dispatch_phase
+                    ),
+                    Level2DynamicArenaKind::SpellReplacement => {
+                        dynamic_phase_mut!(live.economy.economy.spell_replacements, phase)
+                    }
+                    Level2DynamicArenaKind::SpellPickup => {
+                        dynamic_phase_mut!(live.economy.economy.spell_pickups, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel1 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model1, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel45 => dynamic_phase_mut!(
+                        live.economy.economy.authored_model45,
+                        source_byte_3e
+                    ),
+                    Level2DynamicArenaKind::AuthoredModel13 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model13, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredBee => {
+                        dynamic_phase_mut!(live.economy.economy.authored_bees, phase)
+                    }
+                    Level2DynamicArenaKind::Model13SpawnedChild => dynamic_phase_mut!(
+                        live.economy.economy.model13_spawned_children,
+                        phase
+                    ),
+                    Level2DynamicArenaKind::AuthoredModel6 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model6, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel17 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model17, phase)
+                    }
+                    Level2DynamicArenaKind::Model17SpawnedChild => dynamic_phase_mut!(
+                        live.economy.economy.model17_spawned_children,
+                        phase
+                    ),
+                    Level2DynamicArenaKind::AuthoredModel22 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model22, phase)
+                    }
+                    Level2DynamicArenaKind::Model22SpawnedChild => dynamic_phase_mut!(
+                        live.economy.economy.model22_spawned_children,
+                        phase
+                    ),
+                    Level2DynamicArenaKind::AuthoredModel76 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model76, phase)
+                    }
+                    Level2DynamicArenaKind::Model76Child => {
+                        dynamic_phase_mut!(live.economy.economy.model76_children, phase)
+                    }
+                    Level2DynamicArenaKind::Model76TailSpawn => dynamic_phase_mut!(
+                        live.economy.economy.model76_tail_spawns,
+                        phase
+                    ),
+                    Level2DynamicArenaKind::AuthoredClass14 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_class14, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredClass5 => dynamic_phase_mut!(
+                        live.economy.economy.authored_class5,
+                        source_byte_3e
+                    ),
+                    Level2DynamicArenaKind::AuthoredClass5ArcherChild => dynamic_phase_mut!(
+                        live.economy.economy.authored_class5_archer_children,
+                        source_byte_3e
+                    ),
+                    Level2DynamicArenaKind::AuthoredClass5Model3Child => dynamic_phase_mut!(
+                        live.economy.economy.authored_class5_model3_children,
+                        source_byte_3e
+                    ),
+                    Level2DynamicArenaKind::HouseResident => {
+                        dynamic_phase_mut!(live.economy.economy.house_residents, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredSwitchProducer => dynamic_phase_mut!(
+                        live.economy.economy.authored_switch_producers,
+                        phase
+                    ),
+                    Level2DynamicArenaKind::AuthoredTree => {
+                        dynamic_phase_mut!(live.economy.economy.authored_trees, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel32 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model32, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel59 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model59, phase)
+                    }
+                    Level2DynamicArenaKind::Model59SmokeChild => dynamic_phase_mut!(
+                        live.economy.economy.model59_smoke_children,
+                        phase
+                    ),
+                    Level2DynamicArenaKind::AuthoredModel53 => {
+                        dynamic_phase_mut!(live.economy.economy.authored_model53, phase)
+                    }
+                    Level2DynamicArenaKind::AuthoredModel5WaterSplash => dynamic_phase_mut!(
+                        live.economy.economy.authored_model5_water_splashes,
+                        phase
+                    ),
+                }
+            }
+            _ => None,
+        }
+        .ok_or_else(|| {
+            format!(
+                "scheduler cannot resolve the current phase carrier for {route:?} at source slot {source_slot}"
+            )
+        })?;
+        *phase = phase.wrapping_add(1);
+        let advanced = *phase;
+        match route {
+            Level2SourceRoute::SpeedPickup | Level2SourceRoute::GenericPickup => {
+                if let Some(row) = live
+                    .shared_spells
+                    .pickups
+                    .iter_mut()
+                    .chain(live.shared_spells.dynamic_pickups.iter_mut())
+                    .find(|row| row.index == source_slot)
+                {
+                    row.record[66] = advanced;
+                }
+            }
+            Level2SourceRoute::Nyphur | Level2SourceRoute::Player => {
+                if let Some(row) = live
+                    .economy
+                    .entities
+                    .iter_mut()
+                    .find(|row| row.index == source_slot)
+                {
+                    row.record[66] = advanced;
+                }
+            }
+            Level2SourceRoute::Dolmen => {
+                if let Some(row) = live
+                    .ordinary
+                    .dolmens
+                    .iter_mut()
+                    .find(|row| row.entity.index == source_slot)
+                {
+                    row.entity.record[66] = advanced;
+                }
+            }
+            Level2SourceRoute::PossessionHolder | Level2SourceRoute::FireballHolder => {
+                if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                    || source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+                {
+                    if let Some(row) = live
+                        .economy
+                        .entities
+                        .iter_mut()
+                        .find(|row| row.index == source_slot)
+                    {
+                        row.record[66] = advanced;
+                    }
+                } else if let Some(row) = live
+                    .shared_spells
+                    .dynamic_pickups
+                    .iter_mut()
+                    .find(|row| row.index == source_slot)
+                {
+                    row.record[66] = advanced;
+                }
+            }
+            Level2SourceRoute::CastleHolder => {
+                if let Some(row) = live
+                    .shared_spells
+                    .dynamic_pickups
+                    .iter_mut()
+                    .find(|row| row.index == source_slot)
+                {
+                    row.record[66] = advanced;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn level2_route_accepts_handler(route: Level2SourceRoute, handler: ExistingHandler) -> bool {
+        match route {
+            Level2SourceRoute::SpeedPickup
+            | Level2SourceRoute::GenericPickup
+            | Level2SourceRoute::PossessionHolder
+            | Level2SourceRoute::CastleHolder
+            | Level2SourceRoute::FireballHolder => handler == ExistingHandler::SpellHolderAndPickup,
+            Level2SourceRoute::BadStone => handler == ExistingHandler::BadStone,
+            Level2SourceRoute::House => handler == ExistingHandler::Class10Effects,
+            Level2SourceRoute::Villager => matches!(
+                handler,
+                ExistingHandler::BuilderFamily
+                    | ExistingHandler::VillagerFamily
+                    | ExistingHandler::BuilderVillagerPostBuild
+                    | ExistingHandler::TraderFamily
+            ),
+            Level2SourceRoute::Dolmen => handler == ExistingHandler::Dolmen,
+            Level2SourceRoute::CastleRoot => handler == ExistingHandler::CastleRoot,
+            Level2SourceRoute::Goat => handler == ExistingHandler::GoatFamily,
+            Level2SourceRoute::Player => handler == ExistingHandler::PlayerFlight,
+            Level2SourceRoute::Nyphur => handler == ExistingHandler::NyphurPlayer,
+            Level2SourceRoute::Dynamic(row) => match row.kind {
+                Level2DynamicArenaKind::CastleProjectile
+                | Level2DynamicArenaKind::FireballProjectile
+                | Level2DynamicArenaKind::PossessionProjectile
+                | Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
+                    handler == ExistingHandler::ProjectileFamily
+                }
+                Level2DynamicArenaKind::PossessionEffect
+                | Level2DynamicArenaKind::CastleChild
+                | Level2DynamicArenaKind::CastleController
+                | Level2DynamicArenaKind::ManaSphere
+                | Level2DynamicArenaKind::DeathBurst
+                | Level2DynamicArenaKind::PlayerDeathMarker
+                | Level2DynamicArenaKind::AuthoredModel1
+                | Level2DynamicArenaKind::AuthoredModel45
+                | Level2DynamicArenaKind::AuthoredModel13
+                | Level2DynamicArenaKind::Model13SpawnedChild
+                | Level2DynamicArenaKind::AuthoredModel6
+                | Level2DynamicArenaKind::AuthoredModel17
+                | Level2DynamicArenaKind::Model17SpawnedChild
+                | Level2DynamicArenaKind::AuthoredModel22
+                | Level2DynamicArenaKind::AuthoredModel76
+                | Level2DynamicArenaKind::Model76TailSpawn
+                | Level2DynamicArenaKind::AuthoredModel59
+                | Level2DynamicArenaKind::Model59SmokeChild
+                | Level2DynamicArenaKind::AuthoredModel53
+                | Level2DynamicArenaKind::AuthoredModel5WaterSplash
+                | Level2DynamicArenaKind::BeyondSightPulseEffect
+                | Level2DynamicArenaKind::ManaAttraction => {
+                    handler == ExistingHandler::Class10Effects
+                }
+                Level2DynamicArenaKind::CastleRoot => handler == ExistingHandler::CastleRoot,
+                Level2DynamicArenaKind::CastleAuxiliary => {
+                    handler == ExistingHandler::CastleAuxiliary
+                }
+                Level2DynamicArenaKind::CastleDefender | Level2DynamicArenaKind::ManaCarrier => {
+                    handler == ExistingHandler::ManaCarrier
+                }
+                Level2DynamicArenaKind::SpellReplacement | Level2DynamicArenaKind::SpellPickup => {
+                    handler == ExistingHandler::SpellHolderAndPickup
+                }
+                Level2DynamicArenaKind::AuthoredBee => handler == ExistingHandler::BeeFamily,
+                Level2DynamicArenaKind::Model6SpawnedChild => {
+                    handler == ExistingHandler::Model6ProjectileChild
+                }
+                Level2DynamicArenaKind::AuthoredClass14 => {
+                    handler == ExistingHandler::Class14Events
+                }
+                Level2DynamicArenaKind::AuthoredClass5
+                | Level2DynamicArenaKind::AuthoredClass5Model3Child
+                | Level2DynamicArenaKind::HouseResident => matches!(
+                    handler,
+                    ExistingHandler::MultipartFamily
+                        | ExistingHandler::ArcherFamily
+                        | ExistingHandler::Model9Family
+                        | ExistingHandler::BuilderFamily
+                        | ExistingHandler::VillagerFamily
+                        | ExistingHandler::BuilderVillagerPostBuild
+                        | ExistingHandler::TraderFamily
+                ),
+                Level2DynamicArenaKind::AuthoredSwitchProducer => {
+                    handler == ExistingHandler::SwitchProducers
+                }
+                Level2DynamicArenaKind::AuthoredTree => handler == ExistingHandler::TreeLifecycle,
+                Level2DynamicArenaKind::AuthoredModel32 => {
+                    handler == ExistingHandler::ObjectiveSwitch
+                }
+                Level2DynamicArenaKind::Model22SpawnedChild
+                | Level2DynamicArenaKind::Model76Child => false,
+            },
+        }
+    }
+
+    fn dispatch_level2_source_visit(
         &mut self,
         pass: u8,
         latched_command: crate::LatchedCommand,
         evidence: &mut Vec<crate::StepEvidence>,
-    ) {
-        self.flush_shared_effects();
-        let source_player_order = self.refresh_level2_spell_owner_candidates();
-        let player_entity_index = self.session.state.live.core.state.entity_index;
-        let mut player_position = self.session.state.live.core.state.position;
-        // Retain event chronology across all source slots in this pass;
-        // individual handlers must not erase an earlier pickup row.
-        self.session.state.live.shared_spells.pickup_events.clear();
-        let goat_players = self.level2_goat_player_targets();
-        self.session.state.live.economy.advance_global_rng();
-        self.session
-            .state
-            .live
-            .economy
-            .reclaim_deferred_authored_bees_at_source_boundary();
-        self.session
-            .state
-            .live
-            .economy
-            .reclaim_possession_rows_at_source_boundary();
-        self.session
-            .state
-            .live
-            .economy
-            .reclaim_fireball_rows_at_source_boundary();
-        self.session
-            .state
-            .live
-            .economy
-            .reclaim_death_burst_rows_at_source_boundary();
-        // `UpdateEntities_57730` scans every hidden active entity and calls
-        // `sub_57F20` before rebuilding lists or dispatching any root. Keep
-        // this generic prepass independent of Castle root/model/parent state
-        // so a destroyed root cannot strand a hidden typed child.
-        self.session
-            .state
-            .live
-            .economy
-            .reclaim_hidden_castle_rows_at_source_boundary();
-        self.session
-            .state
-            .live
-            .economy
-            .rebuild_possession_guidance_source_slots();
-        // Pinned `UpdateEntities_57730` invokes `sub_60F00` once at the
-        // owning-pass boundary (EventsFunctions.cpp:40115), before any
-        // callback can spawn a fresh model-39 sphere or carrier. Rebuild the
-        // full row projection before maxMana so the Castle dword-0x13C gate
-        // and capacity sink both observe the same source boundary; same-pass
-        // merges still observe the prior boundary's capacity.
-        self.session
-            .state
-            .live
-            .economy
-            .rebuild_owner_mana_projection_at_source_boundary();
-        let reset_owner_max_mana = self.session.baseline.economy.economy.owner_max_mana.clone();
-        self.session
-            .state
-            .live
-            .economy
-            .rebuild_owner_max_mana_projection(&reset_owner_max_mana);
-        self.step_level2_imported_switch_roots(pass);
-        self.activate_level2_authored_group8(pass);
-        self.activate_level2_authored_group31(pass);
-        self.step_level2_group10_switch25(pass);
-        self.activate_level2_authored_bees(pass);
-        self.activate_level2_authored_model13(pass);
-        self.activate_level2_authored_model76(pass);
-        self.activate_level2_authored_class14(pass);
-        self.sync_level2_model76_targets_from_entities();
-        // Complete the source-bound class-11 downstream activation before
-        // taking the initial cursor view.  A model-54 field produced by an
-        // already-live producer is an ordinary source row for this pass; its
-        // callback must be reached at its allocated slot, not manufactured by
-        // a post-cursor drain.
-        self.activate_level2_authored_mana_attraction_fields(pass);
-        // `UpdateEntities_57730` rebuilds the model-39 linked membership once
-        // at the ordinary-pass boundary. Keep that source snapshot separate
-        // from the live arena cursor: spheres born later in this walk may
-        // receive their own higher-slot callback, but attraction fields must
-        // not target them until the next pass rebuild.
-        let pass_start_mana_sphere_slots = self
-            .session
-            .state
-            .live
-            .economy
-            .live_arena_cursor_rows()
-            .into_iter()
-            .filter(|row| row.kind == Level2DynamicArenaKind::ManaSphere)
-            .map(|row| row.source_slot)
-            .collect::<BTreeSet<_>>();
-        // UpdateEntities builds the class-3 and per-model class-5 linked
-        // memberships once at this same boundary. Callbacks resolve those
-        // fixed source slots against live row fields during the moving walk.
-        let pass_start_castle_auxiliary_membership = self
-            .session
-            .state
-            .live
-            .economy
-            .economy
-            .castle_auxiliary_membership(&self.session.state.live.economy.entities);
-        let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
-        for event in self
-            .session
-            .state
-            .live
-            .goats
-            .begin_source_turn(&goat_players)
-        {
-            let source_slot = match event {
-                GoatStepEvent::Reclaimed { entity_index } => entity_index,
-                _ => 0,
-            };
-            goat_begin_events
-                .entry(source_slot)
-                .or_default()
-                .push(event);
-        }
-        let mut routes = [(player_entity_index, 9_u8)]
-            .into_iter()
-            .chain([75_u16].into_iter().map(|slot| (slot, 0_u8)))
-            .chain([38_u16].into_iter().map(|slot| (slot, 8_u8)))
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .shared_spells
-                    .dynamic_pickups
-                    .iter()
-                    .filter(|holder| {
-                        holder.active
-                            && holder.class == 15
-                            && holder.model == POSSESSION_SPELL_FAMILY
-                            && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
-                            && holder.source_spell_parent_entity_index()
-                                == self.session.state.live.core.state.entity_index
-                    })
-                    .map(|holder| (holder.index, 11_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .shared_spells
-                    .dynamic_pickups
-                    .iter()
-                    .filter(|holder| {
-                        holder.active
-                            && holder.class == 15
-                            && holder.model == FIREBALL_SPELL_FAMILY
-                            && holder.action == 0
-                            && holder.source_spell_parent_entity_index()
-                                == self.session.state.live.core.state.entity_index
-                    })
-                    .map(|holder| (holder.index, 13_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .entities
-                    .iter()
-                    .filter(|holder| {
-                        holder.active
-                            && holder.index == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
-                            && holder.class == 15
-                            && holder.model == POSSESSION_SPELL_FAMILY
-                            && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
-                            && holder.source_spell_parent_entity_index()
-                                == LEVEL2_NYPHUR_ENTITY_INDEX
-                            && holder.active_value > 0
-                    })
-                    .map(|holder| (holder.index, 11_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .entities
-                    .iter()
-                    .filter(|holder| {
-                        holder.active
-                            && holder.index == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
-                            && holder.class == 15
-                            && holder.model == FIREBALL_SPELL_FAMILY
-                            && holder.action == 0
-                            && holder.source_spell_parent_entity_index()
-                                == LEVEL2_NYPHUR_ENTITY_INDEX
-                            && holder.active_value > 0
-                    })
-                    .map(|holder| (holder.index, 13_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .shared_spells
-                    .dynamic_pickups
-                    .iter()
-                    .filter(|holder| {
-                        holder.active
-                            && holder.class == 15
-                            && holder.model == CASTLE_SPELL_FAMILY
-                            && holder.action == CASTLE_SPELL_FAMILY.saturating_mul(3)
-                    })
-                    .map(|holder| (holder.index, 12_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .bad_stones
-                    .iter()
-                    .map(|stone| (stone.entity.index, 1_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .ordinary
-                    .houses()
-                    .iter()
-                    .map(|house| (house.entity_index, 2_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .ordinary
-                    .villagers()
-                    .iter()
-                    .map(|villager| (villager.entity_index, 3_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .ordinary
-                    .dolmens()
-                    .iter()
-                    .map(|dolmen| (dolmen.entity.index, 4_u8)),
-            )
-            .chain(
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .entities
-                    .iter()
-                    .filter(|entity| {
-                        entity.active
-                            && entity.class == 3
-                            && entity.model == 1
-                            && entity.action == 1
-                    })
-                    .map(|entity| (entity.index, 10_u8)),
-            )
-            .chain(LEVEL_TWO_GOAT_INDICES.into_iter().map(|slot| (slot, 7_u8)))
-            .collect::<Vec<_>>();
-        if let Some(castle) = self
-            .session
-            .state
-            .live
-            .economy
-            .castle()
-            .filter(|castle| castle.active)
-        {
-            routes.push((castle.source_entity_index, 5_u8));
-        }
-        let dynamic_rows = self
-            .session
-            .state
-            .live
-            .economy
-            .live_arena_cursor_rows()
-            .into_iter()
-            .filter(|row| !routes.iter().any(|(known, _)| known == &row.source_slot))
-            .map(|row| (row.source_slot, row))
-            .collect::<BTreeMap<_, _>>();
-        routes.extend(dynamic_rows.keys().copied().map(|slot| (slot, 6_u8)));
-        routes.sort_unstable_by_key(|(slot, _)| *slot);
-        // Ordinary `UpdateEntities_57730` makes one ascending in-place walk
-        // over the live source rows.  The typed routes above are its initial
-        // source-slot view; a callback-created row is inserted into the
-        // moving cursor only when its allocated slot is still ahead of the
-        // callback, while a lower/equal birth waits for the next invocation.
-        let mut dispatched_dynamic_slots = BTreeSet::new();
-        let mut deferred_dynamic_slots = BTreeSet::new();
-        let mut pending_source_rows = BTreeMap::<(u16, u32), Level2DynamicArenaCursorRow>::new();
-        for (source_slot, kind) in routes {
-            // A NewEvent row with a higher source slot joins the same ascending
-            // source pass before this next existing row. A lower row was
-            // already passed and is intentionally deferred by the helper.
-            loop {
-                let Some((key, row)) = pending_source_rows
-                    .first_key_value()
-                    .map(|(key, row)| (*key, *row))
-                else {
-                    break;
-                };
-                if row.source_slot >= source_slot {
-                    break;
-                }
-                pending_source_rows.remove(&key);
-                let live_dynamic_before = self
+        source_slot: u16,
+        visit: &Level2ResolvedSourceVisit,
+        player_entity_index: u16,
+        player_position: &mut Position,
+        source_player_order: &[usize],
+        goat_players: &[GoatPlayerTarget],
+        pass_start_mana_sphere_slots: &BTreeSet<u16>,
+        pass_start_castle_auxiliary_membership:
+            &level2_dynamic_economy::Level2CastleAuxiliaryMembership,
+        pass_start_castle_root_slot: Option<u16>,
+        goat_begin_events: &mut BTreeMap<u16, Vec<GoatStepEvent>>,
+    ) -> std::result::Result<(), String> {
+        match (visit.handler, visit.route) {
+            (ExistingHandler::PlayerFlight, Level2SourceRoute::Player) => {
+                // The player source owns mailbox consumption.  A Bee
+                // contact written by a later source slot therefore stays
+                // pending until the next outer pass, while an earlier
+                // source consumes it in this pass.
+                // The qualified local player body is class 3/model 0;
+                // model-2 diagnostic rows use the same entity slot for a
+                // wind/mailbox target and must remain on that callback.
+                let local_player_body = self
                     .session
                     .state
                     .live
                     .economy
-                    .live_arena_cursor_rows()
-                    .into_iter()
-                    .map(|row| (row.source_slot, row.generation))
-                    .collect::<BTreeSet<_>>();
-                dispatched_dynamic_slots.insert(key);
-                self.step_level2_pending_source_row(
-                    pass,
-                    row,
-                    player_entity_index,
-                    player_position,
-                    &source_player_order,
-                    &pass_start_mana_sphere_slots,
-                    &pass_start_castle_auxiliary_membership,
-                );
-                self.schedule_new_source_rows_in_source_order(
-                    &live_dynamic_before,
-                    row.source_slot,
-                    &dispatched_dynamic_slots,
-                    &mut deferred_dynamic_slots,
-                    &mut pending_source_rows,
-                );
-            }
-            let live_dynamic_before = self
-                .session
-                .state
-                .live
-                .economy
-                .live_arena_cursor_rows()
-                .into_iter()
-                .map(|row| (row.source_slot, row.generation))
-                .collect::<BTreeSet<_>>();
-            match kind {
-                9 => {
-                    // The player source owns mailbox consumption.  A Bee
-                    // contact written by a later source slot therefore stays
-                    // pending until the next outer pass, while an earlier
-                    // source consumes it in this pass.
-                    // The qualified local player body is class 3/model 0;
-                    // model-2 diagnostic rows use the same entity slot for a
-                    // wind/mailbox target and must remain on that callback.
-                    let local_player_body = self
+                    .entities
+                    .get(usize::from(player_entity_index))
+                    .is_some_and(|entity| {
+                        entity.index == player_entity_index
+                            && entity.class == 3
+                            && entity.model == 0
+                    });
+                if local_player_body {
+                    let player_action_at_visit = self.session.state.live.economy.entities
+                        [usize::from(player_entity_index)]
+                    .action;
+                    let mut lethal_at_visit = false;
+                    // `AddPlayer03_00_5E010` tests the Castle shift AABB
+                    // against the entity-111 position before the generic
+                    // body updates position. Preserve that source-time
+                    // observation for the following upkeep write.
+                    let castle_shift_overlap = self
                         .session
                         .state
                         .live
                         .economy
                         .entities
-                        .get(usize::from(player_entity_index))
-                        .is_some_and(|entity| {
-                            entity.index == player_entity_index
-                                && entity.class == 3
-                                && entity.model == 0
+                        .iter()
+                        .find(|entity| {
+                            entity.index == self.session.state.live.core.state.entity_index
+                        })
+                        .is_some_and(|player| {
+                            self.session
+                                .state
+                                .live
+                                .economy
+                                .player_castle_shift_aabb_overlap(player)
                         });
-                    if local_player_body {
-                        let player_action_at_visit = self.session.state.live.economy.entities
-                            [usize::from(player_entity_index)]
-                        .action;
-                        let mut lethal_at_visit = false;
-                        // `AddPlayer03_00_5E010` tests the Castle shift AABB
-                        // against the entity-111 position before the generic
-                        // body updates position. Preserve that source-time
-                        // observation for the following upkeep write.
-                        let castle_shift_overlap = self
-                            .session
+                    if player_action_at_visit == 0 {
+                        if let Some((damage, attacker, lethal)) =
+                            self.consume_level2_player_damage()
+                        {
+                            lethal_at_visit = lethal;
+                            self.session.state.live.economy.events.push(
+                                Level2EconomyEvent::DamageApplied {
+                                    target_entity_index: player_entity_index,
+                                    attacker_entity_index: attacker,
+                                    damage,
+                                    lethal,
+                                },
+                            );
+                        }
+                    }
+                    self.append_new_economy_events(pass, source_slot);
+
+                    if player_action_at_visit == 2 {
+                        // remc2 action 2 calls the recovered sub_5D530 body
+                        // directly: no new PlayerEvents input or spell-fire
+                        // command is latched while the player is dying.
+                        let profile = self.session.definition.profile;
+                        let context_event_start = self.session.state.live.core.context.events.len();
+                        let body = {
+                            let campaign = &mut self.session.state;
+                            let core = &mut campaign.live.core;
+                            let terrain = &campaign.live.terrain;
+                            crate::step_entity_body_with_context(
+                                &mut core.state,
+                                profile,
+                                terrain,
+                                &mut core.context,
+                            )
+                        };
+                        let context_events = self.session.state.live.core.context.events
+                            [context_event_start..]
+                            .to_vec();
+                        self.append_context_effects(context_events);
+                        self.step_level2_player_dying_action(pass, source_slot, body.proposed);
+                        *player_position = self.session.state.live.core.state.position;
+                        evidence.push(body);
+                    } else if player_action_at_visit == 0 {
+                        // `UpdateEntities_57730` reaches the local player at
+                        // source slot 111 before the later Possession holder
+                        // (116) and Castle (117). Keep the complete generic
+                        // flight/player callback here so its selected spell,
+                        // movement, and upkeep writes are visible to those
+                        // later source handlers in this same pass.
+                        self.refresh_level2_spell_fire_holder_projection();
+                        let profile = self.session.definition.profile;
+                        let context_event_start = self.session.state.live.core.context.events.len();
+                        let campaign = Some(&mut self.session.state)
+                            .expect("Level 2 campaign state owns canonical runtime");
+                        let core = &mut campaign.live.core;
+                        let terrain = &campaign.live.terrain;
+                        evidence.push(crate::step_entity_pass_with_context(
+                            &mut core.state,
+                            latched_command,
+                            profile,
+                            terrain,
+                            &mut core.context,
+                        ));
+                        let context_events = self.session.state.live.core.context.events
+                            [context_event_start..]
+                            .to_vec();
+                        self.append_context_effects(context_events);
+                        self.sync_level2_spell_fire_authority(latched_command.flags);
+                        self.set_level2_entity_position(
+                            self.session.state.live.core.state.entity_index,
+                            self.session.state.live.core.state.position,
+                        )
+                        .expect("qualified Level 2 local-player map carrier remains valid");
+                        self.session
                             .state
                             .live
-                            .economy
-                            .entities
-                            .iter()
-                            .find(|entity| {
-                                entity.index == self.session.state.live.core.state.entity_index
-                            })
-                            .is_some_and(|player| {
+                            .shared_spells
+                            .step_local_player_unboosted_upkeep(
+                                self.session.state.live.economy.player_castle_entity_index(),
+                                castle_shift_overlap,
                                 self.session
                                     .state
                                     .live
                                     .economy
-                                    .player_castle_shift_aabb_overlap(player)
+                                    .owner_max_mana
+                                    .get(&self.session.state.live.core.state.entity_index)
+                                    .copied(),
+                            );
+                        self.session
+                            .state
+                            .live
+                            .shared_spells
+                            .sync_typed_spell_parent_caches_from_player_entity();
+                        self.sync_level2_spell_fire_context();
+                        if lethal_at_visit {
+                            mark_source_audio_call(SourceAudioCallTag::PlayerDeath);
+                            self.push_flight_effect(FlightEvent::PrepareSound {
+                                #[cfg(test)]
+                                audio_site: crate::MissionAudioSite::PlayerDeath,
+                                entity_index: player_entity_index,
+                                player_index: -1,
+                                sound_id: 16,
                             });
-                        if player_action_at_visit == 0 {
-                            if let Some((damage, attacker, lethal)) =
-                                self.consume_level2_player_damage()
-                            {
-                                lethal_at_visit = lethal;
-                                self.session.state.live.economy.events.push(
-                                    Level2EconomyEvent::DamageApplied {
-                                        target_entity_index: player_entity_index,
-                                        attacker_entity_index: attacker,
-                                        damage,
-                                        lethal,
-                                    },
-                                );
-                            }
+                            // `Scene::DEAD` is the fifth variant in the pinned remc2 enum.
+                            self.push_scene_change_effect(4);
                         }
-                        self.append_new_economy_events(pass, source_slot);
-
-                        if player_action_at_visit == 2 {
-                            // remc2 action 2 calls the recovered sub_5D530 body
-                            // directly: no new PlayerEvents input or spell-fire
-                            // command is latched while the player is dying.
-                            let profile = self.session.definition.profile;
-                            let context_event_start =
-                                self.session.state.live.core.context.events.len();
-                            let body = {
-                                let campaign = &mut self.session.state;
-                                let core = &mut campaign.live.core;
-                                let terrain = &campaign.live.terrain;
-                                crate::step_entity_body_with_context(
-                                    &mut core.state,
-                                    profile,
-                                    terrain,
-                                    &mut core.context,
-                                )
-                            };
-                            let context_events = self.session.state.live.core.context.events
-                                [context_event_start..]
-                                .to_vec();
-                            self.append_context_effects(context_events);
-                            self.step_level2_player_dying_action(pass, source_slot, body.proposed);
-                            player_position = self.session.state.live.core.state.position;
-                            evidence.push(body);
-                        } else if player_action_at_visit == 0 {
-                            // `UpdateEntities_57730` reaches the local player at
-                            // source slot 111 before the later Possession holder
-                            // (116) and Castle (117). Keep the complete generic
-                            // flight/player callback here so its selected spell,
-                            // movement, and upkeep writes are visible to those
-                            // later source handlers in this same pass.
-                            self.refresh_level2_spell_fire_holder_projection();
-                            let profile = self.session.definition.profile;
-                            let context_event_start =
-                                self.session.state.live.core.context.events.len();
-                            let campaign = Some(&mut self.session.state)
-                                .expect("Level 2 campaign state owns canonical runtime");
-                            let core = &mut campaign.live.core;
-                            let terrain = &campaign.live.terrain;
-                            evidence.push(crate::step_entity_pass_with_context(
-                                &mut core.state,
-                                latched_command,
-                                profile,
-                                terrain,
-                                &mut core.context,
-                            ));
-                            let context_events = self.session.state.live.core.context.events
-                                [context_event_start..]
-                                .to_vec();
-                            self.append_context_effects(context_events);
-                            self.sync_level2_spell_fire_authority(latched_command.flags);
-                            self.set_level2_entity_position(
-                                self.session.state.live.core.state.entity_index,
-                                self.session.state.live.core.state.position,
-                            )
-                            .expect("qualified Level 2 local-player map carrier remains valid");
-                            self.session
-                                .state
-                                .live
-                                .shared_spells
-                                .step_local_player_unboosted_upkeep(
-                                    self.session.state.live.economy.player_castle_entity_index(),
-                                    castle_shift_overlap,
-                                    self.session
-                                        .state
-                                        .live
-                                        .economy
-                                        .owner_max_mana
-                                        .get(&self.session.state.live.core.state.entity_index)
-                                        .copied(),
-                                );
-                            self.session
-                                .state
-                                .live
-                                .shared_spells
-                                .sync_typed_spell_parent_caches_from_player_entity();
-                            self.sync_level2_spell_fire_context();
-                            if lethal_at_visit {
-                                mark_source_audio_call(SourceAudioCallTag::PlayerDeath);
-                                self.push_flight_effect(FlightEvent::PrepareSound {
-                                    #[cfg(test)]
-                                    audio_site: crate::MissionAudioSite::PlayerDeath,
-                                    entity_index: player_entity_index,
-                                    player_index: -1,
-                                    sound_id: 16,
-                                });
-                                // `Scene::DEAD` is the fifth variant in the pinned remc2 enum.
-                                self.push_scene_change_effect(4);
-                            }
-                        } else if player_action_at_visit == 3 {
-                            self.step_level2_player_banished_action();
-                        }
+                    } else if player_action_at_visit == 3 {
+                        self.step_level2_player_banished_action();
                     }
                 }
-                0 => {
-                    let terrain = &self.session.state.live.terrain;
-                    let result = self.session.state.live.shared_spells.step_shared_pickup(
+            }
+            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::SpeedPickup) => {
+                let terrain = &self.session.state.live.terrain;
+                let result = self.session.state.live.shared_spells.step_shared_pickup(
+                    source_slot,
+                    player_entity_index,
+                    *player_position,
+                    terrain,
+                );
+                match result {
+                    Ok(result) => self.push_dispatch_effect(Level2DispatchEvent::SharedPickup {
+                        pass,
                         source_slot,
+                        result,
+                    }),
+                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot,
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::GenericPickup) => {
+                let family = LEVEL2_GENERIC_SPELL_PICKUPS
+                    .iter()
+                    .find(|(_, slot, _)| *slot == source_slot)
+                    .map(|(family, _, _)| *family)
+                    .expect("generic Level 2 spell route has a family");
+                let terrain = &self.session.state.live.terrain;
+                match self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .step_level2_spell_acquisition_with_economy_in_source_order(
+                        &mut self.session.state.live.economy,
+                        family,
                         player_entity_index,
-                        player_position,
+                        *player_position,
                         terrain,
-                    );
-                    match result {
-                        Ok(result) => {
-                            self.push_dispatch_effect(Level2DispatchEvent::SharedPickup {
-                                pass,
-                                source_slot,
-                                result,
-                            })
-                        }
-                        Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        source_player_order,
+                    ) {
+                    Ok(result) => {
+                        self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
                             pass,
                             source_slot,
-                            message: error.to_string(),
-                        }),
-                    }
-                }
-                8 => {
-                    let family = LEVEL2_GENERIC_SPELL_PICKUPS
-                        .iter()
-                        .find(|(_, slot, _)| *slot == source_slot)
-                        .map(|(family, _, _)| *family)
-                        .expect("generic Level 2 spell route has a family");
-                    let terrain = &self.session.state.live.terrain;
-                    match self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .step_level2_spell_acquisition_with_economy_in_source_order(
-                            &mut self.session.state.live.economy,
                             family,
-                            player_entity_index,
-                            player_position,
-                            terrain,
-                            &source_player_order,
-                        ) {
-                        Ok(result) => {
-                            self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
-                                pass,
-                                source_slot,
-                                family,
-                                result,
-                            })
-                        }
-                        Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
-                            pass,
-                            source_slot,
-                            message: error.to_string(),
-                        }),
+                            result,
+                        })
                     }
-                    // The outer entity dispatcher advances byte_0x3E after
-                    // the action-bearing handler returns; keep the live
-                    // pickup record in that source cadence rather than
-                    // relying on test-only phase mutation.
-                    if let Some(pickup) = self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .pickups
-                        .iter_mut()
-                        .find(|entity| entity.index == source_slot)
-                    {
-                        pickup.phase = pickup.phase.wrapping_add(1);
-                        pickup.record[66] = pickup.phase;
-                    }
+                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot,
+                        message: error.to_string(),
+                    }),
                 }
-                1 => match self.step_bad_stone_action_9(source_slot) {
+                // The outer entity dispatcher advances byte_0x3E after
+                // the action-bearing handler returns; keep the live
+                // pickup record in that source cadence rather than
+                // relying on test-only phase mutation.
+                if let Some(pickup) = self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .pickups
+                    .iter_mut()
+                    .find(|entity| entity.index == source_slot)
+                {
+                    pickup.phase = pickup.phase.wrapping_add(1);
+                    pickup.record[66] = pickup.phase;
+                }
+            }
+            (ExistingHandler::BadStone, Level2SourceRoute::BadStone) => {
+                match self.step_bad_stone_action_9(source_slot) {
                     Ok(step) => {
                         self.push_dispatch_effect(Level2DispatchEvent::BadStone { pass, step })
                     }
@@ -7513,122 +8754,141 @@ impl Level2ResetSession {
                         source_slot,
                         message: error.to_string(),
                     }),
-                },
-                2 => {
-                    let ordinary_before = self.session.state.live.ordinary.clone();
-                    let economy_before = self.session.state.live.economy.clone();
-                    let terrain_before = self.canonical_terrain().clone();
-                    let terrain = &self.session.state.live.terrain;
-                    let events = self
-                        .session
-                        .state
-                        .live
-                        .ordinary
-                        .step_house_action_52(source_slot, terrain);
-                    let result = {
-                        let terrain = &mut self.session.state.live.terrain;
-                        self.session.state.live.ordinary.apply_house_terrain_events(
-                            &mut self.session.state.live.economy,
-                            &events,
-                            terrain,
-                        )
-                    };
-                    match result {
-                        Ok(()) => {
-                            self.append_new_economy_events(pass, source_slot);
-                            self.push_dispatch_effect(Level2DispatchEvent::House {
-                                pass,
-                                source_slot,
-                                events: events.into_boxed_slice(),
-                            });
-                        }
-                        Err(error) => {
-                            self.session.state.live.ordinary = ordinary_before;
-                            self.session.state.live.economy = economy_before;
-                            *&mut self.session.state.live.terrain = terrain_before;
-                            self.push_dispatch_effect(Level2DispatchEvent::Error {
-                                pass,
-                                source_slot,
-                                message: format!("Level 2 House sink failed: {error}"),
-                            });
-                        }
-                    }
                 }
-                3 => {
-                    let terrain = &self.session.state.live.terrain;
-                    let effects = self
-                        .session
-                        .state
-                        .live
-                        .ordinary
-                        .step_villager_action_105(source_slot, terrain);
-                    self.session
-                        .state
-                        .live
-                        .ordinary
-                        .apply_villager_effects(&effects);
-                    // `KillEntity_1C930` allocates the class-10/model-1
-                    // death burst before disabling the dying villager's
-                    // source row. Keep the typed villager source id for this
-                    // relation; imported ordinary villagers have no owner
-                    // entry in the Level 2 economy map.
-                    for effect in &effects {
-                        if let VillagerStepEffect::DeathBurst {
-                            source_entity_index,
-                            position,
-                        } = effect
-                        {
-                            if let Some(villager) = self
-                                .session
-                                .state
-                                .live
-                                .ordinary
-                                .villagers()
-                                .iter()
-                                .find(|villager| villager.entity_index == *source_entity_index)
-                            {
-                                let _ = self
+            }
+            (ExistingHandler::Class10Effects, Level2SourceRoute::House) => {
+                let ordinary_before = self.session.state.live.ordinary.clone();
+                let economy_before = self.session.state.live.economy.clone();
+                let terrain_before = self.canonical_terrain().clone();
+                let terrain = &self.session.state.live.terrain;
+                let events = self
+                    .session
+                    .state
+                    .live
+                    .ordinary
+                    .step_house_action_52(source_slot, terrain);
+                let result = {
+                    let terrain = &mut self.session.state.live.terrain;
+                    self.session.state.live.ordinary.apply_house_terrain_events(
+                        &mut self.session.state.live.economy,
+                        &events,
+                        terrain,
+                    )
+                };
+                match result {
+                    Ok(()) => {
+                        for event in &events {
+                            if let HouseStepEvent::RemoveFootprint { entity_index, .. } = *event
+                                && let Some(entity) = self
                                     .session
                                     .state
                                     .live
                                     .economy
-                                    .spawn_death_burst_from_death_with_id(
-                                        *source_entity_index,
-                                        villager.source_id,
-                                        *position,
-                                    );
+                                    .entities
+                                    .get_mut(usize::from(entity_index))
+                            {
+                                // Source action 53 calls DisableEntityDrawing;
+                                // class-zero/map unlink belongs to the next
+                                // UpdateEntities prologue.
+                                entity.disable_drawing();
                             }
                         }
-                    }
-                    self.append_new_economy_events(pass, source_slot);
-                    self.push_dispatch_effect(Level2DispatchEvent::Villager {
-                        pass,
-                        source_slot,
-                        effects: effects.into_boxed_slice(),
-                    });
-                }
-                4 => {
-                    let terrain = &self.session.state.live.terrain;
-                    match self
-                        .session
-                        .state
-                        .live
-                        .ordinary
-                        .step_dolmen_action_6(source_slot, terrain)
-                    {
-                        Ok(step) => {
-                            self.push_dispatch_effect(Level2DispatchEvent::Dolmen { pass, step })
-                        }
-                        Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        self.append_new_economy_events(pass, source_slot);
+                        self.push_dispatch_effect(Level2DispatchEvent::House {
                             pass,
                             source_slot,
-                            message: error.to_string(),
-                        }),
+                            events: events.into_boxed_slice(),
+                        });
+                    }
+                    Err(error) => {
+                        self.session.state.live.ordinary = ordinary_before;
+                        self.session.state.live.economy = economy_before;
+                        *&mut self.session.state.live.terrain = terrain_before;
+                        return Err(format!("Level 2 House sink failed: {error}"));
                     }
                 }
-                5 => {
-                    let construction_completion = self
-                        .session
+            }
+            (
+                ExistingHandler::BuilderFamily
+                | ExistingHandler::VillagerFamily
+                | ExistingHandler::BuilderVillagerPostBuild
+                | ExistingHandler::TraderFamily,
+                Level2SourceRoute::Villager,
+            ) => {
+                let terrain = &self.session.state.live.terrain;
+                let effects = self
+                    .session
+                    .state
+                    .live
+                    .ordinary
+                    .step_villager_action_105(source_slot, terrain);
+                self.session
+                    .state
+                    .live
+                    .ordinary
+                    .apply_villager_effects(&effects);
+                // `KillEntity_1C930` allocates the class-10/model-1
+                // death burst before disabling the dying villager's
+                // source row. Keep the typed villager source id for this
+                // relation; imported ordinary villagers have no owner
+                // entry in the Level 2 economy map.
+                for effect in &effects {
+                    if let VillagerStepEffect::DeathBurst {
+                        source_entity_index,
+                        position,
+                    } = effect
+                    {
+                        if let Some(villager) = self
+                            .session
+                            .state
+                            .live
+                            .ordinary
+                            .villagers()
+                            .iter()
+                            .find(|villager| villager.entity_index == *source_entity_index)
+                        {
+                            let _ = self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .spawn_death_burst_from_death_with_id(
+                                    *source_entity_index,
+                                    villager.source_id,
+                                    *position,
+                                );
+                        }
+                    }
+                }
+                self.append_new_economy_events(pass, source_slot);
+                self.push_dispatch_effect(Level2DispatchEvent::Villager {
+                    pass,
+                    source_slot,
+                    effects: effects.into_boxed_slice(),
+                });
+            }
+            (ExistingHandler::Dolmen, Level2SourceRoute::Dolmen) => {
+                let terrain = &self.session.state.live.terrain;
+                match self
+                    .session
+                    .state
+                    .live
+                    .ordinary
+                    .step_dolmen_action_6(source_slot, terrain)
+                {
+                    Ok(step) => {
+                        self.push_dispatch_effect(Level2DispatchEvent::Dolmen { pass, step })
+                    }
+                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot,
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            (ExistingHandler::CastleRoot, Level2SourceRoute::CastleRoot) => {
+                let construction_completion =
+                    self.session
                         .state
                         .live
                         .economy
@@ -7636,331 +8896,274 @@ impl Level2ResetSession {
                         .is_some_and(|castle| {
                             castle.active && castle.action == 5 && castle.build_state == 2
                         });
-                    let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
-                    let terrain = &mut self.session.state.live.terrain;
-                    let advanced = self.session.state.live.economy.step_castle_action(
-                        source_slot,
-                        terrain,
-                        &reset_free_slots,
-                    );
-                    // Publish the source handler's economy sidecars before
-                    // the coarse Castle wrapper, matching the handler-first
-                    // ApplyEvents cursor order used by dynamic rows.
-                    self.append_new_economy_events(pass, source_slot);
+                let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
+                let terrain = &mut self.session.state.live.terrain;
+                let advanced = self.session.state.live.economy.step_castle_action(
+                    source_slot,
+                    terrain,
+                    &reset_free_slots,
+                );
+                // Publish the source handler's economy sidecars before
+                // the coarse Castle wrapper, matching the handler-first
+                // ApplyEvents cursor order used by dynamic rows.
+                self.append_new_economy_events(pass, source_slot);
+                if pass_start_castle_root_slot == Some(source_slot) {
                     self.push_dispatch_effect(Level2DispatchEvent::Castle {
                         pass,
                         source_slot,
                         advanced,
                     });
-                    if construction_completion
-                        && self
-                            .session
-                            .state
-                            .live
-                            .economy
-                            .castle()
-                            .is_some_and(|castle| castle.action == 4)
-                        && let Some(holder_index) = self
-                            .session
-                            .state
-                            .live
-                            .shared_spells
-                            .holders
-                            .iter()
-                            .chain(self.session.state.live.shared_spells.dynamic_pickups.iter())
-                            .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
-                            .map(|holder| holder.index)
-                    {
-                        // `BeginOfCastleCreation_5FA70` state 2 calls
-                        // `sub_5F890(caster, 0)` before leaving action 5;
-                        // construction, rather than a timer tick, releases
-                        // the holder for the next public upgrade cast.
-                        self.clear_castle_spell_holder_cooldown(holder_index);
-                    }
-                }
-                6 => {
-                    let row = dynamic_rows
-                        .get(&source_slot)
-                        .copied()
-                        .expect("dynamic source route has a live row");
-                    dispatched_dynamic_slots.insert((source_slot, row.generation));
-                    if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
-                        if let Some(target_group) = self
-                            .session
-                            .state
-                            .live
-                            .economy
-                            .authored_model45()
-                            .iter()
-                            .find(|source| source.source_entity_index == source_slot)
-                            .map(|source| source.target_group)
-                            .filter(|target_group| *target_group != 0)
-                        {
-                            self.activate_level2_authored_spell_group(
-                                pass,
-                                source_slot,
-                                target_group,
-                            );
-                        }
-                    }
-                    let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
-                        self.step_level2_dynamic_spell_pickup(
-                            pass,
-                            source_slot,
-                            player_entity_index,
-                            player_position,
-                            &source_player_order,
-                        )
-                    } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
-                        self.step_level2_dynamic_spell_replacement(
-                            pass,
-                            source_slot,
-                            player_entity_index,
-                            player_position,
-                            &source_player_order,
-                        )
-                    } else {
-                        self.step_level2_dynamic_arena_with_sphere_membership(
-                            pass,
-                            source_slot,
-                            row.kind,
-                            Some(&pass_start_mana_sphere_slots),
-                            Some(&pass_start_castle_auxiliary_membership),
-                        )
-                    };
-                    self.append_new_economy_events(pass, source_slot);
-                    if live {
-                        self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
-                            pass,
-                            source_slot,
-                            kind: row.kind,
-                        });
-                    }
-                }
-                7 => {
-                    let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
-                    let terrain = &self.session.state.live.terrain;
-                    events.extend(self.session.state.live.goats.step_source_slot(
-                        source_slot,
-                        terrain,
-                        &goat_players,
-                    ));
-                    self.apply_level2_goat_economy_events(&events);
-                    self.append_new_economy_events(pass, source_slot);
-                    self.push_dispatch_effect(Level2DispatchEvent::Goat {
+                } else {
+                    // Preserve the established public observation for a
+                    // root born into a higher numeric slot during this
+                    // pass. The handler still runs immediately; only its
+                    // compatibility receipt remains the dynamic family-1
+                    // projection used before the scheduler cutover.
+                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
-                        events: events.into_boxed_slice(),
+                        kind: Level2DynamicArenaKind::CastleRoot,
                     });
                 }
-                10 => {
-                    let move_speed_flag = self
-                        .session
-                        .state
-                        .live
-                        .core
-                        .context
-                        .effects
-                        .as_ref()
-                        .map_or(0, |effects| effects.move_speed_flag);
-                    let active_level_color_index = self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .local_player
-                        .player_color_index();
-                    let terrain = &self.session.state.live.terrain;
-                    let players = &self.session.state.live.core.players;
-                    let source_arena = &mut self.session.state.live.economy;
-                    match self.session.state.live.nyphur_dispatcher.step_dispatch(
-                        pass,
-                        source_slot,
-                        &mut source_arena.entities,
-                        source_arena.economy.spheres(),
-                        players,
-                        terrain,
-                        &self.session.definition.presentation,
-                        move_speed_flag,
-                        active_level_color_index,
-                    ) {
-                        Ok((_snapshot, trace)) => self
-                            .session
-                            .state
-                            .scratch
-                            .nyphur_dispatch_traces
-                            .push(trace),
-                        Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
-                            pass,
-                            source_slot,
-                            message: error.to_string(),
-                        }),
-                    }
-                    // The ordinary source dispatcher advances byte_0x3E after
-                    // every action callback, including the class-3/model-1 AI
-                    // row.
-                    if let Some(entity) = self
+                if construction_completion
+                    && self
                         .session
                         .state
                         .live
                         .economy
-                        .entities
-                        .iter_mut()
-                        .find(|entity| entity.index == source_slot)
-                    {
-                        entity.set_phase(entity.phase.wrapping_add(1));
-                    }
-                }
-                11 => {
-                    // The holder is a constructor/producer only. The
-                    // newly allocated row is dispatched by the source cursor
-                    // below, and emits DynamicArena only if its callback
-                    // returns live.
-                    if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX {
-                        self.step_level2_nyphur_possession_holder_source_slot(source_slot);
-                    } else {
-                        self.step_level2_possession_holder_source_slot(source_slot);
-                    }
-                    // `UpdateEntities_57730` advances `byte_0x3E_62` only
-                    // after the dispatched callback has returned. Keep this
-                    // outside `sub_69640`'s typed body for generic shared
-                    // holders; the canonical Nyphur route is admitted only
-                    // for a positive source countdown so a cold participant
-                    // row retains its reset census bytes.
-                    if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX {
-                        if let Some(holder) = self
-                            .session
-                            .state
-                            .live
-                            .economy
-                            .entities
-                            .iter_mut()
-                            .find(|holder| holder.index == source_slot)
-                        {
-                            holder.set_phase(holder.phase.wrapping_add(1));
-                        }
-                    } else if let Some(holder) = self
+                        .castle()
+                        .is_some_and(|castle| castle.action == 4)
+                    && let Some(holder_index) = self
                         .session
                         .state
                         .live
                         .shared_spells
-                        .dynamic_pickups
-                        .iter_mut()
-                        .find(|holder| holder.index == source_slot)
-                    {
-                        holder.set_phase(holder.phase.wrapping_add(1));
-                    }
+                        .holders
+                        .iter()
+                        .chain(self.session.state.live.shared_spells.dynamic_pickups.iter())
+                        .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
+                        .map(|holder| holder.index)
+                {
+                    // `BeginOfCastleCreation_5FA70` state 2 calls
+                    // `sub_5F890(caster, 0)` before leaving action 5;
+                    // construction, rather than a timer tick, releases
+                    // the holder for the next public upgrade cast.
+                    self.clear_castle_spell_holder_cooldown(holder_index);
                 }
-                12 => {
-                    // The holder is a constructor/producer only. The
-                    // higher-slot flyer callback owns the DynamicArena
-                    // receipt after step_level2_dynamic_arena returns live.
-                    self.step_level2_castle_holder_source_slot(source_slot);
-                    // The class-15/model-2/action-6 callback mutates W and
-                    // word36; the source dispatcher advances byte 0x3e once
-                    // after every active callback, including W=0.
-                    if let Some(holder) = self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .dynamic_pickups
-                        .iter_mut()
-                        .find(|holder| holder.index == source_slot)
-                    {
-                        holder.set_phase(holder.phase.wrapping_add(1));
-                    }
-                }
-                13 => {
-                    // Family-0's class/action keyed handler owns the
-                    // producer transition; the higher-slot Fireball callback
-                    // receives the ordinary dynamic-arena dispatch below.
-                    if source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX {
-                        self.step_level2_nyphur_fireball_holder_source_slot(source_slot);
-                        if let Some(holder) = self
-                            .session
-                            .state
-                            .live
-                            .economy
-                            .entities
-                            .iter_mut()
-                            .find(|holder| holder.index == source_slot)
-                        {
-                            holder.set_phase(holder.phase.wrapping_add(1));
-                        }
-                    } else {
-                        self.step_level2_fireball_holder_source_slot(source_slot);
-                        if let Some(holder) = self
-                            .session
-                            .state
-                            .live
-                            .shared_spells
-                            .dynamic_pickups
-                            .iter_mut()
-                            .find(|holder| holder.index == source_slot)
-                        {
-                            holder.set_phase(holder.phase.wrapping_add(1));
-                        }
-                    }
-                }
-                _ => unreachable!("bounded Level 2 source route"),
             }
-            for row in self.session.state.live.economy.live_arena_cursor_rows() {
-                let key = (row.source_slot, row.generation);
-                if live_dynamic_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
-                    continue;
+            (
+                ExistingHandler::TreeLifecycle
+                | ExistingHandler::CastleRoot
+                | ExistingHandler::ManaCarrier
+                | ExistingHandler::MultipartFamily
+                | ExistingHandler::ArcherFamily
+                | ExistingHandler::Model9Family
+                | ExistingHandler::BuilderFamily
+                | ExistingHandler::VillagerFamily
+                | ExistingHandler::BuilderVillagerPostBuild
+                | ExistingHandler::TraderFamily
+                | ExistingHandler::ProjectileFamily
+                | ExistingHandler::Model6ProjectileChild
+                | ExistingHandler::Class10Effects
+                | ExistingHandler::SwitchProducers
+                | ExistingHandler::ObjectiveSwitch
+                | ExistingHandler::Class14Events
+                | ExistingHandler::SpellHolderAndPickup
+                | ExistingHandler::BeeFamily
+                | ExistingHandler::CastleAuxiliary,
+                Level2SourceRoute::Dynamic(row),
+            ) => {
+                if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
+                    if let Some(target_group) = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .authored_model45()
+                        .iter()
+                        .find(|source| source.source_entity_index == source_slot)
+                        .map(|source| source.target_group)
+                        .filter(|target_group| *target_group != 0)
+                    {
+                        self.activate_level2_authored_spell_group(pass, source_slot, target_group);
+                    }
                 }
-                if row.source_slot <= source_slot {
-                    deferred_dynamic_slots.insert(key);
+                let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
+                    self.step_level2_dynamic_spell_pickup(
+                        pass,
+                        source_slot,
+                        player_entity_index,
+                        *player_position,
+                        source_player_order,
+                    )
+                } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
+                    self.step_level2_dynamic_spell_replacement(
+                        pass,
+                        source_slot,
+                        player_entity_index,
+                        *player_position,
+                        source_player_order,
+                    )
                 } else {
-                    pending_source_rows.insert(key, row);
+                    self.step_level2_dynamic_arena_with_sphere_membership(
+                        pass,
+                        source_slot,
+                        row.kind,
+                        Some(pass_start_mana_sphere_slots),
+                        Some(pass_start_castle_auxiliary_membership),
+                    )
+                };
+                self.append_new_economy_events(pass, source_slot);
+                if live {
+                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                        pass,
+                        source_slot,
+                        kind: row.kind,
+                    });
                 }
             }
+            (ExistingHandler::GoatFamily, Level2SourceRoute::Goat) => {
+                let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
+                let terrain = &self.session.state.live.terrain;
+                events.extend(self.session.state.live.goats.step_source_slot(
+                    source_slot,
+                    terrain,
+                    goat_players,
+                ));
+                self.apply_level2_goat_economy_events(&events);
+                self.append_new_economy_events(pass, source_slot);
+                self.push_dispatch_effect(Level2DispatchEvent::Goat {
+                    pass,
+                    source_slot,
+                    events: events.into_boxed_slice(),
+                });
+            }
+            (ExistingHandler::NyphurPlayer, Level2SourceRoute::Nyphur) => {
+                let move_speed_flag = self
+                    .session
+                    .state
+                    .live
+                    .core
+                    .context
+                    .effects
+                    .as_ref()
+                    .map_or(0, |effects| effects.move_speed_flag);
+                let active_level_color_index = self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .local_player
+                    .player_color_index();
+                let terrain = &self.session.state.live.terrain;
+                let players = &self.session.state.live.core.players;
+                let source_arena = &mut self.session.state.live.economy;
+                match self.session.state.live.nyphur_dispatcher.step_dispatch(
+                    pass,
+                    source_slot,
+                    &mut source_arena.entities,
+                    source_arena.economy.spheres(),
+                    players,
+                    terrain,
+                    &self.session.definition.presentation,
+                    move_speed_flag,
+                    active_level_color_index,
+                ) {
+                    Ok((_snapshot, trace)) => self
+                        .session
+                        .state
+                        .scratch
+                        .nyphur_dispatch_traces
+                        .push(trace),
+                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot,
+                        message: error.to_string(),
+                    }),
+                }
+                // The scheduler epilogue advances the current occupant.
+            }
+            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::PossessionHolder) => {
+                // The holder is a constructor/producer only. The
+                // newly allocated row is dispatched by the source cursor
+                // below, and emits DynamicArena only if its callback
+                // returns live.
+                if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX {
+                    self.step_level2_nyphur_possession_holder_source_slot(source_slot);
+                } else {
+                    self.step_level2_possession_holder_source_slot(source_slot);
+                }
+                // The scheduler epilogue advances the current occupant
+                // after this constructor callback returns.
+            }
+            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::CastleHolder) => {
+                // The holder is a constructor/producer only. The
+                // higher-slot flyer callback owns the DynamicArena
+                // receipt after step_level2_dynamic_arena returns live.
+                self.step_level2_castle_holder_source_slot(source_slot);
+                // The scheduler epilogue advances byte 0x3e, including W=0.
+            }
+            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::FireballHolder) => {
+                // Family-0's class/action keyed handler owns the
+                // producer transition; the higher-slot Fireball callback
+                // receives the ordinary dynamic-arena dispatch below.
+                if source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX {
+                    self.step_level2_nyphur_fireball_holder_source_slot(source_slot);
+                } else {
+                    self.step_level2_fireball_holder_source_slot(source_slot);
+                }
+            }
+            (handler, route) => {
+                return Err(format!(
+                    "registry handler {handler:?} has no Level 2 delegate for {route:?}"
+                ));
+            }
         }
-        // The final static route has no following source row to trigger the
-        // cursor's insertion point, so consume the already-queued higher
-        // births in ascending order. This is the tail of the same moving
-        // queue, not a gameplay rescan; births behind the cursor remain
-        // deferred to the next `UpdateEntities_57730` invocation.
-        while let Some((key, row)) = pending_source_rows
-            .first_key_value()
-            .map(|(key, row)| (*key, *row))
-        {
-            pending_source_rows.remove(&key);
-            let live_dynamic_before = self
-                .session
-                .state
-                .live
-                .economy
-                .live_arena_cursor_rows()
-                .into_iter()
-                .map(|row| (row.source_slot, row.generation))
-                .collect::<BTreeSet<_>>();
-            dispatched_dynamic_slots.insert(key);
-            self.step_level2_pending_source_row(
-                pass,
-                row,
-                player_entity_index,
-                player_position,
-                &source_player_order,
-                &pass_start_mana_sphere_slots,
-                &pass_start_castle_auxiliary_membership,
-            );
-            self.schedule_new_source_rows_in_source_order(
-                &live_dynamic_before,
-                row.source_slot,
-                &dispatched_dynamic_slots,
-                &mut deferred_dynamic_slots,
-                &mut pending_source_rows,
-            );
-        }
-        self.session
-            .state
-            .live
-            .economy
-            .reclaim_inactive_slots_after_source_pass();
-        self.session.state.live.goats.finish_source_turn();
-        self.flush_shared_effects();
+        Ok(())
+    }
+
+    /// Run the production Level 2 entity pass through the literal source
+    /// scheduler. The adapter owns phase placement, live resolution, registry
+    /// selection, callback invocation, epilogue policy, and following cleanup;
+    /// retained family methods own only their typed callback bodies.
+    pub(super) fn step_level2_source_pass_with_player(
+        &mut self,
+        pass: u8,
+        latched_command: crate::LatchedCommand,
+        evidence: &mut Vec<crate::StepEvidence>,
+    ) -> std::result::Result<(), (u16, String)> {
+        let player_entity_index = self.session.state.live.core.state.entity_index;
+        let player_position = self.session.state.live.core.state.position;
+        let mut world = Level2SourceSchedulerWorld {
+            owner: self,
+            pass,
+            latched_command,
+            evidence,
+            source_player_order: Vec::new(),
+            player_entity_index,
+            player_position,
+            goat_players: Vec::new(),
+            pass_start_mana_sphere_slots: BTreeSet::new(),
+            pass_start_castle_auxiliary_membership: Default::default(),
+            pass_start_castle_root_slot: None,
+            goat_begin_events: BTreeMap::new(),
+        };
+        run_update_entities(&mut world)
+            .map(|_| ())
+            .map_err(|error| match error {
+                ScheduleError::UnknownDispatch { slot, selector, .. } => {
+                    let message = match selector {
+                        Level2ResolvedSourcePlan::Unknown { message, .. } => message,
+                        selector => format!("unadmitted production selector {selector:?}"),
+                    };
+                    (slot, message)
+                }
+                ScheduleError::Adapter { slot, source, .. } => (slot.unwrap_or(0), source),
+                ScheduleError::ApplyNoProgress { .. } | ScheduleError::ApplyScanLimit { .. } => (
+                    0,
+                    "ordinary UpdateEntities unexpectedly returned an ApplyEvents error".to_owned(),
+                ),
+            })
     }
 
     pub(super) fn step_level2_dynamic_spell_pickup(
@@ -10656,7 +11859,8 @@ impl Level2ResetSession {
             pass,
             crate::LatchedCommand::default(),
             &mut evidence,
-        );
+        )
+        .expect("test source pass has only admitted selectors");
     }
 
     /// Execute one source outer turn against the Day terrain and reset state.
@@ -10665,6 +11869,9 @@ impl Level2ResetSession {
         command: PlayerCommand,
         speed_index: u8,
     ) -> Vec<crate::StepEvidence> {
+        #[cfg(test)]
+        CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow_mut().clear());
+        let state_before = self.session.state.clone();
         self.session.state.scratch.dispatch_events.clear();
         self.session.state.scratch.nyphur_dispatch_traces.clear();
         self.session.state.scratch.economy_event_cursor =
@@ -10726,11 +11933,25 @@ impl Level2ResetSession {
                 .live
                 .economy
                 .reclaim_castle_upgrade_products_at_source_boundary();
-            self.step_level2_source_pass_with_player(
+            if let Err((source_slot, message)) = self.step_level2_source_pass_with_player(
                 u8::try_from(pass).unwrap_or(u8::MAX),
                 latched_command,
                 &mut evidence,
-            );
+            ) {
+                self.session.state = state_before;
+                self.session.state.scratch.dispatch_events.clear();
+                self.session.state.scratch.nyphur_dispatch_traces.clear();
+                self.session
+                    .state
+                    .scratch
+                    .dispatch_events
+                    .push(Level2DispatchEvent::Error {
+                        pass: u8::try_from(pass).unwrap_or(u8::MAX),
+                        source_slot,
+                        message,
+                    });
+                return Vec::new();
+            }
         }
         self.finish_level2_day_hud_frame();
         // remc2 evaluates objectives after the complete entity update and

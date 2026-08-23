@@ -1375,10 +1375,6 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
         Ok(reset.economy().player_castle_entity_index())
     })
     .expect("read public Castle relation after the flyer gate callback");
-    assert_eq!(
-        second_step_relation, 0,
-        "the flyer-only gate callback keeps Castle relation zero"
-    );
     let mut root_event = events[..event_count as usize]
         .iter()
         .find(|event| event.kind == 8 && event.family == 1)
@@ -1412,6 +1408,10 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
     let root_event = root_event.expect("a later flyer landing allocates the Castle root");
     assert_eq!(root_event.generation, 0);
     assert_ne!(root_event.source_slot, 0);
+    assert_eq!(
+        second_step_relation, root_event.source_slot,
+        "the higher-slot Castle root receives its construction callback in the landing pass"
+    );
     let seed_relation = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
             return Err(AbiError::new(
@@ -1423,8 +1423,8 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
     })
     .expect("read public Castle relation after seed allocation");
     assert_eq!(
-        seed_relation, 0,
-        "the allocation receipt precedes the root's following ordinary construction callback"
+        seed_relation, root_event.source_slot,
+        "the live ascending cursor binds the Castle relation in the root allocation pass"
     );
 
     event_count = 0;

@@ -3237,6 +3237,15 @@ impl Level2OrdinaryResetSession {
         self.houses.houses()
     }
 
+    #[cfg(test)]
+    pub(crate) fn house_mut(&mut self, source_slot: u16) -> Option<&mut HouseState> {
+        self.houses.house_mut(source_slot)
+    }
+
+    pub(crate) fn advance_house_source_phase(&mut self, source_slot: u16) -> Option<u8> {
+        self.houses.advance_source_phase(source_slot)
+    }
+
     #[must_use]
     pub fn villagers(&self) -> &[VillagerState] {
         self.villagers.villagers()
@@ -3390,12 +3399,16 @@ impl Level2OrdinaryResetSession {
                             )
                         })
                         .collect::<Vec<_>>();
-                    if !requests.is_empty()
-                        && economy.allocate_house_residents_atomic(&requests).is_none()
-                    {
-                        return Err(NativeWorldError::new(format!(
-                            "Level 2 House {entity_index} resident allocation failed"
-                        )));
+                    // `RemoveCastleStage_385C0` attempts each NewEvent in
+                    // row-major order. A null allocation skips only that
+                    // resident; earlier products, House RNG/occupants, and
+                    // terrain mutations remain committed.
+                    for (parent_house_entity_index, owner_entity_index, request) in requests {
+                        let _ = economy.allocate_house_resident(
+                            parent_house_entity_index,
+                            owner_entity_index,
+                            request,
+                        );
                     }
                     self.houses
                         .commit_removal_state(
@@ -3404,7 +3417,6 @@ impl Level2OrdinaryResetSession {
                             outcome.final_occupants,
                         )
                         .map_err(NativeWorldError::new)?;
-                    economy.disable_house_source_slot(entity_index)?;
                 }
                 HouseStepEvent::ResidentRequested {
                     entity_index,
@@ -3425,18 +3437,10 @@ impl Level2OrdinaryResetSession {
                         action,
                         attacker_entity_index,
                     };
-                    if economy
-                        .allocate_house_residents_atomic(&[(
-                            entity_index,
-                            owner_entity_index,
-                            request,
-                        )])
-                        .is_none()
-                    {
-                        return Err(NativeWorldError::new(format!(
-                            "Level 2 House {entity_index} resident allocation failed"
-                        )));
-                    }
+                    // `AddHouse0A_2D_38330` mutates the House before
+                    // NewEvent. A null result simply produces no resident.
+                    let _ =
+                        economy.allocate_house_resident(entity_index, owner_entity_index, request);
                 }
                 HouseStepEvent::Possessed {
                     entity_index,

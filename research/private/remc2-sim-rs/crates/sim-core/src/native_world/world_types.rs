@@ -196,6 +196,16 @@ impl EntitySnapshot {
         self.record[16..20].copy_from_slice(&self.control_flags.to_le_bytes());
     }
 
+    /// Apply the source `sub_57F20` class-zero transition after a row was
+    /// draw-disabled during the preceding UpdateEntities pass.
+    pub(super) fn reclaim_source_row(&mut self) {
+        self.active = false;
+        self.authority = EntityAuthority::Inactive;
+        self.class = 0;
+        self.record[2] = 0;
+        self.record[67] = 0;
+    }
+
     /// Update the source position while keeping the lossless record projection
     /// in lockstep.  Level 2 switch tests and the future objective bridge use
     /// this seam instead of mutating a typed cache and leaving stale bytes.

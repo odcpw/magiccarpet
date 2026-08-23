@@ -388,19 +388,38 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
         .expect("move public player input onto the reclaim candidate");
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session.economy().free_slots.contains(&reclaimed_slot));
+    let hidden = session
+        .economy()
+        .authored_class14()
+        .iter()
+        .find(|source| source.source_entity_index == reclaimed_slot)
+        .expect("collected lower-slot row remains through the callback pass");
+    assert!(!hidden.drawing_enabled);
+    assert!(session.economy().map_chains().is_linked(reclaimed_slot));
+    assert!(!session.economy().free_slots.contains(&reclaimed_slot));
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
     )));
-    let (runtime_switch_slot, switch_phase) = session
+    let runtime_switch_slot = session
         .economy()
         .authored_switch_producers()
         .iter()
         .find(|source| source.authored_index == 274)
-        .map(|source| (source.source_entity_index, source.phase))
+        .map(|source| source.source_entity_index)
         .expect("row 274 runtime producer remains live");
     assert!(reclaimed_slot < runtime_switch_slot);
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.economy().free_slots.contains(&reclaimed_slot));
+    assert!(!session.economy().map_chains().is_linked(reclaimed_slot));
+    let switch_phase = session
+        .economy()
+        .authored_switch_producers()
+        .iter()
+        .find(|source| source.source_entity_index == runtime_switch_slot)
+        .map(|source| source.phase)
+        .expect("row 274 remains live after the reclaim boundary");
 
     session
         .set_level2_entity_position(111, row_274.world_position(0))
@@ -430,13 +449,21 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
             if *source_slot == reclaimed_slot
     )));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(
-        !session
-            .economy()
-            .authored_class14()
-            .iter()
-            .any(|source| source.authored_index == 275)
-    );
+    let hidden_deferred_row = session
+        .economy()
+        .authored_class14()
+        .iter()
+        .find(|source| source.authored_index == 275)
+        .expect("lower-slot birth is visited and hidden on the next pass");
+    assert!(!hidden_deferred_row.drawing_enabled);
+    assert!(session.economy().map_chains().is_linked(reclaimed_slot));
+    assert!(!session.economy().free_slots.contains(&reclaimed_slot));
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(!session
+        .economy()
+        .authored_class14()
+        .iter()
+        .any(|source| source.authored_index == 275));
     assert!(session.economy().free_slots.contains(&reclaimed_slot));
 }
 

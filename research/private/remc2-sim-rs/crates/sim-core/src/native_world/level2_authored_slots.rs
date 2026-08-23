@@ -131,6 +131,8 @@ impl Level2EconomyState {
 
             source_rng: BTreeMap::new(),
 
+            source_phase_sidecars: BTreeMap::new(),
+
             source_owner,
 
             owner_class,
@@ -335,6 +337,7 @@ impl Level2EconomyState {
         if let Some(slot) = self.free_slots.pop() {
             // `NewEvent` overwrites the fixed source record at this slot.
             self.possession_guidance_stale_records.remove(&slot);
+            self.source_phase_sidecars.remove(&slot);
             let generation = self.slot_generations.entry(slot).or_default();
             *generation = generation.wrapping_add(1);
             return Some(slot);
@@ -355,6 +358,7 @@ impl Level2EconomyState {
         });
         let (slot, kind) = candidate?;
         self.possession_guidance_stale_records.remove(&slot);
+        self.source_phase_sidecars.remove(&slot);
 
         macro_rules! remove_flagged_row {
             ($rows:expr) => {{
@@ -799,6 +803,8 @@ impl Level2EconomyState {
             action,
             active: true,
         });
+        self.source_phase_sidecars
+            .insert(source_entity_index, source_entity_index as u8);
         self.source_rng.insert(source_entity_index, entity_rng);
         Some(source_entity_index)
     }
@@ -2523,6 +2529,7 @@ impl Level2EconomyState {
             stage_tag,
             position,
             phase: source_entity_index as u8,
+            drawing_enabled: true,
             active: true,
         };
         self.source_rng.insert(source_entity_index, entity_rng);
@@ -2579,24 +2586,6 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
-    pub(super) fn allocate_house_residents_atomic(
-        &mut self,
-        requests: &[(u16, u16, HouseResidentRequest)],
-    ) -> Option<Vec<u16>> {
-        let mut staged = self.clone();
-        let mut source_slots = Vec::with_capacity(requests.len());
-        for &(parent_house_entity_index, owner_entity_index, request) in requests {
-            let source_entity_index = staged.allocate_house_resident(
-                parent_house_entity_index,
-                owner_entity_index,
-                request,
-            )?;
-            source_slots.push(source_entity_index);
-        }
-        *self = staged;
-        Some(source_slots)
-    }
-
     pub(super) fn step_house_resident_slot(&mut self, source_slot: u16) -> bool {
         let Some(source) = self
             .house_residents
@@ -2625,16 +2614,15 @@ impl Level2EconomyState {
         self.source_owner.insert(source_slot, owner_entity_index);
     }
 
-    pub(super) fn disable_house_source_slot(&mut self, source_slot: u16) -> Result<()> {
+    pub(super) fn reclaim_house_source_slot_at_source_boundary(
+        &mut self,
+        source_slot: u16,
+        source_rng: u16,
+    ) {
         self.source_owner.remove(&source_slot);
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: false,
-                x: 0,
-                y: 0,
-            })
-            .map_err(NativeWorldError::new)
+        self.owner_class.remove(&source_slot);
+        self.source_rng.remove(&source_slot);
+        self.release_slot(source_slot, Some(source_rng));
     }
 
     /// Advance one model-1 root through `AddQuickfair0A_01_30F60`.
@@ -2730,38 +2718,54 @@ impl Level2EconomyState {
     }
 
     pub fn step_authored_model45_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source_index) = self
+        let Some(source) = self
             .authored_model45
-            .iter()
-            .position(|source| source.active && source.source_entity_index == source_slot)
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
         else {
             return false;
         };
-        let mut source = self.authored_model45[source_index];
 
         // `sub_3A650` is class-10/model-45/action-51's callback.  The
         // constructor leaves `word_0x96_150` at zero for these authored rows,
         // so its source scan has no parent target; it only sets the hidden
-        // drawing bit.  ApplyEvents immediately follows that callback with
-        // sub_57F20, unlinking and returning the row to NewEvent's free pool.
+        // drawing bit. This production route is UpdateEntities: the outer
+        // scheduler increments byte 0x3E after callback return, and only the
+        // following pass prologue unlinks and returns the row to NewEvent.
         if source.action == 51 {
             source.drawing_enabled = false;
-            source.active = false;
-            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
-            let map_ok = self
-                .map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: false,
-                    x: source.position.x,
-                    y: source.position.y,
-                })
-                .is_ok();
-            self.authored_model45.remove(source_index);
-            self.release_slot(source_slot, Some(source.entity_rng));
-            return map_ok;
+            return true;
         }
         false
+    }
+
+    /// Reclaim model-45 rows hidden by the preceding UpdateEntities callback.
+    /// `sub_3A650` only disables drawing; `sub_57F20` owns unlink/release at
+    /// the next UpdateEntities prologue.
+    pub(super) fn reclaim_hidden_authored_model45_rows_at_source_boundary(&mut self) {
+        let hidden = self
+            .authored_model45
+            .iter()
+            .filter(|source| source.active && !source.drawing_enabled)
+            .map(|source| {
+                (
+                    source.source_entity_index,
+                    source.entity_rng,
+                    source.position,
+                )
+            })
+            .collect::<Vec<_>>();
+        self.authored_model45
+            .retain(|source| source.drawing_enabled);
+        for (slot, entity_rng, position) in hidden {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: position.x,
+                y: position.y,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
     }
 
     /// Advance one authored model-13 emitter through the source action-19
@@ -3088,6 +3092,8 @@ impl Level2EconomyState {
             return None;
         }
         self.source_rng.insert(source_entity_index, entity_rng);
+        self.source_phase_sidecars
+            .insert(source_entity_index, source_entity_index as u8);
         self.model6_spawned_children.push(Level2Model6SpawnedChild {
             source_entity_index,
             entity_rng,
@@ -3186,14 +3192,6 @@ impl Level2EconomyState {
         if source.life < 0 {
             source.active = false;
             self.authored_model17[source_index] = source;
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: false,
-                    x: source.position.x,
-                    y: source.position.y,
-                })
-                .expect("Level 2 model-17 source slot fits the map chain");
             return true;
         }
 
@@ -3317,14 +3315,6 @@ impl Level2EconomyState {
         if child.life < -1 {
             child.active = false;
             self.model17_spawned_children[child_index] = child;
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: false,
-                    x: child.position.x,
-                    y: child.position.y,
-                })
-                .expect("Level 2 model-17 child slot fits the map chain");
             return true;
         }
         child.phase = child.phase.wrapping_add(1);
@@ -3496,7 +3486,7 @@ impl Level2EconomyState {
         let mut parent = self.authored_model22[parent_index];
         parent.life = parent.life.wrapping_sub(1);
         if parent.life < 0 {
-            parent.active = false;
+            parent.control_flags |= ENTITY_DRAW_DISABLED_BIT;
             self.authored_model22[parent_index] = parent;
             let child_slots = self
                 .model22_spawned_children
@@ -3504,34 +3494,10 @@ impl Level2EconomyState {
                 .filter(|child| child.active && child.parent_entity_index == source_slot)
                 .map(|child| child.source_entity_index)
                 .collect::<Vec<_>>();
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: false,
-                    x: parent.position.x,
-                    y: parent.position.y,
-                })
-                .expect("Level 2 wind parent slot fits the map chain");
-            let mut child_disable_rows = Vec::new();
             for child in &mut self.model22_spawned_children {
                 if child_slots.contains(&child.source_entity_index) {
                     child.active = false;
-                    child_disable_rows.push((
-                        child.source_entity_index,
-                        child.position.x,
-                        child.position.y,
-                    ));
                 }
-            }
-            for (child_slot, x, y) in child_disable_rows {
-                self.map_chains
-                    .sync_entity(RenderableMapSeed {
-                        entity_index: child_slot,
-                        active: false,
-                        x,
-                        y,
-                    })
-                    .expect("Level 2 wind child slot fits the map chain");
             }
             return true;
         }
@@ -4115,15 +4081,8 @@ impl Level2EconomyState {
         child.life = child.life.wrapping_sub(1);
         if life_before < 0 {
             child.active = false;
+            child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
             self.model6_spawned_children[child_index] = child;
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: false,
-                    x: child.position.x,
-                    y: child.position.y,
-                })
-                .expect("Level 2 model-6 child slot fits the map chain");
             return true;
         }
         child.actual_speed = (child.actual_speed - 4).clamp(64, 128);
@@ -4183,8 +4142,8 @@ impl Level2EconomyState {
     }
 
     /// Apply `DisableEntityDrawing04_57F10` to an authored class-14 row. The
-    /// source callback leaves the row for the arena reclaim pass; unlinking
-    /// here preserves that ordering instead of deleting it from the handler.
+    /// source callback changes only the drawing bit; the row stays allocated
+    /// and map-linked until the next UpdateEntities reclaim prologue.
     pub fn deactivate_authored_class14_slot(&mut self, source_slot: u16) -> bool {
         let Some(source) = self
             .authored_class14
@@ -4193,15 +4152,8 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        source.active = false;
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: false,
-                x: source.position.x,
-                y: source.position.y,
-            })
-            .is_ok()
+        source.drawing_enabled = false;
+        true
     }
 
     /// Allocate a separately dispatched class-10/model-74/action-72 effect.
@@ -4257,6 +4209,8 @@ impl Level2EconomyState {
             sound_id: 9,
             active: true,
         };
+        self.source_phase_sidecars
+            .insert(source_entity_index, source_entity_index as u8);
         self.source_rng.insert(source_entity_index, entity_rng);
         self.beyond_sight_effects.push(effect);
         Some(effect)
@@ -4337,14 +4291,6 @@ impl Level2EconomyState {
             field.life = field.life.saturating_sub(1);
             if life_before < 0 {
                 field.active = false;
-                self.map_chains
-                    .sync_entity(RenderableMapSeed {
-                        entity_index: source_slot,
-                        active: false,
-                        x: position.x,
-                        y: position.y,
-                    })
-                    .expect("Level 2 mana-attraction source slot fits the map chain");
                 return true;
             }
         }
@@ -4519,6 +4465,16 @@ impl Level2EconomyState {
             .get(&slot)
             .copied()
             .unwrap_or_default()
+    }
+
+    pub(crate) fn source_phase_sidecar(&self, slot: u16) -> Option<u8> {
+        self.source_phase_sidecars.get(&slot).copied()
+    }
+
+    pub(crate) fn advance_source_phase_sidecar(&mut self, slot: u16) -> Option<u8> {
+        let phase = self.source_phase_sidecars.get_mut(&slot)?;
+        *phase = phase.wrapping_add(1);
+        Some(*phase)
     }
 
     pub(super) fn for_each_live_arena_slot(
@@ -4870,6 +4826,135 @@ impl Level2EconomyState {
         rows.into_values().collect()
     }
 
+    /// Read the live source action-table selector for one typed arena row.
+    ///
+    /// `UpdateEntities_57730` reads class/action from the fixed numeric row at
+    /// the moment its cursor reaches that row.  Keeping this lookup beside the
+    /// carrier census prevents the campaign scheduler from dispatching a
+    /// pass-start classification after an earlier callback changed the row.
+    #[must_use]
+    pub(super) fn live_arena_class_action(
+        &self,
+        source_slot: u16,
+        kind: Level2DynamicArenaKind,
+    ) -> Option<(u8, u8)> {
+        macro_rules! selector {
+            ($rows:expr, $class:expr) => {
+                $rows
+                    .iter()
+                    .find(|row| row.active && row.source_entity_index == source_slot)
+                    .map(|row| ($class, row.action))
+            };
+            ($rows:expr) => {
+                $rows
+                    .iter()
+                    .find(|row| row.active && row.source_entity_index == source_slot)
+                    .map(|row| (row.source_class, row.action))
+            };
+        }
+
+        match kind {
+            Level2DynamicArenaKind::CastleProjectile => self
+                .castle_projectiles
+                .iter()
+                .any(|row| row.active && row.source_entity_index == source_slot)
+                .then_some((9, 10)),
+            Level2DynamicArenaKind::FireballProjectile => {
+                selector!(self.fireball_projectiles)
+            }
+            Level2DynamicArenaKind::PossessionProjectile => {
+                selector!(self.possession_projectiles)
+            }
+            Level2DynamicArenaKind::PossessionEffect => selector!(self.possession_effects),
+            Level2DynamicArenaKind::CastleRoot => self
+                .castle
+                .filter(|row| row.active && row.source_entity_index == source_slot)
+                .map(|row| (row.source_class, row.action)),
+            Level2DynamicArenaKind::CastleChild
+            | Level2DynamicArenaKind::CastleAuxiliary
+            | Level2DynamicArenaKind::CastleDefender
+            | Level2DynamicArenaKind::CastleController => selector!(self.castle_children),
+            Level2DynamicArenaKind::ManaSphere => self
+                .spheres
+                .iter()
+                .any(|row| row.active && row.source_entity_index == source_slot)
+                .then_some((10, 41)),
+            Level2DynamicArenaKind::ManaCarrier => self
+                .carriers
+                .iter()
+                .any(|row| row.active && row.source_entity_index == source_slot)
+                .then_some((3, 9)),
+            Level2DynamicArenaKind::DeathBurst => self
+                .death_bursts
+                .iter()
+                .any(|row| row.active && row.source_entity_index == source_slot)
+                .then_some((10, 1)),
+            Level2DynamicArenaKind::PlayerDeathMarker => self
+                .player_death_markers
+                .iter()
+                .any(|row| row.active && row.source_entity_index == source_slot)
+                .then_some((10, 42)),
+            Level2DynamicArenaKind::SpellReplacement => {
+                selector!(self.spell_replacements, 15)
+            }
+            Level2DynamicArenaKind::SpellPickup => selector!(self.spell_pickups, 15),
+            Level2DynamicArenaKind::AuthoredModel1 => selector!(self.authored_model1, 10),
+            Level2DynamicArenaKind::AuthoredModel45 => selector!(self.authored_model45),
+            Level2DynamicArenaKind::AuthoredModel13 => selector!(self.authored_model13),
+            Level2DynamicArenaKind::AuthoredBee => selector!(self.authored_bees),
+            Level2DynamicArenaKind::Model13SpawnedChild => {
+                selector!(self.model13_spawned_children)
+            }
+            Level2DynamicArenaKind::AuthoredModel6 => selector!(self.authored_model6, 10),
+            Level2DynamicArenaKind::Model6SpawnedChild => {
+                selector!(self.model6_spawned_children)
+            }
+            Level2DynamicArenaKind::AuthoredModel17 => selector!(self.authored_model17),
+            Level2DynamicArenaKind::Model17SpawnedChild => {
+                selector!(self.model17_spawned_children)
+            }
+            Level2DynamicArenaKind::AuthoredModel22 => selector!(self.authored_model22),
+            Level2DynamicArenaKind::Model22SpawnedChild => {
+                selector!(self.model22_spawned_children)
+            }
+            Level2DynamicArenaKind::AuthoredModel76 => selector!(self.authored_model76),
+            Level2DynamicArenaKind::Model76Child => selector!(self.model76_children),
+            Level2DynamicArenaKind::Model76TailSpawn => {
+                selector!(self.model76_tail_spawns)
+            }
+            Level2DynamicArenaKind::AuthoredClass14 => selector!(self.authored_class14, 14),
+            Level2DynamicArenaKind::AuthoredClass5 => selector!(self.authored_class5, 5),
+            Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
+                selector!(self.authored_class5_archer_children)
+            }
+            Level2DynamicArenaKind::AuthoredClass5Model3Child => {
+                selector!(self.authored_class5_model3_children, 5)
+            }
+            Level2DynamicArenaKind::HouseResident => selector!(self.house_residents, 5),
+            Level2DynamicArenaKind::AuthoredSwitchProducer => {
+                selector!(self.authored_switch_producers)
+            }
+            Level2DynamicArenaKind::AuthoredTree => selector!(self.authored_trees),
+            Level2DynamicArenaKind::AuthoredModel32 => selector!(self.authored_model32),
+            Level2DynamicArenaKind::AuthoredModel59 => selector!(self.authored_model59),
+            Level2DynamicArenaKind::Model59SmokeChild => {
+                selector!(self.model59_smoke_children)
+            }
+            Level2DynamicArenaKind::AuthoredModel53 => selector!(self.authored_model53),
+            Level2DynamicArenaKind::AuthoredModel5WaterSplash => {
+                selector!(self.authored_model5_water_splashes)
+            }
+            Level2DynamicArenaKind::BeyondSightPulseEffect => self
+                .beyond_sight_effects
+                .iter()
+                .find(|row| row.active && row.source_entity_index == source_slot)
+                .map(|row| (row.source_class, 72)),
+            Level2DynamicArenaKind::ManaAttraction => {
+                selector!(self.mana_attraction_fields, 10)
+            }
+        }
+    }
+
     #[must_use]
     pub const fn map_chains(&self) -> &RenderableMapChains {
         &self.map_chains
@@ -5195,11 +5280,10 @@ impl Level2EconomyState {
         self.reclaim_inactive_slots_with_policy(true);
     }
 
-    /// Reclaim ordinary inactive rows while retaining a phase-zero Bee marked
-    /// for the next `UpdateEntities_57730` boundary. The production cursor
-    /// uses this boundary-aware form so KillEntity's hidden Bee remains
-    /// reserved for the rest of its landing pass.
-    pub(super) fn reclaim_inactive_slots_after_source_pass(&mut self) {
+    /// Reclaim inactive rows at the following `UpdateEntities_57730`
+    /// prologue. Callback-hidden rows remain allocated and map-linked through
+    /// the remainder of their dispatch pass.
+    pub(super) fn reclaim_inactive_slots_at_source_boundary(&mut self) {
         self.reclaim_inactive_slots_with_policy(true);
     }
 
@@ -5236,6 +5320,68 @@ impl Level2EconomyState {
         }
     }
 
+    /// Reclaim Archer roots and class-9/model-13 children disabled during the
+    /// preceding UpdateEntities scan. Invalid child selector 9:37 and the
+    /// root KillArcher callback both leave their numeric rows allocated for
+    /// the remainder of the pass.
+    pub(super) fn reclaim_hidden_archer_rows_at_source_boundary(&mut self) {
+        let hidden_roots = self
+            .authored_class5
+            .iter()
+            .filter(|source| {
+                source.active
+                    && source.model == level2_class5::archer::ARCHER_MODEL
+                    && !source.drawing_enabled
+            })
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_class5.retain(|source| {
+            source.model != level2_class5::archer::ARCHER_MODEL || source.drawing_enabled
+        });
+        self.authored_class5_archer.retain(|state| {
+            !hidden_roots
+                .iter()
+                .any(|(source_slot, _)| *source_slot == state.source_entity_index)
+        });
+
+        let hidden_children = self
+            .authored_class5_archer_children
+            .iter()
+            .filter(|child| child.active && !child.drawing_enabled)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_class5_archer_children
+            .retain(|child| child.drawing_enabled);
+
+        for (slot, entity_rng) in hidden_roots.into_iter().chain(hidden_children) {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+    }
+
+    /// Apply UpdateEntities' invalid-selector branch to the retained Archer
+    /// projectile. There is no callback and therefore no phase/byte-0x3E
+    /// epilogue on this visit.
+    pub(super) fn hide_authored_class5_archer_child_invalid_selector(
+        &mut self,
+        source_slot: u16,
+    ) -> bool {
+        let Some(child) = self
+            .authored_class5_archer_children
+            .iter_mut()
+            .find(|child| child.active && child.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        child.drawing_enabled = false;
+        true
+    }
+
     fn reclaim_inactive_slots_with_policy(&mut self, defer_authored_bees: bool) {
         // Castle projectiles are disabled by their source callback and
         // reclaimed only by reclaim_hidden_castle_rows_at_source_boundary at
@@ -5255,7 +5401,7 @@ impl Level2EconomyState {
         let reclaimed = self
             .spheres
             .iter()
-            .filter(|sphere| !sphere.active)
+            .filter(|sphere| !sphere.active || sphere.control_flags & ENTITY_DRAW_DISABLED_BIT != 0)
             .map(|sphere| {
                 (
                     sphere.source_entity_index,
@@ -5264,7 +5410,8 @@ impl Level2EconomyState {
                 )
             })
             .collect::<Vec<_>>();
-        self.spheres.retain(|sphere| sphere.active);
+        self.spheres
+            .retain(|sphere| sphere.active && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0);
         for (slot, entity_rng, target_top) in reclaimed {
             // `sub_57F20` frees the slot but leaves its fixed entity record in
             // place until `NewEvent` overwrites it. An already-guided flyer
@@ -5571,10 +5718,11 @@ impl Level2EconomyState {
         let reclaimed_model22 = self
             .authored_model22
             .iter()
-            .filter(|source| !source.active)
+            .filter(|source| !source.active || source.control_flags & ENTITY_DRAW_DISABLED_BIT != 0)
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
-        self.authored_model22.retain(|source| source.active);
+        self.authored_model22
+            .retain(|source| source.active && source.control_flags & ENTITY_DRAW_DISABLED_BIT == 0);
         for (slot, entity_rng) in reclaimed_model22 {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
@@ -5651,10 +5799,11 @@ impl Level2EconomyState {
         let reclaimed_class14 = self
             .authored_class14
             .iter()
-            .filter(|source| !source.active)
+            .filter(|source| !source.active || !source.drawing_enabled)
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
-        self.authored_class14.retain(|source| source.active);
+        self.authored_class14
+            .retain(|source| source.active && source.drawing_enabled);
         for (slot, entity_rng) in reclaimed_class14 {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
@@ -5847,6 +5996,11 @@ impl Level2EconomyState {
         for (slot, rng) in &self.source_rng {
             hasher.update(slot.to_le_bytes());
             hasher.update(rng.to_le_bytes());
+        }
+        hasher.update(b"source-phase-sidecars-v1");
+        for (slot, phase) in &self.source_phase_sidecars {
+            hasher.update(slot.to_le_bytes());
+            hasher.update([*phase]);
         }
         for (slot, owner) in &self.source_owner {
             hasher.update(slot.to_le_bytes());
@@ -6546,6 +6700,7 @@ impl Level2EconomyState {
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
+            hasher.update([u8::from(source.drawing_enabled)]);
             hasher.update([u8::from(source.active)]);
         }
         hasher.update(b"authored-class5-v4");

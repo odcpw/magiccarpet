@@ -2286,6 +2286,117 @@
     }
 
     #[test]
+    fn level_two_production_scheduler_advances_the_action122_self_replacement() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("production action122 replacement session");
+        assert!(
+            !session
+                .step_outer_turn(PlayerCommand::default(), 0)
+                .is_empty(),
+            "prime the qualified one-shot authored activations before forcing the replacement arena"
+        );
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("production action122 Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        let target_slot = 50_u16;
+        {
+            let target = &mut session.economy.entities[usize::from(target_slot)];
+            target.index = target_slot;
+            target.active = true;
+            target.class = 3;
+            target.model = 0;
+            target.life = 100;
+            target.source_id = 0x7777;
+            target.control_flags = 0;
+            target.position = Position {
+                x: 512,
+                y: 256,
+                z: 80,
+            };
+        }
+        {
+            let economy = &mut session.economy.economy;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("production action122 auxiliary");
+            child.action = 122;
+            child.target_sphere_slot = target_slot;
+            child.position = Position {
+                x: 1_024,
+                y: 512,
+                z: 300,
+            };
+            child.source_byte_3e = 0;
+            economy.free_slots.clear();
+            economy.replacement_cursor_exclusions = (1_u16..1_000)
+                .filter(|slot| *slot != auxiliary_slot)
+                .collect();
+        }
+        let generation_before = session.economy().slot_generation(auxiliary_slot);
+
+        let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !evidence.is_empty(),
+            "production action122 pass failed: {:?}",
+            session.dispatch_events()
+        );
+        assert_eq!(
+            session.economy().slot_generation(auxiliary_slot),
+            generation_before.wrapping_add(1)
+        );
+        assert!(session
+            .economy()
+            .castle_children()
+            .iter()
+            .all(|child| child.source_entity_index != auxiliary_slot));
+        let replacement = session
+            .economy()
+            .authored_class5_archer_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("production scheduler retains the action122 replacement");
+        assert_eq!(
+            replacement.source_byte_3e,
+            (auxiliary_slot as u8).wrapping_add(1),
+            "the common epilogue advances the NewEvent replacement, not the retired Castle auxiliary"
+        );
+        assert!(session
+            .cf10_production_schedule_receipts()
+            .iter()
+            .any(|receipt| matches!(
+                receipt,
+                crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                    slot,
+                    original,
+                    current:
+                        crate::campaign::schedule::CurrentOccupant::Known { selector, .. },
+                    ..
+                } if *slot == auxiliary_slot
+                    && original.registry_key().selector
+                        == crate::campaign::spec::BehaviorSelector::ClassAction {
+                            class: 5,
+                            action: 122,
+                        }
+                    && selector.registry_key().selector
+                        == crate::campaign::spec::BehaviorSelector::ClassAction {
+                            class: 9,
+                            action: 13,
+                        }
+                    && selector.observed_phase()
+                        == Some((auxiliary_slot as u8).wrapping_add(1))
+            )));
+    }
+
+    #[test]
     fn level_two_castle_auxiliary_self_replaced_burst_reclaims_on_following_boundary() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -2380,6 +2491,100 @@
                 ..
             } if *source_slot == auxiliary_slot
         )));
+    }
+
+    #[test]
+    fn level_two_production_scheduler_advances_the_inactive_action125_replacement() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("production action125 replacement session");
+        assert!(
+            !session
+                .step_outer_turn(PlayerCommand::default(), 0)
+                .is_empty(),
+            "prime the qualified one-shot authored activations before forcing the replacement arena"
+        );
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("production action125 Castle");
+        session.economy_mut().castle.as_mut().expect("Castle").level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
+        {
+            let economy = &mut session.economy.economy;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == auxiliary_slot)
+                .expect("production action125 auxiliary");
+            child.action = 125;
+            child.source_byte_3e = 0;
+            child.position = Position {
+                x: 0x4000,
+                y: 0x5000,
+                z: 300,
+            };
+            economy.free_slots.clear();
+            economy.replacement_cursor_exclusions = (1_u16..1_000)
+                .filter(|slot| *slot != auxiliary_slot)
+                .collect();
+        }
+        let generation_before = session.economy().slot_generation(auxiliary_slot);
+
+        let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !evidence.is_empty(),
+            "production action125 pass failed: {:?}",
+            session.dispatch_events()
+        );
+        assert_eq!(
+            session.economy().slot_generation(auxiliary_slot),
+            generation_before.wrapping_add(1)
+        );
+        let burst = session
+            .economy()
+            .death_bursts()
+            .iter()
+            .find(|burst| burst.source_entity_index == auxiliary_slot)
+            .expect("inactive self-replaced death burst remains until the following boundary");
+        assert!(!burst.active);
+        assert_eq!(
+            burst.source_byte_3e,
+            (auxiliary_slot as u8).wrapping_add(1),
+            "the common epilogue advances the inactive NewEvent replacement through its raw carrier"
+        );
+        assert!(session
+            .cf10_production_schedule_receipts()
+            .iter()
+            .any(|receipt| matches!(
+                receipt,
+                crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                    slot,
+                    original,
+                    current: crate::campaign::schedule::CurrentOccupant::Inactive,
+                    ..
+                } if *slot == auxiliary_slot
+                    && original.registry_key().selector
+                        == crate::campaign::spec::BehaviorSelector::ClassAction {
+                            class: 5,
+                            action: 125,
+                        }
+            )));
+
+        let replacement_generation = session.economy().slot_generation(auxiliary_slot);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session
+            .economy()
+            .death_bursts()
+            .iter()
+            .all(|burst| burst.source_entity_index != auxiliary_slot));
+        assert!(
+            session.economy().free_slots.contains(&auxiliary_slot)
+                || session.economy().slot_generation(auxiliary_slot) > replacement_generation
+        );
     }
 
     #[test]
@@ -3074,16 +3279,36 @@
                 .active
         );
         assert_eq!(
-            session.economy().source_owner(disabled_house.entity_index),
-            0
+            session
+                .economy()
+                .owner_class
+                .get(&disabled_house.entity_index),
+            Some(&HOUSE_CLASS)
         );
         assert!(
-            !session
+            session
                 .economy()
                 .map_chains()
                 .is_linked(disabled_house.entity_index)
         );
+        let disabled_raw = &session.session.state.live.economy.entities
+            [usize::from(disabled_house.entity_index)];
+        assert!(disabled_raw.active);
+        assert_eq!(disabled_raw.class, HOUSE_CLASS);
+        assert!(disabled_raw.drawing_disabled());
         session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.economy().source_owner(disabled_house.entity_index),
+            0
+        );
+        assert!(!session
+            .economy()
+            .owner_class
+            .contains_key(&disabled_house.entity_index));
+        assert!(!session
+            .economy()
+            .map_chains()
+            .is_linked(disabled_house.entity_index));
         assert!(
             !session
                 .economy()

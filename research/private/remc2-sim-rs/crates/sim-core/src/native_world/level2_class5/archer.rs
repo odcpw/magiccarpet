@@ -231,6 +231,10 @@ impl Level2EconomyState {
             return None;
         }
         self.source_rng.insert(source_entity_index, entity_rng);
+        // NewEvent_4A050 clears the source player/owner relation before the
+        // class-9/model-13 constructor writes its own fields. Keep a reused
+        // arena slot from leaking the prior occupant's owner into this child.
+        self.source_owner.insert(source_entity_index, 0);
         let next_entity_index = linked_parent_index
             .map(|parent_index| self.authored_class5_archer[parent_index].word_0x34)
             .unwrap_or(0);
@@ -331,6 +335,10 @@ impl Level2EconomyState {
         let source = payload.into_class5_source();
         self.source_rng
             .insert(source_entity_index, source.entity_rng);
+        // NewEvent_4A050 memsets playerEntityIndex to zero. The Archer
+        // constructor does not replace it, so a reused source slot must not
+        // retain the previous occupant's owner relation.
+        self.source_owner.insert(source_entity_index, 0);
         self.authored_class5.push(source);
         self.authored_class5_runtime
             .push(Level2AuthoredClass5RuntimeState {
@@ -1116,7 +1124,34 @@ impl Level2EconomyState {
                 ArcherActionEffects::default()
             }
             ARCHER_ACTION_KILL => {
-                source.drawing_enabled = false;
+                // `KillArcher_201040` calls KillEntity only on the phase-zero
+                // cadence. Visits at phases 1..7 retain the row and consume no
+                // allocation. The common UpdateEntities epilogue below then
+                // advances byte 0x3E exactly once.
+                if source.source_byte_3e & 7 == 0 {
+                    let owner_entity_index = self.source_owner(source.source_entity_index);
+                    if source.mana > 0 {
+                        // KillEntity_1C930 advances the dying row's RNG once
+                        // before TransformEntityToManaSphere_36BA0 consumes
+                        // the resulting stream value.
+                        source.entity_rng = level2_next_rng16(source.entity_rng);
+                    }
+                    let _ = self.spawn_mana_sphere_from_death(
+                        source.source_entity_index,
+                        source.position,
+                        source.yaw,
+                        source.entity_rng,
+                        source.mana,
+                        owner_entity_index,
+                        terrain,
+                    );
+                    let _ = self.spawn_death_burst_from_death_with_id(
+                        source.source_entity_index,
+                        source.source_entity_index,
+                        source.position,
+                    );
+                    source.drawing_enabled = false;
+                }
                 ArcherActionEffects::default()
             }
             ARCHER_ACTION_ATTACK_VISUAL => ArcherActionEffects {
@@ -1187,8 +1222,8 @@ impl Level2EconomyState {
 
     /// Visit a retained class-9/model-13 child from the same live source
     /// cursor. Its source movement uses the constructor's signed pitch and
-    /// the shared terrain/map projection; action 37 is terminal drawing kill
-    /// while reclaim remains an explicit arena pass.
+    /// the shared terrain/map projection. Action 37 is not a class-9 table
+    /// callback and is handled by the scheduler's invalid-selector branch.
     pub(crate) fn step_authored_class5_archer_child_slot(
         &mut self,
         source_slot: u16,
@@ -1211,8 +1246,6 @@ impl Level2EconomyState {
                 child.actual_speed,
             );
             child.position.z = terrain.ground_height(child.position);
-        } else if child.action == ARCHER_ACTION_KILL {
-            child.drawing_enabled = false;
         }
         child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
         child.phase = child.phase.wrapping_add(1);

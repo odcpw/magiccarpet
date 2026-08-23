@@ -559,6 +559,72 @@ fn level_two_authored_model76_builds_full_cluster_then_spawns_tail_on_expiry() {
 }
 
 #[test]
+fn level_two_production_model76_terminal_return_advances_the_retained_raw_phase() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("production model-76 terminal session");
+    assert!(
+        !session
+            .step_outer_turn(PlayerCommand::default(), 0)
+            .is_empty(),
+        "prime the qualified one-shot authored activations"
+    );
+    let source = session
+        .allocate_level2_authored_model76(112)
+        .expect("production model-76 root");
+    {
+        let mut economy = session.economy_mut();
+        let root = economy
+            .authored_model76
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+            .expect("model-76 terminal root");
+        root.state = 2;
+        root.word_0x2c = 8;
+        root.font_type_index = 18;
+    }
+    let phase_before = source.phase;
+
+    let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !evidence.is_empty(),
+        "production model-76 terminal pass failed: {:?}",
+        session.dispatch_events()
+    );
+    let retired = session
+        .economy()
+        .authored_model76()
+        .iter()
+        .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+        .expect("model-76 tombstone remains through its callback pass");
+    assert!(!retired.active);
+    assert_eq!(
+        retired.phase,
+        phase_before.wrapping_add(1),
+        "UpdateEntities advances byte 0x3E after the terminal callback disables the row"
+    );
+    assert!(session
+        .cf10_production_schedule_receipts()
+        .iter()
+        .any(|receipt| matches!(
+            receipt,
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                slot,
+                original,
+                current: crate::campaign::schedule::CurrentOccupant::Inactive,
+                ..
+            } if *slot == source.source_entity_index
+                && original.registry_key().selector
+                    == crate::campaign::spec::BehaviorSelector::ClassAction {
+                        class: 10,
+                        action: 83,
+                    }
+        )));
+}
+
+#[test]
 fn level_two_model76_callback_snaps_to_live_target_cache() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
