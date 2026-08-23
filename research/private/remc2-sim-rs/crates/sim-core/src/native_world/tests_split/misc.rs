@@ -2147,8 +2147,9 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
     }
     {
         let terrain = session.canonical_terrain().clone();
-        let mut shared = &mut session.shared_spells;
-        let mut economy = &mut session.economy;
+        let live = &mut session.session.state.live;
+        let shared = &mut live.shared_spells;
+        let economy = &mut live.economy.economy;
         shared
             .step_level2_spell_acquisition_with_economy(
                 economy,

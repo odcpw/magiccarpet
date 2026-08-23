@@ -1646,12 +1646,16 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         .find(|goat| goat.entity_index == goat_slot)
         .expect("Level 2 Goat source row")
         .source_id;
+    let attacker = session.state.entity_index.cast_signed();
     session
+        .session
+        .state
+        .live
         .goats
         .inject_damage(
             goat_slot,
             1_000_000,
-            session.state.entity_index.cast_signed(),
+            attacker,
         )
         .expect("inject lethal Goat damage");
 

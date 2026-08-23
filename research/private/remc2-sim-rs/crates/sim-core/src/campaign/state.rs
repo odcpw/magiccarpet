@@ -15,11 +15,10 @@ use super::{journal::EffectJournal, source_arena::SourceArena};
 use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, SpellFireContext, SpellFireSource,
     TetherTarget,
-    goat::GoatState,
-    mission_content::MissionContentSession,
+    collision_mask::CollisionMaskBank,
     native_world::{
-        Level2BadStone, Level2NyphurDispatchTrace, Level2OrdinaryResetSession, Level2ResetSession,
-        Level2SharedSpellResetSession, PlayerSnapshot, RuntimeSnapshot, SessionTerrain,
+        Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
+        PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
     },
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash,
@@ -68,6 +67,8 @@ pub struct CampaignDefinition {
     pub package_sha256: String,
     pub collision_masks_present: bool,
     pub identity_receipt: CanonicalDigest,
+    pub(crate) collision_masks: Option<CollisionMaskBank>,
+    pub(crate) presentation: PresentationSelectors,
 }
 
 /// Source slot/map topology observed alongside the lossless entity records.
@@ -98,48 +99,12 @@ pub struct CanonicalRuntimeState {
     pub effect_journal: EffectJournal,
 }
 
-/// Immutable receipts for the canonical live `SourceArena`.
-///
-/// The live records and allocator are not cloned into this reset observer;
-/// doing so would recreate the shadow authority that CF-06 removes.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceArenaState {
-    arena_receipt: CanonicalDigest,
-    economy_reset_hash: String,
-    source_rng_receipt: CanonicalDigest,
-}
-
-/// Typed sidecars that currently have public read-only projections.  Their
-/// internal writers remain in the old Level2ResetSession implementation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceSidecarsState {
-    pub shared_spells: Level2SharedSpellResetSession,
-    pub ordinary: Level2OrdinaryResetSession,
-    pub goats: Box<[GoatState]>,
-    pub bad_stones: Box<[Level2BadStone]>,
-    pub mission: MissionContentSession,
-    pub nyphur: NyphurState,
-    /// Receipt for outer-session cells that are not yet exposed as public
-    /// typed borrows (mailbox/HUD/activation sidecars).  It is an observer
-    /// anchor, not a new writer or a claim that those cells have migrated.
-    pub legacy_campaign_state_hash: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NyphurState {
-    pub state_byte: i8,
-    pub traces: Box<[Level2NyphurDispatchTrace]>,
-    pub state_hash: Option<String>,
-}
-
 /// The complete resettable live carrier, grouped according to the census.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResetState {
-    pub core: CanonicalRuntimeState,
-    pub source_arena: SourceArenaState,
-    pub terrain: SessionTerrain,
-    pub source_sidecars: SourceSidecarsState,
-}
+///
+/// This is the canonical name used by the campaign contract. The concrete
+/// carrier lives beside the legacy Level 2 types only so its private typed
+/// sidecars do not become a public package contract.
+pub type ResetState = Level2LiveState;
 
 /// No current census field is proven to survive `Level2ResetSession::reset`.
 /// Keeping this as a distinct unit type prevents accidental admission of a
@@ -152,6 +117,13 @@ pub struct ScratchState {
     pub validity_epoch: u64,
     pub valid: bool,
     pub dispatch_receipt: CanonicalDigest,
+    pub(crate) dispatch_events: Vec<Level2DispatchEvent>,
+    pub(crate) economy_event_cursor: usize,
+    pub(crate) nyphur_dispatch_traces: Vec<Level2NyphurDispatchTrace>,
+    pub(crate) level2_day_hud_color_phase_1: u8,
+    pub(crate) level2_day_hud_color_phase_2: u8,
+    pub(crate) level2_day_hud_hit_frame_time_pre_draw: u8,
+    pub(crate) level2_day_hud_player_panel_selector: u16,
 }
 
 impl ScratchState {
@@ -161,6 +133,13 @@ impl ScratchState {
             validity_epoch: 0,
             valid: false,
             dispatch_receipt: CanonicalDigest::zero(),
+            dispatch_events: Vec::new(),
+            economy_event_cursor: 0,
+            nyphur_dispatch_traces: Vec::new(),
+            level2_day_hud_color_phase_1: 0,
+            level2_day_hud_color_phase_2: 0,
+            level2_day_hud_hit_frame_time_pre_draw: 0,
+            level2_day_hud_player_panel_selector: 0,
         }
     }
 
@@ -168,12 +147,14 @@ impl ScratchState {
         self.validity_epoch = self.validity_epoch.wrapping_add(1);
         self.valid = false;
         self.dispatch_receipt = CanonicalDigest::zero();
+        self.dispatch_events.clear();
+        self.economy_event_cursor = 0;
+        self.nyphur_dispatch_traces.clear();
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignState {
-    baseline_core: Arc<CanonicalRuntimeState>,
     pub persistent: PersistentState,
     pub live: ResetState,
     pub scratch: ScratchState,
@@ -185,16 +166,11 @@ impl CampaignState {
     /// it lets the caller install terrain exactly once without first creating
     /// a second session field that would need copy-back reconciliation.
     #[must_use]
-    pub(crate) fn from_level2_with_terrain(
-        session: &Level2ResetSession,
-        terrain: &SessionTerrain,
-    ) -> Self {
-        let live = ResetState::from_level2_with_terrain(session, terrain);
+    pub(crate) fn new(live: ResetState) -> Self {
         Self {
-            baseline_core: Arc::new(live.core.clone()),
             persistent: PersistentState,
             live,
-            scratch: ScratchState::from_level2(session, 0),
+            scratch: ScratchState::empty(),
         }
     }
 
@@ -207,32 +183,27 @@ impl CampaignState {
         &mut self.live.core
     }
 
-    /// Restore the migrated domains from one immutable aggregate baseline.
-    pub(crate) fn reset_core(&mut self) {
-        let next_journal_generation = self.live.core.effect_journal.generation().wrapping_add(1);
-        self.live.core = (*self.baseline_core).clone();
-        self.live
-            .core
-            .effect_journal
-            .reset_to_generation(next_journal_generation);
-        self.scratch.invalidate();
-    }
-
-    /// Seal an intentional pre-generation configuration into the one reset
-    /// baseline before a session handle is exposed.
-    pub(crate) fn rebase_core(&mut self) {
-        self.baseline_core = Arc::new(self.live.core.clone());
-    }
-
-    /// Borrow the one mutable terrain carrier used by the production route.
     #[must_use]
     pub(crate) fn terrain(&self) -> &SessionTerrain {
         &self.live.terrain
     }
 
-    /// Mutably borrow the one terrain carrier used by the production route.
     pub(crate) fn terrain_mut(&mut self) -> &mut SessionTerrain {
         &mut self.live.terrain
+    }
+}
+
+impl std::ops::Deref for CampaignState {
+    type Target = ResetState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.live
+    }
+}
+
+impl std::ops::DerefMut for CampaignState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.live
     }
 }
 
@@ -265,31 +236,6 @@ impl ResetReceipt {
     }
 }
 
-/// A read-only observation of the old authority.  It is kept separate from
-/// `CampaignSession` so equality tests compare an old projection with the
-/// shell projection rather than accidentally comparing a shell to itself.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LegacyResetObservation {
-    pub reset: ResetState,
-    pub receipt: ResetReceipt,
-    pub campaign_state_hash: u64,
-    pub terrain_hash: u64,
-}
-
-impl LegacyResetObservation {
-    #[must_use]
-    pub fn from_level2(session: &Level2ResetSession) -> Self {
-        let reset = ResetState::from_level2(session);
-        let receipt = ResetReceipt::from_state(&reset);
-        Self {
-            reset,
-            receipt,
-            campaign_state_hash: session.campaign_state_hash(),
-            terrain_hash: session.terrain_hash(),
-        }
-    }
-}
-
 /// Read-only campaign shell.  `from_level2` clones the old authority only to
 /// obtain its frame-zero baseline; no shell method writes the old session.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -303,72 +249,60 @@ pub struct CampaignSession {
 
 impl CampaignSession {
     #[must_use]
-    pub fn from_level2(session: &Level2ResetSession) -> Self {
-        let mut baseline_authority = session.clone();
-        baseline_authority.reset();
-        let mut baseline = ResetState::from_level2(&baseline_authority);
-        baseline
-            .core
-            .effect_journal
-            .reset_to_generation(session.effect_journal().generation());
-        let baseline = Arc::new(baseline);
-        let live = ResetState::from_level2(session);
-        let definition = Arc::new(CampaignDefinition::from_level2(session));
+    pub(crate) fn new(definition: CampaignDefinition, live: ResetState) -> Self {
+        let definition = Arc::new(definition);
+        let baseline = Arc::new(live.clone());
         let baseline_hash = ResetReceipt::from_state(&baseline);
-        let baseline_core = Arc::new(baseline.core.clone());
-        let scratch = ScratchState::from_level2(session, 0);
+        let scratch = live.reset_scratch(0, true);
+        let mut state = CampaignState::new(live);
+        state.scratch = scratch;
         Self {
             definition,
             baseline,
             baseline_hash,
-            state: CampaignState {
-                baseline_core,
-                persistent: PersistentState,
-                live,
-                scratch,
-            },
+            state,
             generation: 0,
         }
     }
 
-    /// Refresh the observer from the old authority without changing that
-    /// authority.  This is the only bridge needed until a later cutover leaf.
-    pub fn observe_level2(&mut self, session: &Level2ResetSession) {
-        self.state.live = ResetState::from_level2(session);
-        self.state.scratch = ScratchState::from_level2(session, self.generation);
+    #[must_use]
+    pub fn from_level2(session: &Level2ResetSession) -> Self {
+        session.session.clone()
     }
 
     /// Shell-only reset semantics; this does not reset the old authority.
     pub fn reset(&mut self) {
-        let next_journal_generation = self
-            .state
-            .live
-            .core
-            .effect_journal
-            .generation()
-            .wrapping_add(1);
-        self.state.live = (*self.baseline).clone();
-        self.state
-            .live
-            .core
-            .effect_journal
-            .reset_to_generation(next_journal_generation);
-        self.state.baseline_core = Arc::new(self.baseline.core.clone());
-        self.state.scratch.invalidate();
         self.generation = self.generation.wrapping_add(1);
+        self.state.live.clone_from(&self.baseline);
+        self.state.scratch = self.state.live.reset_scratch(self.generation, false);
+    }
+
+    /// Seal an intentional pre-generation configuration into the one shared
+    /// reset baseline before the session is exposed to a client.
+    pub(crate) fn rebase(&mut self) {
+        self.baseline = Arc::new(self.state.live.clone());
+        self.baseline_hash = ResetReceipt::from_state(&self.baseline);
     }
 }
 
 impl CampaignDefinition {
     #[must_use]
     pub fn from_level2(session: &Level2ResetSession) -> Self {
-        let package_sha256 = session.package_sha256().to_owned();
-        let collision_masks_present = session.collision_mask_bank().is_some();
+        (*session.session.definition).clone()
+    }
+
+    #[must_use]
+    pub(crate) fn new(
+        profile: FlightProfile,
+        package_sha256: String,
+        collision_masks: Option<CollisionMaskBank>,
+        presentation: PresentationSelectors,
+    ) -> Self {
+        let collision_masks_present = collision_masks.is_some();
         let identity_receipt = digest_with(|hasher| {
             hasher.update(package_sha256.as_bytes());
             hasher.update([0]);
             hasher.update([u8::from(collision_masks_present)]);
-            let profile = session.profile();
             hasher.update([u8::from(profile.cave_mode)]);
             hasher.update(profile.terrain_reference_height.to_le_bytes());
             hasher.update(profile.ground_clearance.to_le_bytes());
@@ -378,10 +312,12 @@ impl CampaignDefinition {
             hasher.update(profile.raw_word_0x12.to_le_bytes());
         });
         Self {
-            profile: session.profile(),
+            profile,
             package_sha256,
             collision_masks_present,
             identity_receipt,
+            collision_masks,
+            presentation,
         }
     }
 }
@@ -389,58 +325,7 @@ impl CampaignDefinition {
 impl ResetState {
     #[must_use]
     pub fn from_level2(session: &Level2ResetSession) -> Self {
-        Self::from_level2_with_terrain(session, session.canonical_terrain())
-    }
-
-    #[must_use]
-    pub(crate) fn from_level2_with_terrain(
-        session: &Level2ResetSession,
-        terrain: &SessionTerrain,
-    ) -> Self {
-        let sidecars = SourceSidecarsState {
-            shared_spells: session.shared_spells().clone(),
-            ordinary: session.ordinary().clone(),
-            goats: session.goats().to_vec().into_boxed_slice(),
-            bad_stones: session.bad_stones().to_vec().into_boxed_slice(),
-            mission: session.mission().clone(),
-            nyphur: NyphurState {
-                state_byte: session.nyphur_dispatch_state_byte(),
-                traces: session.nyphur_dispatch_traces().to_vec().into_boxed_slice(),
-                state_hash: session.nyphur_state_hash().ok(),
-            },
-            legacy_campaign_state_hash: session.campaign_state_hash_with_terrain(terrain),
-        };
-        Self {
-            core: CanonicalRuntimeState {
-                state: session.state,
-                players: session.players().to_vec().into_boxed_slice(),
-                runtime: session.runtime().clone(),
-                context: session.context.clone(),
-                effect_journal: session.effect_journal().clone(),
-            },
-            source_arena: SourceArenaState {
-                arena_receipt: digest_live_source_arena(session.source_arena()),
-                economy_reset_hash: session.economy().reset_hash_with_terrain(terrain),
-                source_rng_receipt: digest_source_rng_inputs(
-                    session.source_global_rng(),
-                    terrain,
-                    session.source_arena(),
-                ),
-            },
-            terrain: terrain.clone(),
-            source_sidecars: sidecars,
-        }
-    }
-}
-
-impl ScratchState {
-    #[must_use]
-    fn from_level2(session: &Level2ResetSession, generation: u64) -> Self {
-        Self {
-            validity_epoch: generation,
-            valid: true,
-            dispatch_receipt: session.effect_journal().receipt(),
-        }
+        session.campaign_state().live.clone()
     }
 }
 
@@ -509,15 +394,11 @@ fn reset_component_digests(
 ) -> [CanonicalDigest; RESET_V1_COMPONENT_COUNT as usize] {
     [
         digest_flight(&state.core.state),
-        state.source_arena.arena_receipt,
+        digest_live_source_arena(&state.economy),
         digest_terrain(&state.terrain),
         digest_players_and_runtime(&state.core),
-        digest_source_sidecars(
-            &state.source_sidecars,
-            &state.source_arena.economy_reset_hash,
-            &state.terrain,
-        ),
-        state.source_arena.source_rng_receipt,
+        digest_source_sidecars(state),
+        digest_source_rng_inputs(state.economy.global_rng, &state.terrain, &state.economy),
         digest_objectives(&state.core.runtime.objective_state),
         state.core.effect_journal.receipt(),
     ]
@@ -750,26 +631,79 @@ fn append_position(hasher: &mut Sha256, position: crate::Position) {
 }
 
 #[must_use]
-fn digest_source_sidecars(
-    sidecars: &SourceSidecarsState,
-    economy_reset_hash: &str,
-    terrain: &SessionTerrain,
-) -> CanonicalDigest {
+fn digest_source_sidecars(state: &ResetState) -> CanonicalDigest {
     digest_with(|hasher| {
         append_string(
             hasher,
-            &sidecars.shared_spells.reset_hash_with_terrain(terrain),
+            &state.shared_spells.reset_hash_with_terrain(&state.terrain),
         );
-        append_string(hasher, economy_reset_hash);
-        append_string(hasher, &sidecars.ordinary.reset_hash());
-        append_string(hasher, &sidecars.mission.state_hash());
-        hasher.update(sidecars.legacy_campaign_state_hash.to_le_bytes());
-        append_len(hasher, sidecars.goats.len());
-        append_len(hasher, sidecars.bad_stones.len());
-        hasher.update([sidecars.nyphur.state_byte.cast_unsigned()]);
-        append_string_option(hasher, sidecars.nyphur.state_hash.as_deref());
-        append_len(hasher, sidecars.nyphur.traces.len());
+        append_string(
+            hasher,
+            &state.economy.reset_hash_with_terrain(&state.terrain),
+        );
+        append_string(hasher, &state.ordinary.reset_hash());
+        append_string(hasher, &state.mission.state_hash());
+        append_len(hasher, state.goats.goats().len());
+        append_len(hasher, state.bad_stones.len());
+        hasher.update([state.nyphur_dispatcher.state_byte().cast_unsigned()]);
+        digest_outer_reset_state(hasher, state);
     })
+}
+
+fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
+    hasher.update(state.player_pending_damage.to_le_bytes());
+    hasher.update(state.player_pending_attacker.to_le_bytes());
+    hasher.update(state.player_life.to_le_bytes());
+    hasher.update([
+        u8::from(state.level2_group8_activated),
+        state.level2_selected_objective_stage_state,
+        state.level2_objective_pause,
+        u8::from(state.level2_objective_done),
+    ]);
+    for set in [
+        &state.level2_mana_attraction_activated,
+        &state.level2_model13_activated,
+        &state.level2_bees_activated,
+        &state.level2_switch_producers_activated,
+        &state.level2_model32_activated,
+        &state.level2_model76_activated,
+        &state.level2_model22_activated,
+        &state.level2_model39_activated,
+        &state.level2_model6_activated,
+        &state.level2_model59_activated,
+        &state.level2_model53_activated,
+        &state.level2_model1_activated,
+        &state.level2_model17_activated,
+        &state.level2_class14_activated,
+        &state.level2_tree_activated,
+        &state.level2_class5_activated,
+        &state.level2_model45_activated,
+    ] {
+        append_len(hasher, set.len());
+        for value in set {
+            hasher.update(value.to_le_bytes());
+        }
+    }
+    append_len(hasher, state.level2_imported_switch_roots.len());
+    for root in &state.level2_imported_switch_roots {
+        hasher.update(root.source_slot.to_le_bytes());
+        hasher.update(root.authored_index.to_le_bytes());
+        hasher.update([root.model, root.phase, root.cooldown]);
+        hasher.update(root.target_group.to_le_bytes());
+        hasher.update(root.word_10.to_le_bytes());
+        append_position(hasher, root.position);
+        hasher.update([u8::from(root.drawing_enabled), u8::from(root.active)]);
+    }
+    match state.level2_group10_switch25 {
+        Some(switch) => {
+            hasher.update([1, switch.phase]);
+            hasher.update(switch.source_slot.to_le_bytes());
+            hasher.update(switch.authored_index.to_le_bytes());
+            hasher.update(switch.target_group.to_le_bytes());
+            append_position(hasher, switch.position);
+        }
+        None => hasher.update([0]),
+    }
 }
 
 #[must_use]
@@ -817,7 +751,6 @@ pub(crate) fn digest_topology(links: &[SourceLink]) -> CanonicalDigest {
     })
 }
 
-#[must_use]
 fn append_len(hasher: &mut Sha256, length: usize) {
     hasher.update(
         u32::try_from(length)
@@ -829,16 +762,6 @@ fn append_len(hasher: &mut Sha256, length: usize) {
 fn append_string(hasher: &mut Sha256, value: &str) {
     append_len(hasher, value.len());
     hasher.update(value.as_bytes());
-}
-
-fn append_string_option(hasher: &mut Sha256, value: Option<&str>) {
-    match value {
-        Some(value) => {
-            hasher.update([1]);
-            append_string(hasher, value);
-        }
-        None => hasher.update([0]),
-    }
 }
 
 #[must_use]
@@ -876,89 +799,30 @@ mod tests {
             .expect("qualified Level 2 session")
     }
 
-    fn assert_dual_observer_equal(session: &Level2ResetSession) {
+    fn assert_canonical_receipt_matches_live(session: &Level2ResetSession) {
         let public_hash = session.campaign_state_hash();
         let terrain_hash = session.terrain_hash();
-        let old = LegacyResetObservation::from_level2(session);
-        let shell = CampaignSession::from_level2(session);
-        assert_eq!(old.reset, shell.state.live);
-        assert_eq!(old.receipt.bytes(), encode_reset_v1(&shell.state.live));
-        assert_eq!(old.receipt, ResetReceipt::from_state(&shell.state.live));
+        let receipt = ResetReceipt::from_state(&session.session.state.live);
+        assert_eq!(
+            receipt.bytes(),
+            encode_reset_v1(&session.session.state.live)
+        );
         assert_eq!(session.campaign_state_hash(), public_hash);
         assert_eq!(session.terrain_hash(), terrain_hash);
     }
 
     #[test]
-    fn cf04_dual_observer_matches_frame_step_cleanup_reset() {
-        let mut session = level_two_session();
-        let frame_zero_hash = session.campaign_state_hash();
-        let frame_zero_terrain_hash = session.terrain_hash();
-        let mut observer = CampaignSession::from_level2(&session);
-        assert!(observer.state.scratch.valid);
-        assert_eq!(
-            observer.baseline_hash,
-            ResetReceipt::from_state(&observer.state.live)
-        );
-        assert_eq!(observer.state.live.core.effect_journal.generation(), 0);
-        assert_dual_observer_equal(&session);
-
-        session.step_outer_turn(
-            PlayerCommand {
-                flags: 1,
-                ..PlayerCommand::default()
-            },
-            0,
-        );
-        let stepped_hash = session.campaign_state_hash();
-        assert_ne!(stepped_hash, frame_zero_hash);
-        observer.observe_level2(&session);
-        assert!(observer.state.scratch.valid);
-        assert_eq!(
-            observer.state.live,
-            LegacyResetObservation::from_level2(&session).reset
-        );
-        assert_dual_observer_equal(&session);
-
-        // The second ordinary turn reaches the following-pass cleanup/reclaim
-        // boundary while the old session remains the only writer.
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        observer.observe_level2(&session);
-        assert_dual_observer_equal(&session);
-
-        session.reset();
-        assert_eq!(session.campaign_state_hash(), frame_zero_hash);
-        assert_eq!(session.terrain_hash(), frame_zero_terrain_hash);
-        observer.reset();
-        assert!(!observer.state.scratch.valid);
-        assert_eq!(
-            observer.state.live,
-            LegacyResetObservation::from_level2(&session).reset
-        );
-        assert_ne!(
-            observer.baseline_hash,
-            ResetReceipt::from_state(&observer.state.live),
-            "reset generation must distinguish the new cursor lifetime"
-        );
-        assert_eq!(observer.state.live.core.effect_journal.generation(), 1);
-        observer.observe_level2(&session);
-        assert!(observer.state.scratch.valid);
-        assert_dual_observer_equal(&session);
-    }
-
-    #[test]
     fn cf04_omitted_field_is_detected() {
         let session = level_two_session();
-        let old = LegacyResetObservation::from_level2(&session);
-        assert_ne!(
-            old.reset.core.effect_journal.receipt(),
-            CanonicalDigest::zero()
-        );
+        let reset = ResetState::from_level2(&session);
+        let receipt = ResetReceipt::from_state(&reset);
+        assert_ne!(reset.core.effect_journal.receipt(), CanonicalDigest::zero());
 
-        let mut omitted = encode_reset_v1(&old.reset);
+        let mut omitted = encode_reset_v1(&reset);
         let journal_component_offset = RESET_V1_ENCODED_LEN - 32;
         omitted[journal_component_offset..].fill(0);
         assert_ne!(
-            old.receipt.bytes(),
+            receipt.bytes(),
             omitted,
             "omitting the effect-journal field must change the canonical receipt"
         );
@@ -967,18 +831,20 @@ mod tests {
     #[test]
     fn cf04_failed_capacity_does_not_change_observer() {
         let session = level_two_session();
-        let before = LegacyResetObservation::from_level2(&session);
+        let reset = ResetState::from_level2(&session);
+        let campaign_state_hash = session.campaign_state_hash();
+        let terrain_hash = session.terrain_hash();
         let mut undersized = vec![0_u8; RESET_V1_ENCODED_LEN - 1];
         assert_eq!(
-            encode_reset_v1_into(&before.reset, &mut undersized),
+            encode_reset_v1_into(&reset, &mut undersized),
             Err(EncodeResetError::OutputTooSmall {
                 required: RESET_V1_ENCODED_LEN,
                 capacity: RESET_V1_ENCODED_LEN - 1,
             })
         );
-        assert_eq!(session.campaign_state_hash(), before.campaign_state_hash);
-        assert_eq!(session.terrain_hash(), before.terrain_hash);
-        assert_dual_observer_equal(&session);
+        assert_eq!(session.campaign_state_hash(), campaign_state_hash);
+        assert_eq!(session.terrain_hash(), terrain_hash);
+        assert_canonical_receipt_matches_live(&session);
     }
 
     #[test]
@@ -1036,7 +902,7 @@ mod tests {
         assert_eq!(session.canonical_terrain(), replay.canonical_terrain());
         assert_eq!(session.terrain_hash(), replay.terrain_hash());
         assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
-        assert_dual_observer_equal(&session);
+        assert_canonical_receipt_matches_live(&session);
 
         // Reversing overlapping writes is not an equivalent terrain fold:
         // material marks the cell immutable, so a later collision write is
@@ -1089,7 +955,7 @@ mod tests {
         assert_eq!(session.campaign_state_hash(), control.campaign_state_hash());
         assert_eq!(session.terrain_hash(), control.terrain_hash());
         assert_ne!(session.campaign_state_hash(), baseline_hash);
-        assert_dual_observer_equal(&session);
+        assert_canonical_receipt_matches_live(&session);
 
         session.reset();
         control.reset();
@@ -1144,20 +1010,28 @@ mod tests {
         let accepted = ResetState::from_level2(&session);
         let accepted_bytes = encode_reset_v1(&accepted);
         let mut swapped = accepted.clone();
-        std::mem::swap(
-            &mut swapped.source_arena.arena_receipt,
-            &mut swapped.source_arena.source_rng_receipt,
-        );
+        let effect_rng = swapped
+            .core
+            .context
+            .effects
+            .as_ref()
+            .expect("qualified effects context")
+            .global_rng;
+        let source_rng = swapped.economy.global_rng;
+        swapped.economy.global_rng = effect_rng;
+        swapped
+            .core
+            .context
+            .effects
+            .as_mut()
+            .expect("qualified effects context")
+            .global_rng = source_rng;
         assert_ne!(encode_reset_v1(&swapped), accepted_bytes);
         let mut dropped = accepted.clone();
-        dropped.source_arena.source_rng_receipt = CanonicalDigest::zero();
+        dropped.economy.global_rng = 0;
         assert_ne!(encode_reset_v1(&dropped), accepted_bytes);
         let mut duplicated = accepted.clone();
-        let rng_receipt = duplicated.source_arena.source_rng_receipt;
-        duplicated.source_arena.source_rng_receipt = digest_with(|hasher| {
-            hasher.update(rng_receipt.as_bytes());
-            hasher.update(rng_receipt.as_bytes());
-        });
+        duplicated.economy.global_rng = duplicated.economy.global_rng.wrapping_mul(2);
         assert_ne!(encode_reset_v1(&duplicated), accepted_bytes);
         let mut wrong_player_site = accepted.clone();
         wrong_player_site
@@ -1276,5 +1150,102 @@ mod tests {
         assert_eq!(session.campaign_state_hash(), first_hash);
         assert_eq!(session.cf07_rng_observation(), first_rng);
         assert_eq!(replay_output, first_output);
+    }
+
+    #[test]
+    fn cf09_reset_hash_isomorphism_and_live_only_transaction_clone() {
+        let mut session = level_two_session();
+        let baseline = Arc::clone(&session.session.baseline);
+        let definition = Arc::clone(&session.session.definition);
+        let baseline_receipt = session.session.baseline_hash.clone();
+        let baseline_public_hash = session.campaign_state_hash();
+
+        let mut candidate = session.clone();
+        assert!(Arc::ptr_eq(&candidate.session.baseline, &baseline));
+        assert!(Arc::ptr_eq(&candidate.session.definition, &definition));
+        assert_ne!(
+            std::ptr::addr_of!(candidate.session.state.live),
+            std::ptr::addr_of!(session.session.state.live),
+            "transaction candidates must clone live state, not alias it"
+        );
+
+        candidate.session.state.live.core.state.position.x ^= 1;
+        let candidate_reset_receipt = ResetReceipt::from_state(&candidate.session.state.live);
+        candidate.session.state.scratch.dispatch_events.push(
+            crate::native_world::Level2DispatchEvent::Error {
+                pass: 0,
+                source_slot: 0,
+                message: "planted scratch mutation".to_owned(),
+            },
+        );
+        assert_eq!(
+            ResetReceipt::from_state(&session.session.state.live),
+            baseline_receipt
+        );
+        assert_eq!(session.session.state.live, *baseline);
+        assert_ne!(candidate.session.state.live, *baseline);
+        assert_eq!(
+            ResetReceipt::from_state(&candidate.session.state.live),
+            candidate_reset_receipt,
+            "scratch is outside the canonical reset image"
+        );
+
+        session.session.state.live.core.state.position.x ^= 1;
+        session.session.state.scratch.dispatch_events.push(
+            crate::native_world::Level2DispatchEvent::Error {
+                pass: 0,
+                source_slot: 0,
+                message: "discarded on reset".to_owned(),
+            },
+        );
+        session.reset();
+        assert_eq!(session.session.state.live, *baseline);
+        assert_eq!(session.session.baseline_hash, baseline_receipt);
+        assert_eq!(session.campaign_state_hash(), baseline_public_hash);
+        assert!(session.session.state.scratch.dispatch_events.is_empty());
+        assert!(!session.session.state.scratch.valid);
+    }
+
+    #[test]
+    fn cf09_repeated_reset_generation_and_replay_are_exact() {
+        let mut session = level_two_session();
+        let baseline_bytes = encode_reset_v1(&session.session.baseline);
+        let command = PlayerCommand {
+            flags: 1,
+            ..PlayerCommand::default()
+        };
+        let old_cursor = session.effect_journal().cursor(session.session.generation);
+
+        let first_evidence = session.step_outer_turn(command, 0);
+        let first_hash = session.campaign_state_hash();
+        let first_receipt = ResetReceipt::from_state(&session.session.state.live);
+        let first_effects = session.effect_journal().clone();
+
+        session.reset();
+        assert_eq!(session.session.generation, 1);
+        assert_eq!(encode_reset_v1(&session.session.state.live), baseline_bytes);
+        assert!(matches!(
+            session
+                .effect_journal()
+                .page(session.session.generation, old_cursor, 1),
+            Err(super::super::journal::EffectPageError::StaleGeneration { .. })
+        ));
+
+        let replay_evidence = session.step_outer_turn(command, 0);
+        assert_eq!(replay_evidence, first_evidence);
+        assert_eq!(session.campaign_state_hash(), first_hash);
+        assert_eq!(
+            ResetReceipt::from_state(&session.session.state.live),
+            first_receipt
+        );
+        assert_eq!(session.effect_journal(), &first_effects);
+
+        session.reset();
+        assert_eq!(session.session.generation, 2);
+        assert_eq!(encode_reset_v1(&session.session.state.live), baseline_bytes);
+        assert_eq!(
+            ResetReceipt::from_state(&session.session.state.live),
+            session.session.baseline_hash
+        );
     }
 }

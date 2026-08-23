@@ -3609,17 +3609,20 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
     };
     session.economy.entities[second_injected_index].control_flags = 0;
     session.economy.entities[112].model = 0;
+    let second_slot = session.economy.entities[second_injected_index].index;
+    let nyphur_slot = session.economy.entities[112].index;
+    let injected_slot = session.economy.entities[injected_index].index;
     session.economy.entities[local_player_index].next_relation =
-        Some(session.economy.entities[second_injected_index].index);
+        Some(second_slot);
     session.economy.entities[local_player_index].record[4..8].copy_from_slice(
-        &(u32::from(session.economy.entities[second_injected_index].index) + 1).to_le_bytes(),
+        &(u32::from(second_slot) + 1).to_le_bytes(),
     );
-    session.economy.entities[second_injected_index].next_relation = Some(session.economy.entities[112].index);
+    session.economy.entities[second_injected_index].next_relation = Some(nyphur_slot);
     session.economy.entities[second_injected_index].record[4..8]
-        .copy_from_slice(&(u32::from(session.economy.entities[112].index) + 1).to_le_bytes());
-    session.economy.entities[112].next_relation = Some(session.economy.entities[injected_index].index);
+        .copy_from_slice(&(u32::from(nyphur_slot) + 1).to_le_bytes());
+    session.economy.entities[112].next_relation = Some(injected_slot);
     session.economy.entities[112].record[4..8]
-        .copy_from_slice(&(u32::from(session.economy.entities[injected_index].index) + 1).to_le_bytes());
+        .copy_from_slice(&(u32::from(injected_slot) + 1).to_le_bytes());
     session.economy.entities[injected_index].next_relation = None;
     session.economy.entities[injected_index].record[4..8].fill(0);
     let expected_player_slots = session.economy.entities
@@ -3785,7 +3788,8 @@ fn level_two_goat_dispatch_falls_back_to_peer_when_all_live_players_are_ineligib
         z: 0,
     };
     session.economy.entities[local_player_index].control_flags = 0x20;
-    session.economy.entities[local_player_index].position = session.state.position;
+    let local_position = session.state.position;
+    session.economy.entities[local_player_index].position = local_position;
     session.economy.entities[injected_index].active = true;
     session.economy.entities[injected_index].class = 3;
     session.economy.entities[injected_index].model = 0;
@@ -3796,9 +3800,10 @@ fn level_two_goat_dispatch_falls_back_to_peer_when_all_live_players_are_ineligib
         z: 0,
     };
     session.economy.entities[injected_index].control_flags = 0x20;
-    session.economy.entities[112].next_relation = Some(session.economy.entities[injected_index].index);
+    let injected_slot = session.economy.entities[injected_index].index;
+    session.economy.entities[112].next_relation = Some(injected_slot);
     session.economy.entities[112].record[4..8]
-        .copy_from_slice(&(u32::from(session.economy.entities[injected_index].index) + 1).to_le_bytes());
+        .copy_from_slice(&(u32::from(injected_slot) + 1).to_le_bytes());
     session.economy.entities[injected_index].next_relation = None;
     session.economy.entities[injected_index].record[4..8].fill(0);
 
@@ -4009,12 +4014,16 @@ fn level_two_goat_death_respects_source_burst_suppression_bit() {
         .expect("Level 2 suppressed Goat session");
     let goat_slot = LEVEL_TWO_GOAT_INDICES[0];
     assert!(session.goats.set_control_flags(goat_slot, 0x0010_0000));
+    let attacker = session.state.entity_index.cast_signed();
     session
+        .session
+        .state
+        .live
         .goats
         .inject_damage(
             goat_slot,
             1_000_000,
-            session.state.entity_index.cast_signed(),
+            attacker,
         )
         .expect("inject lethal Goat damage");
 

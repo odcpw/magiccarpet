@@ -2216,10 +2216,16 @@ fn level2_nyphur_turn_direction(from: i16, to: i16) -> i16 {
 /// unsigned carriers, so perform the source-width wrap before interpreting
 /// the checksum as signed.
 pub(super) fn level2_nyphur_source_identity(entity: &EntitySnapshot) -> i16 {
-    let value = entity
-        .source_id
-        .wrapping_add(u16::from(entity.model))
-        .wrapping_add(u16::from(entity.class).wrapping_shl(7));
+    level2_nyphur_source_identity_parts(entity.source_id, entity.model, entity.class)
+}
+
+/// Compute the source identity for a typed arena row without manufacturing a
+/// second `EntitySnapshot`. Dynamic rows use this same primitive when they are
+/// projected for dispatch and when a stored relation is validated later.
+pub(crate) fn level2_nyphur_source_identity_parts(source_id: u16, model: u8, class: u8) -> i16 {
+    let value = source_id
+        .wrapping_add(u16::from(model))
+        .wrapping_add(u16::from(class).wrapping_shl(7));
     i16::from_le_bytes(value.to_le_bytes())
 }
 
@@ -2386,7 +2392,7 @@ fn level2_nyphur_map_angle_allowed(
 /// Production carrier for the source AI dispatch state byte and common
 /// `sub_12A70` state.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Level2NyphurDispatcher {
+pub(crate) struct Level2NyphurDispatcher {
     state_byte: i8,
     pub(super) common_upkeep: Level2NyphurCommonUpkeep,
 }
@@ -2413,7 +2419,18 @@ impl Level2NyphurDispatcher {
         let baseline_entity = entities
             .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
-        let participant = level2_nyphur_participant(players, entities, runtime, baseline_entity)?;
+        let participant = level2_nyphur_participant(
+            players,
+            entities,
+            runtime,
+            baseline_entity,
+            |source_slot| {
+                entities
+                    .get(usize::from(source_slot))
+                    .filter(|entity| entity.active)
+                    .map(level2_nyphur_source_identity)
+            },
+        )?;
         if participant.entity_model != 1 || participant.entity_action != 1 {
             return Err(NativeWorldError::new(
                 "Level 2 Nyphur dispatcher requires the qualified model-1 action-1 row",
@@ -2431,7 +2448,7 @@ impl Level2NyphurDispatcher {
     }
 
     #[must_use]
-    pub(super) const fn state_byte(&self) -> i8 {
+    pub(crate) const fn state_byte(&self) -> i8 {
         self.state_byte
     }
 
@@ -2522,6 +2539,18 @@ impl Level2NyphurDispatcher {
             level2_nyphur_project_mana_sphere(entity, *sphere, source_id);
             projected_dynamic_slots.insert(usize::from(source_slot));
             projected_carrier = true;
+        }
+
+        // Imported class-10/model-39 rows are the package seed for the typed
+        // sphere arena, not a second live authority. Mask any seed whose typed
+        // row has retired so relation cleanup and target scans cannot revive a
+        // stale sphere from the immutable entity record.
+        for (index, entity) in projected_entities.iter_mut().enumerate() {
+            if entity.class == 10 && entity.model == 39 && !seen_spheres.contains(&entity.index) {
+                entity.active = false;
+                projected_dynamic_slots.insert(index);
+                projected_carrier = true;
+            }
         }
 
         if projected_carrier {

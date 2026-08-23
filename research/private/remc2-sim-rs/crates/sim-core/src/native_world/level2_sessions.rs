@@ -169,63 +169,59 @@ impl Level2SharedSpellResetSession {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let mut session = Self {
-            baseline_pickups: pickups.clone(),
             pickups,
-            baseline_dynamic_pickups: Vec::new(),
+
             dynamic_pickups: Vec::new(),
-            baseline_authored_pickup_slots: BTreeMap::new(),
+
             authored_pickup_slots: BTreeMap::new(),
-            baseline_holders: holders.clone(),
+
             holders,
-            baseline_player_mana: player_entity.mana,
+
             player_mana: player_entity.mana,
-            baseline_player_life_regen: 0,
+
             player_life_regen: 0,
-            baseline_player_entity: player_entity.clone(),
+
             player_entity: player_entity.clone(),
-            baseline_players: players.to_vec().into_boxed_slice(),
+
             players: players.to_vec().into_boxed_slice(),
-            baseline_player_entities: player_entities.clone(),
+
             player_entities,
-            baseline_local_player: baseline_local_player.clone(),
+
             local_player: baseline_local_player,
-            baseline_speed_pickup_state: Level2SpeedPickupState::default(),
+
             speed_pickup_state: Level2SpeedPickupState::default(),
-            baseline_caster: caster,
+
             caster,
-            baseline_fireball: fireball,
+
             fireball,
-            baseline_possession: possession,
+
             possession,
-            baseline_speed: speed,
+
             speed,
-            baseline_shield: None,
+
             shield: None,
-            baseline_invisible: None,
+
             invisible: None,
-            baseline_beyond_sight: None,
+
             beyond_sight: None,
-            baseline_shield_damage_mailbox: None,
+
             shield_damage_mailbox: None,
-            baseline_beyond_sight_auxiliary: Level2PlayerEventAuxiliary {
-                entity_index: player_entity.index,
-                ..Level2PlayerEventAuxiliary::default()
-            },
+
             beyond_sight_auxiliary: Level2PlayerEventAuxiliary {
                 entity_index: player_entity.index,
                 ..Level2PlayerEventAuxiliary::default()
             },
-            baseline_acquisitions: acquisitions.clone(),
+
             acquisitions,
-            baseline_free_spell_usage: false,
+
             free_spell_usage: false,
-            baseline_persistent_spell_experience: local_player.persistent_spell_experience,
+
             persistent_spell_experience: local_player.persistent_spell_experience,
-            baseline_spell_experience: local_player.runtime_spell_experience,
+
             spell_experience: local_player.runtime_spell_experience,
-            baseline_spell_levels: local_player.spell_unlocked_levels,
+
             spell_levels: local_player.spell_unlocked_levels,
-            baseline_persistent_acquisitions: BTreeMap::new(),
+
             persistent_acquisitions: BTreeMap::new(),
             player_entity_sha256: LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256.to_owned(),
             events: Vec::new(),
@@ -234,7 +230,6 @@ impl Level2SharedSpellResetSession {
         };
         if let Some((economy, wizard)) = starting_spells {
             session.materialize_direct_starting_spells(economy, wizard)?;
-            economy.seal_direct_starting_spell_baseline();
         }
         Ok(session)
     }
@@ -398,10 +393,6 @@ impl Level2SharedSpellResetSession {
             self.spell_levels[family] =
                 self.spell_levels[family].max(self.local_player.family_selected_tiers[family]);
         }
-        self.baseline_dynamic_pickups = self.dynamic_pickups.clone();
-        self.baseline_players = self.players.clone();
-        self.baseline_local_player = self.local_player.clone();
-        self.baseline_spell_levels = self.spell_levels;
         Ok(())
     }
 
@@ -1374,11 +1365,6 @@ impl Level2SharedSpellResetSession {
     #[must_use]
     pub const fn player_mana(&self) -> i32 {
         self.player_mana
-    }
-
-    #[must_use]
-    pub const fn baseline_player_mana(&self) -> i32 {
-        self.baseline_player_mana
     }
 
     /// Keep the shared spell projection's local player entity in lockstep
@@ -3106,42 +3092,6 @@ impl Level2SharedSpellResetSession {
         hasher.update([self.speed_pickup_state.state_timer]);
         format!("{:x}", hasher.finalize())
     }
-
-    pub fn reset(&mut self) {
-        self.pickups.clone_from(&self.baseline_pickups);
-        self.dynamic_pickups
-            .clone_from(&self.baseline_dynamic_pickups);
-        self.authored_pickup_slots
-            .clone_from(&self.baseline_authored_pickup_slots);
-        self.holders.clone_from(&self.baseline_holders);
-        self.player_mana = self.baseline_player_mana;
-        self.player_life_regen = self.baseline_player_life_regen;
-        self.player_entity = self.baseline_player_entity.clone();
-        self.players.clone_from(&self.baseline_players);
-        self.player_entities
-            .clone_from(&self.baseline_player_entities);
-        self.local_player = self.baseline_local_player.clone();
-        self.speed_pickup_state = self.baseline_speed_pickup_state;
-        self.caster = self.baseline_caster;
-        self.fireball = self.baseline_fireball;
-        self.possession = self.baseline_possession;
-        self.speed = self.baseline_speed;
-        self.shield = self.baseline_shield;
-        self.shield_damage_mailbox = self.baseline_shield_damage_mailbox;
-        self.invisible = self.baseline_invisible;
-        self.beyond_sight = self.baseline_beyond_sight;
-        self.beyond_sight_auxiliary = self.baseline_beyond_sight_auxiliary;
-        self.acquisitions.clone_from(&self.baseline_acquisitions);
-        self.free_spell_usage = self.baseline_free_spell_usage;
-        self.persistent_acquisitions
-            .clone_from(&self.baseline_persistent_acquisitions);
-        self.persistent_spell_experience = self.baseline_persistent_spell_experience;
-        self.spell_experience = self.baseline_spell_experience;
-        self.spell_levels = self.baseline_spell_levels;
-        self.events.clear();
-        self.pickup_events.clear();
-        self.pending_effects.clear();
-    }
 }
 
 impl Level2OrdinaryResetSession {
@@ -3197,15 +3147,15 @@ impl Level2OrdinaryResetSession {
         .expect("Level 2 ordinary population census fits u32");
         Ok(Self {
             house_build_footprints,
-            baseline_houses: houses.clone(),
+
             houses,
-            baseline_villagers: villagers.clone(),
+
             villagers,
-            baseline_dolmens: dolmens.clone(),
+
             dolmens,
-            baseline_players: player_entities.clone(),
+
             players: player_entities,
-            baseline_population_census: population_census,
+
             population_census,
         })
     }
@@ -3511,14 +3461,6 @@ impl Level2OrdinaryResetSession {
             }
         }
         Ok(self.dolmens[index].step_action_6(terrain))
-    }
-
-    pub fn reset(&mut self) {
-        self.houses = self.baseline_houses.clone();
-        self.villagers = self.baseline_villagers.clone();
-        self.dolmens = self.baseline_dolmens.clone();
-        self.players = self.baseline_players.clone();
-        self.population_census = self.baseline_population_census;
     }
 }
 

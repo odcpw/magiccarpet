@@ -63,7 +63,6 @@ pub enum EffectPageError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectJournal {
-    generation: u64,
     first_sequence: u64,
     next_sequence: u64,
     records: Vec<EffectRecord>,
@@ -71,15 +70,14 @@ pub struct EffectJournal {
 
 impl Default for EffectJournal {
     fn default() -> Self {
-        Self::new(0)
+        Self::new()
     }
 }
 
 impl EffectJournal {
     #[must_use]
-    pub const fn new(generation: u64) -> Self {
+    pub const fn new() -> Self {
         Self {
-            generation,
             first_sequence: 0,
             next_sequence: 0,
             records: Vec::new(),
@@ -87,14 +85,9 @@ impl EffectJournal {
     }
 
     #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    #[must_use]
-    pub const fn cursor(&self) -> EffectCursor {
+    pub const fn cursor(&self, generation: u64) -> EffectCursor {
         EffectCursor {
-            generation: self.generation,
+            generation,
             next_sequence: self.next_sequence,
         }
     }
@@ -133,23 +126,15 @@ impl EffectJournal {
         }
     }
 
-    /// Reset is a lifecycle transition: old cursors fail by generation even
-    /// if their numeric sequence happens to exist in the new session.
-    pub fn reset_to_generation(&mut self, generation: u64) {
-        self.generation = generation;
-        self.first_sequence = 0;
-        self.next_sequence = 0;
-        self.records.clear();
-    }
-
     pub fn page(
         &self,
+        generation: u64,
         cursor: EffectCursor,
         capacity: usize,
     ) -> Result<EffectPage, EffectPageError> {
-        if cursor.generation != self.generation {
+        if cursor.generation != generation {
             return Err(EffectPageError::StaleGeneration {
-                expected: self.generation,
+                expected: generation,
                 actual: cursor.generation,
             });
         }
@@ -177,7 +162,7 @@ impl EffectJournal {
             .to_vec()
             .into_boxed_slice();
         let next_cursor = EffectCursor {
-            generation: self.generation,
+            generation,
             next_sequence: cursor.next_sequence + u64::try_from(count).expect("count fits u64"),
         };
         Ok(EffectPage {
@@ -190,7 +175,6 @@ impl EffectJournal {
     pub fn receipt(&self) -> CanonicalDigest {
         let mut hasher = Sha256::new();
         hasher.update(b"carpet-flight-effect-journal-v1");
-        hasher.update(self.generation.to_le_bytes());
         hasher.update(self.first_sequence.to_le_bytes());
         hasher.update(self.next_sequence.to_le_bytes());
         for record in &self.records {
@@ -410,7 +394,7 @@ mod tests {
 
     #[test]
     fn cf08_cursor_generation_and_failed_capacity_are_atomic() {
-        let mut journal = EffectJournal::new(7);
+        let mut journal = EffectJournal::new();
         journal.append_flight(
             1,
             FlightEvent::UpdateMusic {
@@ -424,12 +408,13 @@ mod tests {
         };
         let before = journal.clone();
         assert_eq!(
-            journal.page(cursor, 0),
+            journal.page(7, cursor, 0),
             Err(EffectPageError::OutputTooSmall { pending: 1 })
         );
         assert_eq!(journal, before);
         assert!(matches!(
             journal.page(
+                7,
                 EffectCursor {
                     generation: 6,
                     next_sequence: 0,
@@ -439,14 +424,12 @@ mod tests {
             Err(EffectPageError::StaleGeneration { .. })
         ));
 
-        journal.reset_to_generation(8);
-        assert!(journal.records().is_empty());
         assert!(matches!(
-            journal.page(cursor, 1),
+            journal.page(8, cursor, 1),
             Err(EffectPageError::StaleGeneration { .. })
         ));
 
-        let mut expiring = EffectJournal::new(9);
+        let mut expiring = EffectJournal::new();
         for turn in 0..=MAX_RETAINED_EFFECTS {
             expiring.append_flight(
                 u32::try_from(turn).expect("bounded turn"),
@@ -458,6 +441,7 @@ mod tests {
         }
         assert!(matches!(
             expiring.page(
+                9,
                 EffectCursor {
                     generation: 9,
                     next_sequence: 0,
@@ -471,7 +455,7 @@ mod tests {
         ));
 
         let mut session = level_two_session();
-        let generation = session.effect_journal().generation();
+        let generation = session.session.generation;
         let before = session.clone();
         let mut undersized = [];
         assert!(matches!(
@@ -495,10 +479,12 @@ mod tests {
         ));
         assert_eq!(session, before);
 
-        let old_cursor = session.effect_journal().cursor();
+        let old_cursor = session.effect_journal().cursor(session.session.generation);
         session.reset();
         assert!(matches!(
-            session.effect_journal().page(old_cursor, 1),
+            session
+                .effect_journal()
+                .page(session.session.generation, old_cursor, 1),
             Err(EffectPageError::StaleGeneration { .. })
         ));
     }

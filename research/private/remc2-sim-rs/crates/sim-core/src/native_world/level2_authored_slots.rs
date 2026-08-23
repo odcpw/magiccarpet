@@ -115,159 +115,157 @@ impl Level2EconomyState {
                 (0, 0)
             };
         let mut state = Self {
-            baseline_free_slots: free_slots.clone().into_boxed_slice(),
             free_slots,
-            baseline_slot_generations: BTreeMap::new(),
+
             slot_generations: BTreeMap::new(),
-            baseline_slot_rng: slot_rng.clone(),
+
             slot_rng,
-            baseline_global_rng: global_rng,
+
             global_rng,
-            baseline_sentinel_rng: sentinel_rng,
+
             sentinel_rng,
-            baseline_source_rng: BTreeMap::new(),
+
             source_rng: BTreeMap::new(),
-            baseline_source_owner: source_owner.clone(),
+
             source_owner,
-            baseline_owner_class: owner_class.clone(),
+
             owner_class,
-            baseline_owner_max_mana,
             owner_max_mana,
-            baseline_owner_mana_rows: owner_mana_rows.clone(),
+
             owner_mana_rows,
-            baseline_owner_mana_aggregate: owner_mana_aggregate.clone(),
+
             owner_mana_aggregate,
-            baseline_owner_mana_global: owner_mana_global,
+
             owner_mana_global,
-            baseline_spheres: static_spheres.clone(),
+
             spheres: static_spheres,
-            baseline_death_bursts: Vec::new(),
+
             death_bursts: Vec::new(),
-            baseline_spell_replacements: Vec::new(),
+
             spell_replacements: Vec::new(),
-            baseline_spell_pickups: Vec::new(),
+
             spell_pickups: Vec::new(),
-            baseline_authored_model45: Vec::new(),
+
             authored_model45: Vec::new(),
-            baseline_authored_model1: Vec::new(),
+
             authored_model1: Vec::new(),
-            baseline_authored_model13: Vec::new(),
+
             authored_model13: Vec::new(),
-            baseline_authored_bees: Vec::new(),
+
             authored_bees: Vec::new(),
-            baseline_bee_model2_constructor_phase: 0,
+
             bee_model2_constructor_phase: 0,
-            baseline_authored_bee_kill_census: BTreeMap::new(),
+
             authored_bee_kill_census: BTreeMap::new(),
             deferred_authored_bee_reclaims: BTreeSet::new(),
-            baseline_authored_switch_producers: Vec::new(),
+
             authored_switch_producers: Vec::new(),
-            baseline_authored_trees: Vec::new(),
+
             authored_trees: Vec::new(),
-            baseline_authored_model32: Vec::new(),
+
             authored_model32: Vec::new(),
-            baseline_authored_model59: Vec::new(),
+
             authored_model59: Vec::new(),
-            baseline_model59_smoke_children: Vec::new(),
+
             model59_smoke_children: Vec::new(),
-            baseline_authored_model53: Vec::new(),
+
             authored_model53: Vec::new(),
-            baseline_authored_model5_water_splashes: Vec::new(),
+
             authored_model5_water_splashes: Vec::new(),
-            baseline_model13_spawned_children: Vec::new(),
+
             model13_spawned_children: Vec::new(),
-            baseline_authored_model6: Vec::new(),
+
             authored_model6: Vec::new(),
-            baseline_model6_spawned_children: Vec::new(),
+
             model6_spawned_children: Vec::new(),
-            baseline_authored_model17: Vec::new(),
+
             authored_model17: Vec::new(),
-            baseline_model17_spawned_children: Vec::new(),
+
             model17_spawned_children: Vec::new(),
-            baseline_authored_model22: Vec::new(),
+
             authored_model22: Vec::new(),
-            baseline_model22_spawned_children: Vec::new(),
+
             model22_spawned_children: Vec::new(),
-            baseline_authored_model76: Vec::new(),
+
             authored_model76: Vec::new(),
-            baseline_model76_children: Vec::new(),
+
             model76_children: Vec::new(),
-            baseline_model76_tail_spawns: Vec::new(),
+
             model76_tail_spawns: Vec::new(),
-            baseline_authored_class14: Vec::new(),
+
             authored_class14: Vec::new(),
-            baseline_authored_class5: Vec::new(),
+
             authored_class5: Vec::new(),
-            baseline_authored_class5_runtime: Vec::new(),
+
             authored_class5_runtime: Vec::new(),
-            baseline_authored_class5_model3: Vec::new(),
+
             authored_class5_model3: Vec::new(),
-            baseline_authored_class5_model3_children: Vec::new(),
+
             authored_class5_model3_children: Vec::new(),
-            baseline_authored_class5_archer: Vec::new(),
+
             authored_class5_archer: Vec::new(),
-            baseline_authored_class5_archer_children: Vec::new(),
+
             authored_class5_archer_children: Vec::new(),
-            baseline_house_residents: Vec::new(),
+
             house_residents: Vec::new(),
-            baseline_class5_model3_constructor_phase: 0,
+
             class5_model3_constructor_phase: 0,
-            baseline_class5_model9_constructor_phase: 0,
+
             class5_model9_constructor_phase: 0,
-            baseline_class5_model14_constructor_phase: 0,
+
             class5_model14_constructor_phase: 0,
-            baseline_class5_model4_constructor_phase: 0,
+
             class5_model4_constructor_phase: 0,
-            baseline_class14_model3_handle: 0,
+
             class14_model3_handle: 0,
-            baseline_beyond_sight_effects: Vec::new(),
+
             beyond_sight_effects: Vec::new(),
-            baseline_mana_attraction_fields: Vec::new(),
+
             mana_attraction_fields: Vec::new(),
-            baseline_possession_projectiles: Vec::new(),
+
             possession_projectiles: Vec::new(),
-            baseline_possession_guidance_source_slots: Vec::new(),
+
             possession_guidance_source_slots: Vec::new(),
-            baseline_possession_guidance_stale_records: BTreeMap::new(),
+
             possession_guidance_stale_records: BTreeMap::new(),
-            baseline_possession_effects: Vec::new(),
+
             possession_effects: Vec::new(),
             fireball_projectiles: Vec::new(),
-            baseline_carriers: Vec::new(),
+
             carriers: Vec::new(),
-            baseline_castle_projectiles: Vec::new(),
+
             castle_projectiles: Vec::new(),
-            baseline_castle: None,
+
             castle: None,
-            baseline_castle_children: Vec::new(),
+
             castle_children: Vec::new(),
-            baseline_castle_footprint: None,
+
             castle_footprint: None,
-            baseline_castle_stage_footprints: castle_stage_footprints.clone(),
+
             castle_stage_footprints,
-            baseline_map_chains: map_chains.clone(),
+
             map_chains,
-            baseline_player_mana: player_mana,
+
             player_mana,
-            baseline_player_castle_entity_index: 0,
+
             player_castle_entity_index: 0,
-            baseline_player_castle_stage: 0,
+
             player_castle_stage: 0,
-            baseline_player_castle_aux_flags: 0,
+
             player_castle_aux_flags: 0,
-            baseline_player_model: player_model,
+
             player_model,
-            baseline_player_terrain_flags: player_terrain_flags,
+
             player_terrain_flags,
-            baseline_player_spell_slot_2: player_spell_slot_2,
+
             player_spell_slot_2,
-            baseline_player_spell_holder_action: player_spell_holder_action,
+
             player_spell_holder_action,
-            baseline_player_spell_holder_max_action: player_spell_holder_max_action,
+
             player_spell_holder_max_action,
-            baseline_castle_stage_coefficients: [256; 8],
+
             castle_stage_coefficients: [256; 8],
-            baseline_castle_controller_coefficients: [1; 8],
+
             castle_controller_coefficients: [1; 8],
             events: Vec::new(),
         };
@@ -453,7 +451,7 @@ impl Level2EconomyState {
     /// `sub_49F90`: reclaim rows already marked inactive, then retry the
     /// allocator from descending source-slot order without inventing a new
     /// pool or changing any live relation.
-    pub(super) fn rebuild_free_arena(&mut self) {
+    pub(super) fn rebuild_free_arena(&mut self, reset_free_slots: &[u16]) {
         self.reclaim_inactive_slots();
         let occupied = self
             .live_arena_cursor_rows()
@@ -482,8 +480,7 @@ impl Level2EconomyState {
                     .map(|projectile| projectile.source_entity_index),
             )
             .collect::<BTreeSet<_>>();
-        self.free_slots = self
-            .baseline_free_slots
+        self.free_slots = reset_free_slots
             .iter()
             .copied()
             .filter(|slot| !occupied.contains(slot))
@@ -4887,18 +4884,6 @@ impl Level2EconomyState {
         self.player_spell_slot_2 = holder_slot;
         self.player_spell_holder_action = action;
         self.player_spell_holder_max_action = max_action;
-        self.baseline_player_model = player_model;
-        self.baseline_player_terrain_flags = terrain_flags;
-        self.baseline_player_spell_slot_2 = holder_slot;
-        self.baseline_player_spell_holder_action = action;
-        self.baseline_player_spell_holder_max_action = max_action;
-    }
-
-    pub(super) fn seal_direct_starting_spell_baseline(&mut self) {
-        self.baseline_free_slots = self.free_slots.clone().into_boxed_slice();
-        self.baseline_slot_generations = self.slot_generations.clone();
-        self.baseline_source_rng = self.source_rng.clone();
-        self.baseline_map_chains = self.map_chains.clone();
     }
 
     #[must_use]
@@ -4948,9 +4933,10 @@ impl Level2EconomyState {
     /// written `source_owner` relations. The published aggregate and global
     /// counter remain frozen until that boundary as they do in `sub_60F00`.
     pub(super) fn refresh_owner_mana_rows(&mut self) {
-        let baseline_source_slots = self
-            .baseline_owner_mana_rows
+        let imported_source_slots = self
+            .owner_mana_rows
             .iter()
+            .filter(|row| !self.slot_generations.contains_key(&row.source_entity_index))
             .map(|row| row.source_entity_index)
             .collect::<BTreeSet<_>>();
         let mut active_dynamic_source_slots = BTreeSet::new();
@@ -4976,7 +4962,7 @@ impl Level2EconomyState {
                 .map(|carrier| carrier.source_entity_index),
         );
         self.owner_mana_rows.retain(|row| {
-            baseline_source_slots.contains(&row.source_entity_index)
+            imported_source_slots.contains(&row.source_entity_index)
                 || active_dynamic_source_slots.contains(&row.source_entity_index)
         });
         if let Some(castle) = self.castle.filter(|castle| castle.active) {
@@ -5050,8 +5036,9 @@ impl Level2EconomyState {
     /// retroactively changing the frozen baseline relation for the pass.
     pub(super) fn rebuild_owner_mana_projection_at_source_boundary(&mut self) {
         self.owner_mana_rows = self
-            .baseline_owner_mana_rows
+            .owner_mana_rows
             .iter()
+            .filter(|row| !self.slot_generations.contains_key(&row.source_entity_index))
             .filter_map(|row| {
                 self.source_owner
                     .get(&row.source_entity_index)
@@ -5068,9 +5055,12 @@ impl Level2EconomyState {
     /// Run the source `sub_60F00` max-mana reset/sink at its owning-pass
     /// boundary. Generic sphere/carrier mutations refresh the underlying rows
     /// but must not publish aggregate/global/capacity earlier than this turn.
-    pub(super) fn rebuild_owner_max_mana_projection(&mut self) {
+    pub(super) fn rebuild_owner_max_mana_projection(
+        &mut self,
+        reset_owner_max_mana: &BTreeMap<u16, i32>,
+    ) {
         self.owner_max_mana =
-            level2_owner_max_mana_projection(&self.baseline_owner_max_mana, &self.owner_mana_rows);
+            level2_owner_max_mana_projection(reset_owner_max_mana, &self.owner_mana_rows);
     }
 
     #[must_use]
@@ -7038,94 +7028,5 @@ impl Level2EconomyState {
             );
         }
         format!("{:x}", hasher.finalize())
-    }
-
-    pub fn reset(&mut self) {
-        self.free_slots = self.baseline_free_slots.to_vec();
-        self.slot_generations = self.baseline_slot_generations.clone();
-        self.slot_rng = self.baseline_slot_rng.clone();
-        self.global_rng = self.baseline_global_rng;
-        self.sentinel_rng = self.baseline_sentinel_rng;
-        self.source_rng = self.baseline_source_rng.clone();
-        self.source_owner = self.baseline_source_owner.clone();
-        self.owner_class = self.baseline_owner_class.clone();
-        self.owner_max_mana = self.baseline_owner_max_mana.clone();
-        self.owner_mana_rows = self.baseline_owner_mana_rows.clone();
-        self.owner_mana_aggregate = self.baseline_owner_mana_aggregate.clone();
-        self.owner_mana_global = self.baseline_owner_mana_global;
-        self.spheres = self.baseline_spheres.clone();
-        self.death_bursts = self.baseline_death_bursts.clone();
-        self.spell_replacements = self.baseline_spell_replacements.clone();
-        self.spell_pickups = self.baseline_spell_pickups.clone();
-        self.authored_model1 = self.baseline_authored_model1.clone();
-        self.authored_model45 = self.baseline_authored_model45.clone();
-        self.authored_model13 = self.baseline_authored_model13.clone();
-        self.authored_bees = self.baseline_authored_bees.clone();
-        self.bee_model2_constructor_phase = self.baseline_bee_model2_constructor_phase;
-        self.authored_bee_kill_census = self.baseline_authored_bee_kill_census.clone();
-        self.deferred_authored_bee_reclaims.clear();
-        self.authored_switch_producers = self.baseline_authored_switch_producers.clone();
-        self.authored_trees = self.baseline_authored_trees.clone();
-        self.authored_model32 = self.baseline_authored_model32.clone();
-        self.authored_model59 = self.baseline_authored_model59.clone();
-        self.model59_smoke_children = self.baseline_model59_smoke_children.clone();
-        self.authored_model53 = self.baseline_authored_model53.clone();
-        self.authored_model5_water_splashes = self.baseline_authored_model5_water_splashes.clone();
-        self.model13_spawned_children = self.baseline_model13_spawned_children.clone();
-        self.authored_model6 = self.baseline_authored_model6.clone();
-        self.model6_spawned_children = self.baseline_model6_spawned_children.clone();
-        self.authored_model17 = self.baseline_authored_model17.clone();
-        self.model17_spawned_children = self.baseline_model17_spawned_children.clone();
-        self.authored_model22 = self.baseline_authored_model22.clone();
-        self.model22_spawned_children = self.baseline_model22_spawned_children.clone();
-        self.authored_model76 = self.baseline_authored_model76.clone();
-        self.model76_children = self.baseline_model76_children.clone();
-        self.model76_tail_spawns = self.baseline_model76_tail_spawns.clone();
-        self.authored_class14 = self.baseline_authored_class14.clone();
-        self.class14_model3_handle = self.baseline_class14_model3_handle;
-        self.authored_class5 = self.baseline_authored_class5.clone();
-        self.authored_class5_runtime = self.baseline_authored_class5_runtime.clone();
-        self.authored_class5_model3 = self.baseline_authored_class5_model3.clone();
-        self.authored_class5_model3_children =
-            self.baseline_authored_class5_model3_children.clone();
-        self.authored_class5_archer = self.baseline_authored_class5_archer.clone();
-        self.authored_class5_archer_children =
-            self.baseline_authored_class5_archer_children.clone();
-        self.class5_model3_constructor_phase = self.baseline_class5_model3_constructor_phase;
-        self.class5_model4_constructor_phase = self.baseline_class5_model4_constructor_phase;
-        self.class5_model9_constructor_phase = self.baseline_class5_model9_constructor_phase;
-        self.class5_model14_constructor_phase = self.baseline_class5_model14_constructor_phase;
-        self.house_residents = self.baseline_house_residents.clone();
-        self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
-        self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
-        self.possession_projectiles = self.baseline_possession_projectiles.clone();
-        self.possession_guidance_source_slots =
-            self.baseline_possession_guidance_source_slots.clone();
-        self.possession_guidance_stale_records =
-            self.baseline_possession_guidance_stale_records.clone();
-        self.possession_effects = self.baseline_possession_effects.clone();
-        self.fireball_projectiles.clear();
-        self.carriers = self.baseline_carriers.clone();
-        self.castle_projectiles = self.baseline_castle_projectiles.clone();
-        self.castle = self.baseline_castle;
-        self.castle_children = self.baseline_castle_children.clone();
-        self.castle_footprint = self.baseline_castle_footprint.clone();
-        self.castle_stage_footprints = self.baseline_castle_stage_footprints.clone();
-        self.map_chains = self.baseline_map_chains.clone();
-        self.player_mana = self.baseline_player_mana;
-        self.player_castle_entity_index = self.baseline_player_castle_entity_index;
-        self.player_castle_stage = self.baseline_player_castle_stage;
-        self.player_castle_aux_flags = self.baseline_player_castle_aux_flags;
-        self.player_model = self.baseline_player_model;
-        self.player_terrain_flags = self.baseline_player_terrain_flags;
-        self.player_spell_slot_2 = self.baseline_player_spell_slot_2;
-        self.player_spell_holder_action = self.baseline_player_spell_holder_action;
-        self.player_spell_holder_max_action = self.baseline_player_spell_holder_max_action;
-        self.castle_stage_coefficients = self.baseline_castle_stage_coefficients;
-        self.castle_controller_coefficients = self.baseline_castle_controller_coefficients;
-        self.refresh_owner_mana_rows();
-        self.publish_owner_mana_projection();
-        self.rebuild_owner_max_mana_projection();
-        self.events.clear();
     }
 }

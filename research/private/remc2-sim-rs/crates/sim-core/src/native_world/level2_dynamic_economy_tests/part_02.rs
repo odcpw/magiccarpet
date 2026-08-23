@@ -332,6 +332,7 @@
                 .economy_mut()
                 .set_castle_stage_footprint(2, footprint)
         );
+        session.session.rebase();
         session.reset();
         let baseline_hash = session.economy().reset_hash();
         let castle_slot = session
@@ -828,6 +829,7 @@
                 .economy_mut()
                 .set_castle_stage_footprint(6, stage_six)
         );
+        session.session.rebase();
         session.reset();
 
         let castle_slot = session
@@ -1562,9 +1564,7 @@
             .filter(|house| house.active && !house.parameter.possession_blocked())
             .map(|house| house.entity_index)
             .collect::<Vec<_>>();
-        let house_mana = session
-            .economy()
-            .baseline_owner_mana_rows
+        let house_mana = session.session.baseline.economy.economy.owner_mana_rows
             .iter()
             .filter(|row| {
                 house_slots.contains(&row.source_entity_index)
@@ -1766,9 +1766,7 @@
 
         session.reset();
         session.select_level2_campaign_entry_stage();
-        let positive_house_slots = session
-            .economy()
-            .baseline_owner_mana_rows
+        let positive_house_slots = session.session.baseline.economy.economy.owner_mana_rows
             .iter()
             .filter(|row| row.source_class == HOUSE_CLASS && row.source_model == HOUSE_MODEL)
             .filter(|row| row.mana > 0)
@@ -1781,9 +1779,7 @@
             .copied()
             .find(|house| house.active && positive_house_slots.contains(&house.entity_index))
             .expect("qualified positive-mana House for disable path");
-        let disabled_mana = session
-            .economy()
-            .baseline_owner_mana_rows
+        let disabled_mana = session.session.baseline.economy.economy.owner_mana_rows
             .iter()
             .find(|row| row.source_entity_index == disabled_house.entity_index)
             .expect("disabled House owner row")
@@ -2028,10 +2024,11 @@
             "sub_61000 adds static model-39 mana to the linked player's maxMana"
         );
 
+        let reset = economy.clone();
         let baseline_hash = economy.reset_hash();
         economy.spheres[0].mana = 999;
         assert_ne!(economy.reset_hash(), baseline_hash);
-        economy.reset();
+        economy.clone_from(&reset);
         assert_eq!(economy.spheres().len(), 1);
         assert_eq!(economy.spheres()[0].mana, 321);
         assert_eq!(economy.reset_hash(), baseline_hash);

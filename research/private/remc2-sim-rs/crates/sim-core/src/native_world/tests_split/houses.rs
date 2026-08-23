@@ -175,7 +175,8 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
             entity.control_flags = if boost { 0x0000_1000 } else { 0 };
             entity.record[16..20].copy_from_slice(&entity.control_flags.to_le_bytes());
         };
-        let mut shared = &mut session.shared_spells;
+        let live = &mut session.session.state.live;
+        let shared = &mut live.shared_spells;
         shared.player_entity.mana = 1_000;
         shared.player_entity.mana_regen = 100;
         shared.player_entity.life = 1_000;
@@ -187,13 +188,13 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         shared.caster.control_flags = shared.player_entity.control_flags;
         shared.player_mana = 1_000;
         set_player_extents(
-            session
+            live
                 .economy
                 .entities
                 .get_mut(usize::from(player_index))
                 .expect("local player entity"),
         );
-        session.player_life = 1_000;
+        live.player_life = 1_000;
         shared.player_life_regen = 100;
         (
             root_slot,

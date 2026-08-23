@@ -472,6 +472,7 @@ pub use world_types::*;
 #[path = "campaign/level2.rs"]
 mod campaign;
 mod level2_nyphur;
+pub(crate) use level2_nyphur::level2_nyphur_source_identity_parts;
 pub use level2_nyphur::{
     Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchCall, Level2NyphurDispatchHelper,
     Level2NyphurDispatchTrace, Level2NyphurParticipant, Level2NyphurVisibility,
@@ -628,80 +629,71 @@ pub struct Level2DayHudSnapshot {
 /// source family-6/11/12 pickup transition without claiming active lifecycles.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2SharedSpellResetSession {
-    baseline_pickups: Box<[EntitySnapshot]>,
     pickups: Box<[EntitySnapshot]>,
-    baseline_dynamic_pickups: Vec<EntitySnapshot>,
+
     dynamic_pickups: Vec<EntitySnapshot>,
-    baseline_authored_pickup_slots: BTreeMap<u16, u16>,
+
     authored_pickup_slots: BTreeMap<u16, u16>,
-    baseline_holders: Box<[EntitySnapshot]>,
+
     holders: Box<[EntitySnapshot]>,
-    baseline_player_mana: i32,
+
     player_mana: i32,
-    baseline_player_life_regen: i32,
+
     player_life_regen: i32,
-    baseline_player_entity: EntitySnapshot,
+
     player_entity: EntitySnapshot,
     /// All source player records/entities are retained for the generic
     /// `sub_68FF0` linked-list scan.  The previous seam only kept player 0,
     /// which made a pickup silently local-only.
-    baseline_players: Box<[PlayerSnapshot]>,
     players: Box<[PlayerSnapshot]>,
-    baseline_player_entities: Box<[EntitySnapshot]>,
+
     player_entities: Box<[EntitySnapshot]>,
-    baseline_local_player: PlayerSnapshot,
+
     local_player: PlayerSnapshot,
-    baseline_speed_pickup_state: Level2SpeedPickupState,
+
     speed_pickup_state: Level2SpeedPickupState,
-    baseline_caster: SpellCasterState,
+
     caster: SpellCasterState,
-    baseline_fireball: SpellActivationHolder,
+
     fireball: SpellActivationHolder,
-    baseline_possession: SpellActivationHolder,
+
     possession: SpellActivationHolder,
-    baseline_speed: SpellActivationHolder,
+
     speed: SpellActivationHolder,
     /// Reachable family-6 active lifecycle. Other new active families remain
     /// explicitly outside this bounded slice.
-    baseline_shield: Option<ShieldState>,
     shield: Option<ShieldState>,
     /// Reachable family-11 active lifecycle. AI visibility consumption remains
     /// explicitly outside this bounded slice.
-    baseline_invisible: Option<InvisibleState>,
     invisible: Option<InvisibleState>,
     /// Reachable family-12 active lifecycle. The first-pulse effect allocation
     /// is intentionally not part of class-15/action-36; holder timing and
     /// cleanup are live.
-    baseline_beyond_sight: Option<BeyondSightState>,
     beyond_sight: Option<BeyondSightState>,
-    baseline_shield_damage_mailbox: Option<Level2ShieldDamageMailbox>,
+
     shield_damage_mailbox: Option<Level2ShieldDamageMailbox>,
     /// Transient player/event state consumed by the Beyond Sight first-pulse
     /// constructor. This is deliberately separate from the serialized entity
     /// record, matching the source `dword_0xA4_164x` allocation.
-    baseline_beyond_sight_auxiliary: Level2PlayerEventAuxiliary,
     beyond_sight_auxiliary: Level2PlayerEventAuxiliary,
     /// Generic source acquisition states for authored Level 2 families 6,
     /// 11, and 12.  Family-specific active lifecycles remain separate.
-    baseline_acquisitions: Box<[SpellHolderAcquisitionState]>,
     acquisitions: Box<[SpellHolderAcquisitionState]>,
     /// Source `OptionsSettingFlag_24 & 0x20`. `PlayerEvents_51BB0` toggles
     /// this session-global bit before the entity passes; cold
     /// `SetSpell_6D5E0` projections then force mana regeneration to zero and
     /// the holder's current mana to one. The option is runtime input, not an
     /// owner-package field.
-    baseline_free_spell_usage: bool,
     free_spell_usage: bool,
-    baseline_persistent_spell_experience: [i32; PLAYER_SPELL_COUNT],
+
     persistent_spell_experience: [i32; PLAYER_SPELL_COUNT],
-    baseline_spell_experience: [i32; PLAYER_SPELL_COUNT],
+
     spell_experience: [i32; PLAYER_SPELL_COUNT],
-    baseline_spell_levels: [i8; PLAYER_SPELL_COUNT],
+
     spell_levels: [i8; PLAYER_SPELL_COUNT],
     /// Persistent replacement rows can coexist with the authored ordinary
     /// source for the same family. Keep their source-local acquisition state
     /// separate instead of letting one family slot overwrite the other.
-    baseline_persistent_acquisitions: BTreeMap<u16, SpellHolderAcquisitionState>,
     persistent_acquisitions: BTreeMap<u16, SpellHolderAcquisitionState>,
     player_entity_sha256: String,
     events: Vec<FlightEvent>,
@@ -2607,177 +2599,171 @@ pub enum Level2EconomyEvent {
 /// RNG and owner writes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2EconomyState {
-    baseline_free_slots: Box<[u16]>,
     free_slots: Vec<u16>,
-    baseline_slot_generations: BTreeMap<u16, u32>,
+
     slot_generations: BTreeMap<u16, u32>,
-    baseline_slot_rng: BTreeMap<u16, u16>,
+
     slot_rng: BTreeMap<u16, u16>,
-    baseline_global_rng: u32,
-    global_rng: u32,
+
+    pub(crate) global_rng: u32,
     /// Source entity[0] is the transient `sub_605E0`/`RemoveCastleStage`
     /// sentinel. Its rand_0x14 stream is independent of the Castle root.
-    baseline_sentinel_rng: u16,
     sentinel_rng: u16,
-    baseline_source_rng: BTreeMap<u16, u16>,
+
     source_rng: BTreeMap<u16, u16>,
-    baseline_source_owner: BTreeMap<u16, u16>,
+
     source_owner: BTreeMap<u16, u16>,
-    baseline_owner_class: BTreeMap<u16, u8>,
+
     owner_class: BTreeMap<u16, u8>,
-    baseline_owner_max_mana: BTreeMap<u16, i32>,
-    owner_max_mana: BTreeMap<u16, i32>,
-    baseline_owner_mana_rows: Vec<Level2OwnerManaRow>,
+
+    pub(crate) owner_max_mana: BTreeMap<u16, i32>,
+
     owner_mana_rows: Vec<Level2OwnerManaRow>,
-    baseline_owner_mana_aggregate: BTreeMap<u16, i32>,
+
     owner_mana_aggregate: BTreeMap<u16, i32>,
-    baseline_owner_mana_global: i32,
+
     owner_mana_global: i32,
-    baseline_spheres: Vec<ManaSphere>,
+
     spheres: Vec<ManaSphere>,
-    baseline_death_bursts: Vec<Level2DeathBurst>,
+
     death_bursts: Vec<Level2DeathBurst>,
-    baseline_spell_replacements: Vec<Level2SpellReplacement>,
+
     spell_replacements: Vec<Level2SpellReplacement>,
-    baseline_spell_pickups: Vec<Level2SpellPickupSource>,
+
     spell_pickups: Vec<Level2SpellPickupSource>,
-    baseline_authored_model45: Vec<Level2AuthoredModel45Source>,
+
     authored_model45: Vec<Level2AuthoredModel45Source>,
-    baseline_authored_model1: Vec<Level2AuthoredModel1Source>,
+
     authored_model1: Vec<Level2AuthoredModel1Source>,
-    baseline_authored_model13: Vec<Level2AuthoredModel13Source>,
+
     authored_model13: Vec<Level2AuthoredModel13Source>,
-    baseline_authored_bees: Vec<Level2AuthoredBeeSource>,
+
     authored_bees: Vec<Level2AuthoredBeeSource>,
-    baseline_bee_model2_constructor_phase: u8,
+
     bee_model2_constructor_phase: u8,
-    baseline_authored_bee_kill_census: BTreeMap<u16, u32>,
+
     authored_bee_kill_census: BTreeMap<u16, u32>,
     deferred_authored_bee_reclaims: BTreeSet<u16>,
-    baseline_authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
+
     authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
-    baseline_authored_trees: Vec<Level2AuthoredTreeSource>,
+
     authored_trees: Vec<Level2AuthoredTreeSource>,
-    baseline_authored_model32: Vec<Level2AuthoredModel32Source>,
+
     authored_model32: Vec<Level2AuthoredModel32Source>,
-    baseline_authored_model59: Vec<Level2AuthoredModel59Source>,
+
     authored_model59: Vec<Level2AuthoredModel59Source>,
-    baseline_model59_smoke_children: Vec<Level2Model59SmokeChild>,
+
     model59_smoke_children: Vec<Level2Model59SmokeChild>,
-    baseline_authored_model53: Vec<Level2AuthoredModel53Source>,
+
     authored_model53: Vec<Level2AuthoredModel53Source>,
-    baseline_authored_model5_water_splashes: Vec<Level2AuthoredModel5WaterSplashSource>,
+
     authored_model5_water_splashes: Vec<Level2AuthoredModel5WaterSplashSource>,
-    baseline_model13_spawned_children: Vec<Level2Model13SpawnedChild>,
+
     model13_spawned_children: Vec<Level2Model13SpawnedChild>,
-    baseline_authored_model6: Vec<Level2AuthoredModel6Source>,
+
     authored_model6: Vec<Level2AuthoredModel6Source>,
-    baseline_model6_spawned_children: Vec<Level2Model6SpawnedChild>,
+
     model6_spawned_children: Vec<Level2Model6SpawnedChild>,
-    baseline_authored_model17: Vec<Level2AuthoredModel17Source>,
+
     authored_model17: Vec<Level2AuthoredModel17Source>,
-    baseline_model17_spawned_children: Vec<Level2Model17SpawnedChild>,
+
     model17_spawned_children: Vec<Level2Model17SpawnedChild>,
-    baseline_authored_model22: Vec<Level2AuthoredModel22Source>,
+
     authored_model22: Vec<Level2AuthoredModel22Source>,
-    baseline_model22_spawned_children: Vec<Level2Model22SpawnedChild>,
+
     model22_spawned_children: Vec<Level2Model22SpawnedChild>,
-    baseline_authored_model76: Vec<Level2AuthoredModel76Source>,
+
     authored_model76: Vec<Level2AuthoredModel76Source>,
-    baseline_model76_children: Vec<Level2Model76Child>,
+
     model76_children: Vec<Level2Model76Child>,
-    baseline_model76_tail_spawns: Vec<Level2Model76TailSpawn>,
+
     model76_tail_spawns: Vec<Level2Model76TailSpawn>,
-    baseline_authored_class14: Vec<Level2AuthoredClass14Source>,
+
     authored_class14: Vec<Level2AuthoredClass14Source>,
-    baseline_authored_class5: Vec<Level2AuthoredClass5Source>,
+
     authored_class5: Vec<Level2AuthoredClass5Source>,
-    baseline_authored_class5_runtime: Vec<Level2AuthoredClass5RuntimeState>,
+
     authored_class5_runtime: Vec<Level2AuthoredClass5RuntimeState>,
-    baseline_authored_class5_model3: Vec<Level2AuthoredClass5Model3State>,
+
     authored_class5_model3: Vec<Level2AuthoredClass5Model3State>,
-    baseline_authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
+
     authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
-    baseline_authored_class5_archer: Vec<Level2AuthoredClass5ArcherState>,
+
     authored_class5_archer: Vec<Level2AuthoredClass5ArcherState>,
-    baseline_authored_class5_archer_children: Vec<Level2AuthoredClass5ArcherChild>,
+
     authored_class5_archer_children: Vec<Level2AuthoredClass5ArcherChild>,
-    baseline_house_residents: Vec<Level2HouseResidentSource>,
+
     house_residents: Vec<Level2HouseResidentSource>,
-    baseline_class5_model3_constructor_phase: u8,
+
     class5_model3_constructor_phase: u8,
-    baseline_class5_model9_constructor_phase: u8,
+
     class5_model9_constructor_phase: u8,
-    baseline_class5_model14_constructor_phase: u8,
+
     class5_model14_constructor_phase: u8,
-    baseline_class5_model4_constructor_phase: u8,
+
     class5_model4_constructor_phase: u8,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
     /// event and left unchanged by model 5.
-    baseline_class14_model3_handle: u16,
     class14_model3_handle: u16,
-    baseline_beyond_sight_effects: Vec<Level2BeyondSightPulseEffect>,
+
     beyond_sight_effects: Vec<Level2BeyondSightPulseEffect>,
-    baseline_mana_attraction_fields: Vec<Level2ManaAttractionField>,
+
     mana_attraction_fields: Vec<Level2ManaAttractionField>,
-    baseline_possession_projectiles: Vec<Level2PossessionProjectile>,
+
     possession_projectiles: Vec<Level2PossessionProjectile>,
-    baseline_possession_guidance_source_slots: Vec<u16>,
+
     possession_guidance_source_slots: Vec<u16>,
-    baseline_possession_guidance_stale_records: BTreeMap<u16, Position>,
+
     possession_guidance_stale_records: BTreeMap<u16, Position>,
-    baseline_possession_effects: Vec<Level2PossessionEffect>,
+
     possession_effects: Vec<Level2PossessionEffect>,
     /// Transient public Fireball products.  These are born from the live
     /// family-0 holder and therefore intentionally have no baseline twin.
     fireball_projectiles: Vec<Level2FireballProjectile>,
-    baseline_carriers: Vec<ManaCarrier>,
+
     carriers: Vec<ManaCarrier>,
-    baseline_castle_projectiles: Vec<Level2CastleProjectile>,
+
     castle_projectiles: Vec<Level2CastleProjectile>,
-    baseline_castle: Option<Level2CastleState>,
+
     castle: Option<Level2CastleState>,
-    baseline_castle_children: Vec<Level2CastleChild>,
+
     castle_children: Vec<Level2CastleChild>,
-    baseline_castle_footprint: Option<CastleBuildFootprint>,
+
     castle_footprint: Option<CastleBuildFootprint>,
     /// Source `RemoveCastleStage_385C0` indexes the old Castle level through
     /// DATA_BUILD00DATTAB's `byte_0x46`, rather than always using record 1.
     /// The qualified package currently binds stage 1; additional preserved
     /// TAB records can be installed through `set_castle_stage_footprint`.
-    baseline_castle_stage_footprints: BTreeMap<u8, CastleBuildFootprint>,
     castle_stage_footprints: BTreeMap<u8, CastleBuildFootprint>,
-    baseline_map_chains: RenderableMapChains,
+
     map_chains: RenderableMapChains,
-    baseline_player_mana: i32,
+
     player_mana: i32,
-    baseline_player_castle_entity_index: u16,
+
     player_castle_entity_index: u16,
-    baseline_player_castle_stage: u8,
+
     player_castle_stage: u8,
-    baseline_player_castle_aux_flags: u8,
+
     player_castle_aux_flags: u8,
-    baseline_player_model: u8,
+
     player_model: u8,
-    baseline_player_terrain_flags: u8,
+
     player_terrain_flags: u8,
-    baseline_player_spell_slot_2: u16,
+
     player_spell_slot_2: u16,
-    baseline_player_spell_holder_action: u16,
+
     player_spell_holder_action: u16,
-    baseline_player_spell_holder_max_action: u16,
+
     player_spell_holder_max_action: u16,
     /// Imported `sub_60810` life coefficient per Castle stage. The owner
     /// export does not expose the nested player-state array, so fixed-profile
     /// sessions default to the source identity coefficient (256); callers
     /// preserving those bytes can bind each stage explicitly.
-    baseline_castle_stage_coefficients: [u16; 8],
     castle_stage_coefficients: [u16; 8],
     /// Imported `sub_613D0` controller coefficient from the player's
     /// `array_0x24E[9 + level]`. The owner export does not expose this
     /// nested byte array, so fixed-profile sessions bind the explicit source
     /// identity value `1` unless a caller provides the preserved byte.
-    baseline_castle_controller_coefficients: [u8; 8],
     castle_controller_coefficients: [u8; 8],
     events: Vec<Level2EconomyEvent>,
 }
@@ -2926,25 +2912,25 @@ const fn level2_direct_starting_spell_profile(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2OrdinaryResetSession {
     house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
-    baseline_houses: HouseFamily,
+
     houses: HouseFamily,
-    baseline_villagers: VillagerFamily,
+
     villagers: VillagerFamily,
-    baseline_dolmens: Box<[Level2Dolmen]>,
+
     dolmens: Box<[Level2Dolmen]>,
-    baseline_players: Box<[EntitySnapshot]>,
+
     players: Box<[EntitySnapshot]>,
-    baseline_population_census: u32,
+
     population_census: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Level2Group10Switch25State {
-    source_slot: u16,
-    authored_index: u16,
-    target_group: u16,
-    position: Position,
-    phase: u8,
+pub(crate) struct Level2Group10Switch25State {
+    pub(crate) source_slot: u16,
+    pub(crate) authored_index: u16,
+    pub(crate) target_group: u16,
+    pub(crate) position: Position,
+    pub(crate) phase: u8,
 }
 
 /// Callback state for a group-zero class-11 model-0/model-1 producer that is
@@ -2952,161 +2938,146 @@ struct Level2Group10Switch25State {
 /// the visible/source authority; this wrapper only carries the mutable
 /// callback words needed to execute the generic stage-tag chain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Level2ImportedSwitchRootState {
-    source_slot: u16,
-    authored_index: u16,
-    model: u8,
-    target_group: u16,
-    word_10: i16,
-    position: Position,
-    phase: u8,
-    cooldown: u8,
-    drawing_enabled: bool,
-    active: bool,
+pub(crate) struct Level2ImportedSwitchRootState {
+    pub(crate) source_slot: u16,
+    pub(crate) authored_index: u16,
+    pub(crate) model: u8,
+    pub(crate) target_group: u16,
+    pub(crate) word_10: i16,
+    pub(crate) position: Position,
+    pub(crate) phase: u8,
+    pub(crate) cooldown: u8,
+    pub(crate) drawing_enabled: bool,
+    pub(crate) active: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Level2ResetSession {
-    profile: FlightProfile,
-    package_sha256: String,
-    collision_masks: Option<CollisionMaskBank>,
-    baseline_terrain: SessionTerrain,
-    economy: crate::campaign::source_arena::SourceArena,
-    campaign_state: Option<crate::campaign::state::CampaignState>,
-    /// Constructor-only handoff into `campaign_state.live.core`. It is `None`
-    /// for every usable session, so there is never a second live authority.
-    bootstrap_core: Option<crate::campaign::state::CanonicalRuntimeState>,
-    presentation: PresentationSelectors,
-    baseline_bad_stones: Box<[Level2BadStone]>,
-    bad_stones: Box<[Level2BadStone]>,
-    baseline_shared_spells: Level2SharedSpellResetSession,
-    shared_spells: Level2SharedSpellResetSession,
-    ordinary: Level2OrdinaryResetSession,
-    baseline_goats: GoatFamily,
-    goats: GoatFamily,
-    mission: MissionContentSession,
-    baseline_nyphur_dispatcher: Level2NyphurDispatcher,
-    nyphur_dispatcher: Level2NyphurDispatcher,
-    baseline_nyphur_dispatch_traces: Vec<Level2NyphurDispatchTrace>,
-    nyphur_dispatch_traces: Vec<Level2NyphurDispatchTrace>,
+pub struct Level2LiveState {
+    pub(crate) core: crate::campaign::state::CanonicalRuntimeState,
+    pub(crate) terrain: SessionTerrain,
+    pub(crate) economy: crate::campaign::source_arena::SourceArena,
+    pub(crate) bad_stones: Box<[Level2BadStone]>,
+    pub(crate) shared_spells: Level2SharedSpellResetSession,
+    pub(crate) ordinary: Level2OrdinaryResetSession,
+    pub(crate) goats: GoatFamily,
+    pub(crate) mission: MissionContentSession,
+    pub(crate) nyphur_dispatcher: Level2NyphurDispatcher,
     /// Source `sub_11900` player damage mailbox.  The Bee contact writes this
     /// during its source-slot callback; the local-player route consumes it on
     /// the next source-ordered visit.
-    baseline_player_pending_damage: i32,
-    player_pending_damage: i32,
-    baseline_player_pending_attacker: u16,
-    player_pending_attacker: u16,
-    baseline_player_life: i32,
-    player_life: i32,
-    baseline_level2_day_hud_color_phase_1: u8,
-    level2_day_hud_color_phase_1: u8,
-    baseline_level2_day_hud_color_phase_2: u8,
-    level2_day_hud_color_phase_2: u8,
-    baseline_level2_day_hud_hit_frame_time_pre_draw: u8,
-    level2_day_hud_hit_frame_time_pre_draw: u8,
-    baseline_level2_day_hud_player_panel_selector: u16,
-    level2_day_hud_player_panel_selector: u16,
-    dispatch_events: Vec<Level2DispatchEvent>,
-    economy_event_cursor: usize,
-    baseline_level2_group8_activated: bool,
-    level2_group8_activated: bool,
+    pub(crate) player_pending_damage: i32,
+    pub(crate) player_pending_attacker: u16,
+    pub(crate) player_life: i32,
+    pub(crate) level2_group8_activated: bool,
     /// Mutable selected-objective stage state consumed by class-11/model-32
     /// switches.  The qualified reset starts at one; objective progression
     /// owns the later transition to exactly two.
-    baseline_level2_selected_objective_stage_state: u8,
-    level2_selected_objective_stage_state: u8,
-    baseline_level2_objective_pause: u8,
-    level2_objective_pause: u8,
-    baseline_level2_objective_done: bool,
-    level2_objective_done: bool,
+    pub(crate) level2_selected_objective_stage_state: u8,
+    pub(crate) level2_objective_pause: u8,
+    pub(crate) level2_objective_done: bool,
     /// Authored class-10/model-54 rows already consumed by a rooted class-11
     /// stage-tag producer.  The source can run the same group again with
     /// `a2 == 0`; retaining the authored identity prevents a normal outer
     /// turn from repeatedly constructing the same temporary field.
-    baseline_level2_mana_attraction_activated: BTreeSet<u16>,
-    level2_mana_attraction_activated: BTreeSet<u16>,
-    baseline_level2_model13_activated: BTreeSet<u16>,
-    level2_model13_activated: BTreeSet<u16>,
-    baseline_level2_bees_activated: BTreeSet<u16>,
-    level2_bees_activated: BTreeSet<u16>,
-    baseline_level2_switch_producers_activated: BTreeSet<u16>,
-    level2_switch_producers_activated: BTreeSet<u16>,
-    baseline_level2_model32_activated: BTreeSet<u16>,
-    level2_model32_activated: BTreeSet<u16>,
-    baseline_level2_model76_activated: BTreeSet<u16>,
-    level2_model76_activated: BTreeSet<u16>,
+    pub(crate) level2_mana_attraction_activated: BTreeSet<u16>,
+    pub(crate) level2_model13_activated: BTreeSet<u16>,
+    pub(crate) level2_bees_activated: BTreeSet<u16>,
+    pub(crate) level2_switch_producers_activated: BTreeSet<u16>,
+    pub(crate) level2_model32_activated: BTreeSet<u16>,
+    pub(crate) level2_model76_activated: BTreeSet<u16>,
     /// Authored class-10/model-22 wind rows consumed by one-shot switches.
     /// The source disables the authored feature after dispatch, so a later
     /// parent expiry must not rematerialize the same row.
-    baseline_level2_model22_activated: BTreeSet<u16>,
-    level2_model22_activated: BTreeSet<u16>,
+    pub(crate) level2_model22_activated: BTreeSet<u16>,
     /// Authored class-10/subtype-39 rows consumed by a live stage-tag
     /// producer. The source group scan can run again, so retain authored
     /// identity even though the typed consumers live in the sphere arena.
-    baseline_level2_model39_activated: BTreeSet<u16>,
-    level2_model39_activated: BTreeSet<u16>,
+    pub(crate) level2_model39_activated: BTreeSet<u16>,
     /// Authored class-10/model-6 rows consumed by the rooted group-24
     /// producer. The group scan is repeatable, so keep authored identity
     /// separate from the live model-6 arena rows.
-    baseline_level2_model6_activated: BTreeSet<u16>,
-    level2_model6_activated: BTreeSet<u16>,
-    baseline_level2_model59_activated: BTreeSet<u16>,
-    level2_model59_activated: BTreeSet<u16>,
-    baseline_level2_model53_activated: BTreeSet<u16>,
-    level2_model53_activated: BTreeSet<u16>,
-    baseline_level2_model1_activated: BTreeSet<u16>,
-    level2_model1_activated: BTreeSet<u16>,
-    baseline_level2_model17_activated: BTreeSet<u16>,
-    level2_model17_activated: BTreeSet<u16>,
-    baseline_level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
-    level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
-    baseline_level2_group10_switch25: Option<Level2Group10Switch25State>,
-    level2_group10_switch25: Option<Level2Group10Switch25State>,
+    pub(crate) level2_model6_activated: BTreeSet<u16>,
+    pub(crate) level2_model59_activated: BTreeSet<u16>,
+    pub(crate) level2_model53_activated: BTreeSet<u16>,
+    pub(crate) level2_model1_activated: BTreeSet<u16>,
+    pub(crate) level2_model17_activated: BTreeSet<u16>,
+    pub(crate) level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
+    pub(crate) level2_group10_switch25: Option<Level2Group10Switch25State>,
     /// Authored class-14 subtype-3/5 rows already consumed by an active
     /// class-11 stage-tag producer.  The source group scan is repeatable, so
     /// retain authored identity to prevent duplicate arena rows on later
     /// source passes.
-    baseline_level2_class14_activated: BTreeSet<u16>,
-    level2_class14_activated: BTreeSet<u16>,
+    pub(crate) level2_class14_activated: BTreeSet<u16>,
     /// Authored class-2/model-0 tree rows already consumed by the group-31
     /// LevelEnd producer.  Keep this separate from class-14 activation so a
     /// malformed partial group cannot be mistaken for a complete transition.
-    baseline_level2_tree_activated: BTreeSet<u16>,
-    level2_tree_activated: BTreeSet<u16>,
+    pub(crate) level2_tree_activated: BTreeSet<u16>,
     /// Authored class-5/model-3/9 rows consumed by the model-45 group-22
     /// callback. Retain authored identity across repeatable source scans.
-    baseline_level2_class5_activated: BTreeSet<u16>,
-    level2_class5_activated: BTreeSet<u16>,
+    pub(crate) level2_class5_activated: BTreeSet<u16>,
     /// Authored class-10/model-45 rows consumed by the bounded groups 3 and
     /// 8 scans. The source group scan is repeatable, but each authored row is
     /// consumed only once when `a2 == 1`.
-    baseline_level2_model45_activated: BTreeSet<u16>,
-    level2_model45_activated: BTreeSet<u16>,
+    pub(crate) level2_model45_activated: BTreeSet<u16>,
 }
 
-impl std::ops::Deref for Level2ResetSession {
+impl Level2LiveState {
+    pub(crate) fn reset_scratch(
+        &self,
+        generation: u64,
+        valid: bool,
+    ) -> crate::campaign::state::ScratchState {
+        let (color_phase_1, color_phase_2) =
+            level2_day_color_phases(self.shared_spells.local_player.turn);
+        let hit_frame_time_pre_draw = self.shared_spells.local_player.record_bytes()[406];
+        crate::campaign::state::ScratchState {
+            validity_epoch: generation,
+            valid,
+            dispatch_receipt: self.core.effect_journal.receipt(),
+            dispatch_events: Vec::new(),
+            economy_event_cursor: self.economy.events().len(),
+            nyphur_dispatch_traces: Vec::new(),
+            level2_day_hud_color_phase_1: color_phase_1,
+            level2_day_hud_color_phase_2: color_phase_2,
+            level2_day_hud_hit_frame_time_pre_draw: hit_frame_time_pre_draw,
+            level2_day_hud_player_panel_selector: level2_day_player_panel_selector(
+                hit_frame_time_pre_draw,
+                color_phase_1,
+            ),
+        }
+    }
+}
+
+impl std::ops::Deref for Level2LiveState {
     type Target = crate::campaign::state::CanonicalRuntimeState;
 
     fn deref(&self) -> &Self::Target {
-        if let Some(campaign) = &self.campaign_state {
-            campaign.core()
-        } else {
-            self.bootstrap_core
-                .as_ref()
-                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
-        }
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for Level2LiveState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2ResetSession {
+    pub(crate) session: crate::campaign::state::CampaignSession,
+}
+
+impl std::ops::Deref for Level2ResetSession {
+    type Target = Level2LiveState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session.state.live
     }
 }
 
 impl std::ops::DerefMut for Level2ResetSession {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        if let Some(campaign) = &mut self.campaign_state {
-            campaign.core_mut()
-        } else {
-            self.bootstrap_core
-                .as_mut()
-                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
-        }
+        &mut self.session.state.live
     }
 }
 
@@ -3684,6 +3655,7 @@ fn level2_nyphur_participant(
     entities: &[EntitySnapshot],
     runtime: &RuntimeSnapshot,
     baseline_entity: &EntitySnapshot,
+    target_identity: impl Fn(u16) -> Option<i16>,
 ) -> Result<Level2NyphurParticipant> {
     let player = players
         .get(1)
@@ -3711,9 +3683,8 @@ fn level2_nyphur_participant(
         .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
         .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
     let source_relation_is_valid = entity.source_word_96() == 0
-        || entities
-            .get(usize::from(entity.source_word_96()))
-            .is_some_and(|target| entity.source_word_98() == level2_nyphur_source_identity(target));
+        || target_identity(entity.source_word_96())
+            .is_some_and(|identity| entity.source_word_98() == identity);
     if !entity.active
         || entity.class != 3
         || entity.model != 1

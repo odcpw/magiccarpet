@@ -1639,7 +1639,11 @@ fn level2_campaign_public_family0_fireball_reaches_authored_bee_mailbox() {
     let (_, _) = step_level2_campaign_public(handle, input);
     let consumed = read_bee().expect("target Bee remains public after mailbox consume");
     assert_eq!(consumed.life, pending.life - 250);
-    assert_eq!(consumed.pending_damage, 0);
+    // GOLDEN-CHANGE: pinned sub_1F660 -> sub_1BF90 clears word 0x62 (the
+    // attacker mailbox) but retains dword 0x5E as the last applied damage
+    // payload. The life delta and cleared attacker assertions below
+    // discriminate a retained receipt from an unconsumed duplicate hit.
+    assert_eq!(consumed.pending_damage, 250);
     assert_eq!(consumed.pending_attacker_entity_index, 0);
     assert_eq!(consumed.damage_attacker_entity_index, player_entity_index);
     assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);

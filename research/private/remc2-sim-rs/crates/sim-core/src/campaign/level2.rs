@@ -3,18 +3,26 @@ use super::*;
 
 use crate::campaign::source_arena::SourceArena;
 use crate::campaign::state::{
-    CampaignState, CampaignStepError, CanonicalRuntimeState, ResetState, encode_reset_v1_into,
+    CampaignDefinition, CampaignSession, CampaignState, CampaignStepError, CanonicalRuntimeState,
+    ResetReceipt, ResetState, encode_reset_v1_into,
 };
 
 impl Level2ResetSession {
     #[cfg(test)]
     pub(crate) fn cf07_rng_observation(&self) -> (u32, u32, u32, u16, Box<[(u16, u16)]>) {
         let effect_rng = self
+            .session
+            .state
+            .live
+            .core
             .context
             .effects
             .as_ref()
             .map_or(0, |effects| effects.global_rng);
         let entity_streams = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -22,8 +30,8 @@ impl Level2ResetSession {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         (
-            self.economy.global_rng,
-            self.runtime().random_state,
+            self.session.state.live.economy.global_rng,
+            self.session.state.live.core.runtime.random_state,
             effect_rng,
             self.canonical_terrain().terrain_rng(),
             entity_streams,
@@ -32,7 +40,7 @@ impl Level2ResetSession {
 
     #[must_use]
     pub(crate) fn source_global_rng(&self) -> u32 {
-        self.economy.global_rng
+        self.session.state.live.economy.global_rng
     }
 
     pub(super) fn level2_bee_class3_targets(&self) -> Vec<(u16, Position, u32)> {
@@ -40,6 +48,9 @@ impl Level2ResetSession {
         // class-3 row. Reconstruct that linked order from the lossless
         // `next_relation` fields instead of using entity-pool order.
         let eligible = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -50,7 +61,9 @@ impl Level2ResetSession {
             .collect::<BTreeSet<_>>();
         let linked = eligible
             .iter()
-            .filter_map(|index| self.economy.entities[usize::from(*index)].next_relation)
+            .filter_map(|index| {
+                self.session.state.live.economy.entities[usize::from(*index)].next_relation
+            })
             .collect::<BTreeSet<_>>();
         let Some(mut current) = eligible
             .iter()
@@ -62,14 +75,21 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut targets = Vec::with_capacity(eligible.len());
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
+            let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(current))
+            else {
                 break;
             };
             if eligible.contains(&current) {
                 targets.push((
                     entity.index,
-                    if entity.index == self.state.entity_index {
-                        self.state.position
+                    if entity.index == self.session.state.live.core.state.entity_index {
+                        self.session.state.live.core.state.position
                     } else {
                         entity.position
                     },
@@ -88,7 +108,14 @@ impl Level2ResetSession {
         let radius_squared = MODEL3_TARGET_RANGE * MODEL3_TARGET_RANGE;
         let mut nearest: Option<(u32, EntitySnapshot)> = None;
         for (entity_index, position, control_flags) in self.level2_bee_class3_targets() {
-            let Some(entity) = self.economy.entities.get(usize::from(entity_index)) else {
+            let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(entity_index))
+            else {
                 continue;
             };
             let dx = i32::from(position.x.wrapping_sub(source.position.x).cast_signed());
@@ -132,6 +159,9 @@ impl Level2ResetSession {
         target_index: u16,
     ) -> Option<(Position, i16, bool)> {
         let target = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -139,13 +169,20 @@ impl Level2ResetSession {
         let valid = target.active
             && target.life >= 0
             && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
-        if target.index == self.state.entity_index {
+        if target.index == self.session.state.live.core.state.entity_index {
             let local = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
-                .get(usize::from(self.state.entity_index))
+                .get(usize::from(self.session.state.live.core.state.entity_index))
                 .expect("local player entity row");
-            Some((self.state.position, local.array_yaw(), valid))
+            Some((
+                self.session.state.live.core.state.position,
+                local.array_yaw(),
+                valid,
+            ))
         } else {
             Some((target.position, target.array_yaw(), valid))
         }
@@ -168,6 +205,9 @@ impl Level2ResetSession {
             return None;
         }
         if let Some(entity) = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .get(usize::from(entity_index))
@@ -193,12 +233,18 @@ impl Level2ResetSession {
             });
         }
         if let Some(source) = self
+            .session
+            .state
+            .live
             .economy
             .authored_class5()
             .iter()
             .find(|source| source.active && source.source_entity_index == entity_index)
         {
             let state = self
+                .session
+                .state
+                .live
                 .economy
                 .authored_class5_archer()
                 .iter()
@@ -222,6 +268,9 @@ impl Level2ResetSession {
             });
         }
         if let Some(child) = self
+            .session
+            .state
+            .live
             .economy
             .authored_class5_archer_children()
             .iter()
@@ -245,7 +294,10 @@ impl Level2ResetSession {
                 position: child.position,
             });
         }
-        self.economy
+        self.session
+            .state
+            .live
+            .economy
             .authored_model45()
             .iter()
             .find(|source| source.active && source.source_entity_index == entity_index)
@@ -270,6 +322,9 @@ impl Level2ResetSession {
 
     pub(super) fn level2_archer_entity_rows(&self) -> Vec<level2_class5::archer::ArcherTarget> {
         let mut rows = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -277,7 +332,10 @@ impl Level2ResetSession {
             .filter_map(|entity| self.level2_archer_target(entity.index))
             .collect::<Vec<_>>();
         rows.extend(
-            self.economy
+            self.session
+                .state
+                .live
+                .economy
                 .authored_class5()
                 .iter()
                 .filter(|source| {
@@ -286,7 +344,10 @@ impl Level2ResetSession {
                 .filter_map(|source| self.level2_archer_target(source.source_entity_index)),
         );
         rows.extend(
-            self.economy
+            self.session
+                .state
+                .live
+                .economy
                 .authored_class5_archer_children()
                 .iter()
                 .filter(|child| child.active)
@@ -302,9 +363,19 @@ impl Level2ResetSession {
         let mut rows = Vec::new();
         let mut current = linked_head;
         let mut visits = 0_usize;
-        let bound = self.economy.authored_class5_archer_children().len() + 1;
+        let bound = self
+            .session
+            .state
+            .live
+            .economy
+            .authored_class5_archer_children()
+            .len()
+            + 1;
         while current != 0 && visits <= bound {
             if let Some(entity) = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .get(usize::from(current))
@@ -318,6 +389,9 @@ impl Level2ResetSession {
                 });
                 current = entity.word_34();
             } else if let Some(child) = self
+                .session
+                .state
+                .live
                 .economy
                 .authored_class5_archer_children()
                 .iter()
@@ -343,6 +417,9 @@ impl Level2ResetSession {
         target: level2_class5::archer::ArcherTarget,
     ) {
         if let Some(entity) = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .get_mut(usize::from(target.entity_index))
@@ -351,6 +428,9 @@ impl Level2ResetSession {
             return;
         }
         if let Some(source) = self
+            .session
+            .state
+            .live
             .economy
             .authored_class5
             .iter_mut()
@@ -360,6 +440,9 @@ impl Level2ResetSession {
             return;
         }
         if let Some(child) = self
+            .session
+            .state
+            .live
             .economy
             .authored_class5_archer_children
             .iter_mut()
@@ -376,6 +459,9 @@ impl Level2ResetSession {
     /// source compares `id_0x1A_26`, not the pool slot.
     pub(super) fn level2_bee_peer_rows(&self, model: u8) -> Vec<(u16, Position)> {
         let mut peers = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -389,7 +475,10 @@ impl Level2ResetSession {
             .map(|entity| (entity.source_id, entity.position))
             .collect::<Vec<_>>();
         peers.extend(
-            self.economy
+            self.session
+                .state
+                .live
+                .economy
                 .authored_bees()
                 .iter()
                 .filter(|source| source.active && source.life >= 0 && source.model == model)
@@ -405,7 +494,14 @@ impl Level2ResetSession {
         if entity_index == 0 {
             return None;
         }
-        if let Some(entity) = self.economy.entities.get(usize::from(entity_index)) {
+        if let Some(entity) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(entity_index))
+        {
             return Some(level2_class5::trader::TraderTarget {
                 entity_index: entity.index,
                 class: entity.class,
@@ -416,7 +512,10 @@ impl Level2ResetSession {
                 position: entity.position,
             });
         }
-        self.economy
+        self.session
+            .state
+            .live
+            .economy
             .authored_model45()
             .iter()
             .find(|source| source.source_entity_index == entity_index)
@@ -436,6 +535,9 @@ impl Level2ResetSession {
         target: level2_class5::trader::TraderTarget,
     ) {
         if let Some(entity) = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .get_mut(usize::from(target.entity_index))
@@ -444,6 +546,9 @@ impl Level2ResetSession {
             return;
         }
         if let Some(source) = self
+            .session
+            .state
+            .live
             .economy
             .authored_model45
             .iter_mut()
@@ -461,7 +566,14 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut linked = Vec::new();
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
+            let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(current))
+            else {
                 break;
             };
             linked.push(level2_class5::trader::TraderLinkedState {
@@ -480,6 +592,9 @@ impl Level2ResetSession {
         &self,
     ) -> Vec<level2_class5::trader::TraderBuildingCandidate> {
         let eligible = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -488,7 +603,14 @@ impl Level2ResetSession {
             .collect::<BTreeSet<_>>();
         let linked = eligible
             .iter()
-            .filter_map(|index| self.economy.entities.get(usize::from(*index)))
+            .filter_map(|index| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get(usize::from(*index))
+            })
             .filter_map(|entity| entity.next_relation)
             .collect::<BTreeSet<_>>();
         let Some(mut current) = eligible
@@ -501,7 +623,14 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut buildings = Vec::new();
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
+            let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(current))
+            else {
                 break;
             };
             if eligible.contains(&current) && entity.model == HOUSE_MODEL {
@@ -526,6 +655,9 @@ impl Level2ResetSession {
         // distances. The qualified reset's list starts at the first live
         // player and each entity carries the next relation.
         let eligible = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -540,7 +672,9 @@ impl Level2ResetSession {
             .collect::<BTreeSet<_>>();
         let linked = eligible
             .iter()
-            .filter_map(|index| self.economy.entities[usize::from(*index)].next_relation)
+            .filter_map(|index| {
+                self.session.state.live.economy.entities[usize::from(*index)].next_relation
+            })
             .collect::<BTreeSet<_>>();
         let Some(mut current) = eligible
             .iter()
@@ -552,14 +686,21 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut targets = Vec::with_capacity(eligible.len());
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
+            let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(current))
+            else {
                 break;
             };
             if eligible.contains(&current) {
                 targets.push(GoatPlayerTarget {
                     entity_index: entity.index,
-                    position: if entity.index == self.state.entity_index {
-                        self.state.position
+                    position: if entity.index == self.session.state.live.core.state.entity_index {
+                        self.session.state.live.core.state.position
                     } else {
                         entity.position
                     },
@@ -577,9 +718,12 @@ impl Level2ResetSession {
     /// remaining candidate projections receive only the source-owned fields
     /// used by `sub_68FF0`, leaving holder/mana state in its existing owner.
     pub(super) fn refresh_level2_spell_owner_candidates(&mut self) -> Vec<usize> {
-        let local_entity_index = self.state.entity_index;
-        let local_position = self.state.position;
+        let local_entity_index = self.session.state.live.core.state.entity_index;
+        let local_position = self.session.state.live.core.state.position;
         if let Some(local_entity) = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter_mut()
@@ -587,9 +731,13 @@ impl Level2ResetSession {
         {
             local_entity.set_position(local_position);
         }
-        for player_index in 0..self.shared_spells.players.len() {
-            let entity_index = self.shared_spells.players[player_index].entity_index;
+        for player_index in 0..self.session.state.live.shared_spells.players.len() {
+            let entity_index =
+                self.session.state.live.shared_spells.players[player_index].entity_index;
             let Some(live_entity) = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .iter()
@@ -598,12 +746,19 @@ impl Level2ResetSession {
             else {
                 continue;
             };
-            if let Some(projected) = self.shared_spells.player_entities.get_mut(player_index) {
+            if let Some(projected) = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_entities
+                .get_mut(player_index)
+            {
                 sync_level2_spell_candidate_projection(projected, &live_entity);
             }
             if entity_index == local_entity_index {
                 sync_level2_spell_candidate_projection(
-                    &mut self.shared_spells.player_entity,
+                    &mut self.session.state.live.shared_spells.player_entity,
                     &live_entity,
                 );
             }
@@ -614,6 +769,9 @@ impl Level2ResetSession {
         // rows that map to a shared player snapshot. There is deliberately no
         // pool-order fallback when the source chain is absent or malformed.
         let chain_entities = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -622,7 +780,14 @@ impl Level2ResetSession {
             .collect::<BTreeSet<_>>();
         let linked = chain_entities
             .iter()
-            .filter_map(|index| self.economy.entities.get(usize::from(*index)))
+            .filter_map(|index| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get(usize::from(*index))
+            })
             .filter_map(|entity| entity.next_relation)
             .collect::<BTreeSet<_>>();
         let Some(mut current) = chain_entities
@@ -635,13 +800,23 @@ impl Level2ResetSession {
         let mut visited = BTreeSet::new();
         let mut player_order = Vec::new();
         while current != 0 && visited.insert(current) {
-            let Some(entity) = self.economy.entities.get(usize::from(current)) else {
+            let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(current))
+            else {
                 break;
             };
             if chain_entities.contains(&current)
                 && entity.model == 0
                 && entity.life >= 0
                 && let Some(player_index) = self
+                    .session
+                    .state
+                    .live
                     .shared_spells
                     .players
                     .iter()
@@ -662,7 +837,7 @@ impl Level2ResetSession {
     /// transition).  The command flags identify the only holder mirrors the
     /// generic pass is permitted to hand back to the source authority.
     pub(super) fn sync_level2_spell_fire_authority(&mut self, command_flags: u8) {
-        let Some(fire) = self.context.spell_fire.as_ref() else {
+        let Some(fire) = self.session.state.live.core.context.spell_fire.as_ref() else {
             return;
         };
         let mut holder_indices = Vec::with_capacity(3);
@@ -685,13 +860,23 @@ impl Level2ResetSession {
             return;
         }
         let caster = fire.caster;
-        self.shared_spells.caster = caster;
-        self.shared_spells.player_mana = caster.mana;
-        self.shared_spells.player_entity.set_mana(caster.mana);
-        self.shared_spells.player_entity.control_flags = caster.control_flags;
-        self.shared_spells.player_entity.record[16..20]
+        self.session.state.live.shared_spells.caster = caster;
+        self.session.state.live.shared_spells.player_mana = caster.mana;
+        self.session
+            .state
+            .live
+            .shared_spells
+            .player_entity
+            .set_mana(caster.mana);
+        self.session
+            .state
+            .live
+            .shared_spells
+            .player_entity
+            .control_flags = caster.control_flags;
+        self.session.state.live.shared_spells.player_entity.record[16..20]
             .copy_from_slice(&caster.control_flags.to_le_bytes());
-        for entity in &mut self.shared_spells.player_entities {
+        for entity in &mut self.session.state.live.shared_spells.player_entities {
             if entity.index == caster.entity_index {
                 entity.set_mana(caster.mana);
                 entity.control_flags = caster.control_flags;
@@ -700,11 +885,21 @@ impl Level2ResetSession {
         }
         for holder in &holders {
             for authoritative in self
+                .session
+                .state
+                .live
                 .shared_spells
                 .pickups
                 .iter_mut()
-                .chain(self.shared_spells.holders.iter_mut())
-                .chain(self.shared_spells.dynamic_pickups.iter_mut())
+                .chain(self.session.state.live.shared_spells.holders.iter_mut())
+                .chain(
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .dynamic_pickups
+                        .iter_mut(),
+                )
             {
                 if authoritative.index != holder.entity_index {
                     continue;
@@ -718,11 +913,20 @@ impl Level2ResetSession {
                 authoritative.record[64] = holder.action_marker.cast_unsigned();
             }
         }
-        self.shared_spells
+        self.session
+            .state
+            .live
+            .shared_spells
             .sync_shield_from_spell_fire(caster, &holders);
-        self.shared_spells
+        self.session
+            .state
+            .live
+            .shared_spells
             .sync_invisible_from_spell_fire(caster, &holders);
-        self.shared_spells
+        self.session
+            .state
+            .live
+            .shared_spells
             .sync_beyond_sight_from_spell_fire(caster, &holders);
     }
 
@@ -736,7 +940,16 @@ impl Level2ResetSession {
         if !is_menu_command {
             return;
         }
-        let Some(fire_snapshot) = self.context.spell_fire.as_ref().cloned() else {
+        let Some(fire_snapshot) = self
+            .session
+            .state
+            .live
+            .core
+            .context
+            .spell_fire
+            .as_ref()
+            .cloned()
+        else {
             return;
         };
 
@@ -779,11 +992,17 @@ impl Level2ResetSession {
         let holder_index = fire_snapshot.enabled_holder_indices[family_index];
         if holder_index == 0
             || !self
+                .session
+                .state
+                .live
                 .shared_spells
                 .local_player
                 .enabled_spell_holders
                 .contains(&holder_index)
             || !self
+                .session
+                .state
+                .live
                 .shared_spells
                 .pickup(holder_index)
                 .is_some_and(|holder| {
@@ -791,7 +1010,13 @@ impl Level2ResetSession {
                         && holder.class == 15
                         && holder.model == family
                         && holder.source_spell_parent_entity_index()
-                            == self.shared_spells.local_player.entity_index
+                            == self
+                                .session
+                                .state
+                                .live
+                                .shared_spells
+                                .local_player
+                                .entity_index
                 })
         {
             return;
@@ -810,15 +1035,28 @@ impl Level2ResetSession {
         } else {
             requested_tier
         };
-        let local_player_index =
-            self.shared_spells.players.iter().position(|player| {
-                player.entity_index == self.shared_spells.local_player.entity_index
+        let local_player_index = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .players
+            .iter()
+            .position(|player| {
+                player.entity_index
+                    == self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .local_player
+                        .entity_index
             });
         let Some(local_player_index) = local_player_index else {
             return;
         };
 
-        if let Some(fire) = self.context.spell_fire.as_mut() {
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() {
             match command.opcode {
                 31 | 32 => {
                     fire.family_selected_tiers[family_index] = selected_tier;
@@ -851,7 +1089,7 @@ impl Level2ResetSession {
             }
         }
 
-        let mut owner = self.shared_spells.players[local_player_index].clone();
+        let mut owner = self.session.state.live.shared_spells.players[local_player_index].clone();
         match command.opcode {
             31 | 32 => {
                 // The player/hand fields retain the raw selector. SetSpell's
@@ -896,8 +1134,8 @@ impl Level2ResetSession {
             }
             _ => unreachable!("menu command was checked above"),
         }
-        self.shared_spells.players[local_player_index] = owner.clone();
-        self.shared_spells.local_player = owner;
+        self.session.state.live.shared_spells.players[local_player_index] = owner.clone();
+        self.session.state.live.shared_spells.local_player = owner;
 
         // Only op31/32 call SetSpell. op40/41 change the menu selection but
         // leave the holder's physical profile and queued word untouched.
@@ -906,6 +1144,9 @@ impl Level2ResetSession {
         }
 
         let active_word = self
+            .session
+            .state
+            .live
             .shared_spells
             .pickup(holder_index)
             .map(|holder| {
@@ -916,7 +1157,13 @@ impl Level2ResetSession {
                 )
             })
             .unwrap_or_default();
-        if let Some(holder) = self.shared_spells.pickup_mut(holder_index) {
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(holder_index)
+        {
             holder.level_gate = physical_tier;
             holder.record[74] = physical_tier.cast_unsigned();
             if active_word != 0 {
@@ -942,7 +1189,8 @@ impl Level2ResetSession {
         }
         if family == BEYOND_SIGHT_FAMILY && active_word == 0 {
             if let Some(profile) = level2_set_spell_profile(family, physical_tier.cast_unsigned())
-                && let Some(beyond_sight) = self.shared_spells.beyond_sight.as_mut()
+                && let Some(beyond_sight) =
+                    self.session.state.live.shared_spells.beyond_sight.as_mut()
             {
                 beyond_sight.tier = physical_tier.cast_unsigned();
                 beyond_sight.activation_value = profile.word_0x30.cast_signed();
@@ -961,6 +1209,9 @@ impl Level2ResetSession {
         holder_index: u16,
     ) -> Option<u16> {
         let Some(holder) = self
+            .session
+            .state
+            .live
             .shared_spells
             .dynamic_pickups
             .iter()
@@ -970,7 +1221,8 @@ impl Level2ResetSession {
                     && holder.class == 15
                     && holder.model == POSSESSION_SPELL_FAMILY
                     && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
-                    && holder.source_spell_parent_entity_index() == self.state.entity_index
+                    && holder.source_spell_parent_entity_index()
+                        == self.session.state.live.core.state.entity_index
                     && holder.active_value > 0
             })
             .cloned()
@@ -980,25 +1232,52 @@ impl Level2ResetSession {
 
         let activation_value = i16::try_from(holder.activation_value).unwrap_or(i16::MAX);
         let mana_regen = if holder.active_value == activation_value {
-            Some(if self.shared_spells.player_entity.mana_regen >= 0 {
-                -holder.mana_cost
-            } else {
-                self.shared_spells
+            Some(
+                if self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
                     .player_entity
                     .mana_regen
-                    .wrapping_sub(holder.mana_cost)
-            })
-        } else if holder.active_value != 0 && self.shared_spells.player_entity.mana_regen > 0 {
+                    >= 0
+                {
+                    -holder.mana_cost
+                } else {
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .player_entity
+                        .mana_regen
+                        .wrapping_sub(holder.mana_cost)
+                },
+            )
+        } else if holder.active_value != 0
+            && self
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_entity
+                .mana_regen
+                > 0
+        {
             Some(0)
         } else {
             None
         };
         if let Some(mana_regen) = mana_regen {
-            self.shared_spells.player_entity.mana_regen = mana_regen;
-            self.shared_spells.player_entity.record[140..144]
+            self.session
+                .state
+                .live
+                .shared_spells
+                .player_entity
+                .mana_regen = mana_regen;
+            self.session.state.live.shared_spells.player_entity.record[140..144]
                 .copy_from_slice(&mana_regen.to_le_bytes());
-            for entity in &mut self.shared_spells.player_entities {
-                if entity.index == self.shared_spells.player_entity.index {
+            for entity in &mut self.session.state.live.shared_spells.player_entities {
+                if entity.index == self.session.state.live.shared_spells.player_entity.index {
                     entity.mana_regen = mana_regen;
                     entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
                 }
@@ -1011,32 +1290,48 @@ impl Level2ResetSession {
             // left/selected moves at yaw-512, right at yaw+512, strict ground
             // penetration rolls the displacement back, then parent FOV is
             // added with source-width wrapping.
-            let mut launch_position = self.state.position;
-            let direction_bits = self.shared_spells.player_entity.control_flags & 0x0300;
+            let mut launch_position = self.session.state.live.core.state.position;
+            let direction_bits = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_entity
+                .control_flags
+                & 0x0300;
             let hand_yaw = if direction_bits & 0x0100 != 0 {
-                Some(self.state.yaw.wrapping_sub(512))
+                Some(self.session.state.live.core.state.yaw.wrapping_sub(512))
             } else if direction_bits & 0x0200 != 0 {
-                Some(self.state.yaw.wrapping_add(512))
+                Some(self.session.state.live.core.state.yaw.wrapping_add(512))
             } else {
                 None
             };
             if let Some(hand_yaw) = hand_yaw {
                 crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
                 if self.canonical_terrain().ground_height(launch_position) > launch_position.z {
-                    launch_position = self.state.position;
+                    launch_position = self.session.state.live.core.state.position;
                 }
             }
-            launch_position.z = launch_position.z.wrapping_add(self.state.entity_fov);
-            let auxiliary = self.shared_spells.beyond_sight_auxiliary();
-            let launch_yaw = auxiliary.next_entity.wrapping_add(self.state.yaw);
+            launch_position.z = launch_position
+                .z
+                .wrapping_add(self.session.state.live.core.state.entity_fov);
+            let auxiliary = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .beyond_sight_auxiliary();
+            let launch_yaw = auxiliary
+                .next_entity
+                .wrapping_add(self.session.state.live.core.state.yaw);
             let launch_pitch = auxiliary
                 .entity_index2
-                .wrapping_add(self.state.display_pitch);
-            let mut axis_position = self.state.position;
+                .wrapping_add(self.session.state.live.core.state.display_pitch);
+            let mut axis_position = self.session.state.live.core.state.position;
             crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 10_240);
-            let player_entity_index = self.state.entity_index;
-            let actual_speed = self.state.actual_speed;
-            self.economy.spawn_possession_projectile(
+            let player_entity_index = self.session.state.live.core.state.entity_index;
+            let actual_speed = self.session.state.live.core.state.actual_speed;
+            self.session.state.live.economy.spawn_possession_projectile(
                 launch_position,
                 player_entity_index,
                 holder_index,
@@ -1050,6 +1345,9 @@ impl Level2ResetSession {
         };
         let next_active_value = holder.active_value.saturating_sub(1);
         if let Some(authoritative) = self
+            .session
+            .state
+            .live
             .shared_spells
             .dynamic_pickups
             .iter_mut()
@@ -1058,7 +1356,7 @@ impl Level2ResetSession {
             authoritative.active_value = next_active_value;
             authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
         }
-        if let Some(fire) = self.context.spell_fire.as_mut()
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
             && let Some(in_flight) = fire
                 .holders
                 .iter_mut()
@@ -1075,6 +1373,9 @@ impl Level2ResetSession {
     /// consumes `word_0x2E` and reinstalls the selected profile.
     pub(super) fn apply_castle_spell_holder_cleanup(&mut self, holder_index: u16) {
         let queued_spell = self
+            .session
+            .state
+            .live
             .shared_spells
             .pickup(holder_index)
             .map(|holder| {
@@ -1088,7 +1389,12 @@ impl Level2ResetSession {
         if queued_spell != 0 {
             let tier = queued_spell.saturating_sub(1).min(2) as u8;
             if let Some(profile) = level2_direct_starting_spell_profile(CASTLE_SPELL_FAMILY, tier)
-                && let Some(holder) = self.shared_spells.pickup_mut(holder_index)
+                && let Some(holder) = self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .pickup_mut(holder_index)
             {
                 holder.level_gate = tier.cast_signed();
                 holder.subspell_index = profile.subspell_index;
@@ -1115,6 +1421,9 @@ impl Level2ResetSession {
     /// closed no-op rather than a neighboring-family fallback.
     pub(super) fn apply_fireball_spell_holder_cleanup(&mut self, holder_index: u16) {
         let queued_spell = self
+            .session
+            .state
+            .live
             .shared_spells
             .pickup(holder_index)
             .map(|holder| {
@@ -1140,6 +1449,9 @@ impl Level2ResetSession {
             return;
         };
         if let Some(holder) = self
+            .session
+            .state
+            .live
             .shared_spells
             .pickup_mut(holder_index)
             .filter(|holder| {
@@ -1174,6 +1486,9 @@ impl Level2ResetSession {
         holder_index: u16,
     ) -> Option<u16> {
         let Some(holder) = self
+            .session
+            .state
+            .live
             .shared_spells
             .dynamic_pickups
             .iter()
@@ -1188,7 +1503,7 @@ impl Level2ResetSession {
         else {
             return None;
         };
-        let parent_entity_index = self.shared_spells.player_entity.index;
+        let parent_entity_index = self.session.state.live.shared_spells.player_entity.index;
         if holder.source_spell_parent_entity_index() != parent_entity_index {
             return None;
         }
@@ -1199,15 +1514,25 @@ impl Level2ResetSession {
             self.apply_fireball_spell_holder_cleanup(holder_index);
         } else {
             let fresh = holder.active_value == holder.activation_value.cast_signed();
-            let parent_life = self.shared_spells.player_entity.life;
-            let parent_mana = self.shared_spells.player_entity.mana;
-            let parent_mana_regen = self.shared_spells.player_entity.mana_regen;
+            let parent_life = self.session.state.live.shared_spells.player_entity.life;
+            let parent_mana = self.session.state.live.shared_spells.player_entity.mana;
+            let parent_mana_regen = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_entity
+                .mana_regen;
             let castle_mana = self
+                .session
+                .state
+                .live
                 .economy
                 .castle()
                 .filter(|castle| {
                     castle.active
-                        && self.economy.player_castle_entity_index() == castle.source_entity_index
+                        && self.session.state.live.economy.player_castle_entity_index()
+                            == castle.source_entity_index
                 })
                 .map(|castle| castle.mana);
             let predicate = holder.level_gate >= 0
@@ -1234,10 +1559,15 @@ impl Level2ResetSession {
                     None
                 };
                 if let Some(mana_regen) = mana_regen {
-                    self.shared_spells.player_entity.mana_regen = mana_regen;
-                    self.shared_spells.player_entity.record[140..144]
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .player_entity
+                        .mana_regen = mana_regen;
+                    self.session.state.live.shared_spells.player_entity.record[140..144]
                         .copy_from_slice(&mana_regen.to_le_bytes());
-                    for entity in &mut self.shared_spells.player_entities {
+                    for entity in &mut self.session.state.live.shared_spells.player_entities {
                         if entity.index == parent_entity_index {
                             entity.mana_regen = mana_regen;
                             entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
@@ -1246,12 +1576,19 @@ impl Level2ResetSession {
                 }
 
                 if fresh {
-                    let mut launch_position = self.state.position;
-                    let direction_bits = self.shared_spells.player_entity.control_flags & 0x0300;
+                    let mut launch_position = self.session.state.live.core.state.position;
+                    let direction_bits = self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .player_entity
+                        .control_flags
+                        & 0x0300;
                     let hand_yaw = if direction_bits & 0x0100 != 0 {
-                        Some(self.state.yaw.wrapping_sub(512))
+                        Some(self.session.state.live.core.state.yaw.wrapping_sub(512))
                     } else if direction_bits & 0x0200 != 0 {
-                        Some(self.state.yaw.wrapping_add(512))
+                        Some(self.session.state.live.core.state.yaw.wrapping_add(512))
                     } else {
                         None
                     };
@@ -1260,41 +1597,61 @@ impl Level2ResetSession {
                         if self.canonical_terrain().ground_height(launch_position)
                             > launch_position.z
                         {
-                            launch_position = self.state.position;
+                            launch_position = self.session.state.live.core.state.position;
                         }
                     }
-                    launch_position.z = launch_position.z.wrapping_add(self.state.entity_fov);
-                    let auxiliary = self.shared_spells.beyond_sight_auxiliary();
-                    let launch_yaw = auxiliary.next_entity.wrapping_add(self.state.yaw);
+                    launch_position.z = launch_position
+                        .z
+                        .wrapping_add(self.session.state.live.core.state.entity_fov);
+                    let auxiliary = self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .beyond_sight_auxiliary();
+                    let launch_yaw = auxiliary
+                        .next_entity
+                        .wrapping_add(self.session.state.live.core.state.yaw);
                     let launch_pitch = auxiliary
                         .entity_index2
-                        .wrapping_add(self.state.display_pitch);
-                    let mut axis_position = self.state.position;
+                        .wrapping_add(self.session.state.live.core.state.display_pitch);
+                    let mut axis_position = self.session.state.live.core.state.position;
                     crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 0x4000);
                     let source_dword_0x10 = self
+                        .session
+                        .state
+                        .live
                         .shared_spells
                         .players
                         .iter()
                         .find(|player| player.entity_index == parent_entity_index)
                         .and_then(PlayerSnapshot::type_str_164_auxiliary)
                         .map_or(0, |carrier| i32::from(carrier.byte_0x154_340));
-                    let actual_speed = self.state.actual_speed;
-                    spawned = self.economy.spawn_fireball_projectile_with_payload(
-                        level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
-                            position: launch_position,
-                            yaw: launch_yaw,
-                            pitch: launch_pitch,
-                            axis_position,
-                            source_id_entity_index: parent_entity_index,
-                            holder_entity_index: holder_index,
-                            source_subspell_index: holder.subspell_index,
-                            source_mana: holder.mana,
-                            source_dword_0x10,
-                        },
-                        actual_speed,
-                    );
+                    let actual_speed = self.session.state.live.core.state.actual_speed;
+                    spawned = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .spawn_fireball_projectile_with_payload(
+                            level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                                position: launch_position,
+                                yaw: launch_yaw,
+                                pitch: launch_pitch,
+                                axis_position,
+                                source_id_entity_index: parent_entity_index,
+                                holder_entity_index: holder_index,
+                                source_subspell_index: holder.subspell_index,
+                                source_mana: holder.mana,
+                                source_dword_0x10,
+                            },
+                            actual_speed,
+                        );
                     if let Some(spawned_slot) = spawned {
                         if let Some(player) = self
+                            .session
+                            .state
+                            .live
                             .shared_spells
                             .players
                             .iter_mut()
@@ -1304,8 +1661,16 @@ impl Level2ResetSession {
                                 carrier.byte_0x154_340 = 0;
                                 player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
                             }
-                            if self.shared_spells.local_player.entity_index == parent_entity_index {
-                                self.shared_spells.local_player = player.clone();
+                            if self
+                                .session
+                                .state
+                                .live
+                                .shared_spells
+                                .local_player
+                                .entity_index
+                                == parent_entity_index
+                            {
+                                self.session.state.live.shared_spells.local_player = player.clone();
                             }
                         }
                         mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
@@ -1322,6 +1687,9 @@ impl Level2ResetSession {
             }
         }
         if let Some(authoritative) = self
+            .session
+            .state
+            .live
             .shared_spells
             .dynamic_pickups
             .iter_mut()
@@ -1330,7 +1698,13 @@ impl Level2ResetSession {
             authoritative.active_value = next_active_value;
             authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
         }
-        if let Some(holder) = self.shared_spells.pickup_mut(holder_index) {
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(holder_index)
+        {
             let word_36 = u16::from_le_bytes(
                 holder.record[58..60]
                     .try_into()
@@ -1340,7 +1714,7 @@ impl Level2ResetSession {
                 holder.record[58..60].copy_from_slice(&word_36.saturating_sub(1).to_le_bytes());
             }
         }
-        if let Some(fire) = self.context.spell_fire.as_mut()
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
             && let Some(in_flight) = fire
                 .holders
                 .iter_mut()
@@ -1358,6 +1732,10 @@ impl Level2ResetSession {
     /// closed producer admission failure.
     pub(super) fn level2_nyphur_type_str_orientation(&self) -> Option<(i16, i16)> {
         let player = self
+            .session
+            .state
+            .live
+            .core
             .players
             .iter()
             .find(|player| player.entity_index == LEVEL2_NYPHUR_ENTITY_INDEX)?;
@@ -1390,6 +1768,9 @@ impl Level2ResetSession {
         action: u8,
     ) {
         let Some(queued_spell) = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .get(usize::from(holder_index))
@@ -1414,7 +1795,14 @@ impl Level2ResetSession {
         let Some(profile) = level2_direct_starting_spell_profile(family, tier) else {
             return;
         };
-        if let Some(holder) = self.economy.entities.get_mut(usize::from(holder_index)) {
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(holder_index))
+        {
             holder.apply_nyphur_spell_profile(profile, tier);
             holder.record[48..50].fill(0);
         }
@@ -1432,6 +1820,9 @@ impl Level2ResetSession {
             return None;
         }
         let holder = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .get(usize::from(holder_index))
@@ -1447,6 +1838,9 @@ impl Level2ResetSession {
             })
             .cloned()?;
         let parent = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
@@ -1478,10 +1872,18 @@ impl Level2ResetSession {
             let activation_value = i16::try_from(holder.activation_value).ok();
             let fresh =
                 activation_value.is_some_and(|activation| holder.active_value == activation);
-            let common_upkeep = self.nyphur_dispatcher.common_upkeep(parent.phase);
+            let common_upkeep = self
+                .session
+                .state
+                .live
+                .nyphur_dispatcher
+                .common_upkeep(parent.phase);
             let castle_mana = (common_upkeep.castle_entity_index != 0)
                 .then(|| {
-                    self.economy
+                    self.session
+                        .state
+                        .live
+                        .economy
                         .entities
                         .get(usize::from(common_upkeep.castle_entity_index))
                 })
@@ -1520,6 +1922,9 @@ impl Level2ResetSession {
                     parent_mana_regen
                 };
                 if let Some(parent) = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .entities
                     .get_mut(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
@@ -1550,23 +1955,38 @@ impl Level2ResetSession {
                     let launch_pitch = entity_index2.wrapping_add(parent.pitch);
                     let mut axis_position = parent.position;
                     crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 0x4000);
-                    let source_dword_0x10 = i32::from(self.nyphur_dispatcher.source_byte_0x154());
-                    spawned = self.economy.spawn_fireball_projectile_with_payload(
-                        level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
-                            position: launch_position,
-                            yaw: launch_yaw,
-                            pitch: launch_pitch,
-                            axis_position,
-                            source_id_entity_index: LEVEL2_NYPHUR_ENTITY_INDEX,
-                            holder_entity_index: holder_index,
-                            source_subspell_index: holder.subspell_index,
-                            source_mana: holder.mana,
-                            source_dword_0x10,
-                        },
-                        parent.actual_speed,
+                    let source_dword_0x10 = i32::from(
+                        self.session
+                            .state
+                            .live
+                            .nyphur_dispatcher
+                            .source_byte_0x154(),
                     );
+                    spawned = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .spawn_fireball_projectile_with_payload(
+                            level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                                position: launch_position,
+                                yaw: launch_yaw,
+                                pitch: launch_pitch,
+                                axis_position,
+                                source_id_entity_index: LEVEL2_NYPHUR_ENTITY_INDEX,
+                                holder_entity_index: holder_index,
+                                source_subspell_index: holder.subspell_index,
+                                source_mana: holder.mana,
+                                source_dword_0x10,
+                            },
+                            parent.actual_speed,
+                        );
                     if let Some(spawned_slot) = spawned {
-                        self.nyphur_dispatcher.clear_source_byte_0x154();
+                        self.session
+                            .state
+                            .live
+                            .nyphur_dispatcher
+                            .clear_source_byte_0x154();
                         mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
                         self.push_flight_effect(FlightEvent::PrepareSound {
                             #[cfg(test)]
@@ -1581,7 +2001,14 @@ impl Level2ResetSession {
             }
         }
 
-        if let Some(holder) = self.economy.entities.get_mut(usize::from(holder_index)) {
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(holder_index))
+        {
             holder.active_value = next_active_value;
             holder.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
             let word_36 = u16::from_le_bytes([holder.record[58], holder.record[59]]);
@@ -1609,6 +2036,9 @@ impl Level2ResetSession {
             return None;
         }
         let holder = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .get(usize::from(holder_index))
@@ -1624,6 +2054,9 @@ impl Level2ResetSession {
             })
             .cloned()?;
         let parent = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
@@ -1685,6 +2118,9 @@ impl Level2ResetSession {
                     parent_mana_regen
                 };
                 if let Some(parent) = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .entities
                     .get_mut(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
@@ -1721,18 +2157,27 @@ impl Level2ResetSession {
                         };
                     let mut axis_position = parent.position;
                     crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, axis_distance);
-                    spawned = self.economy.spawn_possession_projectile_with_physical_tier(
-                        launch_position,
-                        LEVEL2_NYPHUR_ENTITY_INDEX,
-                        holder_index,
-                        launch_yaw,
-                        launch_pitch,
-                        parent.actual_speed,
-                        axis_position,
-                        physical_tier.expect("profile admission has a physical tier"),
-                    );
+                    spawned = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .spawn_possession_projectile_with_physical_tier(
+                            launch_position,
+                            LEVEL2_NYPHUR_ENTITY_INDEX,
+                            holder_index,
+                            launch_yaw,
+                            launch_pitch,
+                            parent.actual_speed,
+                            axis_position,
+                            physical_tier.expect("profile admission has a physical tier"),
+                        );
                     if let Some(spawned_slot) = spawned {
-                        self.nyphur_dispatcher.clear_source_byte_0x154();
+                        self.session
+                            .state
+                            .live
+                            .nyphur_dispatcher
+                            .clear_source_byte_0x154();
                         mark_source_audio_call(
                             if physical_tier.expect("profile admission has a physical tier") == 0 {
                                 SourceAudioCallTag::PossessionLaunchBasic
@@ -1753,7 +2198,14 @@ impl Level2ResetSession {
             }
         }
 
-        if let Some(holder) = self.economy.entities.get_mut(usize::from(holder_index)) {
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(holder_index))
+        {
             holder.active_value = next_active_value;
             holder.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
             let word_36 = u16::from_le_bytes([holder.record[58], holder.record[59]]);
@@ -1781,6 +2233,9 @@ impl Level2ResetSession {
         holder_index: u16,
     ) -> Option<u16> {
         let Some(holder) = self
+            .session
+            .state
+            .live
             .shared_spells
             .dynamic_pickups
             .iter()
@@ -1796,7 +2251,7 @@ impl Level2ResetSession {
             return None;
         };
 
-        let parent_entity_index = self.shared_spells.player_entity.index;
+        let parent_entity_index = self.session.state.live.shared_spells.player_entity.index;
         let parent_relation_valid =
             holder.source_spell_parent_entity_index() == parent_entity_index;
         let mut next_active_value = holder.active_value;
@@ -1807,15 +2262,25 @@ impl Level2ResetSession {
             self.apply_castle_spell_holder_cleanup(holder_index);
         } else if parent_relation_valid {
             let fresh = holder.active_value == holder.activation_value.cast_signed();
-            let parent_life = self.shared_spells.player_entity.life;
-            let parent_mana = self.shared_spells.player_entity.mana;
-            let parent_mana_regen = self.shared_spells.player_entity.mana_regen;
+            let parent_life = self.session.state.live.shared_spells.player_entity.life;
+            let parent_mana = self.session.state.live.shared_spells.player_entity.mana;
+            let parent_mana_regen = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_entity
+                .mana_regen;
             let castle_mana = self
+                .session
+                .state
+                .live
                 .economy
                 .castle()
                 .filter(|castle| {
                     castle.active
-                        && self.economy.player_castle_entity_index() == castle.source_entity_index
+                        && self.session.state.live.economy.player_castle_entity_index()
+                            == castle.source_entity_index
                 })
                 .map(|castle| castle.mana);
             let predicate = parent_life >= 0
@@ -1828,6 +2293,9 @@ impl Level2ResetSession {
                 next_active_value = 0;
             } else if fresh {
                 let stage = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .castle()
                     .map_or(1, |castle| castle.level.saturating_add(1));
@@ -1838,12 +2306,20 @@ impl Level2ResetSession {
                 let stage_coefficient =
                     256_i32.wrapping_add(i32::from(holder.subspell_index as i8) << 8);
                 let _ = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .set_castle_stage_coefficient(stage, stage_coefficient as u16);
-                let _ = self.economy.set_castle_controller_coefficient(
-                    stage,
-                    holder.level_gate.clamp(0, 2).cast_unsigned(),
-                );
+                let _ = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .set_castle_controller_coefficient(
+                        stage,
+                        holder.level_gate.clamp(0, 2).cast_unsigned(),
+                    );
                 // `sub_68DE0` charges before `sub_69AB0` attempts NewEvent;
                 // allocation failure therefore retains the charge but leaves
                 // W unchanged.
@@ -1852,10 +2328,15 @@ impl Level2ResetSession {
                 } else {
                     parent_mana_regen.wrapping_sub(holder.max_mana)
                 };
-                self.shared_spells.player_entity.mana_regen = mana_regen;
-                self.shared_spells.player_entity.record[140..144]
+                self.session
+                    .state
+                    .live
+                    .shared_spells
+                    .player_entity
+                    .mana_regen = mana_regen;
+                self.session.state.live.shared_spells.player_entity.record[140..144]
                     .copy_from_slice(&mana_regen.to_le_bytes());
-                for entity in &mut self.shared_spells.player_entities {
+                for entity in &mut self.session.state.live.shared_spells.player_entities {
                     if entity.index == parent_entity_index {
                         entity.mana_regen = mana_regen;
                         entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
@@ -1868,65 +2349,84 @@ impl Level2ResetSession {
                 // a strict ground penetration rolls the displacement back.
                 // The parent FOV and two A4 angle words are then copied with
                 // source-width wrapping into the new class-9/model-10 row.
-                let mut launch_position = self.state.position;
-                let direction_bits = self.shared_spells.player_entity.control_flags & 0x0300;
+                let mut launch_position = self.session.state.live.core.state.position;
+                let direction_bits = self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .player_entity
+                    .control_flags
+                    & 0x0300;
                 let hand_yaw = if direction_bits & 0x0100 != 0 {
-                    Some(self.state.yaw.wrapping_sub(512))
+                    Some(self.session.state.live.core.state.yaw.wrapping_sub(512))
                 } else if direction_bits & 0x0200 != 0 {
-                    Some(self.state.yaw.wrapping_add(512))
+                    Some(self.session.state.live.core.state.yaw.wrapping_add(512))
                 } else {
                     None
                 };
                 if let Some(hand_yaw) = hand_yaw {
                     crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state is initialized")
-                        .terrain();
+                    let terrain = &self.session.state.live.terrain;
                     if terrain.ground_height(launch_position) > launch_position.z {
-                        launch_position = self.state.position;
+                        launch_position = self.session.state.live.core.state.position;
                     }
                 }
-                launch_position.z = launch_position.z.wrapping_add(self.state.entity_fov);
+                launch_position.z = launch_position
+                    .z
+                    .wrapping_add(self.session.state.live.core.state.entity_fov);
 
-                let auxiliary = self.shared_spells.beyond_sight_auxiliary();
+                let auxiliary = self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .beyond_sight_auxiliary();
                 let source_a4_byte_154 = self
+                    .session
+                    .state
+                    .live
                     .shared_spells
                     .players
                     .iter()
                     .find(|player| player.entity_index == parent_entity_index)
                     .and_then(PlayerSnapshot::type_str_164_auxiliary)
                     .map_or(0, |carrier| carrier.byte_0x154_340);
-                let launch_yaw = auxiliary.next_entity.wrapping_add(self.state.yaw);
+                let launch_yaw = auxiliary
+                    .next_entity
+                    .wrapping_add(self.session.state.live.core.state.yaw);
                 let launch_pitch = auxiliary
                     .entity_index2
-                    .wrapping_add(self.state.display_pitch);
-                let actual_speed = self.state.actual_speed;
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state is initialized")
-                    .terrain();
-                spawned = self.economy.spawn_castle_projectile_with_payload(
-                    level2_dynamic_economy::Level2CastleProjectileLaunchPayload {
-                        position: launch_position,
-                        yaw: launch_yaw,
-                        pitch: launch_pitch,
-                        source_id_entity_index: parent_entity_index,
-                        source_subspell_index: holder.subspell_index,
-                        source_mana: holder.mana,
-                        source_a4_byte_154,
-                    },
-                    holder_index,
-                    actual_speed,
-                    terrain,
-                );
+                    .wrapping_add(self.session.state.live.core.state.display_pitch);
+                let actual_speed = self.session.state.live.core.state.actual_speed;
+                let terrain = &self.session.state.live.terrain;
+                spawned = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .spawn_castle_projectile_with_payload(
+                        level2_dynamic_economy::Level2CastleProjectileLaunchPayload {
+                            position: launch_position,
+                            yaw: launch_yaw,
+                            pitch: launch_pitch,
+                            source_id_entity_index: parent_entity_index,
+                            source_subspell_index: holder.subspell_index,
+                            source_mana: holder.mana,
+                            source_a4_byte_154,
+                        },
+                        holder_index,
+                        actual_speed,
+                        terrain,
+                    );
                 if let Some(spawned_slot) = spawned {
                     // The A4 byte transfer and sound are success-only source
                     // epilogue writes; predicate or allocator failure leaves
                     // the parent byte and audio journal untouched.
                     if let Some(player) = self
+                        .session
+                        .state
+                        .live
                         .shared_spells
                         .players
                         .iter_mut()
@@ -1936,8 +2436,16 @@ impl Level2ResetSession {
                             carrier.byte_0x154_340 = 0;
                             player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
                         }
-                        if self.shared_spells.local_player.entity_index == parent_entity_index {
-                            self.shared_spells.local_player = player.clone();
+                        if self
+                            .session
+                            .state
+                            .live
+                            .shared_spells
+                            .local_player
+                            .entity_index
+                            == parent_entity_index
+                        {
+                            self.session.state.live.shared_spells.local_player = player.clone();
                         }
                     }
                     mark_source_audio_call(SourceAudioCallTag::InitialCastleLaunch);
@@ -1953,6 +2461,9 @@ impl Level2ResetSession {
             }
         }
         if let Some(authoritative) = self
+            .session
+            .state
+            .live
             .shared_spells
             .dynamic_pickups
             .iter_mut()
@@ -1964,7 +2475,13 @@ impl Level2ResetSession {
         // word36 is the package record word at bytes 58..60. It is consumed
         // by every active action-6 callback, including invalid-parent and
         // zero-W cleanup callbacks; bytes 40..42 are the unrelated word24.
-        if let Some(holder) = self.shared_spells.pickup_mut(holder_index) {
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(holder_index)
+        {
             let word_36 = u16::from_le_bytes(
                 holder.record[58..60]
                     .try_into()
@@ -1974,7 +2491,7 @@ impl Level2ResetSession {
                 holder.record[58..60].copy_from_slice(&word_36.saturating_sub(1).to_le_bytes());
             }
         }
-        if let Some(fire) = self.context.spell_fire.as_mut()
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
             && let Some(in_flight) = fire
                 .holders
                 .iter_mut()
@@ -1989,11 +2506,21 @@ impl Level2ResetSession {
     /// cooldown when `sub_11CB0` rejects the flyer site.
     pub(super) fn clear_castle_spell_holder_cooldown(&mut self, holder_index: u16) {
         for holder in self
+            .session
+            .state
+            .live
             .shared_spells
             .pickups
             .iter_mut()
-            .chain(self.shared_spells.holders.iter_mut())
-            .chain(self.shared_spells.dynamic_pickups.iter_mut())
+            .chain(self.session.state.live.shared_spells.holders.iter_mut())
+            .chain(
+                self.session
+                    .state
+                    .live
+                    .shared_spells
+                    .dynamic_pickups
+                    .iter_mut(),
+            )
         {
             if holder.index == holder_index {
                 holder.active_value = 0;
@@ -2004,7 +2531,7 @@ impl Level2ResetSession {
         // `sync_level2_spell_fire_authority` write-back.  Clear the in-flight
         // mirror as well so that authority cannot replay the pre-rejection
         // cooldown into the shared holder on that pass.
-        if let Some(fire) = self.context.spell_fire.as_mut()
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
             && let Some(holder) = fire
                 .holders
                 .iter_mut()
@@ -2022,7 +2549,7 @@ impl Level2ResetSession {
         // opcode-6/bit-0x40 latch must be able to select a newly acquired
         // holder, while a remote player's acquisition must remain absent from
         // the local command path.
-        let local_player = self.shared_spells.local_player.clone();
+        let local_player = self.session.state.live.shared_spells.local_player.clone();
         let enabled_holder_indices = local_player.enabled_spell_holders;
         let left_slot = usize::from(local_player.left_spell_slot);
         let right_slot = usize::from(local_player.right_spell_slot);
@@ -2035,11 +2562,14 @@ impl Level2ResetSession {
         let selected_holder_index = enabled_holder_indices[usize::from(selected_family)];
         let mut holders = Vec::new();
         for authoritative in self
+            .session
+            .state
+            .live
             .shared_spells
             .pickups
             .iter()
-            .chain(self.shared_spells.holders.iter())
-            .chain(self.shared_spells.dynamic_pickups.iter())
+            .chain(self.session.state.live.shared_spells.holders.iter())
+            .chain(self.session.state.live.shared_spells.dynamic_pickups.iter())
         {
             if !enabled_holder_indices.contains(&authoritative.index)
                 || holders.iter().any(|holder: &SpellActivationHolder| {
@@ -2058,10 +2588,10 @@ impl Level2ResetSession {
                 action_marker: authoritative.action_marker,
             });
         }
-        let caster = self.shared_spells.caster;
-        let spell_experience = self.shared_spells.spell_experience;
-        let spell_levels = self.shared_spells.spell_levels;
-        let Some(fire) = self.context.spell_fire.as_mut() else {
+        let caster = self.session.state.live.shared_spells.caster;
+        let spell_experience = self.session.state.live.shared_spells.spell_experience;
+        let spell_levels = self.session.state.live.shared_spells.spell_levels;
+        let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() else {
             return;
         };
         fire.caster = caster;
@@ -2085,13 +2615,16 @@ impl Level2ResetSession {
     /// before the pass and must remain intact until the generic command pass
     /// consumes them.
     pub(super) fn refresh_level2_spell_fire_holder_projection(&mut self) {
-        let caster = self.shared_spells.caster;
+        let caster = self.session.state.live.shared_spells.caster;
         let holders = self
+            .session
+            .state
+            .live
             .shared_spells
             .pickups
             .iter()
-            .chain(self.shared_spells.holders.iter())
-            .chain(self.shared_spells.dynamic_pickups.iter())
+            .chain(self.session.state.live.shared_spells.holders.iter())
+            .chain(self.session.state.live.shared_spells.dynamic_pickups.iter())
             .map(|authoritative| SpellActivationHolder {
                 entity_index: authoritative.index,
                 model: authoritative.model,
@@ -2102,7 +2635,7 @@ impl Level2ResetSession {
                 action_marker: authoritative.action_marker,
             })
             .collect::<Vec<_>>();
-        let Some(fire) = self.context.spell_fire.as_mut() else {
+        let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() else {
             return;
         };
         fire.caster = caster;
@@ -2277,154 +2810,76 @@ impl Level2ResetSession {
                 .expect("player attacker mailbox bytes"),
         );
         let initial_player_life = initial_player.life;
-        let (initial_day_hud_color_phase_1, initial_day_hud_color_phase_2) =
-            level2_day_color_phases(shared_spells.local_player.turn);
-        let initial_day_hud_hit_frame_time_pre_draw =
-            shared_spells.local_player.record_bytes()[406];
-        let initial_day_hud_player_panel_selector = level2_day_player_panel_selector(
-            initial_day_hud_hit_frame_time_pre_draw,
-            initial_day_hud_color_phase_1,
-        );
-        let mut session = Self {
-            profile,
-            package_sha256,
-            collision_masks,
-            baseline_terrain: terrain.clone(),
-            economy: SourceArena::new(entities, economy),
-            campaign_state: None,
-            bootstrap_core: Some(CanonicalRuntimeState {
+        let definition =
+            CampaignDefinition::new(profile, package_sha256, collision_masks, presentation);
+        let live = Level2LiveState {
+            core: CanonicalRuntimeState {
                 state,
                 players,
                 runtime,
                 context,
                 effect_journal: crate::campaign::journal::EffectJournal::default(),
-            }),
-            presentation,
-            baseline_bad_stones: bad_stones.clone(),
+            },
+            terrain,
+            economy: SourceArena::new(entities, economy),
             bad_stones,
-            baseline_shared_spells: shared_spells.clone(),
             shared_spells,
             ordinary,
-            baseline_goats: goats.clone(),
             goats,
             mission,
-            baseline_nyphur_dispatcher: nyphur_dispatcher.clone(),
             nyphur_dispatcher,
-            baseline_nyphur_dispatch_traces: Vec::new(),
-            nyphur_dispatch_traces: Vec::new(),
-            baseline_player_pending_damage: initial_player_pending_damage,
             player_pending_damage: initial_player_pending_damage,
-            baseline_player_pending_attacker: initial_player_pending_attacker,
             player_pending_attacker: initial_player_pending_attacker,
-            baseline_player_life: initial_player_life,
             player_life: initial_player_life,
-            baseline_level2_day_hud_color_phase_1: initial_day_hud_color_phase_1,
-            level2_day_hud_color_phase_1: initial_day_hud_color_phase_1,
-            baseline_level2_day_hud_color_phase_2: initial_day_hud_color_phase_2,
-            level2_day_hud_color_phase_2: initial_day_hud_color_phase_2,
-            baseline_level2_day_hud_hit_frame_time_pre_draw:
-                initial_day_hud_hit_frame_time_pre_draw,
-            level2_day_hud_hit_frame_time_pre_draw: initial_day_hud_hit_frame_time_pre_draw,
-            baseline_level2_day_hud_player_panel_selector: initial_day_hud_player_panel_selector,
-            level2_day_hud_player_panel_selector: initial_day_hud_player_panel_selector,
-            dispatch_events: Vec::new(),
-            economy_event_cursor: 0,
-            baseline_level2_group8_activated: false,
             level2_group8_activated: false,
             // The qualified frame-zero model-32 row observes stage index 3's
             // source state 1; the switch completes only after that state is 2.
-            baseline_level2_selected_objective_stage_state: initial_level2_objective_stage_state,
             level2_selected_objective_stage_state: initial_level2_objective_stage_state,
-            baseline_level2_objective_pause: 0,
             level2_objective_pause: 0,
-            baseline_level2_objective_done: false,
             level2_objective_done: false,
-            baseline_level2_mana_attraction_activated: BTreeSet::new(),
             level2_mana_attraction_activated: BTreeSet::new(),
-            baseline_level2_model13_activated: BTreeSet::new(),
             level2_model13_activated: BTreeSet::new(),
-            baseline_level2_bees_activated: BTreeSet::new(),
             level2_bees_activated: BTreeSet::new(),
-            baseline_level2_switch_producers_activated: BTreeSet::new(),
             level2_switch_producers_activated: BTreeSet::new(),
-            baseline_level2_model32_activated: BTreeSet::new(),
             level2_model32_activated: BTreeSet::new(),
-            baseline_level2_model76_activated: BTreeSet::new(),
             level2_model76_activated: BTreeSet::new(),
-            baseline_level2_model22_activated: BTreeSet::new(),
             level2_model22_activated: BTreeSet::new(),
-            baseline_level2_model39_activated: BTreeSet::new(),
             level2_model39_activated: BTreeSet::new(),
-            baseline_level2_model6_activated: BTreeSet::new(),
             level2_model6_activated: BTreeSet::new(),
-            baseline_level2_model59_activated: BTreeSet::new(),
             level2_model59_activated: BTreeSet::new(),
-            baseline_level2_model53_activated: BTreeSet::new(),
             level2_model53_activated: BTreeSet::new(),
-            baseline_level2_model1_activated: BTreeSet::new(),
             level2_model1_activated: BTreeSet::new(),
-            baseline_level2_model17_activated: BTreeSet::new(),
             level2_model17_activated: BTreeSet::new(),
-            baseline_level2_imported_switch_roots: initial_level2_imported_switch_roots.clone(),
             level2_imported_switch_roots: initial_level2_imported_switch_roots,
-            baseline_level2_group10_switch25: initial_level2_group10_switch25,
             level2_group10_switch25: initial_level2_group10_switch25,
-            baseline_level2_class14_activated: BTreeSet::new(),
             level2_class14_activated: BTreeSet::new(),
-            baseline_level2_tree_activated: BTreeSet::new(),
             level2_tree_activated: BTreeSet::new(),
-            baseline_level2_class5_activated: BTreeSet::new(),
             level2_class5_activated: BTreeSet::new(),
-            baseline_level2_model45_activated: BTreeSet::new(),
             level2_model45_activated: BTreeSet::new(),
         };
-        session.campaign_state = Some(CampaignState::from_level2_with_terrain(&session, &terrain));
-        session.bootstrap_core = None;
-        session
+        Self {
+            session: CampaignSession::new(definition, live),
+        }
     }
 
-    /// Borrow the canonical campaign carrier. `None` exists only during the
-    /// constructor bootstrap, before the fully assembled reset session can
-    /// be projected into its own carrier.
+    /// Borrow the canonical campaign carrier.
     pub(crate) fn campaign_state(&self) -> &CampaignState {
-        self.campaign_state
-            .as_ref()
-            .expect("Level 2 campaign state installed after construction")
+        &self.session.state
     }
 
-    /// Mutably borrow the canonical campaign carrier after construction.
+    /// Mutably borrow the canonical campaign carrier.
     pub(crate) fn campaign_state_mut(&mut self) -> &mut CampaignState {
-        self.campaign_state
-            .as_mut()
-            .expect("Level 2 campaign state installed after construction")
+        &mut self.session.state
     }
 
-    /// Borrow the one generation-bound production journal. During constructor
-    /// bootstrap it lives in the same handoff carrier as the other core state;
-    /// every usable session resolves it from `CampaignState`.
+    /// Borrow the one generation-bound production journal.
     #[must_use]
     pub(crate) fn effect_journal(&self) -> &crate::campaign::journal::EffectJournal {
-        if let Some(campaign) = &self.campaign_state {
-            &campaign.core().effect_journal
-        } else {
-            &self
-                .bootstrap_core
-                .as_ref()
-                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
-                .effect_journal
-        }
+        &self.session.state.live.core.effect_journal
     }
 
     fn effect_journal_mut(&mut self) -> &mut crate::campaign::journal::EffectJournal {
-        if let Some(campaign) = &mut self.campaign_state {
-            &mut campaign.core_mut().effect_journal
-        } else {
-            &mut self
-                .bootstrap_core
-                .as_mut()
-                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
-                .effect_journal
-        }
+        &mut self.session.state.live.core.effect_journal
     }
 
     /// Append to the canonical journal before updating the legacy Level 2
@@ -2432,19 +2887,19 @@ impl Level2ResetSession {
     /// generic CF-12 reader replaces it.
     fn push_dispatch_effect(&mut self, event: Level2DispatchEvent) {
         self.flush_shared_effects();
-        let turn = self.runtime().global_turn;
+        let turn = self.session.state.live.core.runtime.global_turn;
         self.effect_journal_mut()
             .append_dispatch(turn, event.clone());
-        Vec::push(&mut self.dispatch_events, event);
+        Vec::push(&mut self.session.state.scratch.dispatch_events, event);
     }
 
     /// Record an authoritative flight/audio effect before retaining the old
     /// per-subsystem projection consumed by existing qualification tools.
     fn push_flight_effect(&mut self, event: FlightEvent) {
         self.flush_shared_effects();
-        let turn = self.runtime().global_turn;
+        let turn = self.session.state.live.core.runtime.global_turn;
         self.effect_journal_mut().append_flight(turn, event);
-        Vec::push(&mut self.shared_spells.events, event);
+        Vec::push(&mut self.session.state.live.shared_spells.events, event);
     }
 
     fn append_context_effects(&mut self, events: Vec<FlightEvent>) {
@@ -2452,7 +2907,7 @@ impl Level2ResetSession {
             return;
         }
         self.flush_shared_effects();
-        let turn = self.runtime().global_turn;
+        let turn = self.session.state.live.core.runtime.global_turn;
         let journal = self.effect_journal_mut();
         for event in events {
             journal.append_flight(turn, event);
@@ -2460,11 +2915,16 @@ impl Level2ResetSession {
     }
 
     fn flush_shared_effects(&mut self) {
-        let effects = self.shared_spells.drain_pending_effects();
+        let effects = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .drain_pending_effects();
         if effects.is_empty() {
             return;
         }
-        let turn = self.runtime().global_turn;
+        let turn = self.session.state.live.core.runtime.global_turn;
         let journal = self.effect_journal_mut();
         for effect in effects {
             match effect {
@@ -2483,11 +2943,11 @@ impl Level2ResetSession {
 
     #[must_use]
     pub(crate) fn source_arena(&self) -> &SourceArena {
-        &self.economy
+        &self.session.state.live.economy
     }
 
     pub(crate) fn source_arena_mut(&mut self) -> &mut SourceArena {
-        &mut self.economy
+        &mut self.session.state.live.economy
     }
 
     /// Borrow the one terrain owner used by all Level 2 production handlers.
@@ -2501,22 +2961,22 @@ impl Level2ResetSession {
     }
 
     #[must_use]
-    pub const fn profile(&self) -> FlightProfile {
-        self.profile
+    pub fn profile(&self) -> FlightProfile {
+        self.session.definition.profile
     }
 
     /// Immutable owner-package identity carried from the validated Level 2
     /// inspection into this live reset session.
     #[must_use]
     pub fn package_sha256(&self) -> &str {
-        &self.package_sha256
+        &self.session.definition.package_sha256
     }
 
     /// Borrow the immutable source-exact Level 2 collision bank retained by
     /// this reset session. A historical v3 session has no collision authority.
     #[must_use]
-    pub const fn collision_mask_bank(&self) -> Option<&CollisionMaskBank> {
-        self.collision_masks.as_ref()
+    pub fn collision_mask_bank(&self) -> Option<&CollisionMaskBank> {
+        self.session.definition.collision_masks.as_ref()
     }
 
     /// Query remc2 model-45 occupancy through the authoritative session bank.
@@ -2535,14 +2995,22 @@ impl Level2ResetSession {
     /// package's raw selector; the campaign route binds its own entry state
     /// before the first generation is exposed.
     pub fn select_level2_campaign_entry_stage(&mut self) {
-        self.runtime
+        let rebase_initial_definition = self.session.generation == 0
+            && ResetReceipt::from_state(&self.session.state.live) == self.session.baseline_hash;
+        self.session
+            .state
+            .live
+            .core
+            .runtime
             .set_level2_objective_text_selector_for(0, LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX);
-        self.campaign_state_mut().rebase_core();
+        if rebase_initial_definition {
+            self.session.rebase();
+        }
     }
 
     #[must_use]
     pub fn entities(&self) -> &[EntitySnapshot] {
-        self.economy.entities()
+        self.session.state.live.economy.entities()
     }
 
     /// Return the source `str_D93C0` byte-2 flags for one entity-parameter
@@ -2552,7 +3020,9 @@ impl Level2ResetSession {
     /// substitute an entity-pool slot.
     #[must_use]
     pub fn level2_entity_parameter_flags(&self, selector: u8) -> Option<u8> {
-        self.presentation
+        self.session
+            .definition
+            .presentation
             .entity_parameters
             .get(usize::from(selector))
             .map(|record| record[2])
@@ -2560,15 +3030,7 @@ impl Level2ResetSession {
 
     #[must_use]
     pub fn players(&self) -> &[PlayerSnapshot] {
-        if let Some(campaign) = &self.campaign_state {
-            &campaign.core().players
-        } else {
-            &self
-                .bootstrap_core
-                .as_ref()
-                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
-                .players
-        }
+        &self.session.state.live.core.players
     }
 
     /// Set the selected objective stage value consumed by source model-32
@@ -2580,8 +3042,16 @@ impl Level2ResetSession {
                 "Level 2 objective stage state {state} is out of bounds"
             )));
         }
-        self.level2_selected_objective_stage_state = state;
-        self.runtime.set_level2_objective_stage_state(state);
+        self.session
+            .state
+            .live
+            .level2_selected_objective_stage_state = state;
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .set_level2_objective_stage_state(state);
         Ok(())
     }
 
@@ -2594,18 +3064,34 @@ impl Level2ResetSession {
     /// yet expose the exact active BUILD-chain relation used by remc2.
     pub(super) fn advance_level2_objectives(&mut self) {
         let owner_colors = self
+            .session
+            .state
+            .live
+            .core
             .players
             .iter()
-            .take(usize::from(self.runtime.player_count))
+            .take(usize::from(
+                self.session.state.live.core.runtime.player_count,
+            ))
             .filter(|player| player.active_player_index >= 0)
             .map(|player| usize::from(player.player_color_index()))
             .collect::<Vec<_>>();
-        let stage_count = usize::from(self.runtime.stage_index).min(self.runtime.stages.len());
-        let player_x = i32::from(self.state.position.x as i16);
-        let player_y = i32::from(self.state.position.y as i16);
+        let stage_count = usize::from(self.session.state.live.core.runtime.stage_index)
+            .min(self.session.state.live.core.runtime.stages.len());
+        let player_x = i32::from(self.session.state.live.core.state.position.x as i16);
+        let player_y = i32::from(self.session.state.live.core.state.position.y as i16);
 
         for objective_index in owner_colors {
-            let Some(objective) = self.runtime.objectives.get(objective_index).copied() else {
+            let Some(objective) = self
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .objectives
+                .get(objective_index)
+                .copied()
+            else {
                 continue;
             };
             if objective.done != 0 || objective.is_level_end != 0 {
@@ -2616,7 +3102,8 @@ impl Level2ResetSession {
                 if objective.stage_selectors[stage_index] != 1 {
                     continue;
                 }
-                let Some(stage) = self.runtime.stages.get(stage_index) else {
+                let Some(stage) = self.session.state.live.core.runtime.stages.get(stage_index)
+                else {
                     continue;
                 };
                 let achieved = match stage.kind {
@@ -2629,7 +3116,11 @@ impl Level2ResetSession {
                         if stage.flags & 1 == 0 {
                             false
                         } else if let RuntimeRelation::LiveEntity(target_index) = stage.relation {
-                            self.players
+                            self.session
+                                .state
+                                .live
+                                .core
+                                .players
                                 .iter()
                                 .find(|player| player.entity_index == target_index)
                                 .is_some_and(|player| player.objective_player_state() == Some(0))
@@ -2654,12 +3145,17 @@ impl Level2ResetSession {
                             false
                         } else {
                             let target_is_live =
-                                self.economy.authored_bees().iter().any(|source| {
-                                    source.active
-                                        && source.authored_index
-                                            == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX
-                                });
-                            self.level2_bees_activated
+                                self.session.state.live.economy.authored_bees().iter().any(
+                                    |source| {
+                                        source.active
+                                            && source.authored_index
+                                                == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX
+                                    },
+                                );
+                            self.session
+                                .state
+                                .live
+                                .level2_bees_activated
                                 .contains(&LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
                                 && !target_is_live
                         }
@@ -2678,25 +3174,37 @@ impl Level2ResetSession {
                 continue;
             }
             for stage_index in completed {
-                self.runtime.set_level2_objective_stage_selector_for(
-                    objective_index,
-                    stage_index,
-                    2,
-                );
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .set_level2_objective_stage_selector_for(objective_index, stage_index, 2);
                 if objective_index == 0 && stage_index == LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX {
-                    self.level2_selected_objective_stage_state = 2;
+                    self.session
+                        .state
+                        .live
+                        .level2_selected_objective_stage_state = 2;
                 }
             }
-            let next_stage = self.runtime.objectives[objective_index]
+            let next_stage = self.session.state.live.core.runtime.objectives[objective_index]
                 .stage_selectors
                 .iter()
                 .take(stage_count)
                 .position(|selector| *selector == 1);
             if let Some(next_stage) = next_stage {
-                self.runtime
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
                     .set_level2_objective_text_selector_for(objective_index, next_stage);
             } else {
-                self.runtime
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
                     .set_level2_objective_level_end_for(objective_index, 1);
             }
         }
@@ -2704,17 +3212,20 @@ impl Level2ResetSession {
 
     #[must_use]
     pub const fn level2_selected_objective_stage_state(&self) -> u8 {
-        self.level2_selected_objective_stage_state
+        self.session
+            .state
+            .live
+            .level2_selected_objective_stage_state
     }
 
     #[must_use]
     pub const fn level2_objective_pause(&self) -> u8 {
-        self.level2_objective_pause
+        self.session.state.live.level2_objective_pause
     }
 
     #[must_use]
     pub const fn level2_objective_done(&self) -> bool {
-        self.level2_objective_done
+        self.session.state.live.level2_objective_done
     }
 
     /// Move one imported source entity through the lossless Level 2 seam.
@@ -2727,14 +3238,24 @@ impl Level2ResetSession {
         entity_index: u16,
         position: Position,
     ) -> Result<()> {
-        let Some(entity) = self.economy.entities.get_mut(usize::from(entity_index)) else {
+        let Some(entity) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(entity_index))
+        else {
             return Err(NativeWorldError::new(format!(
                 "Level 2 entity index {entity_index} is out of bounds"
             )));
         };
         let active = entity.active;
         entity.set_position(position);
-        self.economy
+        self.session
+            .state
+            .live
+            .economy
             .map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index,
@@ -2743,8 +3264,8 @@ impl Level2ResetSession {
                 y: position.y,
             })
             .map_err(NativeWorldError::new)?;
-        if entity_index == self.state.entity_index {
-            self.state.position = position;
+        if entity_index == self.session.state.live.core.state.entity_index {
+            self.session.state.live.core.state.position = position;
         }
         Ok(())
     }
@@ -2759,20 +3280,27 @@ impl Level2ResetSession {
         F: FnMut(&EntitySnapshot) -> Position,
     {
         const SWITCH_HALF_WIDTH: i16 = 121;
-        let overlap = self.economy.entities.iter().any(|entity| {
-            entity.active
-                && entity.class == 3
-                && entity.model == 0
-                && entity.life >= 0
-                && crate::level1_mission::source_entities_overlap_xy(
-                    switch_position,
-                    SWITCH_HALF_WIDTH,
-                    SWITCH_HALF_WIDTH,
-                    entity_position(entity),
-                    SWITCH_HALF_WIDTH,
-                    SWITCH_HALF_WIDTH,
-                )
-        });
+        let overlap = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .any(|entity| {
+                entity.active
+                    && entity.class == 3
+                    && entity.model == 0
+                    && entity.life >= 0
+                    && crate::level1_mission::source_entities_overlap_xy(
+                        switch_position,
+                        SWITCH_HALF_WIDTH,
+                        SWITCH_HALF_WIDTH,
+                        entity_position(entity),
+                        SWITCH_HALF_WIDTH,
+                        SWITCH_HALF_WIDTH,
+                    )
+            });
         overlap == expected_overlap
     }
 
@@ -2785,7 +3313,10 @@ impl Level2ResetSession {
         F: FnMut(&EntitySnapshot) -> Position,
     {
         const SWITCH_HALF_WIDTH: i16 = 121;
-        self.economy
+        self.session
+            .state
+            .live
+            .economy
             .entities
             .iter()
             .find(|entity| {
@@ -2813,6 +3344,9 @@ impl Level2ResetSession {
     /// participates in this source callback.
     pub fn level2_authored_switch_matches(&self, authored_index: u16) -> Result<bool> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -2845,15 +3379,24 @@ impl Level2ResetSession {
     /// a stale or cross-player holder relation cannot become authority.
     pub fn nyphur_participant(&self) -> Result<Level2NyphurParticipant> {
         let baseline_entity = self
+            .session
+            .baseline
             .economy
-            .baseline_entities
+            .entities
             .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
         level2_nyphur_participant(
-            &self.players,
-            &self.economy.entities,
-            &self.runtime,
+            &self.session.state.live.core.players,
+            &self.session.state.live.economy.entities,
+            &self.session.state.live.core.runtime,
             baseline_entity,
+            |source_slot| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .relation_identity(source_slot)
+            },
         )
     }
 
@@ -2861,19 +3404,19 @@ impl Level2ResetSession {
     /// spell/session state. Unknown hand selectors and broken parent links are
     /// rejected so presentation cannot fall back to a neighboring asset row.
     pub fn day_hud(&self) -> Result<Level2DayHudSnapshot> {
-        let local_player_slot = self.runtime.local_player_slot;
-        let local_player = &self.shared_spells.local_player;
-        let local_entity = &self.shared_spells.player_entity;
+        let local_player_slot = self.session.state.live.core.runtime.local_player_slot;
+        let local_player = &self.session.state.live.shared_spells.local_player;
+        let local_entity = &self.session.state.live.shared_spells.player_entity;
         if local_player.slot != local_player_slot
-            || local_player.entity_index != self.state.entity_index
-            || local_entity.index != self.state.entity_index
+            || local_player.entity_index != self.session.state.live.core.state.entity_index
+            || local_entity.index != self.session.state.live.core.state.entity_index
         {
             return Err(NativeWorldError::new(
                 "Level 2 Day HUD local player/entity relation is invalid",
             ));
         }
 
-        let global_mana_denominator = self.economy.owner_mana_global();
+        let global_mana_denominator = self.session.state.live.economy.owner_mana_global();
         if global_mana_denominator <= 0 {
             return Err(NativeWorldError::new(
                 "Level 2 Day HUD global mana denominator is not positive",
@@ -2910,11 +3453,21 @@ impl Level2ResetSession {
                 )));
             }
             let holder = self
+                .session
+                .state
+                .live
                 .shared_spells
                 .holders
                 .iter()
-                .chain(self.shared_spells.pickups().iter())
-                .chain(self.shared_spells.dynamic_pickups().iter())
+                .chain(self.session.state.live.shared_spells.pickups().iter())
+                .chain(
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .dynamic_pickups()
+                        .iter(),
+                )
                 .find(|holder| holder.index == holder_index)
                 .ok_or_else(|| {
                     NativeWorldError::new(format!(
@@ -2953,38 +3506,46 @@ impl Level2ResetSession {
                 control_flags: holder.control_flags,
                 max_mana: holder.max_mana,
                 mana_regen: holder.mana_regen,
-                caster_mana: self.shared_spells.player_mana(),
+                caster_mana: self.session.state.live.shared_spells.player_mana(),
                 frame_selector: if holder.active_value == 0 { 1 } else { 2 },
                 icon_selector,
                 level_text_selector,
                 draw_admitted: level2_day_spell_draw_admitted(
                     holder.model,
                     holder.active_value,
-                    self.level2_day_hud_color_phase_1,
+                    self.session.state.scratch.level2_day_hud_color_phase_1,
                 ),
             })
         };
 
         Ok(Level2DayHudSnapshot {
-            tick: self.state.tick,
+            tick: self.session.state.live.core.state.tick,
             local_player_slot,
             local_player_entity_index: local_entity.index,
             local_player_color_index,
             local_player_active: local_player.active_player_index >= 0 && local_entity.active,
-            hit_frame_time_pre_draw: self.level2_day_hud_hit_frame_time_pre_draw,
-            color_phase_1: self.level2_day_hud_color_phase_1,
-            color_phase_2: self.level2_day_hud_color_phase_2,
+            hit_frame_time_pre_draw: self
+                .session
+                .state
+                .scratch
+                .level2_day_hud_hit_frame_time_pre_draw,
+            color_phase_1: self.session.state.scratch.level2_day_hud_color_phase_1,
+            color_phase_2: self.session.state.scratch.level2_day_hud_color_phase_2,
             local_player_control_flags: local_entity.control_flags,
             local_player_life: local_entity.life,
             local_player_max_life: local_entity.max_life,
-            local_player_mana: self.shared_spells.player_mana(),
+            local_player_mana: self.session.state.live.shared_spells.player_mana(),
             local_player_max_mana: local_entity.max_mana,
             global_mana_denominator,
             // DrawTopStatusBar_2D710's direct MSPRD0-0 roots and geometry.
             minimap_panel_selector: 40,
             castle_panel_selector: 54,
             balloon_panel_selector: 54,
-            player_panel_selector: self.level2_day_hud_player_panel_selector,
+            player_panel_selector: self
+                .session
+                .state
+                .scratch
+                .level2_day_hud_player_panel_selector,
             player_icon_selector: 43,
             life_mana_icon_selector: 42,
             life_palette_index,
@@ -3006,7 +3567,7 @@ impl Level2ResetSession {
     /// the production Nyphur dispatcher.
     #[must_use]
     pub const fn nyphur_dispatch_state_byte(&self) -> i8 {
-        self.nyphur_dispatcher.state_byte()
+        self.session.state.live.nyphur_dispatcher.state_byte()
     }
 
     /// Read the source-owned common upkeep carrier after the Nyphur source
@@ -3014,18 +3575,35 @@ impl Level2ResetSession {
     /// dispatcher increments byte `0x3E` after the callback returns.
     pub fn nyphur_common_upkeep(&self) -> Result<Level2NyphurCommonUpkeepSnapshot> {
         let entity = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
-            .find(|entity| entity.index == self.nyphur_dispatcher.common_upkeep.source_slot)
+            .find(|entity| {
+                entity.index
+                    == self
+                        .session
+                        .state
+                        .live
+                        .nyphur_dispatcher
+                        .common_upkeep
+                        .source_slot
+            })
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur common source row is absent"))?;
-        Ok(self.nyphur_dispatcher.common_upkeep(entity.phase))
+        Ok(self
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .common_upkeep(entity.phase))
     }
 
     /// Ordered `sub_12910` traces emitted by the real Level 2 source pass.
     #[must_use]
     pub fn nyphur_dispatch_traces(&self) -> &[Level2NyphurDispatchTrace] {
-        &self.nyphur_dispatch_traces
+        &self.session.state.scratch.nyphur_dispatch_traces
     }
 
     /// Evaluate the pinned `sub_63570` visibility consumer for Nyphur.
@@ -3037,13 +3615,22 @@ impl Level2ResetSession {
     pub fn nyphur_visibility(&self) -> Result<Level2NyphurVisibility> {
         let participant = self.nyphur_participant()?;
         let owner = self
+            .session
+            .state
+            .live
             .shared_spells
             .players
             .get(usize::from(participant.player_slot))
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur visibility owner is absent"))?;
         let owner_visibility_mode = owner.record_bytes()[447];
-        let beyond_sight = self.shared_spells.beyond_sight;
-        let local_entity_index = self.shared_spells.local_player.entity_index;
+        let beyond_sight = self.session.state.live.shared_spells.beyond_sight;
+        let local_entity_index = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .local_player
+            .entity_index;
         let beyond_sight_holder_present =
             beyond_sight.is_some_and(|state| state.parent_entity_index == local_entity_index);
         let beyond_sight_active = beyond_sight.is_some_and(|state| {
@@ -3055,15 +3642,24 @@ impl Level2ResetSession {
         let family4_holder_index = owner.enabled_spell_holders[4];
         let family4_gate_active = family4_holder_index != 0
             && (self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .get(usize::from(family4_holder_index))
                 .is_some_and(|entity| entity.active_value != 0)
                 || self
+                    .session
+                    .state
+                    .live
                     .shared_spells
                     .pickup(family4_holder_index)
                     .is_some_and(|entity| entity.active_value != 0)
                 || self
+                    .session
+                    .state
+                    .live
                     .shared_spells
                     .holders
                     .iter()
@@ -3090,53 +3686,45 @@ impl Level2ResetSession {
 
     #[must_use]
     pub fn runtime(&self) -> &RuntimeSnapshot {
-        if let Some(campaign) = &self.campaign_state {
-            &campaign.core().runtime
-        } else {
-            &self
-                .bootstrap_core
-                .as_ref()
-                .expect("Level 2 canonical runtime bootstrap is present until campaign install")
-                .runtime
-        }
+        &self.session.state.live.core.runtime
     }
 
     #[must_use]
     pub fn bad_stones(&self) -> &[Level2BadStone] {
-        &self.bad_stones
+        &self.session.state.live.bad_stones
     }
 
     #[must_use]
     pub fn shared_spells(&self) -> &Level2SharedSpellResetSession {
-        &self.shared_spells
+        &self.session.state.live.shared_spells
     }
 
     #[cfg(not(test))]
     #[must_use]
     pub fn shared_spells_mut(&mut self) -> &mut Level2SharedSpellResetSession {
-        &mut self.shared_spells
+        &mut self.session.state.live.shared_spells
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn shared_spells_mut(&mut self) -> Level2SharedSpellTestView<'_> {
+    pub(crate) fn shared_spells_mut(&mut self) -> Level2SharedSpellTestView<'_> {
         Level2SharedSpellTestView { session: self }
     }
 
     #[must_use]
     pub fn economy(&self) -> &Level2EconomyState {
-        &self.economy
+        &self.session.state.live.economy
     }
 
     #[cfg(not(test))]
     #[must_use]
     pub fn economy_mut(&mut self) -> &mut Level2EconomyState {
-        &mut self.economy
+        &mut self.session.state.live.economy
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn economy_mut(&mut self) -> Level2EconomyTestView<'_> {
+    pub(crate) fn economy_mut(&mut self) -> Level2EconomyTestView<'_> {
         Level2EconomyTestView { session: self }
     }
 
@@ -3149,16 +3737,21 @@ impl Level2ResetSession {
         parent_entity_index: u16,
         position: Position,
     ) -> Option<Level2SpellReplacement> {
-        let economy_before = self.economy.clone();
-        let replacement =
-            self.economy
-                .allocate_spell_replacement(family, parent_entity_index, position)?;
+        let economy_before = self.session.state.live.economy.clone();
+        let replacement = self.session.state.live.economy.allocate_spell_replacement(
+            family,
+            parent_entity_index,
+            position,
+        )?;
         if self
+            .session
+            .state
+            .live
             .shared_spells
             .materialize_spell_replacement_pickup(replacement)
             .is_err()
         {
-            self.economy = economy_before;
+            self.session.state.live.economy = economy_before;
             return None;
         }
         Some(replacement)
@@ -3174,6 +3767,9 @@ impl Level2ResetSession {
         action: u8,
     ) -> Option<u16> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3187,12 +3783,11 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        self.economy.allocate_mana_attraction_field(
-            authored_index,
-            position,
-            feature.stage_tag,
-            action,
-        )
+        self.session
+            .state
+            .live
+            .economy
+            .allocate_mana_attraction_field(authored_index, position, feature.stage_tag, action)
     }
 
     /// Materialize one authored class-14 subtype-3/5 row through the pinned
@@ -3205,6 +3800,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredClass14Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3218,7 +3816,7 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        self.economy.allocate_authored_class14(
+        self.session.state.live.economy.allocate_authored_class14(
             authored_index,
             u8::try_from(feature.subtype).ok()?,
             feature.activation_group,
@@ -3236,6 +3834,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredTreeSource> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3250,7 +3851,10 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        self.economy
+        self.session
+            .state
+            .live
+            .economy
             .allocate_authored_tree(authored_index, position)
     }
 
@@ -3264,6 +3868,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredModel6Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3272,19 +3879,16 @@ impl Level2ResetSession {
                 feature.index == authored_index && feature.kind == 10 && feature.subtype == 6
             })?;
         let position = feature.world_position(
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain()
+            self.session
+                .state
+                .live
+                .terrain
                 .ground_height(feature.world_position(0)),
         );
-        self.economy.allocate_authored_model6(
+        self.session.state.live.economy.allocate_authored_model6(
             authored_index,
             position,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
+            &self.session.state.live.terrain,
         )
     }
 
@@ -3295,6 +3899,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredModel59Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3306,7 +3913,10 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        self.economy
+        self.session
+            .state
+            .live
+            .economy
             .allocate_authored_model59(authored_index, position)
     }
 
@@ -3318,6 +3928,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredModel53Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3330,9 +3943,16 @@ impl Level2ResetSession {
                 .ground_height(feature.world_position(0)),
         );
         let source = self
+            .session
+            .state
+            .live
             .economy
             .allocate_authored_model53(authored_index, position)?;
-        self.runtime
+        self.session
+            .state
+            .live
+            .core
+            .runtime
             .bind_authored_stage_entity(authored_index, source.source_entity_index);
         Some(source)
     }
@@ -3345,6 +3965,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredModel32Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3358,15 +3981,12 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        self.economy.allocate_authored_model32(
+        self.session.state.live.economy.allocate_authored_model32(
             authored_index,
             stage_tag,
             objective_stage_index,
             position,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
+            &self.session.state.live.terrain,
         )
     }
 
@@ -3379,6 +3999,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredModel17Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3390,13 +4013,10 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        self.economy.allocate_authored_model17(
+        self.session.state.live.economy.allocate_authored_model17(
             authored_index,
             position,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
+            &self.session.state.live.terrain,
         )
     }
 
@@ -3409,6 +4029,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredModel22Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3425,14 +4048,11 @@ impl Level2ResetSession {
             y: feature.parameter_1.wrapping_shl(8).wrapping_add(128),
             z: position.z,
         };
-        self.economy.allocate_authored_model22(
+        self.session.state.live.economy.allocate_authored_model22(
             authored_index,
             axis_position,
             position,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
+            &self.session.state.live.terrain,
         )
     }
 
@@ -3443,6 +4063,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredModel76Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3454,19 +4077,16 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        let source = self.economy.allocate_authored_model76(
+        let source = self.session.state.live.economy.allocate_authored_model76(
             authored_index,
             position,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
+            &self.session.state.live.terrain,
         )?;
         // `AddFireSpheres_4F2A0` calls `SetEntityIndexAndRot_49CD0` with
         // particle 340 for every linked child. The presentation table is the
         // authoritative owner of that selector row, so bind its four axes
         // once after the atomic economy allocation.
-        if let Some(particle) = self.presentation.particles.get(340) {
+        if let Some(particle) = self.session.definition.presentation.particles.get(340) {
             let collision_yaw =
                 i16::try_from(particle.rotation_speed / 2).expect("model-76 particle yaw fits i16");
             let collision_pitch =
@@ -3492,6 +4112,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredModel13Source> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3503,13 +4126,10 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        self.economy.allocate_authored_model13(
+        self.session.state.live.economy.allocate_authored_model13(
             authored_index,
             position,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
+            &self.session.state.live.terrain,
         )
     }
 
@@ -3523,11 +4143,20 @@ impl Level2ResetSession {
         if feature.kind != 5 || feature.subtype != 2 {
             return None;
         }
-        let stage_var = self.mission.level2_authored_stage_variable_for(feature)?;
+        let stage_var = self
+            .session
+            .state
+            .live
+            .mission
+            .level2_authored_stage_variable_for(feature)?;
         if stage_var.kind != 2 || !stage_var.subtype_match() || stage_var.flags & 0x60 != 0 {
             return None;
         }
         let runtime_stage_var = self
+            .session
+            .state
+            .live
+            .core
             .runtime
             .stage_variables
             .get(usize::from(stage_var.index))?;
@@ -3560,14 +4189,11 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        let source = self.economy.allocate_authored_bee(
+        let source = self.session.state.live.economy.allocate_authored_bee(
             feature.index,
             position,
             stage_route,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
+            &self.session.state.live.terrain,
         )?;
         if let Some(route) = stage_route {
             // This was checked above against the same bounded runtime table.
@@ -3590,6 +4216,9 @@ impl Level2ResetSession {
         authored_index: u16,
     ) -> Option<Level2AuthoredBeeSource> {
         let feature = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -3605,18 +4234,18 @@ impl Level2ResetSession {
 
     #[must_use]
     pub fn ordinary(&self) -> &Level2OrdinaryResetSession {
-        &self.ordinary
+        &self.session.state.live.ordinary
     }
 
     #[cfg(not(test))]
     #[must_use]
     pub fn ordinary_mut(&mut self) -> &mut Level2OrdinaryResetSession {
-        &mut self.ordinary
+        &mut self.session.state.live.ordinary
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn ordinary_mut(&mut self) -> Level2OrdinaryTestView<'_> {
+    pub(crate) fn ordinary_mut(&mut self) -> Level2OrdinaryTestView<'_> {
         Level2OrdinaryTestView { session: self }
     }
 }
@@ -3657,12 +4286,27 @@ impl Level2EconomyTestView<'_> {
         &mut self,
         callback: impl FnOnce(&mut Level2EconomyState, &mut SessionTerrain) -> R,
     ) -> R {
-        let session = &mut *self.session;
-        let campaign_state = session
-            .campaign_state
-            .as_mut()
-            .expect("Level 2 campaign state installed before test borrow");
-        callback(&mut session.economy, campaign_state.terrain_mut())
+        let live = &mut self.session.session.state.live;
+        callback(&mut live.economy.economy, &mut live.terrain)
+    }
+
+    pub(crate) fn reset(self) {
+        self.session.reset();
+    }
+
+    pub(crate) fn step_castle_action(&mut self, castle_slot: u16) -> bool {
+        let reset_free_slots = self
+            .session
+            .session
+            .baseline
+            .economy
+            .economy
+            .free_slots
+            .clone();
+        let live = &mut self.session.session.state.live;
+        live.economy
+            .economy
+            .step_castle_action(castle_slot, &mut live.terrain, &reset_free_slots)
     }
 
     terrain_method!(allocate_authored_archer,
@@ -3709,8 +4353,6 @@ impl Level2EconomyTestView<'_> {
         (source_slot: u16) -> bool);
     terrain_method!(step_authored_model13_slot,
         (source_slot: u16) -> bool);
-    terrain_method!(step_castle_action,
-        (castle_slot: u16) -> bool);
     terrain_method!(step_castle_child_terminal_slot,
         (source_slot: u16) -> bool);
     terrain_method!(step_castle_defender_slot,
@@ -3762,12 +4404,12 @@ impl Level2SharedSpellTestView<'_> {
         &mut self,
         callback: impl FnOnce(&mut Level2SharedSpellResetSession, &SessionTerrain) -> R,
     ) -> R {
-        let session = &mut *self.session;
-        let campaign_state = session
-            .campaign_state
-            .as_ref()
-            .expect("Level 2 campaign state installed before test borrow");
-        callback(&mut session.shared_spells, campaign_state.terrain())
+        let live = &mut self.session.session.state.live;
+        callback(&mut live.shared_spells, &live.terrain)
+    }
+
+    pub(crate) fn reset(self) {
+        self.session.reset();
     }
 
     pub(crate) fn step_speed_pickup(
@@ -3853,12 +4495,12 @@ impl Level2OrdinaryTestView<'_> {
         &mut self,
         callback: impl FnOnce(&mut Level2OrdinaryResetSession, &SessionTerrain) -> R,
     ) -> R {
-        let session = &mut *self.session;
-        let campaign_state = session
-            .campaign_state
-            .as_ref()
-            .expect("Level 2 campaign state installed before test borrow");
-        callback(&mut session.ordinary, campaign_state.terrain())
+        let live = &mut self.session.session.state.live;
+        callback(&mut live.ordinary, &live.terrain)
+    }
+
+    pub(crate) fn reset(self) {
+        self.session.reset();
     }
 
     pub(crate) fn step_house_action_52(&mut self, source_slot: u16) -> Vec<HouseStepEvent> {
@@ -3879,7 +4521,7 @@ impl Level2OrdinaryTestView<'_> {
 impl Level2ResetSession {
     #[must_use]
     pub fn goats(&self) -> &[GoatState] {
-        self.goats.goats()
+        self.session.state.live.goats.goats()
     }
 
     /// Queue one source-authoritative Goat hit for the next outer turn.
@@ -3891,7 +4533,10 @@ impl Level2ResetSession {
         damage: i32,
         attacker_entity_index: u16,
     ) -> Result<()> {
-        self.goats
+        self.session
+            .state
+            .live
+            .goats
             .inject_damage(
                 target_entity_index,
                 damage,
@@ -3902,15 +4547,15 @@ impl Level2ResetSession {
 
     #[must_use]
     pub const fn goat_outer_tick(&self) -> u32 {
-        self.goats.outer_tick()
+        self.session.state.live.goats.outer_tick()
     }
 
     #[must_use]
     pub fn goat_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
-        hasher.update(self.goats.outer_tick().to_le_bytes());
-        for (family_index, goat) in self.goats.goats().iter().enumerate() {
+        hasher.update(self.session.state.live.goats.outer_tick().to_le_bytes());
+        for (family_index, goat) in self.session.state.live.goats.goats().iter().enumerate() {
             hasher.update(goat.entity_index.to_le_bytes());
             hasher.update(goat.source_id.to_le_bytes());
             hasher.update(u8::from(goat.active).to_le_bytes());
@@ -3950,7 +4595,10 @@ impl Level2ResetSession {
             // action-11 child-chain damage propagation.  Hash its null
             // sentinel explicitly so reset/replay detects link mutations.
             hasher.update(
-                self.goats
+                self.session
+                    .state
+                    .live
+                    .goats
                     .child_links()
                     .get(family_index)
                     .copied()
@@ -3966,7 +4614,7 @@ impl Level2ResetSession {
     pub fn bad_stone_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
-        for stone in &self.bad_stones {
+        for stone in &self.session.state.live.bad_stones {
             hasher.update(stone.entity.record_bytes());
         }
         format!("{:x}", hasher.finalize())
@@ -3977,27 +4625,45 @@ impl Level2ResetSession {
         &self,
         source_slot: u16,
     ) -> Option<&[u8; ENTITY_PARAMETER_BYTES]> {
-        self.bad_stones
+        self.session
+            .state
+            .live
+            .bad_stones
             .iter()
             .find(|stone| stone.entity.index == source_slot)
             .and_then(|stone| stone.entity.parameter_relation)
-            .and_then(|index| self.presentation.entity_parameters.get(usize::from(index)))
+            .and_then(|index| {
+                self.session
+                    .definition
+                    .presentation
+                    .entity_parameters
+                    .get(usize::from(index))
+            })
     }
 
     #[must_use]
     pub fn bad_stone_particle_presentation(&self, source_slot: u16) -> Option<&ParticleParameter> {
         let index = self
+            .session
+            .state
+            .live
             .bad_stones
             .iter()
             .find(|stone| stone.entity.index == source_slot)
             .and_then(|stone| stone.entity.particle_parameter_index)?;
-        self.presentation.particles.get(usize::from(index))
+        self.session
+            .definition
+            .presentation
+            .particles
+            .get(usize::from(index))
     }
 
     #[must_use]
     pub fn bad_stone_sprite_selector(&self, source_slot: u16) -> Option<u8> {
         let particle = self.bad_stone_particle_presentation(source_slot)?;
-        self.presentation
+        self.session
+            .definition
+            .presentation
             .level_sprite_selectors
             .get(usize::from(particle.base_tmap))
             .copied()
@@ -4008,6 +4674,9 @@ impl Level2ResetSession {
         source_slot: u16,
     ) -> std::result::Result<SourceSpriteTemplateDisposition, String> {
         let stone = self
+            .session
+            .state
+            .live
             .bad_stones
             .iter()
             .find(|stone| stone.entity.index == source_slot)
@@ -4025,6 +4694,9 @@ impl Level2ResetSession {
 
     pub fn step_bad_stone_action_9(&mut self, source_slot: u16) -> Result<Level2BadStoneStep> {
         let Some(stone) = self
+            .session
+            .state
+            .live
             .bad_stones
             .iter_mut()
             .find(|stone| stone.entity.index == source_slot)
@@ -4033,16 +4705,12 @@ impl Level2ResetSession {
                 "Level 2 bad stone source slot {source_slot} is not active"
             )));
         };
-        let terrain = self
-            .campaign_state
-            .as_ref()
-            .expect("Level 2 campaign state owns canonical terrain")
-            .terrain();
+        let terrain = &self.session.state.live.terrain;
         Ok(stone.step_action_9(terrain))
     }
 
     pub(super) fn sync_level2_model76_targets_from_entities(&mut self) {
-        let source_arena = &mut self.economy;
+        let source_arena = &mut self.session.state.live.economy;
         for source in &mut source_arena.economy.authored_model76 {
             let Some(target) = source_arena
                 .entities
@@ -4066,10 +4734,15 @@ impl Level2ResetSession {
     /// history before an outer turn; the turn-start cursor deliberately
     /// excludes those stale entries from dispatcher output.
     pub(super) fn append_new_economy_events(&mut self, pass: u8, fallback_source_slot: u16) {
-        let events = self.economy.events();
-        let start = self.economy_event_cursor.min(events.len());
+        let events = self.session.state.live.economy.events();
+        let start = self
+            .session
+            .state
+            .scratch
+            .economy_event_cursor
+            .min(events.len());
         let pending = events[start..].to_vec();
-        self.economy_event_cursor = events.len();
+        self.session.state.scratch.economy_event_cursor = events.len();
         for event in pending {
             let source_slot = level2_economy_event_source_slot(event, fallback_source_slot);
             self.push_dispatch_effect(Level2DispatchEvent::Economy {
@@ -4092,19 +4765,29 @@ impl Level2ResetSession {
         // existence-only path activated group 8 on the first turn and could
         // manufacture spell sources prematurely.
         let completed_owner_color = self
+            .session
+            .state
+            .live
+            .core
             .players
             .iter()
             // Outside multiplayer remc2 inspects only the local objective;
             // multiplayer expands the scan to NumberOfPlayers. The runtime
             // player-count field is the lossless package equivalent of that
             // bounded participant list.
-            .take(usize::from(self.runtime.player_count))
+            .take(usize::from(
+                self.session.state.live.core.runtime.player_count,
+            ))
             .filter_map(|player| {
                 if player.active_player_index < 0 {
                     return None;
                 }
                 let color = player.player_color_index();
-                self.runtime
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
                     .objectives
                     .get(usize::from(color))
                     .filter(|objective| {
@@ -4116,10 +4799,13 @@ impl Level2ResetSession {
         let Some(completed_owner_color) = completed_owner_color else {
             return;
         };
-        if self.level2_group8_activated {
+        if self.session.state.live.level2_group8_activated {
             return;
         }
         let Some(root_slot) = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -4140,7 +4826,13 @@ impl Level2ResetSession {
             });
             return;
         };
-        let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(8) else {
+        let Some(group_row_indices) = self
+            .session
+            .state
+            .live
+            .mission
+            .level2_dispatch_group_rows(8)
+        else {
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -4151,7 +4843,10 @@ impl Level2ResetSession {
         let group_rows = group_row_indices
             .iter()
             .filter_map(|authored_index| {
-                self.mission
+                self.session
+                    .state
+                    .live
+                    .mission
                     .authored_features()
                     .iter()
                     .copied()
@@ -4169,13 +4864,9 @@ impl Level2ResetSession {
             });
             return;
         }
-        let economy_before = self.economy.clone();
-        let shared_before = self.shared_spells.clone();
-        let terrain = self
-            .campaign_state
-            .as_ref()
-            .expect("Level 2 campaign state is initialized")
-            .terrain();
+        let economy_before = self.session.state.live.economy.clone();
+        let shared_before = self.session.state.live.shared_spells.clone();
+        let terrain = &self.session.state.live.terrain;
         let mut constructed = Vec::with_capacity(group_rows.len());
         let result = (|| -> Result<()> {
             for feature in group_rows.iter().copied() {
@@ -4188,6 +4879,9 @@ impl Level2ResetSession {
                     )));
                 }
                 let source = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .allocate_authored_model45(
                         feature.index,
@@ -4207,8 +4901,8 @@ impl Level2ResetSession {
             Ok(())
         })();
         if let Err(error) = result {
-            self.economy = economy_before;
-            self.shared_spells = shared_before;
+            self.session.state.live.economy = economy_before;
+            self.session.state.live.shared_spells = shared_before;
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -4216,15 +4910,29 @@ impl Level2ResetSession {
             });
             return;
         }
-        self.level2_model45_activated
+        self.session
+            .state
+            .live
+            .level2_model45_activated
             .extend(constructed.iter().map(|(index, _)| *index));
-        if let Some(root) = self.economy.entities.get_mut(usize::from(root_slot)) {
+        if let Some(root) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(root_slot))
+        {
             root.disable_drawing();
         }
-        self.level2_group8_activated = true;
-        self.level2_objective_pause = 1;
-        self.level2_objective_done = true;
-        self.runtime
+        self.session.state.live.level2_group8_activated = true;
+        self.session.state.live.level2_objective_pause = 1;
+        self.session.state.live.level2_objective_done = true;
+        self.session
+            .state
+            .live
+            .core
+            .runtime
             .mark_level2_objective_done_for(completed_owner_color);
         self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
             pass,
@@ -4246,31 +4954,52 @@ impl Level2ResetSession {
     /// Their constructors are kept on the shared typed arena so the source
     /// order and all-or-nothing allocation boundary remain observable.
     pub(super) fn activate_level2_authored_group31(&mut self, pass: u8) {
-        if self.level2_class14_activated.contains(&244) || self.level2_tree_activated.contains(&260)
+        if self
+            .session
+            .state
+            .live
+            .level2_class14_activated
+            .contains(&244)
+            || self.session.state.live.level2_tree_activated.contains(&260)
         {
             return;
         }
-        let any_player_is_level_end_candidate = self.players.iter().any(|player| {
-            if player.active_player_index < 0 {
-                return false;
-            }
-            let Some(entity) = self.economy.entities.get(usize::from(player.entity_index)) else {
-                return false;
-            };
-            entity.active
-                && entity.class == 3
-                && entity.model == 0
-                && entity.life >= 0
-                && self
-                    .runtime
-                    .objectives
-                    .get(usize::from(player.player_color_index()))
-                    .is_some_and(|objective| objective.is_level_end != 0)
-        });
+        let any_player_is_level_end_candidate =
+            self.session.state.live.core.players.iter().any(|player| {
+                if player.active_player_index < 0 {
+                    return false;
+                }
+                let Some(entity) = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get(usize::from(player.entity_index))
+                else {
+                    return false;
+                };
+                entity.active
+                    && entity.class == 3
+                    && entity.model == 0
+                    && entity.life >= 0
+                    && self
+                        .session
+                        .state
+                        .live
+                        .core
+                        .runtime
+                        .objectives
+                        .get(usize::from(player.player_color_index()))
+                        .is_some_and(|objective| objective.is_level_end != 0)
+            });
         if !any_player_is_level_end_candidate {
             return;
         }
         let Some(root_slot) = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -4288,6 +5017,9 @@ impl Level2ResetSession {
             return;
         };
         let group_rows = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -4386,25 +5118,33 @@ impl Level2ResetSession {
             });
             return;
         };
-        let economy_before = self.economy.clone();
-        let switch_producers_before = self.level2_switch_producers_activated.clone();
-        let class14_before = self.level2_class14_activated.clone();
-        let tree_before = self.level2_tree_activated.clone();
+        let economy_before = self.session.state.live.economy.clone();
+        let switch_producers_before = self
+            .session
+            .state
+            .live
+            .level2_switch_producers_activated
+            .clone();
+        let class14_before = self.session.state.live.level2_class14_activated.clone();
+        let tree_before = self.session.state.live.level2_tree_activated.clone();
         let model12_position = model12_row.world_position(
             self.canonical_terrain()
                 .ground_height(model12_row.world_position(0)),
         );
-        let Some(model12_source) = self.economy.allocate_authored_switch_producer(
-            model12_row.index,
-            12,
-            u16::try_from(model12_row.stage_tag).unwrap_or_default(),
-            i16::try_from(model12_row.word_10).unwrap_or(i16::MAX),
-            model12_position,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
-        ) else {
+        let Some(model12_source) = self
+            .session
+            .state
+            .live
+            .economy
+            .allocate_authored_switch_producer(
+                model12_row.index,
+                12,
+                u16::try_from(model12_row.stage_tag).unwrap_or_default(),
+                i16::try_from(model12_row.word_10).unwrap_or(i16::MAX),
+                model12_position,
+                &self.session.state.live.terrain,
+            )
+        else {
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -4412,13 +5152,16 @@ impl Level2ResetSession {
             });
             return;
         };
-        self.level2_switch_producers_activated
+        self.session
+            .state
+            .live
+            .level2_switch_producers_activated
             .insert(model12_row.index);
         let Some(class14_source) = self.allocate_level2_authored_class14(feature.index) else {
-            self.economy = economy_before;
-            self.level2_switch_producers_activated = switch_producers_before;
-            self.level2_class14_activated = class14_before;
-            self.level2_tree_activated = tree_before;
+            self.session.state.live.economy = economy_before;
+            self.session.state.live.level2_switch_producers_activated = switch_producers_before;
+            self.session.state.live.level2_class14_activated = class14_before;
+            self.session.state.live.level2_tree_activated = tree_before;
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -4429,14 +5172,18 @@ impl Level2ResetSession {
             });
             return;
         };
-        self.level2_class14_activated.insert(feature.index);
+        self.session
+            .state
+            .live
+            .level2_class14_activated
+            .insert(feature.index);
         let mut tree_sources = Vec::with_capacity(tree_rows.len());
         for tree_row in tree_rows {
             let Some(tree_source) = self.allocate_level2_authored_tree(tree_row.index) else {
-                self.economy = economy_before;
-                self.level2_switch_producers_activated = switch_producers_before;
-                self.level2_class14_activated = class14_before;
-                self.level2_tree_activated = tree_before;
+                self.session.state.live.economy = economy_before;
+                self.session.state.live.level2_switch_producers_activated = switch_producers_before;
+                self.session.state.live.level2_class14_activated = class14_before;
+                self.session.state.live.level2_tree_activated = tree_before;
                 self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: root_slot,
@@ -4447,28 +5194,35 @@ impl Level2ResetSession {
                 });
                 return;
             };
-            self.level2_tree_activated.insert(tree_row.index);
+            self.session
+                .state
+                .live
+                .level2_tree_activated
+                .insert(tree_row.index);
             tree_sources.push(tree_source);
         }
         let switch_position = switch_row.world_position(
             self.canonical_terrain()
                 .ground_height(switch_row.world_position(0)),
         );
-        let Some(_) = self.economy.allocate_authored_switch_producer(
-            switch_row.index,
-            0,
-            switch_stage_tag,
-            switch_word_10,
-            switch_position,
-            self.campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state is initialized")
-                .terrain(),
-        ) else {
-            self.economy = economy_before;
-            self.level2_switch_producers_activated = switch_producers_before;
-            self.level2_class14_activated = class14_before;
-            self.level2_tree_activated = tree_before;
+        let Some(_) = self
+            .session
+            .state
+            .live
+            .economy
+            .allocate_authored_switch_producer(
+                switch_row.index,
+                0,
+                switch_stage_tag,
+                switch_word_10,
+                switch_position,
+                &self.session.state.live.terrain,
+            )
+        else {
+            self.session.state.live.economy = economy_before;
+            self.session.state.live.level2_switch_producers_activated = switch_producers_before;
+            self.session.state.live.level2_class14_activated = class14_before;
+            self.session.state.live.level2_tree_activated = tree_before;
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -4476,9 +5230,19 @@ impl Level2ResetSession {
             });
             return;
         };
-        self.level2_switch_producers_activated
+        self.session
+            .state
+            .live
+            .level2_switch_producers_activated
             .insert(switch_row.index);
-        if let Some(root) = self.economy.entities.get_mut(usize::from(root_slot)) {
+        if let Some(root) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(root_slot))
+        {
             root.disable_drawing();
         }
         self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
@@ -4515,6 +5279,9 @@ impl Level2ResetSession {
         subtype: i16,
     ) {
         let all_rows = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -4538,8 +5305,16 @@ impl Level2ResetSession {
         let pending_rows = all_rows
             .into_iter()
             .filter(|feature| {
-                !self.level2_class14_activated.contains(&feature.index)
+                !self
+                    .session
+                    .state
+                    .live
+                    .level2_class14_activated
+                    .contains(&feature.index)
                     && !self
+                        .session
+                        .state
+                        .live
                         .economy
                         .authored_class14()
                         .iter()
@@ -4549,13 +5324,13 @@ impl Level2ResetSession {
         if pending_rows.is_empty() {
             return;
         }
-        let economy_before = self.economy.clone();
-        let activated_before = self.level2_class14_activated.clone();
+        let economy_before = self.session.state.live.economy.clone();
+        let activated_before = self.session.state.live.level2_class14_activated.clone();
         let mut activated_rows = Vec::with_capacity(pending_rows.len());
         for feature in pending_rows {
             let Some(source_slot) = self.allocate_level2_authored_class14(feature.index) else {
-                self.economy = economy_before;
-                self.level2_class14_activated = activated_before;
+                self.session.state.live.economy = economy_before;
+                self.session.state.live.level2_class14_activated = activated_before;
                 self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
@@ -4566,7 +5341,11 @@ impl Level2ResetSession {
                 });
                 return;
             };
-            self.level2_class14_activated.insert(feature.index);
+            self.session
+                .state
+                .live
+                .level2_class14_activated
+                .insert(feature.index);
             activated_rows.push((feature.index, source_slot.source_entity_index));
         }
         self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
@@ -4594,6 +5373,9 @@ impl Level2ResetSession {
     /// intentionally excluded at construction, so it cannot race this path.
     pub(super) fn step_level2_imported_switch_roots(&mut self, pass: u8) {
         let mut source_slots = self
+            .session
+            .state
+            .live
             .level2_imported_switch_roots
             .iter()
             .map(|root| root.source_slot)
@@ -4601,6 +5383,9 @@ impl Level2ResetSession {
         source_slots.sort_unstable();
         for source_slot in source_slots {
             let Some(root) = self
+                .session
+                .state
+                .live
                 .level2_imported_switch_roots
                 .iter()
                 .find(|root| root.source_slot == source_slot && root.active)
@@ -4620,16 +5405,16 @@ impl Level2ResetSession {
                 continue;
             }
             let overlap = self.level2_model0_overlap_matches(position, model == 0, |entity| {
-                if entity.index == self.state.entity_index {
-                    self.state.position
+                if entity.index == self.session.state.live.core.state.entity_index {
+                    self.session.state.live.core.state.position
                 } else {
                     entity.position
                 }
             });
             let matched_owner = if model == 0 && overlap {
                 self.level2_model0_overlap_owner(position, |entity| {
-                    if entity.index == self.state.entity_index {
-                        self.state.position
+                    if entity.index == self.session.state.live.core.state.entity_index {
+                        self.session.state.live.core.state.position
                     } else {
                         entity.position
                     }
@@ -4651,6 +5436,9 @@ impl Level2ResetSession {
             };
             let next_phase = phase.wrapping_add(1);
             if let Some(root) = self
+                .session
+                .state
+                .live
                 .level2_imported_switch_roots
                 .iter_mut()
                 .find(|root| root.source_slot == source_slot)
@@ -4658,14 +5446,25 @@ impl Level2ResetSession {
                 root.cooldown = next_cooldown;
                 root.phase = next_phase;
             }
-            if let Some(entity) = self.economy.entities.get_mut(usize::from(source_slot)) {
+            if let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get_mut(usize::from(source_slot))
+            {
                 entity.set_phase(next_phase);
                 entity.set_source_word_10(u16::from(next_cooldown));
             }
             if let Some(target_group) = target_group {
                 if let Some(owner_entity_index) = matched_owner {
-                    self.economy
-                        .prepare_sound(source_slot, owner_entity_index, -1, 41);
+                    self.session.state.live.economy.prepare_sound(
+                        source_slot,
+                        owner_entity_index,
+                        -1,
+                        41,
+                    );
                     self.append_new_economy_events(pass, source_slot);
                 }
                 self.activate_level2_authored_switch_group(pass, source_slot, target_group);
@@ -4673,13 +5472,23 @@ impl Level2ResetSession {
                 // `CheckpointArrived_6F070` (model 1) both consume their
                 // rooted switch after a successful source overlap decision.
                 if let Some(root) = self
+                    .session
+                    .state
+                    .live
                     .level2_imported_switch_roots
                     .iter_mut()
                     .find(|root| root.source_slot == source_slot)
                 {
                     root.drawing_enabled = false;
                 }
-                if let Some(entity) = self.economy.entities.get_mut(usize::from(source_slot)) {
+                if let Some(entity) = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get_mut(usize::from(source_slot))
+                {
                     entity.disable_drawing();
                 }
             }
@@ -4696,7 +5505,13 @@ impl Level2ResetSession {
         producer_slot: u16,
         target_group: u16,
     ) {
-        let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(target_group) else {
+        let Some(group_row_indices) = self
+            .session
+            .state
+            .live
+            .mission
+            .level2_dispatch_group_rows(target_group)
+        else {
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
@@ -4709,7 +5524,10 @@ impl Level2ResetSession {
         let rows = group_row_indices
             .iter()
             .filter_map(|authored_index| {
-                self.mission
+                self.session
+                    .state
+                    .live
+                    .mission
                     .authored_features()
                     .iter()
                     .copied()
@@ -4719,7 +5537,12 @@ impl Level2ResetSession {
                 feature.kind == 10
                     && feature.subtype == 45
                     && feature.parameter_2 == 0
-                    && !self.level2_model45_activated.contains(&feature.index)
+                    && !self
+                        .session
+                        .state
+                        .live
+                        .level2_model45_activated
+                        .contains(&feature.index)
             })
             .collect::<Vec<_>>();
         if rows.is_empty() {
@@ -4728,7 +5551,11 @@ impl Level2ResetSession {
         let authored_indices = rows
             .iter()
             .map(|feature| {
-                self.level2_model45_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model45_activated
+                    .insert(feature.index);
                 feature.index
             })
             .collect::<Vec<_>>()
@@ -4751,7 +5578,13 @@ impl Level2ResetSession {
         producer_slot: u16,
         target_group: u16,
     ) {
-        let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(target_group) else {
+        let Some(group_row_indices) = self
+            .session
+            .state
+            .live
+            .mission
+            .level2_dispatch_group_rows(target_group)
+        else {
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
@@ -4764,7 +5597,10 @@ impl Level2ResetSession {
         let rows = group_row_indices
             .iter()
             .filter_map(|authored_index| {
-                self.mission
+                self.session
+                    .state
+                    .live
+                    .mission
                     .authored_features()
                     .iter()
                     .copied()
@@ -4773,28 +5609,31 @@ impl Level2ResetSession {
             .filter(|feature| {
                 feature.kind == 5
                     && feature.subtype == 14
-                    && !self.level2_class5_activated.contains(&feature.index)
+                    && !self
+                        .session
+                        .state
+                        .live
+                        .level2_class5_activated
+                        .contains(&feature.index)
             })
             .collect::<Vec<_>>();
         if rows.is_empty() {
             return;
         }
-        let economy_before = self.economy.clone();
-        let activated_before = self.level2_class5_activated.clone();
+        let economy_before = self.session.state.live.economy.clone();
+        let activated_before = self.session.state.live.level2_class5_activated.clone();
         let mut activated = Vec::with_capacity(rows.len());
         for feature in rows {
-            let terrain = self
-                .campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state owns canonical terrain")
-                .terrain();
+            let terrain = &self.session.state.live.terrain;
             let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
-            let Some(source) =
-                self.economy
-                    .allocate_authored_class5(feature.index, 14, position, terrain)
-            else {
-                self.economy = economy_before;
-                self.level2_class5_activated = activated_before;
+            let Some(source) = self.session.state.live.economy.allocate_authored_class5(
+                feature.index,
+                14,
+                position,
+                terrain,
+            ) else {
+                self.session.state.live.economy = economy_before;
+                self.session.state.live.level2_class5_activated = activated_before;
                 self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
@@ -4805,7 +5644,11 @@ impl Level2ResetSession {
                 });
                 return;
             };
-            self.level2_class5_activated.insert(feature.index);
+            self.session
+                .state
+                .live
+                .level2_class5_activated
+                .insert(feature.index);
             activated.push((feature.index, source.source_entity_index));
         }
         self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
@@ -4834,13 +5677,20 @@ impl Level2ResetSession {
             self.activate_level2_authored_class14_group(pass, producer_slot, target_group, 5);
             return;
         }
-        let rows = if let Some(group_row_indices) =
-            self.mission.level2_dispatch_group_rows(target_group)
+        let rows = if let Some(group_row_indices) = self
+            .session
+            .state
+            .live
+            .mission
+            .level2_dispatch_group_rows(target_group)
         {
             group_row_indices
                 .iter()
                 .filter_map(|authored_index| {
-                    self.mission
+                    self.session
+                        .state
+                        .live
+                        .mission
                         .authored_features()
                         .iter()
                         .copied()
@@ -4848,7 +5698,10 @@ impl Level2ResetSession {
                 })
                 .collect::<Vec<_>>()
         } else {
-            self.mission
+            self.session
+                .state
+                .live
+                .mission
                 .authored_features()
                 .iter()
                 .copied()
@@ -4894,20 +5747,23 @@ impl Level2ResetSession {
         let mut activated = Vec::new();
         for feature in rows {
             if feature.kind == 10 && feature.subtype == 1 && target_group == 20 {
-                if self.level2_model1_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_model1_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
+                let terrain = &self.session.state.live.terrain;
                 let position =
                     feature.world_position(terrain.ground_height(feature.world_position(0)));
-                let Some(source) =
-                    self.economy
-                        .allocate_authored_model1(feature.index, position, terrain)
-                else {
+                let Some(source) = self.session.state.live.economy.allocate_authored_model1(
+                    feature.index,
+                    position,
+                    terrain,
+                ) else {
                     self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
@@ -4918,25 +5774,33 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_model1_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model1_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if feature.kind == 5 && feature.subtype == 4 && target_group == 20 {
-                if self.level2_class5_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_class5_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
+                let terrain = &self.session.state.live.terrain;
                 let position =
                     feature.world_position(terrain.ground_height(feature.world_position(0)));
-                let Some(source) =
-                    self.economy
-                        .allocate_authored_class5(feature.index, 4, position, terrain)
-                else {
+                let Some(source) = self.session.state.live.economy.allocate_authored_class5(
+                    feature.index,
+                    4,
+                    position,
+                    terrain,
+                ) else {
                     self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
@@ -4947,25 +5811,33 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_class5_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_class5_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if feature.kind == 5 && feature.subtype == 3 && matches!(target_group, 1 | 5 | 7) {
-                if self.level2_class5_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_class5_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
+                let terrain = &self.session.state.live.terrain;
                 let position =
                     feature.world_position(terrain.ground_height(feature.world_position(0)));
-                let Some(source) =
-                    self.economy
-                        .allocate_authored_class5(feature.index, 3, position, terrain)
-                else {
+                let Some(source) = self.session.state.live.economy.allocate_authored_class5(
+                    feature.index,
+                    3,
+                    position,
+                    terrain,
+                ) else {
                     self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
@@ -4976,12 +5848,22 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_class5_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_class5_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if feature.kind == 10 && feature.subtype == 22 {
-                if self.level2_model22_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_model22_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model22(feature.index) else {
@@ -4995,12 +5877,22 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_model22_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model22_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if feature.kind == 10 && feature.subtype == 76 {
-                if self.level2_model76_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_model76_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model76(feature.index) else {
@@ -5014,7 +5906,11 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_model76_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model76_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
@@ -5022,17 +5918,24 @@ impl Level2ResetSession {
                 && feature.subtype == 39
                 && matches!(target_group, 1 | 3 | 5 | 7 | 24 | 26)
             {
-                if self.level2_model39_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_model39_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
                 let position = feature.world_position(
                     self.canonical_terrain()
                         .ground_height(feature.world_position(0)),
                 );
-                let Some(source) =
-                    self.economy
-                        .allocate_authored_model39(feature.index, producer_slot, position)
-                else {
+                let Some(source) = self.session.state.live.economy.allocate_authored_model39(
+                    feature.index,
+                    producer_slot,
+                    position,
+                ) else {
                     self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
@@ -5043,12 +5946,22 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_model39_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model39_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if feature.kind == 10 && feature.subtype == 6 && target_group == 24 {
-                if self.level2_model6_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_model6_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model6(feature.index) else {
@@ -5062,12 +5975,22 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_model6_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model6_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if feature.kind == 10 && feature.subtype == 59 && matches!(target_group, 19 | 23) {
-                if self.level2_model59_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_model59_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model59(feature.index) else {
@@ -5081,12 +6004,22 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_model59_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model59_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if feature.kind == 10 && feature.subtype == 58 && target_group == 3 {
-                if self.level2_model53_activated.contains(&feature.index) {
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_model53_activated
+                    .contains(&feature.index)
+                {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model53(feature.index) else {
@@ -5100,13 +6033,25 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_model53_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model53_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if feature.kind == 11 && feature.subtype == 32 {
-                if self.level2_model32_activated.contains(&feature.index)
+                if self
+                    .session
+                    .state
+                    .live
+                    .level2_model32_activated
+                    .contains(&feature.index)
                     || self
+                        .session
+                        .state
+                        .live
                         .economy
                         .authored_model32()
                         .iter()
@@ -5125,14 +6070,24 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.level2_model32_activated.insert(feature.index);
+                self.session
+                    .state
+                    .live
+                    .level2_model32_activated
+                    .insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
             if self
+                .session
+                .state
+                .live
                 .level2_switch_producers_activated
                 .contains(&feature.index)
                 || self
+                    .session
+                    .state
+                    .live
                     .economy
                     .authored_switch_producers()
                     .iter()
@@ -5148,17 +6103,20 @@ impl Level2ResetSession {
                 self.canonical_terrain()
                     .ground_height(feature.world_position(0)),
             );
-            let Some(source) = self.economy.allocate_authored_switch_producer(
-                feature.index,
-                model,
-                u16::try_from(feature.stage_tag).unwrap_or_default(),
-                i16::try_from(feature.word_10).unwrap_or(i16::MAX),
-                position,
-                self.campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state is initialized")
-                    .terrain(),
-            ) else {
+            let Some(source) = self
+                .session
+                .state
+                .live
+                .economy
+                .allocate_authored_switch_producer(
+                    feature.index,
+                    model,
+                    u16::try_from(feature.stage_tag).unwrap_or_default(),
+                    i16::try_from(feature.word_10).unwrap_or(i16::MAX),
+                    position,
+                    &self.session.state.live.terrain,
+                )
+            else {
                 self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
@@ -5169,7 +6127,11 @@ impl Level2ResetSession {
                 });
                 continue;
             };
-            self.level2_switch_producers_activated.insert(feature.index);
+            self.session
+                .state
+                .live
+                .level2_switch_producers_activated
+                .insert(feature.index);
             activated.push((feature.index, source.source_entity_index));
         }
         if !activated.is_empty() {
@@ -5202,6 +6164,9 @@ impl Level2ResetSession {
         F: FnMut(&EntitySnapshot) -> bool,
     {
         let mut producers = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
@@ -5225,7 +6190,10 @@ impl Level2ResetSession {
         // include them in the producer view so all existing data-driven
         // consumers observe one source list.
         producers.extend(
-            self.economy
+            self.session
+                .state
+                .live
+                .economy
                 .authored_switch_producers()
                 .iter()
                 // A fired switch has already run its stage-tag scan but stays
@@ -5240,7 +6208,10 @@ impl Level2ResetSession {
         // the fired source in the producer view so the same downstream group
         // remains observable after the source entity is hidden.
         producers.extend(
-            self.economy
+            self.session
+                .state
+                .live
+                .economy
                 .authored_model32()
                 .iter()
                 .filter(|source| source.active && source.fired)
@@ -5272,11 +6243,17 @@ impl Level2ResetSession {
         let producer_groups = self.live_level2_class11_producers(producer_matches);
         for (producer_slot, producer_group) in producer_groups {
             let candidate_rows = self
+                .session
+                .state
+                .live
                 .mission
                 .level2_dispatch_group_rows(producer_group)
                 .map_or_else(
                     || {
-                        self.mission
+                        self.session
+                            .state
+                            .live
+                            .mission
                             .authored_features()
                             .iter()
                             .copied()
@@ -5289,7 +6266,10 @@ impl Level2ResetSession {
                         authored_indices
                             .iter()
                             .filter_map(|authored_index| {
-                                self.mission
+                                self.session
+                                    .state
+                                    .live
+                                    .mission
                                     .authored_features()
                                     .iter()
                                     .copied()
@@ -5453,20 +6433,23 @@ impl Level2ResetSession {
     }
 
     pub(super) fn step_level2_group10_switch25(&mut self, pass: u8) {
-        let Some(mut switch) = self.level2_group10_switch25 else {
+        let Some(mut switch) = self.session.state.live.level2_group10_switch25 else {
             return;
         };
         if self
+            .session
+            .state
+            .live
             .level2_model76_activated
             .contains(&switch.authored_index)
         {
-            self.level2_group10_switch25 = None;
+            self.session.state.live.level2_group10_switch25 = None;
             return;
         }
         if switch.phase & 7 == 0 {
             if self.level2_model0_overlap_matches(switch.position, true, |entity| {
-                if entity.index == self.state.entity_index {
-                    self.state.position
+                if entity.index == self.session.state.live.core.state.entity_index {
+                    self.session.state.live.core.state.position
                 } else {
                     entity.position
                 }
@@ -5484,27 +6467,38 @@ impl Level2ResetSession {
                         ),
                     });
                     switch.phase = switch.phase.wrapping_add(1);
-                    self.level2_group10_switch25 = Some(switch);
+                    self.session.state.live.level2_group10_switch25 = Some(switch);
                     return;
                 };
                 let Some(owner_entity_index) =
                     self.level2_model0_overlap_owner(switch.position, |entity| {
-                        if entity.index == self.state.entity_index {
-                            self.state.position
+                        if entity.index == self.session.state.live.core.state.entity_index {
+                            self.session.state.live.core.state.position
                         } else {
                             entity.position
                         }
                     })
                 else {
                     switch.phase = switch.phase.wrapping_add(1);
-                    self.level2_group10_switch25 = Some(switch);
+                    self.session.state.live.level2_group10_switch25 = Some(switch);
                     return;
                 };
-                self.level2_model76_activated.insert(switch.authored_index);
-                self.economy
-                    .prepare_sound(switch.source_slot, owner_entity_index, -1, 41);
+                self.session
+                    .state
+                    .live
+                    .level2_model76_activated
+                    .insert(switch.authored_index);
+                self.session.state.live.economy.prepare_sound(
+                    switch.source_slot,
+                    owner_entity_index,
+                    -1,
+                    41,
+                );
                 self.append_new_economy_events(pass, switch.source_slot);
                 if let Some(entity) = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .entities
                     .get_mut(usize::from(switch.source_slot))
@@ -5524,13 +6518,13 @@ impl Level2ResetSession {
                         .iter()
                         .any(|source| source.source_entity_index == source_slot)
                 );
-                self.level2_group10_switch25 = None;
+                self.session.state.live.level2_group10_switch25 = None;
                 return;
             }
             switch.position.z = self.canonical_terrain().ground_height(switch.position);
         }
         switch.phase = switch.phase.wrapping_add(1);
-        self.level2_group10_switch25 = Some(switch);
+        self.session.state.live.level2_group10_switch25 = Some(switch);
     }
 
     /// Consume authored class-14 subtype-3/5 rows when an active class-11
@@ -5583,6 +6577,9 @@ impl Level2ResetSession {
             return;
         }
         let rows = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -5591,30 +6588,31 @@ impl Level2ResetSession {
                 feature.activation_group == 22
                     && feature.kind == 5
                     && matches!(feature.subtype, 3 | 9)
-                    && !self.level2_class5_activated.contains(&feature.index)
+                    && !self
+                        .session
+                        .state
+                        .live
+                        .level2_class5_activated
+                        .contains(&feature.index)
             })
             .collect::<Vec<_>>();
         if rows.is_empty() {
             return;
         }
-        let economy_before = self.economy.clone();
-        let activated_before = self.level2_class5_activated.clone();
+        let economy_before = self.session.state.live.economy.clone();
+        let activated_before = self.session.state.live.level2_class5_activated.clone();
         let mut activated = Vec::with_capacity(rows.len());
         for feature in rows {
-            let terrain = self
-                .campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state owns canonical terrain")
-                .terrain();
+            let terrain = &self.session.state.live.terrain;
             let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
-            let Some(source) = self.economy.allocate_authored_class5(
+            let Some(source) = self.session.state.live.economy.allocate_authored_class5(
                 feature.index,
                 u8::try_from(feature.subtype).unwrap_or(u8::MAX),
                 position,
                 terrain,
             ) else {
-                self.economy = economy_before;
-                self.level2_class5_activated = activated_before;
+                self.session.state.live.economy = economy_before;
+                self.session.state.live.level2_class5_activated = activated_before;
                 self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
@@ -5625,7 +6623,11 @@ impl Level2ResetSession {
                 });
                 return;
             };
-            self.level2_class5_activated.insert(feature.index);
+            self.session
+                .state
+                .live
+                .level2_class5_activated
+                .insert(feature.index);
             activated.push((feature.index, source.source_entity_index));
         }
         self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
@@ -5650,6 +6652,9 @@ impl Level2ResetSession {
             self.activate_level2_authored_class5_group(pass, producer_slot, target_group);
         }
         let rows = self
+            .session
+            .state
+            .live
             .mission
             .authored_features()
             .iter()
@@ -5683,22 +6688,23 @@ impl Level2ResetSession {
             });
             return;
         }
-        let economy_before = self.economy.clone();
-        let shared_before = self.shared_spells.clone();
-        let terrain = self
-            .campaign_state
-            .as_ref()
-            .expect("Level 2 campaign state owns canonical terrain")
-            .terrain();
-        let source_slot = match self.shared_spells.materialize_authored_spell_pickup(
-            &mut self.economy,
-            feature,
-            terrain,
-        ) {
+        let economy_before = self.session.state.live.economy.clone();
+        let shared_before = self.session.state.live.shared_spells.clone();
+        let terrain = &self.session.state.live.terrain;
+        let source_slot = match self
+            .session
+            .state
+            .live
+            .shared_spells
+            .materialize_authored_spell_pickup(
+                &mut self.session.state.live.economy,
+                feature,
+                terrain,
+            ) {
             Ok(source_slot) => source_slot,
             Err(error) => {
-                self.economy = economy_before;
-                self.shared_spells = shared_before;
+                self.session.state.live.economy = economy_before;
+                self.session.state.live.shared_spells = shared_before;
                 self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
@@ -5708,7 +6714,10 @@ impl Level2ResetSession {
             }
         };
         let companion = if target_group == 27 {
-            self.mission
+            self.session
+                .state
+                .live
+                .mission
                 .authored_features()
                 .iter()
                 .copied()
@@ -5716,7 +6725,12 @@ impl Level2ResetSession {
                     candidate.activation_group == 27
                         && candidate.kind == 10
                         && candidate.subtype == 17
-                        && !self.level2_model17_activated.contains(&candidate.index)
+                        && !self
+                            .session
+                            .state
+                            .live
+                            .level2_model17_activated
+                            .contains(&candidate.index)
                 })
         } else {
             None
@@ -5726,8 +6740,8 @@ impl Level2ResetSession {
                 .allocate_level2_authored_model17(companion.index)
                 .is_none()
             {
-                self.economy = economy_before;
-                self.shared_spells = shared_before;
+                self.session.state.live.economy = economy_before;
+                self.session.state.live.shared_spells = shared_before;
                 self.push_dispatch_effect(Level2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
@@ -5738,7 +6752,11 @@ impl Level2ResetSession {
                 });
                 return;
             }
-            self.level2_model17_activated.insert(companion.index);
+            self.session
+                .state
+                .live
+                .level2_model17_activated
+                .insert(companion.index);
         }
         let mut activated_indices = vec![feature.index];
         if let Some(companion) = companion {
@@ -5783,6 +6801,9 @@ impl Level2ResetSession {
         let source_slot = row.source_slot;
         if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
             if let Some(target_group) = self
+                .session
+                .state
+                .live
                 .economy
                 .authored_model45()
                 .iter()
@@ -5840,7 +6861,7 @@ impl Level2ResetSession {
         deferred_dynamic_slots: &mut BTreeSet<(u16, u32)>,
         pending_source_rows: &mut BTreeMap<(u16, u32), Level2DynamicArenaCursorRow>,
     ) {
-        for arena_row in self.economy.cursor_rows() {
+        for arena_row in self.session.state.live.economy.cursor_rows() {
             let row = Level2DynamicArenaCursorRow {
                 source_slot: arena_row.handle.source_slot,
                 generation: arena_row.handle.generation,
@@ -5875,32 +6896,59 @@ impl Level2ResetSession {
     ) {
         self.flush_shared_effects();
         let source_player_order = self.refresh_level2_spell_owner_candidates();
-        let player_entity_index = self.state.entity_index;
-        let player_position = self.state.position;
+        let player_entity_index = self.session.state.live.core.state.entity_index;
+        let player_position = self.session.state.live.core.state.position;
         // Retain event chronology across all source slots in this pass;
         // individual handlers must not erase an earlier pickup row.
-        self.shared_spells.pickup_events.clear();
+        self.session.state.live.shared_spells.pickup_events.clear();
         let goat_players = self.level2_goat_player_targets();
-        self.economy.advance_global_rng();
-        self.economy
+        self.session.state.live.economy.advance_global_rng();
+        self.session
+            .state
+            .live
+            .economy
             .reclaim_deferred_authored_bees_at_source_boundary();
-        self.economy.reclaim_possession_rows_at_source_boundary();
-        self.economy.reclaim_fireball_rows_at_source_boundary();
+        self.session
+            .state
+            .live
+            .economy
+            .reclaim_possession_rows_at_source_boundary();
+        self.session
+            .state
+            .live
+            .economy
+            .reclaim_fireball_rows_at_source_boundary();
         // `UpdateEntities_57730` scans every hidden active entity and calls
         // `sub_57F20` before rebuilding lists or dispatching any root. Keep
         // this generic prepass independent of Castle root/model/parent state
         // so a destroyed root cannot strand a hidden typed child.
-        self.economy.reclaim_hidden_castle_rows_at_source_boundary();
-        self.economy.rebuild_possession_guidance_source_slots();
+        self.session
+            .state
+            .live
+            .economy
+            .reclaim_hidden_castle_rows_at_source_boundary();
+        self.session
+            .state
+            .live
+            .economy
+            .rebuild_possession_guidance_source_slots();
         // Pinned `UpdateEntities_57730` invokes `sub_60F00` once at the
         // owning-pass boundary (EventsFunctions.cpp:40115), before any
         // callback can spawn a fresh model-39 sphere or carrier. Rebuild the
         // full row projection before maxMana so the Castle dword-0x13C gate
         // and capacity sink both observe the same source boundary; same-pass
         // merges still observe the prior boundary's capacity.
-        self.economy
+        self.session
+            .state
+            .live
+            .economy
             .rebuild_owner_mana_projection_at_source_boundary();
-        self.economy.rebuild_owner_max_mana_projection();
+        let reset_owner_max_mana = self.session.baseline.economy.economy.owner_max_mana.clone();
+        self.session
+            .state
+            .live
+            .economy
+            .rebuild_owner_max_mana_projection(&reset_owner_max_mana);
         self.step_level2_imported_switch_roots(pass);
         self.activate_level2_authored_group8(pass);
         self.activate_level2_authored_group31(pass);
@@ -5922,6 +6970,9 @@ impl Level2ResetSession {
         // receive their own higher-slot callback, but attraction fields must
         // not target them until the next pass rebuild.
         let pass_start_mana_sphere_slots = self
+            .session
+            .state
+            .live
             .economy
             .live_arena_cursor_rows()
             .into_iter()
@@ -5929,7 +6980,13 @@ impl Level2ResetSession {
             .map(|row| row.source_slot)
             .collect::<BTreeSet<_>>();
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
-        for event in self.goats.begin_source_turn(&goat_players) {
+        for event in self
+            .session
+            .state
+            .live
+            .goats
+            .begin_source_turn(&goat_players)
+        {
             let source_slot = match event {
                 GoatStepEvent::Reclaimed { entity_index } => entity_index,
                 _ => 0,
@@ -5944,7 +7001,10 @@ impl Level2ResetSession {
             .chain([75_u16].into_iter().map(|slot| (slot, 0_u8)))
             .chain([38_u16].into_iter().map(|slot| (slot, 8_u8)))
             .chain(
-                self.shared_spells
+                self.session
+                    .state
+                    .live
+                    .shared_spells
                     .dynamic_pickups
                     .iter()
                     .filter(|holder| {
@@ -5952,12 +7012,16 @@ impl Level2ResetSession {
                             && holder.class == 15
                             && holder.model == POSSESSION_SPELL_FAMILY
                             && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
-                            && holder.source_spell_parent_entity_index() == self.state.entity_index
+                            && holder.source_spell_parent_entity_index()
+                                == self.session.state.live.core.state.entity_index
                     })
                     .map(|holder| (holder.index, 11_u8)),
             )
             .chain(
-                self.shared_spells
+                self.session
+                    .state
+                    .live
+                    .shared_spells
                     .dynamic_pickups
                     .iter()
                     .filter(|holder| {
@@ -5965,12 +7029,16 @@ impl Level2ResetSession {
                             && holder.class == 15
                             && holder.model == FIREBALL_SPELL_FAMILY
                             && holder.action == 0
-                            && holder.source_spell_parent_entity_index() == self.state.entity_index
+                            && holder.source_spell_parent_entity_index()
+                                == self.session.state.live.core.state.entity_index
                     })
                     .map(|holder| (holder.index, 13_u8)),
             )
             .chain(
-                self.economy
+                self.session
+                    .state
+                    .live
+                    .economy
                     .entities
                     .iter()
                     .filter(|holder| {
@@ -5986,7 +7054,10 @@ impl Level2ResetSession {
                     .map(|holder| (holder.index, 11_u8)),
             )
             .chain(
-                self.economy
+                self.session
+                    .state
+                    .live
+                    .economy
                     .entities
                     .iter()
                     .filter(|holder| {
@@ -6002,7 +7073,10 @@ impl Level2ResetSession {
                     .map(|holder| (holder.index, 13_u8)),
             )
             .chain(
-                self.shared_spells
+                self.session
+                    .state
+                    .live
+                    .shared_spells
                     .dynamic_pickups
                     .iter()
                     .filter(|holder| {
@@ -6014,30 +7088,45 @@ impl Level2ResetSession {
                     .map(|holder| (holder.index, 12_u8)),
             )
             .chain(
-                self.bad_stones
+                self.session
+                    .state
+                    .live
+                    .bad_stones
                     .iter()
                     .map(|stone| (stone.entity.index, 1_u8)),
             )
             .chain(
-                self.ordinary
+                self.session
+                    .state
+                    .live
+                    .ordinary
                     .houses()
                     .iter()
                     .map(|house| (house.entity_index, 2_u8)),
             )
             .chain(
-                self.ordinary
+                self.session
+                    .state
+                    .live
+                    .ordinary
                     .villagers()
                     .iter()
                     .map(|villager| (villager.entity_index, 3_u8)),
             )
             .chain(
-                self.ordinary
+                self.session
+                    .state
+                    .live
+                    .ordinary
                     .dolmens()
                     .iter()
                     .map(|dolmen| (dolmen.entity.index, 4_u8)),
             )
             .chain(
-                self.economy
+                self.session
+                    .state
+                    .live
+                    .economy
                     .entities
                     .iter()
                     .filter(|entity| {
@@ -6050,10 +7139,20 @@ impl Level2ResetSession {
             )
             .chain(LEVEL_TWO_GOAT_INDICES.into_iter().map(|slot| (slot, 7_u8)))
             .collect::<Vec<_>>();
-        if let Some(castle) = self.economy.castle().filter(|castle| castle.active) {
+        if let Some(castle) = self
+            .session
+            .state
+            .live
+            .economy
+            .castle()
+            .filter(|castle| castle.active)
+        {
             routes.push((castle.source_entity_index, 5_u8));
         }
         let dynamic_rows = self
+            .session
+            .state
+            .live
             .economy
             .live_arena_cursor_rows()
             .into_iter()
@@ -6086,6 +7185,9 @@ impl Level2ResetSession {
                 }
                 pending_source_rows.remove(&key);
                 let live_dynamic_before = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .live_arena_cursor_rows()
                     .into_iter()
@@ -6109,6 +7211,9 @@ impl Level2ResetSession {
                 );
             }
             let live_dynamic_before = self
+                .session
+                .state
+                .live
                 .economy
                 .live_arena_cursor_rows()
                 .into_iter()
@@ -6124,6 +7229,9 @@ impl Level2ResetSession {
                     // model-2 diagnostic rows use the same entity slot for a
                     // wind/mailbox target and must remain on that callback.
                     let local_player_body = self
+                        .session
+                        .state
+                        .live
                         .economy
                         .entities
                         .get(usize::from(player_entity_index))
@@ -6134,22 +7242,33 @@ impl Level2ResetSession {
                         // body updates position. Preserve that source-time
                         // observation for the following upkeep write.
                         let castle_shift_overlap = self
+                            .session
+                            .state
+                            .live
                             .economy
                             .entities
                             .iter()
-                            .find(|entity| entity.index == self.state.entity_index)
+                            .find(|entity| {
+                                entity.index == self.session.state.live.core.state.entity_index
+                            })
                             .is_some_and(|player| {
-                                self.economy.player_castle_shift_aabb_overlap(player)
+                                self.session
+                                    .state
+                                    .live
+                                    .economy
+                                    .player_castle_shift_aabb_overlap(player)
                             });
                         if let Some((damage, attacker, lethal)) =
                             self.consume_level2_player_damage()
                         {
-                            self.economy.events.push(Level2EconomyEvent::DamageApplied {
-                                target_entity_index: player_entity_index,
-                                attacker_entity_index: attacker,
-                                damage,
-                                lethal,
-                            });
+                            self.session.state.live.economy.events.push(
+                                Level2EconomyEvent::DamageApplied {
+                                    target_entity_index: player_entity_index,
+                                    attacker_entity_index: attacker,
+                                    damage,
+                                    lethal,
+                                },
+                            );
                         }
                         self.append_new_economy_events(pass, source_slot);
 
@@ -6160,11 +7279,9 @@ impl Level2ResetSession {
                         // movement, and upkeep writes are visible to those
                         // later source handlers in this same pass.
                         self.refresh_level2_spell_fire_holder_projection();
-                        let profile = self.profile;
-                        let context_event_start = self.context.events.len();
-                        let campaign = self
-                            .campaign_state
-                            .as_mut()
+                        let profile = self.session.definition.profile;
+                        let context_event_start = self.session.state.live.core.context.events.len();
+                        let campaign = Some(&mut self.session.state)
                             .expect("Level 2 campaign state owns canonical runtime");
                         let core = &mut campaign.live.core;
                         let terrain = &campaign.live.terrain;
@@ -6175,34 +7292,42 @@ impl Level2ResetSession {
                             terrain,
                             &mut core.context,
                         ));
-                        let context_events = self.context.events[context_event_start..].to_vec();
+                        let context_events = self.session.state.live.core.context.events
+                            [context_event_start..]
+                            .to_vec();
                         self.append_context_effects(context_events);
                         self.sync_level2_spell_fire_authority(latched_command.flags);
                         self.set_level2_entity_position(
-                            self.state.entity_index,
-                            self.state.position,
+                            self.session.state.live.core.state.entity_index,
+                            self.session.state.live.core.state.position,
                         )
                         .expect("qualified Level 2 local-player map carrier remains valid");
-                        self.shared_spells.step_local_player_unboosted_upkeep(
-                            self.economy.player_castle_entity_index(),
-                            castle_shift_overlap,
-                            self.economy
-                                .owner_max_mana
-                                .get(&self.state.entity_index)
-                                .copied(),
-                        );
-                        self.shared_spells
+                        self.session
+                            .state
+                            .live
+                            .shared_spells
+                            .step_local_player_unboosted_upkeep(
+                                self.session.state.live.economy.player_castle_entity_index(),
+                                castle_shift_overlap,
+                                self.session
+                                    .state
+                                    .live
+                                    .economy
+                                    .owner_max_mana
+                                    .get(&self.session.state.live.core.state.entity_index)
+                                    .copied(),
+                            );
+                        self.session
+                            .state
+                            .live
+                            .shared_spells
                             .sync_typed_spell_parent_caches_from_player_entity();
                         self.sync_level2_spell_fire_context();
                     }
                 }
                 0 => {
-                    let campaign = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical runtime");
-                    let terrain = &campaign.live.terrain;
-                    let result = self.shared_spells.step_shared_pickup(
+                    let terrain = &self.session.state.live.terrain;
+                    let result = self.session.state.live.shared_spells.step_shared_pickup(
                         source_slot,
                         player_entity_index,
                         player_position,
@@ -6229,15 +7354,14 @@ impl Level2ResetSession {
                         .find(|(_, slot, _)| *slot == source_slot)
                         .map(|(family, _, _)| *family)
                         .expect("generic Level 2 spell route has a family");
-                    let campaign = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical runtime");
-                    let terrain = &campaign.live.terrain;
+                    let terrain = &self.session.state.live.terrain;
                     match self
+                        .session
+                        .state
+                        .live
                         .shared_spells
                         .step_level2_spell_acquisition_with_economy_in_source_order(
-                            &mut self.economy,
+                            &mut self.session.state.live.economy,
                             family,
                             player_entity_index,
                             player_position,
@@ -6263,6 +7387,9 @@ impl Level2ResetSession {
                     // pickup record in that source cadence rather than
                     // relying on test-only phase mutation.
                     if let Some(pickup) = self
+                        .session
+                        .state
+                        .live
                         .shared_spells
                         .pickups
                         .iter_mut()
@@ -6283,23 +7410,20 @@ impl Level2ResetSession {
                     }),
                 },
                 2 => {
-                    let ordinary_before = self.ordinary.clone();
-                    let economy_before = self.economy.clone();
+                    let ordinary_before = self.session.state.live.ordinary.clone();
+                    let economy_before = self.session.state.live.economy.clone();
                     let terrain_before = self.canonical_terrain().clone();
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain();
-                    let events = self.ordinary.step_house_action_52(source_slot, terrain);
+                    let terrain = &self.session.state.live.terrain;
+                    let events = self
+                        .session
+                        .state
+                        .live
+                        .ordinary
+                        .step_house_action_52(source_slot, terrain);
                     let result = {
-                        let terrain = self
-                            .campaign_state
-                            .as_mut()
-                            .expect("Level 2 campaign state owns canonical terrain")
-                            .terrain_mut();
-                        self.ordinary.apply_house_terrain_events(
-                            &mut self.economy,
+                        let terrain = &mut self.session.state.live.terrain;
+                        self.session.state.live.ordinary.apply_house_terrain_events(
+                            &mut self.session.state.live.economy,
                             &events,
                             terrain,
                         )
@@ -6314,13 +7438,9 @@ impl Level2ResetSession {
                             });
                         }
                         Err(error) => {
-                            self.ordinary = ordinary_before;
-                            self.economy = economy_before;
-                            *self
-                                .campaign_state
-                                .as_mut()
-                                .expect("Level 2 campaign state owns canonical terrain")
-                                .terrain_mut() = terrain_before;
+                            self.session.state.live.ordinary = ordinary_before;
+                            self.session.state.live.economy = economy_before;
+                            *&mut self.session.state.live.terrain = terrain_before;
                             self.push_dispatch_effect(Level2DispatchEvent::Error {
                                 pass,
                                 source_slot,
@@ -6330,13 +7450,18 @@ impl Level2ResetSession {
                     }
                 }
                 3 => {
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain();
-                    let effects = self.ordinary.step_villager_action_105(source_slot, terrain);
-                    self.ordinary.apply_villager_effects(&effects);
+                    let terrain = &self.session.state.live.terrain;
+                    let effects = self
+                        .session
+                        .state
+                        .live
+                        .ordinary
+                        .step_villager_action_105(source_slot, terrain);
+                    self.session
+                        .state
+                        .live
+                        .ordinary
+                        .apply_villager_effects(&effects);
                     // `KillEntity_1C930` allocates the class-10/model-1
                     // death burst before disabling the dying villager's
                     // source row. Keep the typed villager source id for this
@@ -6349,16 +7474,24 @@ impl Level2ResetSession {
                         } = effect
                         {
                             if let Some(villager) = self
+                                .session
+                                .state
+                                .live
                                 .ordinary
                                 .villagers()
                                 .iter()
                                 .find(|villager| villager.entity_index == *source_entity_index)
                             {
-                                let _ = self.economy.spawn_death_burst_from_death_with_id(
-                                    *source_entity_index,
-                                    villager.source_id,
-                                    *position,
-                                );
+                                let _ = self
+                                    .session
+                                    .state
+                                    .live
+                                    .economy
+                                    .spawn_death_burst_from_death_with_id(
+                                        *source_entity_index,
+                                        villager.source_id,
+                                        *position,
+                                    );
                             }
                         }
                     }
@@ -6370,12 +7503,14 @@ impl Level2ResetSession {
                     });
                 }
                 4 => {
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain();
-                    match self.ordinary.step_dolmen_action_6(source_slot, terrain) {
+                    let terrain = &self.session.state.live.terrain;
+                    match self
+                        .session
+                        .state
+                        .live
+                        .ordinary
+                        .step_dolmen_action_6(source_slot, terrain)
+                    {
                         Ok(step) => {
                             self.push_dispatch_effect(Level2DispatchEvent::Dolmen { pass, step })
                         }
@@ -6387,15 +7522,22 @@ impl Level2ResetSession {
                     }
                 }
                 5 => {
-                    let construction_completion = self.economy.castle().is_some_and(|castle| {
-                        castle.active && castle.action == 5 && castle.build_state == 2
-                    });
-                    let terrain = self
-                        .campaign_state
-                        .as_mut()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain_mut();
-                    let advanced = self.economy.step_castle_action(source_slot, terrain);
+                    let construction_completion = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .castle()
+                        .is_some_and(|castle| {
+                            castle.active && castle.action == 5 && castle.build_state == 2
+                        });
+                    let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
+                    let terrain = &mut self.session.state.live.terrain;
+                    let advanced = self.session.state.live.economy.step_castle_action(
+                        source_slot,
+                        terrain,
+                        &reset_free_slots,
+                    );
                     // Publish the source handler's economy sidecars before
                     // the coarse Castle wrapper, matching the handler-first
                     // ApplyEvents cursor order used by dynamic rows.
@@ -6407,14 +7549,20 @@ impl Level2ResetSession {
                     });
                     if construction_completion
                         && self
+                            .session
+                            .state
+                            .live
                             .economy
                             .castle()
                             .is_some_and(|castle| castle.action == 4)
                         && let Some(holder_index) = self
+                            .session
+                            .state
+                            .live
                             .shared_spells
                             .holders
                             .iter()
-                            .chain(self.shared_spells.dynamic_pickups.iter())
+                            .chain(self.session.state.live.shared_spells.dynamic_pickups.iter())
                             .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
                             .map(|holder| holder.index)
                     {
@@ -6433,6 +7581,9 @@ impl Level2ResetSession {
                     dispatched_dynamic_slots.insert((source_slot, row.generation));
                     if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
                         if let Some(target_group) = self
+                            .session
+                            .state
+                            .live
                             .economy
                             .authored_model45()
                             .iter()
@@ -6482,15 +7633,12 @@ impl Level2ResetSession {
                 }
                 7 => {
                     let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain();
-                    events.extend(
-                        self.goats
-                            .step_source_slot(source_slot, terrain, &goat_players),
-                    );
+                    let terrain = &self.session.state.live.terrain;
+                    events.extend(self.session.state.live.goats.step_source_slot(
+                        source_slot,
+                        terrain,
+                        &goat_players,
+                    ));
                     self.apply_level2_goat_economy_events(&events);
                     self.append_new_economy_events(pass, source_slot);
                     self.push_dispatch_effect(Level2DispatchEvent::Goat {
@@ -6501,31 +7649,41 @@ impl Level2ResetSession {
                 }
                 10 => {
                     let move_speed_flag = self
+                        .session
+                        .state
+                        .live
+                        .core
                         .context
                         .effects
                         .as_ref()
                         .map_or(0, |effects| effects.move_speed_flag);
-                    let active_level_color_index =
-                        self.shared_spells.local_player.player_color_index();
-                    let campaign = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical runtime");
-                    let terrain = &campaign.live.terrain;
-                    let players = &campaign.live.core.players;
-                    let source_arena = &mut self.economy;
-                    match self.nyphur_dispatcher.step_dispatch(
+                    let active_level_color_index = self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .local_player
+                        .player_color_index();
+                    let terrain = &self.session.state.live.terrain;
+                    let players = &self.session.state.live.core.players;
+                    let source_arena = &mut self.session.state.live.economy;
+                    match self.session.state.live.nyphur_dispatcher.step_dispatch(
                         pass,
                         source_slot,
                         &mut source_arena.entities,
                         source_arena.economy.spheres(),
                         players,
                         terrain,
-                        &self.presentation,
+                        &self.session.definition.presentation,
                         move_speed_flag,
                         active_level_color_index,
                     ) {
-                        Ok((_snapshot, trace)) => self.nyphur_dispatch_traces.push(trace),
+                        Ok((_snapshot, trace)) => self
+                            .session
+                            .state
+                            .scratch
+                            .nyphur_dispatch_traces
+                            .push(trace),
                         Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                             pass,
                             source_slot,
@@ -6536,6 +7694,9 @@ impl Level2ResetSession {
                     // every action callback, including the class-3/model-1 AI
                     // row.
                     if let Some(entity) = self
+                        .session
+                        .state
+                        .live
                         .economy
                         .entities
                         .iter_mut()
@@ -6562,6 +7723,9 @@ impl Level2ResetSession {
                     // row retains its reset census bytes.
                     if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX {
                         if let Some(holder) = self
+                            .session
+                            .state
+                            .live
                             .economy
                             .entities
                             .iter_mut()
@@ -6570,6 +7734,9 @@ impl Level2ResetSession {
                             holder.set_phase(holder.phase.wrapping_add(1));
                         }
                     } else if let Some(holder) = self
+                        .session
+                        .state
+                        .live
                         .shared_spells
                         .dynamic_pickups
                         .iter_mut()
@@ -6587,6 +7754,9 @@ impl Level2ResetSession {
                     // word36; the source dispatcher advances byte 0x3e once
                     // after every active callback, including W=0.
                     if let Some(holder) = self
+                        .session
+                        .state
+                        .live
                         .shared_spells
                         .dynamic_pickups
                         .iter_mut()
@@ -6602,6 +7772,9 @@ impl Level2ResetSession {
                     if source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX {
                         self.step_level2_nyphur_fireball_holder_source_slot(source_slot);
                         if let Some(holder) = self
+                            .session
+                            .state
+                            .live
                             .economy
                             .entities
                             .iter_mut()
@@ -6612,6 +7785,9 @@ impl Level2ResetSession {
                     } else {
                         self.step_level2_fireball_holder_source_slot(source_slot);
                         if let Some(holder) = self
+                            .session
+                            .state
+                            .live
                             .shared_spells
                             .dynamic_pickups
                             .iter_mut()
@@ -6623,7 +7799,7 @@ impl Level2ResetSession {
                 }
                 _ => unreachable!("bounded Level 2 source route"),
             }
-            for row in self.economy.live_arena_cursor_rows() {
+            for row in self.session.state.live.economy.live_arena_cursor_rows() {
                 let key = (row.source_slot, row.generation);
                 if live_dynamic_before.contains(&key) || dispatched_dynamic_slots.contains(&key) {
                     continue;
@@ -6646,6 +7822,9 @@ impl Level2ResetSession {
         {
             pending_source_rows.remove(&key);
             let live_dynamic_before = self
+                .session
+                .state
+                .live
                 .economy
                 .live_arena_cursor_rows()
                 .into_iter()
@@ -6668,8 +7847,12 @@ impl Level2ResetSession {
                 &mut pending_source_rows,
             );
         }
-        self.economy.reclaim_inactive_slots_after_source_pass();
-        self.goats.finish_source_turn();
+        self.session
+            .state
+            .live
+            .economy
+            .reclaim_inactive_slots_after_source_pass();
+        self.session.state.live.goats.finish_source_turn();
         self.flush_shared_effects();
     }
 
@@ -6682,6 +7865,9 @@ impl Level2ResetSession {
         source_player_order: &[usize],
     ) -> bool {
         let Some(family) = self
+            .session
+            .state
+            .live
             .economy
             .spell_pickups()
             .iter()
@@ -6690,15 +7876,14 @@ impl Level2ResetSession {
         else {
             return false;
         };
-        let terrain = self
-            .campaign_state
-            .as_ref()
-            .expect("Level 2 campaign state owns canonical terrain")
-            .terrain();
+        let terrain = &self.session.state.live.terrain;
         match self
+            .session
+            .state
+            .live
             .shared_spells
             .step_level2_spell_acquisition_with_economy_in_source_order(
-                &mut self.economy,
+                &mut self.session.state.live.economy,
                 family,
                 player_entity_index,
                 player_position,
@@ -6717,11 +7902,21 @@ impl Level2ResetSession {
                 message: error.to_string(),
             }),
         }
-        if let Some(pickup) = self.shared_spells.pickup_mut(source_slot) {
+        if let Some(pickup) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(source_slot)
+        {
             pickup.phase = pickup.phase.wrapping_add(1);
             pickup.record[66] = pickup.phase;
         }
-        self.economy.step_spell_pickup_slot(source_slot)
+        self.session
+            .state
+            .live
+            .economy
+            .step_spell_pickup_slot(source_slot)
     }
 
     pub(super) fn step_level2_dynamic_spell_replacement(
@@ -6733,6 +7928,9 @@ impl Level2ResetSession {
         source_player_order: &[usize],
     ) -> bool {
         let Some((family, action, active)) = self
+            .session
+            .state
+            .live
             .economy
             .spell_replacements()
             .iter()
@@ -6747,15 +7945,14 @@ impl Level2ResetSession {
         let persistent_action =
             physical_spell_action(family, PhysicalSpellActionRole::PersistentPickup);
         if persistent_action == Some(action) {
-            let terrain = self
-                .campaign_state
-                .as_ref()
-                .expect("Level 2 campaign state owns canonical terrain")
-                .terrain();
+            let terrain = &self.session.state.live.terrain;
             match self
+                .session
+                .state
+                .live
                 .shared_spells
                 .step_level2_spell_replacement_acquisition_with_economy_in_source_order(
-                    &mut self.economy,
+                    &mut self.session.state.live.economy,
                     source_slot,
                     family,
                     player_entity_index,
@@ -6776,15 +7973,28 @@ impl Level2ResetSession {
                 }),
             }
         }
-        if let Some(pickup) = self.shared_spells.pickup_mut(source_slot) {
+        if let Some(pickup) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(source_slot)
+        {
             pickup.phase = pickup.phase.wrapping_add(1);
             pickup.record[66] = pickup.phase;
         }
-        self.economy.step_spell_replacement_slot(source_slot)
+        self.session
+            .state
+            .live
+            .economy
+            .step_spell_replacement_slot(source_slot)
     }
 
     pub(super) fn step_level2_authored_class14(&mut self, source_slot: u16) -> bool {
         let Some((model, position)) = self
+            .session
+            .state
+            .live
             .economy
             .authored_class14()
             .iter()
@@ -6795,12 +8005,18 @@ impl Level2ResetSession {
         };
         let ground_height = self.canonical_terrain().ground_height(position);
         if !self
+            .session
+            .state
+            .live
             .economy
             .step_authored_class14_slot(source_slot, ground_height)
         {
             return false;
         }
         let Some(snapped_position) = self
+            .session
+            .state
+            .live
             .economy
             .authored_class14()
             .iter()
@@ -6810,21 +8026,35 @@ impl Level2ResetSession {
             return false;
         };
         let collected = model == 5
-            && self.shared_spells.collect_level2_experience_scroll(
-                source_slot,
-                snapped_position,
-                self.runtime.local_player_slot,
-                self.state.entity_index,
-                self.state.position,
-                self.economy
-                    .entities
-                    .iter()
-                    .find(|entity| entity.index == self.state.entity_index)
-                    .map_or(0, |entity| entity.life),
-                &self.economy.entities,
-            );
+            && self
+                .session
+                .state
+                .live
+                .shared_spells
+                .collect_level2_experience_scroll(
+                    source_slot,
+                    snapped_position,
+                    self.session.state.live.core.runtime.local_player_slot,
+                    self.session.state.live.core.state.entity_index,
+                    self.session.state.live.core.state.position,
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .entities
+                        .iter()
+                        .find(|entity| {
+                            entity.index == self.session.state.live.core.state.entity_index
+                        })
+                        .map_or(0, |entity| entity.life),
+                    &self.session.state.live.economy.entities,
+                );
         if collected {
-            self.economy.deactivate_authored_class14_slot(source_slot);
+            self.session
+                .state
+                .live
+                .economy
+                .deactivate_authored_class14_slot(source_slot);
             false
         } else {
             true
@@ -6838,6 +8068,9 @@ impl Level2ResetSession {
     /// RNG-L2-0464/0465.
     pub(super) fn step_level2_authored_tree(&mut self, source_slot: u16) -> bool {
         let Some(source_index) = self
+            .session
+            .state
+            .live
             .economy
             .authored_trees
             .iter()
@@ -6845,18 +8078,21 @@ impl Level2ResetSession {
         else {
             return false;
         };
-        let mut source = self.economy.authored_trees[source_index];
+        let mut source = self.session.state.live.economy.authored_trees[source_index];
         source.control_flags |= 0x0002_0000;
         if source.owner_entity_index != 0 {
             source.life = source.life.wrapping_sub(source.pending_damage);
             if source.life < 0
-                && let Some(sphere) = self.economy.allocate_authored_model39(
+                && let Some(sphere) = self.session.state.live.economy.allocate_authored_model39(
                     source.authored_index,
                     source_slot,
                     source.position,
                 )
             {
                 let owner_id = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .entities
                     .get(usize::from(source.owner_entity_index))
@@ -6869,6 +8105,9 @@ impl Level2ResetSession {
                     sphere.position.z - 128
                 };
                 if let Some(sphere_row) = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .spheres
                     .iter_mut()
@@ -6888,17 +8127,19 @@ impl Level2ResetSession {
             }
             source.owner_entity_index = 0;
         }
-        let terrain = self
-            .campaign_state
-            .as_ref()
-            .expect("Level 2 campaign state owns canonical terrain")
-            .terrain();
+        let terrain = &self.session.state.live.terrain;
         source.position.z = terrain.ground_height(source.position);
         if terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK {
             if let Some(splash) = self
+                .session
+                .state
+                .live
                 .economy
                 .allocate_authored_model5_water_splash(source.position, terrain)
                 && let Some(splash) = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .authored_model5_water_splashes
                     .iter_mut()
@@ -6909,10 +8150,13 @@ impl Level2ResetSession {
             source.drawing_enabled = false;
         }
         source.phase = source.phase.wrapping_add(1);
-        self.economy
+        self.session
+            .state
+            .live
+            .economy
             .source_rng
             .insert(source_slot, source.entity_rng);
-        self.economy.authored_trees[source_index] = source;
+        self.session.state.live.economy.authored_trees[source_index] = source;
         true
     }
 
@@ -6922,6 +8166,9 @@ impl Level2ResetSession {
         source_slot: u16,
     ) -> bool {
         let Some((position, model)) = self
+            .session
+            .state
+            .live
             .economy
             .authored_switch_producers()
             .iter()
@@ -6931,16 +8178,16 @@ impl Level2ResetSession {
             return false;
         };
         let overlap = self.level2_model0_overlap_matches(position, model == 0, |entity| {
-            if entity.index == self.state.entity_index {
-                self.state.position
+            if entity.index == self.session.state.live.core.state.entity_index {
+                self.session.state.live.core.state.position
             } else {
                 entity.position
             }
         });
         let matched_owner = if model == 0 && overlap {
             self.level2_model0_overlap_owner(position, |entity| {
-                if entity.index == self.state.entity_index {
-                    self.state.position
+                if entity.index == self.session.state.live.core.state.entity_index {
+                    self.session.state.live.core.state.position
                 } else {
                     entity.position
                 }
@@ -6949,13 +8196,19 @@ impl Level2ResetSession {
             None
         };
         let Some(target_group) = self
+            .session
+            .state
+            .live
             .economy
             .step_authored_switch_producer_slot(source_slot, overlap)
         else {
             return false;
         };
         if let Some(owner_entity_index) = matched_owner {
-            self.economy
+            self.session
+                .state
+                .live
+                .economy
                 .prepare_sound(source_slot, owner_entity_index, -1, 41);
             self.append_new_economy_events(pass, source_slot);
         }
@@ -6969,6 +8222,9 @@ impl Level2ResetSession {
     /// mailbox branches. `sub_33340` remains a separate movement/effect pass.
     pub(super) fn step_level2_authored_model22_wind_pulse(&mut self, source_slot: u16) {
         let Some(parent) = self
+            .session
+            .state
+            .live
             .economy
             .authored_model22()
             .iter()
@@ -6982,8 +8238,8 @@ impl Level2ResetSession {
         if parent.phase.wrapping_sub(1) & 7 != 0 {
             return;
         }
-        let local_player_index = self.state.entity_index;
-        let local_player_position = self.state.position;
+        let local_player_index = self.session.state.live.core.state.entity_index;
+        let local_player_position = self.session.state.live.core.state.position;
         let target_position = |entity: &EntitySnapshot| {
             if entity.index == local_player_index {
                 local_player_position
@@ -7002,6 +8258,9 @@ impl Level2ResetSession {
             )
         };
         for entity in self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter_mut()
@@ -7011,9 +8270,17 @@ impl Level2ResetSession {
                 entity.apply_wind_model45_mailbox(parent.entity_id, parent.subspell_index);
             }
         }
-        for entity in self.economy.entities.iter_mut().filter(|entity| {
-            entity.active && entity.life >= 0 && entity.class == 3 && entity.model == 2
-        }) {
+        for entity in self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter_mut()
+            .filter(|entity| {
+                entity.active && entity.life >= 0 && entity.class == 3 && entity.model == 2
+            })
+        {
             if overlaps(entity) {
                 entity.apply_wind_model2_mailbox(
                     parent.source_entity_index,
@@ -7030,6 +8297,9 @@ impl Level2ResetSession {
     /// One sound-3 event follows that child's scans iff any target was hit.
     pub(super) fn step_level2_authored_model76_collision_effect(&mut self, source_slot: u16) {
         let Some(parent) = self
+            .session
+            .state
+            .live
             .economy
             .authored_model76()
             .iter()
@@ -7039,6 +8309,9 @@ impl Level2ResetSession {
             return;
         };
         let source_children = self
+            .session
+            .state
+            .live
             .economy
             .model76_children()
             .iter()
@@ -7050,11 +8323,14 @@ impl Level2ResetSession {
         if source_children.is_empty() {
             return;
         }
-        let local_player_index = self.state.entity_index;
-        let local_player_position = self.state.position;
+        let local_player_index = self.session.state.live.core.state.entity_index;
+        let local_player_position = self.session.state.live.core.state.position;
         for child in source_children {
             let mut hit_count = 0_u16;
             let model2_slots = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .iter()
@@ -7068,6 +8344,9 @@ impl Level2ResetSession {
                 .collect::<Vec<_>>();
             for target_index in model2_slots {
                 let hit = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .entities
                     .get(usize::from(target_index))
@@ -7091,7 +8370,14 @@ impl Level2ResetSession {
                         )
                     });
                 if hit {
-                    if let Some(target) = self.economy.entities.get_mut(usize::from(target_index)) {
+                    if let Some(target) = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .entities
+                        .get_mut(usize::from(target_index))
+                    {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
                         hit_count = hit_count.wrapping_add(1);
                     }
@@ -7099,6 +8385,9 @@ impl Level2ResetSession {
             }
 
             let model45_slots = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .iter()
@@ -7107,6 +8396,9 @@ impl Level2ResetSession {
                 .collect::<Vec<_>>();
             for target_index in model45_slots {
                 let hit = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .entities
                     .get(usize::from(target_index))
@@ -7119,21 +8411,37 @@ impl Level2ResetSession {
                             target.position,
                             target.array_pitch(),
                             target.array_roll(),
-                        ) && self.collision_masks.as_ref().is_some_and(|bank| {
-                            level2_model76_model45_occupancy(bank, selector, child.position)
-                        })
+                        ) && self
+                            .session
+                            .definition
+                            .collision_masks
+                            .as_ref()
+                            .is_some_and(|bank| {
+                                level2_model76_model45_occupancy(bank, selector, child.position)
+                            })
                     });
                 if hit {
-                    if let Some(target) = self.economy.entities.get_mut(usize::from(target_index)) {
+                    if let Some(target) = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .entities
+                        .get_mut(usize::from(target_index))
+                    {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
                         hit_count = hit_count.wrapping_add(1);
                     }
                 }
             }
 
-            let generic_slots = level2_model76_map_search_slots(&self.economy.map_chains, child);
+            let generic_slots =
+                level2_model76_map_search_slots(&self.session.state.live.economy.map_chains, child);
             for target_index in generic_slots {
                 let hit = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .entities
                     .get(usize::from(target_index))
@@ -7163,7 +8471,14 @@ impl Level2ResetSession {
                             )
                     });
                 if hit {
-                    if let Some(target) = self.economy.entities.get_mut(usize::from(target_index)) {
+                    if let Some(target) = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .entities
+                        .get_mut(usize::from(target_index))
+                    {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
                         hit_count = hit_count.wrapping_add(1);
                     }
@@ -7171,12 +8486,12 @@ impl Level2ResetSession {
             }
 
             if hit_count != 0 {
-                self.economy
-                    .events
-                    .push(Level2EconomyEvent::FireSphereCollisionSound {
+                self.session.state.live.economy.events.push(
+                    Level2EconomyEvent::FireSphereCollisionSound {
                         source_entity_index: parent.source_entity_index,
                         sound_id: 3,
-                    });
+                    },
+                );
             }
         }
     }
@@ -7193,6 +8508,9 @@ impl Level2ResetSession {
         source_slot: u16,
     ) {
         let Some(parent) = self
+            .session
+            .state
+            .live
             .economy
             .authored_model22()
             .iter()
@@ -7202,11 +8520,21 @@ impl Level2ResetSession {
             return;
         };
         let search_offsets = source_search_offsets(12);
-        let candidates =
-            source_map_search_slots(&self.economy.map_chains, parent.position, &search_offsets);
+        let candidates = source_map_search_slots(
+            &self.session.state.live.economy.map_chains,
+            parent.position,
+            &search_offsets,
+        );
         let targets = candidates
             .into_iter()
-            .filter_map(|entity_index| self.economy.entities.get(usize::from(entity_index)))
+            .filter_map(|entity_index| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get(usize::from(entity_index))
+            })
             .filter(|entity| {
                 entity.active
                     && matches!(entity.class, 2 | 3 | 5 | 10)
@@ -7216,6 +8544,9 @@ impl Level2ResetSession {
             .collect::<Vec<_>>();
         for target_index in targets {
             let Some(snapshot) = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .get(usize::from(target_index))
@@ -7223,8 +8554,9 @@ impl Level2ResetSession {
             else {
                 continue;
             };
-            let target_position = if target_index == self.state.entity_index {
-                self.state.position
+            let target_position = if target_index == self.session.state.live.core.state.entity_index
+            {
+                self.session.state.live.core.state.position
             } else {
                 snapshot.position
             };
@@ -7248,19 +8580,24 @@ impl Level2ResetSession {
                     settle_descent = snapshot
                         .parameter_relation
                         .and_then(|index| {
-                            self.presentation.entity_parameters.get(usize::from(index))
+                            self.session
+                                .definition
+                                .presentation
+                                .entity_parameters
+                                .get(usize::from(index))
                         })
                         .map_or(0, |parameter| {
                             i16::from_le_bytes([parameter[14], parameter[15]])
                         });
                     if distance >= 5_308_416 {
-                        self.economy.entities[usize::from(target_index)]
+                        self.session.state.live.economy.entities[usize::from(target_index)]
                             .set_control_flags(control_flags & !0x1000_0000);
                     } else {
-                        self.economy.entities[usize::from(target_index)]
+                        self.session.state.live.economy.entities[usize::from(target_index)]
                             .set_control_flags(control_flags);
                     }
-                    self.economy.entities[usize::from(target_index)].set_yaw(yaw);
+                    self.session.state.live.economy.entities[usize::from(target_index)]
+                        .set_yaw(yaw);
                     move_speed = 64;
                     hit = true;
                 }
@@ -7272,9 +8609,10 @@ impl Level2ResetSession {
                     let control_flags = snapshot.control_flags | 0x0000_0800;
                     let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(turn_delta));
                     predicted.z = predicted.z.wrapping_add(114);
-                    self.economy.entities[usize::from(target_index)]
+                    self.session.state.live.economy.entities[usize::from(target_index)]
                         .set_control_flags(control_flags);
-                    self.economy.entities[usize::from(target_index)].set_yaw(yaw);
+                    self.session.state.live.economy.entities[usize::from(target_index)]
+                        .set_yaw(yaw);
                     move_speed = 128;
                     hit = true;
                 } else {
@@ -7283,6 +8621,10 @@ impl Level2ResetSession {
                             snapshot.special_relation
                         {
                             if let Some(player) = self
+                                .session
+                                .state
+                                .live
+                                .core
                                 .players
                                 .iter_mut()
                                 .find(|player| player.slot == player_slot)
@@ -7293,11 +8635,12 @@ impl Level2ResetSession {
                                 }
                             }
                         }
-                        self.economy.entities[usize::from(target_index)].set_actual_speed(80);
+                        self.session.state.live.economy.entities[usize::from(target_index)]
+                            .set_actual_speed(80);
                     }
                     let yaw = if distance >= 0x40000 {
                         let yaw = wrap_source_angle(desired_yaw.wrapping_add(591));
-                        self.economy.entities[usize::from(target_index)]
+                        self.session.state.live.economy.entities[usize::from(target_index)]
                             .set_source_word_30(yaw.cast_unsigned());
                         move_speed = 96;
                         yaw
@@ -7311,25 +8654,28 @@ impl Level2ResetSession {
                             i16::try_from((relative_z + i32::from(ground)).max(i32::from(ground)))
                                 .unwrap_or(ground);
                         let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(turn_delta));
-                        self.economy.entities[usize::from(target_index)]
+                        self.session.state.live.economy.entities[usize::from(target_index)]
                             .set_control_flags(control_flags);
                         let mut entity_rng = snapshot.entity_rng;
                         entity_rng = entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
-                        self.economy.entities[usize::from(target_index)].set_entity_rng(entity_rng);
+                        self.session.state.live.economy.entities[usize::from(target_index)]
+                            .set_entity_rng(entity_rng);
                         if relative_z >= i32::from(latch_band) + i32::from(entity_rng % latch_band)
                         {
-                            self.economy.entities[usize::from(target_index)]
+                            self.session.state.live.economy.entities[usize::from(target_index)]
                                 .set_control_flags(control_flags | 0x1000_0000);
-                            self.economy.entities[usize::from(target_index)]
+                            self.session.state.live.economy.entities[usize::from(target_index)]
                                 .set_source_word_30(yaw.cast_unsigned());
                         }
                         yaw
                     };
-                    self.economy.entities[usize::from(target_index)].set_yaw(yaw);
+                    self.session.state.live.economy.entities[usize::from(target_index)]
+                        .set_yaw(yaw);
                 }
             }
             if move_speed != 0 {
-                let move_yaw = self.economy.entities[usize::from(target_index)].source_word_30();
+                let move_yaw = self.session.state.live.economy.entities[usize::from(target_index)]
+                    .source_word_30();
                 crate::move_entity(
                     &mut predicted,
                     i16::try_from(move_yaw).expect("wind target move yaw fits"),
@@ -7340,7 +8686,13 @@ impl Level2ResetSession {
             let ground = self.canonical_terrain().ground_height(predicted);
             let ground_clearance = snapshot
                 .parameter_relation
-                .and_then(|index| self.presentation.entity_parameters.get(usize::from(index)))
+                .and_then(|index| {
+                    self.session
+                        .definition
+                        .presentation
+                        .entity_parameters
+                        .get(usize::from(index))
+                })
                 .map_or(0_i16, |parameter| {
                     i16::from_le_bytes([parameter[12], parameter[13]])
                 });
@@ -7351,7 +8703,7 @@ impl Level2ResetSession {
             if predicted.z <= settle_floor {
                 predicted.z = settle_floor;
             }
-            if self.profile == FlightProfile::CAVE {
+            if self.session.definition.profile == FlightProfile::CAVE {
                 if let Some(ceiling) = self.canonical_terrain().ceiling_height(predicted) {
                     let ceiling_limit = ceiling.wrapping_sub(snapshot.array_fov());
                     if predicted.z > ceiling_limit {
@@ -7359,19 +8711,25 @@ impl Level2ResetSession {
                     }
                 }
             }
-            let entity = &mut self.economy.entities[usize::from(target_index)];
+            let entity = &mut self.session.state.live.economy.entities[usize::from(target_index)];
             entity.set_position(predicted);
-            if target_index == self.state.entity_index {
-                self.state.position = predicted;
+            if target_index == self.session.state.live.core.state.entity_index {
+                self.session.state.live.core.state.position = predicted;
             }
-            let _ = self.economy.map_chains.sync_entity(RenderableMapSeed {
-                entity_index: target_index,
-                active: true,
-                x: predicted.x,
-                y: predicted.y,
-            });
+            let _ = self
+                .session
+                .state
+                .live
+                .economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: target_index,
+                    active: true,
+                    x: predicted.x,
+                    y: predicted.y,
+                });
             if hit {
-                self.economy.entities[usize::from(target_index)]
+                self.session.state.live.economy.entities[usize::from(target_index)]
                     .apply_wind_model45_mailbox(parent.entity_id, parent.subspell_index);
             }
         }
@@ -7383,6 +8741,9 @@ impl Level2ResetSession {
     /// stage-tag group scan, and disables drawing exactly once.
     pub(super) fn step_level2_authored_model32(&mut self, pass: u8, source_slot: u16) -> bool {
         let Some(source) = self
+            .session
+            .state
+            .live
             .economy
             .authored_model32()
             .iter()
@@ -7391,17 +8752,29 @@ impl Level2ResetSession {
         else {
             return false;
         };
-        if source.fired || source.objective_stage_index >= self.runtime.stage_index {
+        if source.fired
+            || source.objective_stage_index >= self.session.state.live.core.runtime.stage_index
+        {
             return true;
         }
         let Some(completed_owner_color) = self
+            .session
+            .state
+            .live
+            .core
             .players
             .iter()
-            .take(usize::from(self.runtime.player_count))
+            .take(usize::from(
+                self.session.state.live.core.runtime.player_count,
+            ))
             .filter(|player| player.active_player_index >= 0)
             .find_map(|player| {
                 let color = player.player_color_index();
-                self.runtime
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
                     .objectives
                     .get(usize::from(color))
                     .filter(|objective| {
@@ -7415,14 +8788,27 @@ impl Level2ResetSession {
         else {
             return true;
         };
-        let Some(fired_source) = self.economy.complete_authored_model32(source_slot) else {
+        let Some(fired_source) = self
+            .session
+            .state
+            .live
+            .economy
+            .complete_authored_model32(source_slot)
+        else {
             return true;
         };
-        self.level2_model32_activated
+        self.session
+            .state
+            .live
+            .level2_model32_activated
             .insert(fired_source.authored_index);
-        self.level2_objective_pause = 1;
-        self.level2_objective_done = true;
-        self.runtime
+        self.session.state.live.level2_objective_pause = 1;
+        self.session.state.live.level2_objective_done = true;
+        self.session
+            .state
+            .live
+            .core
+            .runtime
             .mark_level2_objective_done_for(completed_owner_color);
         self.activate_level2_authored_switch_group(pass, source_slot, fired_source.stage_tag);
         true
@@ -7449,12 +8835,8 @@ impl Level2ResetSession {
     ) -> bool {
         let live = match kind {
             Level2DynamicArenaKind::CastleProjectile => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                let source_arena = &mut self.economy;
+                let terrain = &self.session.state.live.terrain;
+                let source_arena = &mut self.session.state.live.economy;
                 source_arena.economy.step_castle_projectile_slot(
                     source_slot,
                     &source_arena.entities,
@@ -7462,12 +8844,11 @@ impl Level2ResetSession {
                 )
             }
             Level2DynamicArenaKind::FireballProjectile => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
+                let terrain = &self.session.state.live.terrain;
                 let step = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .step_fireball_projectile_slot(source_slot, terrain);
                 if step.impact_sound {
@@ -7483,63 +8864,86 @@ impl Level2ResetSession {
                 step.live
             }
             Level2DynamicArenaKind::PossessionProjectile => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
                     .step_possession_projectile_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::PossessionEffect => {
-                self.economy.step_possession_effect_slot(source_slot)
-            }
+            Level2DynamicArenaKind::PossessionEffect => self
+                .session
+                .state
+                .live
+                .economy
+                .step_possession_effect_slot(source_slot),
             Level2DynamicArenaKind::CastleDefender => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy.step_castle_defender_slot(source_slot, terrain)
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .step_castle_defender_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::ManaSphere => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy.step_mana_sphere_slot(source_slot, terrain)
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .step_mana_sphere_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::ManaCarrier => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy.step_mana_carrier_slot(source_slot, terrain)
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .step_mana_carrier_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::DeathBurst => self.economy.step_death_burst_slot(source_slot),
-            Level2DynamicArenaKind::SpellReplacement => {
-                self.economy.step_spell_replacement_slot(source_slot)
-            }
-            Level2DynamicArenaKind::SpellPickup => self.economy.step_spell_pickup_slot(source_slot),
-            Level2DynamicArenaKind::AuthoredModel1 => {
-                self.economy.step_authored_model1_slot(source_slot)
-            }
-            Level2DynamicArenaKind::AuthoredModel45 => {
-                self.economy.step_authored_model45_slot(source_slot)
-            }
+            Level2DynamicArenaKind::DeathBurst => self
+                .session
+                .state
+                .live
+                .economy
+                .step_death_burst_slot(source_slot),
+            Level2DynamicArenaKind::SpellReplacement => self
+                .session
+                .state
+                .live
+                .economy
+                .step_spell_replacement_slot(source_slot),
+            Level2DynamicArenaKind::SpellPickup => self
+                .session
+                .state
+                .live
+                .economy
+                .step_spell_pickup_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredModel1 => self
+                .session
+                .state
+                .live
+                .economy
+                .step_authored_model1_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredModel45 => self
+                .session
+                .state
+                .live
+                .economy
+                .step_authored_model45_slot(source_slot),
             Level2DynamicArenaKind::AuthoredModel13 => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
                     .step_authored_model13_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::AuthoredBee => {
                 let source_before = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .authored_bees()
                     .iter()
@@ -7559,12 +8963,8 @@ impl Level2ResetSession {
                     Vec::new()
                 };
                 let acquired_target = if source_before.action == 17 {
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain();
-                    self.economy.acquire_authored_bee_target(
+                    let terrain = &self.session.state.live.terrain;
+                    self.session.state.live.economy.acquire_authored_bee_target(
                         source_slot,
                         &class3_candidates,
                         terrain,
@@ -7573,6 +8973,9 @@ impl Level2ResetSession {
                     None
                 };
                 let source = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .authored_bees()
                     .iter()
@@ -7590,7 +8993,8 @@ impl Level2ResetSession {
                         .and_then(|target_index| self.level2_bee_entity_target(target_index))
                 };
                 let contact_candidate = source_before.action == 18
-                    && source_before.target_entity_index == Some(self.state.entity_index)
+                    && source_before.target_entity_index
+                        == Some(self.session.state.live.core.state.entity_index)
                     && target.is_some_and(|(_, _, valid)| valid)
                     && source_before.action_window > 0
                     && source_before.source_byte_3e
@@ -7598,40 +9002,56 @@ impl Level2ResetSession {
                             .expect("positive Bee action window")
                         == 0;
                 let peers = self.level2_bee_peer_rows(source_before.model);
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                let live = self.economy.step_authored_bee_slot_with_target_and_peers(
-                    source_slot,
-                    target,
-                    &peers,
-                    &class3_candidates,
-                    terrain,
-                );
+                let terrain = &self.session.state.live.terrain;
+                let live = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_bee_slot_with_target_and_peers(
+                        source_slot,
+                        target,
+                        &peers,
+                        &class3_candidates,
+                        terrain,
+                    );
                 if let Some(killer_entity_index) = pre_kill_credit {
                     // `PreKillEntity_1C890` credits only a live, drawn
                     // class-3/model-0 owner distinct from the killed root.
                     // Keep stale, disabled, wrong-class/model, and self-owned
                     // identities fail-closed before changing the reset census.
                     let qualifying_killer = killer_entity_index != source_before.entity_id
-                        && self.economy.entities.iter().any(|entity| {
-                            entity.index == killer_entity_index
-                                && entity.active
-                                && entity.life >= 0
-                                && entity.class == 3
-                                && entity.model == 0
-                                && !entity.drawing_disabled()
-                        });
+                        && self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .entities
+                            .iter()
+                            .any(|entity| {
+                                entity.index == killer_entity_index
+                                    && entity.active
+                                    && entity.life >= 0
+                                    && entity.class == 3
+                                    && entity.model == 0
+                                    && !entity.drawing_disabled()
+                            });
                     if qualifying_killer {
-                        let _ = self.economy.record_authored_bee_kill(killer_entity_index);
+                        let _ = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .record_authored_bee_kill(killer_entity_index);
                     }
                 }
                 if contact_candidate {
                     if let (Some((target_position, _, true)), Some(after)) = (
                         target,
-                        self.economy
+                        self.session
+                            .state
+                            .live
+                            .economy
                             .authored_bees()
                             .iter()
                             .find(|candidate| {
@@ -7658,44 +9078,47 @@ impl Level2ResetSession {
                 live
             }
             Level2DynamicArenaKind::Model13SpawnedChild => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
                     .step_model13_spawned_child_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::AuthoredModel6 => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy.step_authored_model6_slot(source_slot, terrain)
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_model6_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::Model6SpawnedChild => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
                     .step_model6_spawned_child_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::AuthoredModel17 => {
-                self.economy.step_authored_model17_slot(source_slot)
-            }
-            Level2DynamicArenaKind::Model17SpawnedChild => {
-                self.economy.step_model17_spawned_child_slot(source_slot)
-            }
+            Level2DynamicArenaKind::AuthoredModel17 => self
+                .session
+                .state
+                .live
+                .economy
+                .step_authored_model17_slot(source_slot),
+            Level2DynamicArenaKind::Model17SpawnedChild => self
+                .session
+                .state
+                .live
+                .economy
+                .step_model17_spawned_child_slot(source_slot),
             Level2DynamicArenaKind::AuthoredModel22 => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
+                let terrain = &self.session.state.live.terrain;
                 let live = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .step_authored_model22_slot(source_slot, terrain);
                 if live {
@@ -7704,26 +9127,31 @@ impl Level2ResetSession {
                 }
                 live
             }
-            Level2DynamicArenaKind::Model22SpawnedChild => {
-                self.economy.step_model22_spawned_child_slot(source_slot)
-            }
+            Level2DynamicArenaKind::Model22SpawnedChild => self
+                .session
+                .state
+                .live
+                .economy
+                .step_model22_spawned_child_slot(source_slot),
             Level2DynamicArenaKind::AuthoredModel76 => {
                 // `sub_339B0` calls `sub_33C00` only on its state 0/1 route;
                 // state 2 runs the terminal countdown and returns before the
                 // collision/effect callback. Capture the pre-callback state
                 // because a state-1 row may become state 2 after life--.
                 let probe_collision = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .authored_model76()
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
                     .is_some_and(|source| source.state != 2);
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
+                let terrain = &self.session.state.live.terrain;
                 let live = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .step_authored_model76_slot(source_slot, terrain);
                 if live && probe_collision {
@@ -7731,17 +9159,26 @@ impl Level2ResetSession {
                 }
                 live
             }
-            Level2DynamicArenaKind::Model76Child => {
-                self.economy.step_model76_child_slot(source_slot)
-            }
-            Level2DynamicArenaKind::Model76TailSpawn => {
-                self.economy.step_model76_tail_spawn_slot(source_slot)
-            }
+            Level2DynamicArenaKind::Model76Child => self
+                .session
+                .state
+                .live
+                .economy
+                .step_model76_child_slot(source_slot),
+            Level2DynamicArenaKind::Model76TailSpawn => self
+                .session
+                .state
+                .live
+                .economy
+                .step_model76_tail_spawn_slot(source_slot),
             Level2DynamicArenaKind::AuthoredClass14 => {
                 self.step_level2_authored_class14(source_slot)
             }
             Level2DynamicArenaKind::AuthoredClass5 => {
                 let source = self
+                    .session
+                    .state
+                    .live
                     .economy
                     .authored_class5()
                     .iter()
@@ -7751,6 +9188,9 @@ impl Level2ResetSession {
                     source.filter(|source| source.model == level2_class5::archer::ARCHER_MODEL)
                 {
                     let archer_state = self
+                        .session
+                        .state
+                        .live
                         .economy
                         .authored_class5_archer()
                         .iter()
@@ -7771,22 +9211,22 @@ impl Level2ResetSession {
                         fallback_entities: &rows,
                         peers: &rows,
                     };
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain();
-                    let Some(step) =
-                        self.economy
-                            .step_authored_archer_slot(source_slot, context, terrain)
-                    else {
+                    let terrain = &self.session.state.live.terrain;
+                    let Some(step) = self.session.state.live.economy.step_authored_archer_slot(
+                        source_slot,
+                        context,
+                        terrain,
+                    ) else {
                         return false;
                     };
                     if let Some(target) = step.target {
                         self.apply_level2_archer_target(target);
                     }
                     if let Some(entity_index) = step.effects.target_feedback_entity {
-                        self.nyphur_dispatcher
+                        self.session
+                            .state
+                            .live
+                            .nyphur_dispatcher
                             .apply_class5_player_feedback(entity_index);
                     }
                     return step.map_synced;
@@ -7796,6 +9236,9 @@ impl Level2ResetSession {
                     && source.action == level2_class5::trader::TRADER_ACTION
                 {
                     let Some(runtime) = self
+                        .session
+                        .state
+                        .live
                         .economy
                         .authored_class5_runtime()
                         .iter()
@@ -7812,12 +9255,8 @@ impl Level2ResetSession {
                     let target = self.level2_trader_target(target_index);
                     let linked = self.level2_trader_linked_rows(runtime.linked_head);
                     let buildings = self.level2_trader_building_candidates();
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain();
-                    let Some(step) = self.economy.step_authored_trader_slot(
+                    let terrain = &self.session.state.live.terrain;
+                    let Some(step) = self.session.state.live.economy.step_authored_trader_slot(
                         source_slot,
                         target,
                         runtime.pending_damage,
@@ -7832,7 +9271,10 @@ impl Level2ResetSession {
                         self.apply_level2_trader_target(target);
                     }
                     if let Some(entity_index) = step.effects.player_feedback_entity {
-                        self.nyphur_dispatcher
+                        self.session
+                            .state
+                            .live
+                            .nyphur_dispatcher
                             .apply_class5_player_feedback(entity_index);
                     }
                     return step.map_synced;
@@ -7848,7 +9290,10 @@ impl Level2ResetSession {
                     };
                     (target_index != 0)
                         .then(|| {
-                            self.economy
+                            self.session
+                                .state
+                                .live
+                                .economy
                                 .entities
                                 .get(usize::from(target_index))
                                 .cloned()
@@ -7858,60 +9303,66 @@ impl Level2ResetSession {
                 if source.is_some_and(|source| {
                     source.model == 3 && matches!(source.action, 25 | 26 | 27 | 28 | 30)
                 }) {
-                    let event_start = self.economy.events.len();
+                    let event_start = self.session.state.live.economy.events.len();
                     let hit_target = source
                         .filter(|source| source.action == 26)
                         .and_then(|_| target.as_ref().map(|target| target.index));
-                    let terrain = self
-                        .campaign_state
-                        .as_ref()
-                        .expect("Level 2 campaign state owns canonical terrain")
-                        .terrain();
-                    let live = self.economy.step_authored_class5_model3_slot_with_target(
-                        source_slot,
-                        target,
-                        terrain,
-                    );
-                    let hit = self.economy.events[event_start..].iter().any(|event| {
-                        matches!(
-                            event,
-                            Level2EconomyEvent::AuthoredClass5Model3Sound {
-                                source_entity_index,
-                                sound_id: 8,
-                            } if *source_entity_index == source_slot
-                        )
-                    });
+                    let terrain = &self.session.state.live.terrain;
+                    let live = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .step_authored_class5_model3_slot_with_target(source_slot, target, terrain);
+                    let hit = self.session.state.live.economy.events[event_start..]
+                        .iter()
+                        .any(|event| {
+                            matches!(
+                                event,
+                                Level2EconomyEvent::AuthoredClass5Model3Sound {
+                                    source_entity_index,
+                                    sound_id: 8,
+                                } if *source_entity_index == source_slot
+                            )
+                        });
                     if hit {
                         if let Some(target_index) = hit_target {
-                            self.nyphur_dispatcher
+                            self.session
+                                .state
+                                .live
+                                .nyphur_dispatcher
                                 .apply_class5_player_feedback(target_index);
                         }
                     }
                     return live;
                 }
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
                     .step_authored_class5_slot_with_target(source_slot, target, terrain)
             }
             Level2DynamicArenaKind::AuthoredClass5Model3Child => self
+                .session
+                .state
+                .live
                 .economy
                 .step_authored_class5_model3_child_slot(source_slot),
             Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
                     .step_authored_class5_archer_child_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::HouseResident => {
-                self.economy.step_house_resident_slot(source_slot)
-            }
+            Level2DynamicArenaKind::HouseResident => self
+                .session
+                .state
+                .live
+                .economy
+                .step_house_resident_slot(source_slot),
             Level2DynamicArenaKind::AuthoredSwitchProducer => {
                 self.step_level2_authored_switch_producer(pass, source_slot)
             }
@@ -7919,49 +9370,72 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredModel32 => {
                 self.step_level2_authored_model32(pass, source_slot)
             }
-            Level2DynamicArenaKind::AuthoredModel59 => {
-                self.economy.step_authored_model59_slot(source_slot)
-            }
+            Level2DynamicArenaKind::AuthoredModel59 => self
+                .session
+                .state
+                .live
+                .economy
+                .step_authored_model59_slot(source_slot),
             Level2DynamicArenaKind::Model59SmokeChild => {
-                let terrain = self
-                    .campaign_state
-                    .as_ref()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain();
-                self.economy
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
                     .step_model59_smoke_child_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::AuthoredModel53 => {
-                self.economy.step_authored_model53_slot(source_slot)
-            }
+            Level2DynamicArenaKind::AuthoredModel53 => self
+                .session
+                .state
+                .live
+                .economy
+                .step_authored_model53_slot(source_slot),
             Level2DynamicArenaKind::AuthoredModel5WaterSplash => self
+                .session
+                .state
+                .live
                 .economy
                 .step_authored_model5_water_splash_slot(source_slot),
             Level2DynamicArenaKind::BeyondSightPulseEffect => self
+                .session
+                .state
+                .live
                 .economy
                 .step_beyond_sight_pulse_effect_slot(source_slot),
             Level2DynamicArenaKind::ManaAttraction => match sphere_membership {
                 Some(membership) => self
+                    .session
+                    .state
+                    .live
                     .economy
                     .step_mana_attraction_slot_with_sphere_membership(source_slot, membership),
-                None => self.economy.step_mana_attraction_slot(source_slot),
+                None => self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .step_mana_attraction_slot(source_slot),
             },
             Level2DynamicArenaKind::CastleAuxiliary
             | Level2DynamicArenaKind::CastleChild
             | Level2DynamicArenaKind::CastleController => {
-                let terrain = self
-                    .campaign_state
-                    .as_mut()
-                    .expect("Level 2 campaign state owns canonical terrain")
-                    .terrain_mut();
-                self.economy
+                let terrain = &mut self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
                     .step_castle_child_terminal_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::CastleRoot => true,
         };
         if !live
             && kind == Level2DynamicArenaKind::CastleProjectile
-            && let Some(holder_index) = self.economy.rejected_castle_projectile_holder(source_slot)
+            && let Some(holder_index) = self
+                .session
+                .state
+                .live
+                .economy
+                .rejected_castle_projectile_holder(source_slot)
         {
             self.clear_castle_spell_holder_cooldown(holder_index);
         }
@@ -7971,13 +9445,21 @@ impl Level2ResetSession {
                 | Level2DynamicArenaKind::CastleChild
                 | Level2DynamicArenaKind::CastleAuxiliary
                 | Level2DynamicArenaKind::CastleController
-        ) && self.economy.take_castle_upgrade_holder_clear_pending()
+        ) && self
+            .session
+            .state
+            .live
+            .economy
+            .take_castle_upgrade_holder_clear_pending()
         {
             if let Some(holder_index) = self
+                .session
+                .state
+                .live
                 .shared_spells
                 .holders
                 .iter()
-                .chain(self.shared_spells.dynamic_pickups.iter())
+                .chain(self.session.state.live.shared_spells.dynamic_pickups.iter())
                 .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
                 .map(|holder| holder.index)
             {
@@ -7997,31 +9479,39 @@ impl Level2ResetSession {
             match *event {
                 GoatStepEvent::ManaConverted { entity_index, mana } => {
                     if let Some((position, yaw, rng)) = self
+                        .session
+                        .state
+                        .live
                         .goats
                         .goats()
                         .iter()
                         .find(|goat| goat.entity_index == entity_index)
                         .map(|goat| (goat.position, goat.yaw, goat.rng))
                     {
-                        let owner_entity_index = self.economy.source_owner(entity_index);
-                        let terrain = self
-                            .campaign_state
-                            .as_ref()
-                            .expect("Level 2 campaign state owns canonical terrain")
-                            .terrain();
-                        let _ = self.economy.spawn_mana_sphere_from_death(
-                            entity_index,
-                            position,
-                            yaw,
-                            rng,
-                            mana,
-                            owner_entity_index,
-                            terrain,
-                        );
+                        let owner_entity_index =
+                            self.session.state.live.economy.source_owner(entity_index);
+                        let terrain = &self.session.state.live.terrain;
+                        let _ = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .spawn_mana_sphere_from_death(
+                                entity_index,
+                                position,
+                                yaw,
+                                rng,
+                                mana,
+                                owner_entity_index,
+                                terrain,
+                            );
                     }
                 }
                 GoatStepEvent::ExtraManaSphereRequested { entity_index } => {
                     if let Some((position, source_id, _control_flags)) = self
+                        .session
+                        .state
+                        .live
                         .goats
                         .goats()
                         .iter()
@@ -8033,11 +9523,16 @@ impl Level2ResetSession {
                         // dword, so the gate is 0x0010_0000 here.
                         .filter(|(_, _, control_flags)| control_flags & 0x0010_0000 == 0)
                     {
-                        let _ = self.economy.spawn_death_burst_from_death_with_id(
-                            entity_index,
-                            source_id,
-                            position,
-                        );
+                        let _ = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .spawn_death_burst_from_death_with_id(
+                                entity_index,
+                                source_id,
+                                position,
+                            );
                     }
                 }
                 _ => {}
@@ -8047,12 +9542,12 @@ impl Level2ResetSession {
 
     #[must_use]
     pub fn mission(&self) -> &MissionContentSession {
-        &self.mission
+        &self.session.state.live.mission
     }
 
     #[must_use]
     pub fn dispatch_events(&self) -> &[Level2DispatchEvent] {
-        &self.dispatch_events
+        &self.session.state.scratch.dispatch_events
     }
 
     /// Stable only as a session observability digest, not as a conformance
@@ -8062,7 +9557,14 @@ impl Level2ResetSession {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(b"level2-campaign-events-v1");
-        for (ordinal, event) in self.dispatch_events.iter().enumerate() {
+        for (ordinal, event) in self
+            .session
+            .state
+            .scratch
+            .dispatch_events
+            .iter()
+            .enumerate()
+        {
             let (pass, kind, family, flags, source_slot) = event.campaign_projection();
             hasher.update(u32::try_from(ordinal).unwrap_or(u32::MAX).to_le_bytes());
             hasher.update([pass, kind, family, flags]);
@@ -8073,7 +9575,7 @@ impl Level2ResetSession {
         // it here makes the C ABI dispatch digest depend on unrelated movement
         // and regeneration fields that are not present in its canonical ledger.
         hasher.update(b"level2-nyphur-dispatch-traces-v1");
-        for trace in &self.nyphur_dispatch_traces {
+        for trace in &self.session.state.scratch.nyphur_dispatch_traces {
             hasher.update([trace.pass]);
             hasher.update(trace.source_slot.to_le_bytes());
             hasher.update(trace.state_byte.to_le_bytes());
@@ -8103,15 +9605,23 @@ impl Level2ResetSession {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(b"level2-campaign-state-v1");
-        hasher.update(state_hash(&self.state).to_le_bytes());
+        hasher.update(state_hash(&self.session.state.live.core.state).to_le_bytes());
         hasher.update(terrain.deterministic_hash().to_le_bytes());
         for component in [
-            self.shared_spells.reset_hash_with_terrain(terrain),
-            self.economy.reset_hash_with_terrain(terrain),
-            self.ordinary.reset_hash(),
+            self.session
+                .state
+                .live
+                .shared_spells
+                .reset_hash_with_terrain(terrain),
+            self.session
+                .state
+                .live
+                .economy
+                .reset_hash_with_terrain(terrain),
+            self.session.state.live.ordinary.reset_hash(),
             self.goat_hash(),
             self.bad_stone_hash(),
-            self.mission.state_hash(),
+            self.session.state.live.mission.state_hash(),
         ] {
             hasher.update(
                 u32::try_from(component.len())
@@ -8121,27 +9631,27 @@ impl Level2ResetSession {
             hasher.update(component.as_bytes());
         }
         hasher.update(b"level2-mana-attraction-activation-v1");
-        for authored_index in &self.level2_mana_attraction_activated {
+        for authored_index in &self.session.state.live.level2_mana_attraction_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model13-activation-v1");
-        for authored_index in &self.level2_model13_activated {
+        for authored_index in &self.session.state.live.level2_model13_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-bee-activation-v1");
-        for authored_index in &self.level2_bees_activated {
+        for authored_index in &self.session.state.live.level2_bees_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-switch-producer-activation-v1");
-        for authored_index in &self.level2_switch_producers_activated {
+        for authored_index in &self.session.state.live.level2_switch_producers_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model32-activation-v1");
-        for authored_index in &self.level2_model32_activated {
+        for authored_index in &self.session.state.live.level2_model32_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-imported-switch-root-v1");
-        for root in &self.level2_imported_switch_roots {
+        for root in &self.session.state.live.level2_imported_switch_roots {
             hasher.update(root.source_slot.to_le_bytes());
             hasher.update(root.authored_index.to_le_bytes());
             hasher.update([
@@ -8158,39 +9668,39 @@ impl Level2ResetSession {
             hasher.update(root.position.z.to_le_bytes());
         }
         hasher.update(b"level2-model76-activation-v1");
-        for authored_index in &self.level2_model76_activated {
+        for authored_index in &self.session.state.live.level2_model76_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model22-activation-v1");
-        for authored_index in &self.level2_model22_activated {
+        for authored_index in &self.session.state.live.level2_model22_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model39-activation-v1");
-        for authored_index in &self.level2_model39_activated {
+        for authored_index in &self.session.state.live.level2_model39_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model6-activation-v1");
-        for authored_index in &self.level2_model6_activated {
+        for authored_index in &self.session.state.live.level2_model6_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model59-activation-v1");
-        for authored_index in &self.level2_model59_activated {
+        for authored_index in &self.session.state.live.level2_model59_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model53-activation-v1");
-        for authored_index in &self.level2_model53_activated {
+        for authored_index in &self.session.state.live.level2_model53_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model1-activation-v1");
-        for authored_index in &self.level2_model1_activated {
+        for authored_index in &self.session.state.live.level2_model1_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model17-activation-v1");
-        for authored_index in &self.level2_model17_activated {
+        for authored_index in &self.session.state.live.level2_model17_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-group10-switch25-v1");
-        match self.level2_group10_switch25 {
+        match self.session.state.live.level2_group10_switch25 {
             Some(switch) => {
                 hasher.update([1, switch.phase]);
                 hasher.update(switch.source_slot.to_le_bytes());
@@ -8203,40 +9713,65 @@ impl Level2ResetSession {
             None => hasher.update([0]),
         }
         hasher.update(b"level2-class14-activation-v1");
-        for authored_index in &self.level2_class14_activated {
+        for authored_index in &self.session.state.live.level2_class14_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-tree-activation-v1");
-        for authored_index in &self.level2_tree_activated {
+        for authored_index in &self.session.state.live.level2_tree_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-class5-activation-v1");
-        for authored_index in &self.level2_class5_activated {
+        for authored_index in &self.session.state.live.level2_class5_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-model45-activation-v1");
-        for authored_index in &self.level2_model45_activated {
+        for authored_index in &self.session.state.live.level2_model45_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-objective-switch-state-v1");
         hasher.update([
-            self.level2_selected_objective_stage_state,
-            self.level2_objective_pause,
-            u8::from(self.level2_objective_done),
+            self.session
+                .state
+                .live
+                .level2_selected_objective_stage_state,
+            self.session.state.live.level2_objective_pause,
+            u8::from(self.session.state.live.level2_objective_done),
         ]);
         hasher.update(b"level2-nyphur-dispatcher-v1");
-        hasher.update(self.nyphur_dispatcher.state_byte().to_le_bytes());
+        hasher.update(
+            self.session
+                .state
+                .live
+                .nyphur_dispatcher
+                .state_byte()
+                .to_le_bytes(),
+        );
         if let Some(entity) = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter()
-            .find(|entity| entity.index == self.nyphur_dispatcher.common_upkeep.source_slot)
+            .find(|entity| {
+                entity.index
+                    == self
+                        .session
+                        .state
+                        .live
+                        .nyphur_dispatcher
+                        .common_upkeep
+                        .source_slot
+            })
         {
-            self.nyphur_dispatcher
+            self.session
+                .state
+                .live
+                .nyphur_dispatcher
                 .common_upkeep
                 .hash_into(&mut hasher, entity.phase);
         }
-        for trace in &self.nyphur_dispatch_traces {
+        for trace in &self.session.state.scratch.nyphur_dispatch_traces {
             hasher.update([trace.pass]);
             hasher.update(trace.source_slot.to_le_bytes());
             hasher.update(trace.state_byte.to_le_bytes());
@@ -8250,20 +9785,32 @@ impl Level2ResetSession {
             }
         }
         hasher.update(b"level2-player-contact-mailbox-v1");
-        hasher.update(self.player_pending_damage.to_le_bytes());
-        hasher.update(self.player_pending_attacker.to_le_bytes());
-        hasher.update(self.player_life.to_le_bytes());
+        hasher.update(self.session.state.live.player_pending_damage.to_le_bytes());
+        hasher.update(
+            self.session
+                .state
+                .live
+                .player_pending_attacker
+                .to_le_bytes(),
+        );
+        hasher.update(self.session.state.live.player_life.to_le_bytes());
         hasher.update(b"level2-day-hud-frame-state-v1");
         hasher.update([
-            self.level2_day_hud_color_phase_1,
-            self.level2_day_hud_color_phase_2,
+            self.session.state.scratch.level2_day_hud_color_phase_1,
+            self.session.state.scratch.level2_day_hud_color_phase_2,
         ]);
-        hasher.update(self.level2_day_hud_player_panel_selector.to_le_bytes());
-        hasher.update(self.runtime.bytes());
-        for entity in &self.economy.entities {
+        hasher.update(
+            self.session
+                .state
+                .scratch
+                .level2_day_hud_player_panel_selector
+                .to_le_bytes(),
+        );
+        hasher.update(self.session.state.live.core.runtime.bytes());
+        for entity in &self.session.state.live.economy.entities {
             hasher.update(entity.record_bytes());
         }
-        for player in &self.players {
+        for player in &self.session.state.live.core.players {
             hasher.update(player.record_bytes());
         }
         // The byte at offset 662 is decoded into an authoritative mutable
@@ -8272,7 +9819,7 @@ impl Level2ResetSession {
         // cannot collide with a qualified v5 session and ordinary mutations
         // are reset/replay-visible.
         hasher.update(b"level2-player-banishment-state-v1");
-        for player in &self.players {
+        for player in &self.session.state.live.core.players {
             hasher.update([
                 player.slot,
                 u8::from(player.banishment_state_0x006.is_some()),
@@ -8291,7 +9838,7 @@ impl Level2ResetSession {
 
     #[must_use]
     pub fn state_hash(&self) -> u64 {
-        state_hash(&self.state)
+        state_hash(&self.session.state.live.core.state)
     }
 
     #[must_use]
@@ -8300,10 +9847,20 @@ impl Level2ResetSession {
     }
 
     pub(super) fn sync_level2_day_hud_player_projection(&mut self) {
-        let local_player_slot = self.shared_spells.local_player.slot;
-        let turn = self.shared_spells.local_player.turn;
-        let hit_frame_time = self.shared_spells.local_player.record_bytes()[406];
+        let local_player_slot = self.session.state.live.shared_spells.local_player.slot;
+        let turn = self.session.state.live.shared_spells.local_player.turn;
+        let hit_frame_time = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .local_player
+            .record_bytes()[406];
         if let Some(player) = self
+            .session
+            .state
+            .live
+            .core
             .players
             .iter_mut()
             .find(|player| player.slot == local_player_slot)
@@ -8319,12 +9876,29 @@ impl Level2ResetSession {
     /// decrements only when colorIndex[1] is set.  Store that final panel
     /// decision so repeated ABI reads are idempotent.
     pub(super) fn finish_level2_day_hud_frame(&mut self) {
-        let hit_frame_time = self.shared_spells.local_player.record_bytes()[406];
-        self.level2_day_hud_hit_frame_time_pre_draw = hit_frame_time;
-        self.level2_day_hud_player_panel_selector =
-            level2_day_player_panel_selector(hit_frame_time, self.level2_day_hud_color_phase_1);
-        if hit_frame_time > 0 && self.level2_day_hud_color_phase_1 != 0 {
-            self.shared_spells
+        let hit_frame_time = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .local_player
+            .record_bytes()[406];
+        self.session
+            .state
+            .scratch
+            .level2_day_hud_hit_frame_time_pre_draw = hit_frame_time;
+        self.session
+            .state
+            .scratch
+            .level2_day_hud_player_panel_selector = level2_day_player_panel_selector(
+            hit_frame_time,
+            self.session.state.scratch.level2_day_hud_color_phase_1,
+        );
+        if hit_frame_time > 0 && self.session.state.scratch.level2_day_hud_color_phase_1 != 0 {
+            self.session
+                .state
+                .live
+                .shared_spells
                 .set_player_hit_frame_time(hit_frame_time - 1);
         }
         self.sync_level2_day_hud_player_projection();
@@ -8335,11 +9909,14 @@ impl Level2ResetSession {
     /// add to an unowned payload, matching the source primitive.  Shield
     /// status is evaluated later by the player's source callback.
     pub(super) fn queue_level2_player_contact_damage(&mut self, damage: i32, attacker: u16) {
-        if self.player_life < 0 || damage <= 0 || attacker == 0 {
+        if self.session.state.live.player_life < 0 || damage <= 0 || attacker == 0 {
             return;
         }
-        let player_entity_index = self.state.entity_index;
+        let player_entity_index = self.session.state.live.core.state.entity_index;
         let entity = self
+            .session
+            .state
+            .live
             .economy
             .entities
             .iter_mut()
@@ -8362,18 +9939,24 @@ impl Level2ResetSession {
         };
         entity.record[98..102].copy_from_slice(&next_damage.to_le_bytes());
         entity.record[102..104].copy_from_slice(&attacker.to_le_bytes());
-        self.player_pending_damage = next_damage;
-        self.player_pending_attacker = attacker;
-        self.shared_spells
+        self.session.state.live.player_pending_damage = next_damage;
+        self.session.state.live.player_pending_attacker = attacker;
+        self.session
+            .state
+            .live
+            .shared_spells
             .set_player_entity_damage_mailbox(next_damage, attacker);
     }
 
     /// Consume the local-player mailbox on the player's source-cursor visit.
     /// Return the applied payload for the typed dispatcher proof.
     pub(super) fn consume_level2_player_damage(&mut self) -> Option<(i32, u16, bool)> {
-        let player_entity_index = self.state.entity_index;
+        let player_entity_index = self.session.state.live.core.state.entity_index;
         let (attacker, damage, previous_killer) = {
             let entity = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .iter()
@@ -8393,18 +9976,34 @@ impl Level2ResetSession {
                 entity.word_24(),
             )
         };
-        let attacker_is_model67 = self.economy.entities.iter().any(|entity| {
-            entity.index == attacker && entity.active && entity.class == 10 && entity.model == 67
-        });
+        let attacker_is_model67 = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .any(|entity| {
+                entity.index == attacker
+                    && entity.active
+                    && entity.class == 10
+                    && entity.model == 67
+            });
         if attacker == 0 {
             let entity = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .iter_mut()
                 .find(|entity| entity.index == player_entity_index)
                 .expect("Level 2 local player entity remains present");
             entity.record[42..44].fill(0);
-            self.shared_spells
+            self.session
+                .state
+                .live
+                .shared_spells
                 .set_player_entity_damage_result(previous_killer, 0, false);
             return None;
         }
@@ -8412,26 +10011,44 @@ impl Level2ResetSession {
         // `sub_5EFA0` leaves a lethal player's owner mailbox intact and only
         // clears the per-visit attacker word. It does not apply the payload
         // again on later visits because the life guard has already failed.
-        if self.player_life < 0 {
+        if self.session.state.live.player_life < 0 {
             let entity = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .iter_mut()
                 .find(|entity| entity.index == player_entity_index)
                 .expect("Level 2 local player entity remains present");
             entity.record[42..44].fill(0);
-            self.shared_spells
+            self.session
+                .state
+                .live
+                .shared_spells
                 .set_player_entity_damage_result(previous_killer, 0, false);
             return None;
         }
 
-        let shield_damage =
-            self.shared_spells
-                .absorb_player_shield_damage(player_entity_index, damage, attacker);
+        let shield_damage = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .absorb_player_shield_damage(player_entity_index, damage, attacker);
         let applied_damage = shield_damage.map_or(damage, |damage| damage.applied_damage);
-        self.player_life = self.player_life.wrapping_sub(applied_damage);
-        self.shared_spells.set_player_hit_frame_time(4);
-        let lethal = self.player_life < 0;
+        self.session.state.live.player_life = self
+            .session
+            .state
+            .live
+            .player_life
+            .wrapping_sub(applied_damage);
+        self.session
+            .state
+            .live
+            .shared_spells
+            .set_player_hit_frame_time(4);
+        let lethal = self.session.state.live.player_life < 0;
         let killer = if lethal && attacker_is_model67 {
             0
         } else if lethal {
@@ -8439,8 +10056,11 @@ impl Level2ResetSession {
         } else {
             previous_killer
         };
-        let player_life = self.player_life;
+        let player_life = self.session.state.live.player_life;
         let shield_projection = self
+            .session
+            .state
+            .live
             .shared_spells
             .shield_state()
             .filter(|shield| shield.parent_entity_index == player_entity_index)
@@ -8453,6 +10073,9 @@ impl Level2ResetSession {
             });
         {
             let entity = self
+                .session
+                .state
+                .live
                 .economy
                 .entities
                 .iter_mut()
@@ -8478,12 +10101,22 @@ impl Level2ResetSession {
                 entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
             }
         }
-        self.player_pending_attacker = if lethal { attacker } else { 0 };
-        self.player_pending_damage = applied_damage;
-        self.shared_spells.set_player_entity_life(self.player_life);
-        self.shared_spells
+        self.session.state.live.player_pending_attacker = if lethal { attacker } else { 0 };
+        self.session.state.live.player_pending_damage = applied_damage;
+        self.session
+            .state
+            .live
+            .shared_spells
+            .set_player_entity_life(self.session.state.live.player_life);
+        self.session
+            .state
+            .live
+            .shared_spells
             .set_player_entity_damage_mailbox(applied_damage, if lethal { attacker } else { 0 });
-        self.shared_spells
+        self.session
+            .state
+            .live
+            .shared_spells
             .set_player_entity_damage_result(killer, attacker, lethal);
         shield_damage
             .is_none()
@@ -8506,39 +10139,54 @@ impl Level2ResetSession {
         command: PlayerCommand,
         speed_index: u8,
     ) -> Vec<crate::StepEvidence> {
-        self.dispatch_events.clear();
-        self.nyphur_dispatch_traces.clear();
-        self.economy_event_cursor = self.economy.events().len();
+        self.session.state.scratch.dispatch_events.clear();
+        self.session.state.scratch.nyphur_dispatch_traces.clear();
+        self.session.state.scratch.economy_event_cursor =
+            self.session.state.live.economy.events().len();
         // The campaign/C ABI flight carrier writes `state.position` before
         // entering the source outer turn. `UpdateEntities_57730` observes
         // that same local-player position from the entity row, including the
         // Castle shift-AABB probe that precedes the player body at slot 111.
         // Synchronize the row before any source callback; the later slot-111
         // write remains responsible for publishing the post-body position.
-        self.set_level2_entity_position(self.state.entity_index, self.state.position)
-            .expect("qualified Level 2 local-player map carrier remains valid");
+        self.set_level2_entity_position(
+            self.session.state.live.core.state.entity_index,
+            self.session.state.live.core.state.position,
+        )
+        .expect("qualified Level 2 local-player map carrier remains valid");
         // `PlayerEvents_51BB0` handles cheat command 0x1e/9 before
         // `UpdateEntities_57730`: toggle the same session-global bit before
         // any source-pass SetSpell callback can observe it. Other 0x1e
         // subcommands remain outside this bounded packet.
         if command.opcode == 0x1e && command.argument_1 == 9 {
-            self.shared_spells.free_spell_usage = !self.shared_spells.free_spell_usage;
+            self.session.state.live.shared_spells.free_spell_usage =
+                !self.session.state.live.shared_spells.free_spell_usage;
         }
-        self.shared_spells.set_beyond_sight_player_input(
-            self.state.entity_index,
-            command.argument_6,
-            command.argument_8,
-        );
-        let (color_phase_1, color_phase_2) = self.shared_spells.step_day_hud_player_events();
-        self.level2_day_hud_color_phase_1 = color_phase_1;
-        self.level2_day_hud_color_phase_2 = color_phase_2;
+        self.session
+            .state
+            .live
+            .shared_spells
+            .set_beyond_sight_player_input(
+                self.session.state.live.core.state.entity_index,
+                command.argument_6,
+                command.argument_8,
+            );
+        let (color_phase_1, color_phase_2) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .step_day_hud_player_events();
+        self.session.state.scratch.level2_day_hud_color_phase_1 = color_phase_1;
+        self.session.state.scratch.level2_day_hud_color_phase_2 = color_phase_2;
         self.sync_level2_day_hud_player_projection();
         self.sync_level2_spell_fire_context();
-        let context_event_start = self.context.events.len();
+        let context_event_start = self.session.state.live.core.context.events.len();
         let core = self.campaign_state_mut().core_mut();
         let latched_command =
             crate::latch_command_with_context(&mut core.state, command, &mut core.context);
-        let context_events = self.context.events[context_event_start..].to_vec();
+        let context_events =
+            self.session.state.live.core.context.events[context_event_start..].to_vec();
         self.append_context_effects(context_events);
         self.reconcile_level2_spell_menu_command(command);
         let mut evidence = Vec::new();
@@ -8547,7 +10195,10 @@ impl Level2ResetSession {
             // immediately before each entity pass. A landed 10/43/45
             // product therefore remains live and mapped for the rest of its
             // landing pass, then is released at the next pass boundary.
-            self.economy
+            self.session
+                .state
+                .live
+                .economy
                 .reclaim_castle_upgrade_products_at_source_boundary();
             self.step_level2_source_pass_with_player(
                 u8::try_from(pass).unwrap_or(u8::MAX),
@@ -8582,10 +10233,14 @@ impl Level2ResetSession {
             });
         }
 
-        let slot = self.runtime().local_player_slot;
-        let expected_entity = self.state.entity_index;
+        let slot = self.session.state.live.core.runtime.local_player_slot;
+        let expected_entity = self.session.state.live.core.state.entity_index;
         let actual_entity = self
-            .players()
+            .session
+            .state
+            .live
+            .core
+            .players
             .get(usize::from(slot))
             .map(|player| player.entity_index);
         if actual_entity != Some(expected_entity) {
@@ -8610,57 +10265,7 @@ impl Level2ResetSession {
 
     /// Restore every mutable session projection to the decoded frame zero.
     pub fn reset(&mut self) {
-        self.campaign_state_mut().reset_core();
-        self.economy.reset();
-        let baseline_terrain = self.baseline_terrain.clone();
-        *self.canonical_terrain_mut() = baseline_terrain;
-        self.bad_stones.clone_from(&self.baseline_bad_stones);
-        self.shared_spells = self.baseline_shared_spells.clone();
-        self.ordinary.reset();
-        self.goats = self.baseline_goats.clone();
-        self.mission.reset();
-        self.nyphur_dispatcher = self.baseline_nyphur_dispatcher.clone();
-        self.nyphur_dispatch_traces
-            .clone_from(&self.baseline_nyphur_dispatch_traces);
-        self.player_pending_damage = self.baseline_player_pending_damage;
-        self.player_pending_attacker = self.baseline_player_pending_attacker;
-        self.player_life = self.baseline_player_life;
-        self.level2_day_hud_color_phase_1 = self.baseline_level2_day_hud_color_phase_1;
-        self.level2_day_hud_color_phase_2 = self.baseline_level2_day_hud_color_phase_2;
-        self.level2_day_hud_hit_frame_time_pre_draw =
-            self.baseline_level2_day_hud_hit_frame_time_pre_draw;
-        self.level2_day_hud_player_panel_selector =
-            self.baseline_level2_day_hud_player_panel_selector;
-        self.dispatch_events.clear();
-        self.economy_event_cursor = 0;
-        self.level2_group8_activated = self.baseline_level2_group8_activated;
-        self.level2_selected_objective_stage_state =
-            self.baseline_level2_selected_objective_stage_state;
-        self.level2_objective_pause = self.baseline_level2_objective_pause;
-        self.level2_objective_done = self.baseline_level2_objective_done;
-        self.level2_mana_attraction_activated =
-            self.baseline_level2_mana_attraction_activated.clone();
-        self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
-        self.level2_bees_activated = self.baseline_level2_bees_activated.clone();
-        self.level2_switch_producers_activated =
-            self.baseline_level2_switch_producers_activated.clone();
-        self.level2_model32_activated = self.baseline_level2_model32_activated.clone();
-        self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
-        self.level2_model22_activated = self.baseline_level2_model22_activated.clone();
-        self.level2_model39_activated = self.baseline_level2_model39_activated.clone();
-        self.level2_model6_activated = self.baseline_level2_model6_activated.clone();
-        self.level2_model59_activated = self.baseline_level2_model59_activated.clone();
-        self.level2_model53_activated = self.baseline_level2_model53_activated.clone();
-        self.level2_model1_activated = self.baseline_level2_model1_activated.clone();
-        self.level2_model17_activated = self.baseline_level2_model17_activated.clone();
-        self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
-        self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
-        self.level2_class14_activated = self.baseline_level2_class14_activated.clone();
-        self.level2_tree_activated = self.baseline_level2_tree_activated.clone();
-        self.level2_class5_activated = self.baseline_level2_class5_activated.clone();
-        self.level2_model45_activated = self.baseline_level2_model45_activated.clone();
-        let observed = ResetState::from_level2(self);
-        self.campaign_state_mut().live = observed;
+        self.session.reset();
     }
 }
 

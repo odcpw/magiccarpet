@@ -5,7 +5,9 @@
 //! session-side entity mirror from drifting from the free stack, generation
 //! counters, map links, and typed rows that reuse those source slots.
 
-use crate::native_world::{EntitySnapshot, Level2DynamicArenaKind, Level2EconomyState};
+use crate::native_world::{
+    EntitySnapshot, Level2DynamicArenaKind, Level2EconomyState, level2_nyphur_source_identity_parts,
+};
 use std::ops::{Deref, DerefMut};
 
 use super::state::{SourceLink, SourceTopology, digest_topology};
@@ -32,7 +34,6 @@ pub(crate) struct SourceCursorRow {
 /// The single owner of imported source records and dynamic slot sidecars.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceArena {
-    pub(crate) baseline_entities: Box<[EntitySnapshot]>,
     pub(crate) entities: Box<[EntitySnapshot]>,
     pub(crate) economy: Level2EconomyState,
 }
@@ -40,11 +41,7 @@ pub struct SourceArena {
 impl SourceArena {
     #[must_use]
     pub(crate) fn new(entities: Box<[EntitySnapshot]>, economy: Level2EconomyState) -> Self {
-        Self {
-            baseline_entities: entities.clone(),
-            entities,
-            economy,
-        }
+        Self { entities, economy }
     }
 
     #[must_use]
@@ -111,6 +108,38 @@ impl SourceArena {
             .map(SourceEntityView::Imported)
     }
 
+    /// Resolve the source-width identity stored by Nyphur's target relation
+    /// from the authoritative carrier for the live slot. Imported entities and
+    /// typed model-39 births share the same identity primitive; inactive or
+    /// unrelated dynamic rows do not validate a stale relation.
+    #[must_use]
+    pub(crate) fn relation_identity(&self, source_slot: u16) -> Option<i16> {
+        if let Some(sphere) = self
+            .economy
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.active && sphere.source_entity_index == source_slot)
+        {
+            let source_id = u16::try_from(sphere.id).ok()?;
+            return Some(level2_nyphur_source_identity_parts(source_id, 39, 10));
+        }
+        self.entities
+            .get(usize::from(source_slot))
+            .filter(|entity| entity.active)
+            .and_then(|entity| {
+                // Package class-10/model-39 rows seed the typed sphere arena.
+                // Once that typed row retires, the imported record must not
+                // resurrect it as a valid relation target.
+                (entity.class != 10 || entity.model != 39).then(|| {
+                    level2_nyphur_source_identity_parts(
+                        entity.source_id,
+                        entity.model,
+                        entity.class,
+                    )
+                })
+            })
+    }
+
     #[must_use]
     pub(crate) fn cursor_rows(&self) -> Vec<SourceCursorRow> {
         self.economy
@@ -124,11 +153,6 @@ impl SourceArena {
                 kind,
             })
             .collect()
-    }
-
-    pub(crate) fn reset(&mut self) {
-        self.entities.clone_from(&self.baseline_entities);
-        self.economy.reset();
     }
 }
 

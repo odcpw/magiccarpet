@@ -741,12 +741,11 @@ fn parse_level2_authored_stage_variables(
 pub struct MissionContentSession {
     profile: MissionContentProfile,
     authored_features: Box<[AuthoredFeature]>,
-    baseline_slots: Box<[Level1ResetSourceSlot]>,
+
     source_slots: Box<[Level1ResetSourceSlot]>,
     wizard_map_settings: Box<[MissionWizardMapSettings]>,
     level2_authored_stage_variables: Box<[Level2AuthoredStageVariable]>,
     level2_activation_plan: Option<Level2ActivationPlan>,
-    initial_global_rng: u32,
     global_rng: u32,
 }
 
@@ -793,6 +792,7 @@ mod tests {
         );
 
         let mut session = template.session();
+        let reset = session.clone();
         let baseline = session.state_hash();
         let error = session
             .dispatch_source_slot(1)
@@ -802,7 +802,7 @@ mod tests {
             .set_source_slot_active(1, false)
             .expect("valid source slot mutation");
         assert_ne!(session.state_hash(), baseline);
-        session.reset();
+        session.clone_from(&reset);
         assert_eq!(session.state_hash(), baseline);
     }
 
@@ -970,12 +970,11 @@ impl MissionContentSession {
         Self {
             profile: template.profile,
             authored_features: template.authored_features.clone(),
-            baseline_slots: template.reset_source_slots.clone(),
+
             source_slots: template.reset_source_slots.clone(),
             wizard_map_settings: template.wizard_map_settings.clone(),
             level2_authored_stage_variables: template.level2_authored_stage_variables.clone(),
             level2_activation_plan: template.level2_activation_plan.clone(),
-            initial_global_rng: template.initial_global_rng,
             global_rng: template.initial_global_rng,
         }
     }
@@ -1042,12 +1041,6 @@ impl MissionContentSession {
     #[must_use]
     pub const fn global_rng(&self) -> u32 {
         self.global_rng
-    }
-
-    /// Reset all session-owned state to the immutable template baseline.
-    pub fn reset(&mut self) {
-        self.source_slots.clone_from(&self.baseline_slots);
-        self.global_rng = self.initial_global_rng;
     }
 
     /// Mutate one generic reset field through the shared seam.  This is useful

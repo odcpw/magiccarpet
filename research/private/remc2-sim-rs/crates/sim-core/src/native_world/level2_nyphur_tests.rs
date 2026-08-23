@@ -87,7 +87,8 @@ fn level_two_nyphur_participant_chain_is_source_bound_and_reset_isolated() {
     let mut relation_tampered = inspection
         .level2_reset_session()
         .expect("Nyphur relation negative session");
-    relation_tampered.economy.entities[113].record[26..28].copy_from_slice(&114_u16.to_le_bytes());
+    relation_tampered.session.state.live.economy.entities[113].record[26..28]
+        .copy_from_slice(&114_u16.to_le_bytes());
     assert!(relation_tampered.nyphur_participant().is_err());
 
     let mut holder_owner_tampered = inspection
@@ -114,12 +115,14 @@ fn level_two_ai_dispatcher_0008_preserves_mode_and_tail_order() {
 
     let baseline_campaign_hash = session.campaign_state_hash();
     let baseline_dispatch_hash = session.dispatch_observability_hash();
-    let baseline_economy_hash = session.economy.reset_hash();
+    let baseline_economy_hash = session.session.state.live.economy.reset_hash();
     let baseline_shared_spells_hash = session.shared_spells.reset_hash();
-    let baseline_global_rng = session.economy.global_rng;
+    let baseline_global_rng = session.session.state.live.economy.global_rng;
     let baseline_runtime = session.runtime.clone();
-    let baseline_entity_record = session.economy.entities[112].record_bytes().to_vec();
-    let baseline_entity_phase = session.economy.entities[112].phase;
+    let baseline_entity_record = session.session.state.live.economy.entities[112]
+        .record_bytes()
+        .to_vec();
+    let baseline_entity_phase = session.session.state.live.economy.entities[112].phase;
 
     // This is the ordinary production route: the qualified class-3,
     // model-1, action-1 source row is discovered from the indexed entity
@@ -154,10 +157,16 @@ fn level_two_ai_dispatcher_0008_preserves_mode_and_tail_order() {
         "the source-owned phase increment is the only mutable census byte"
     );
     let mut phase_record_mismatch = session.clone();
-    phase_record_mismatch.economy.entities[112].record[66] ^= 1;
+    phase_record_mismatch.session.state.live.economy.entities[112].record[66] ^= 1;
     assert!(phase_record_mismatch.nyphur_participant().is_err());
     let mut non_phase_record_mutation = session.clone();
-    non_phase_record_mutation.economy.entities[112].record[67] ^= 1;
+    non_phase_record_mutation
+        .session
+        .state
+        .live
+        .economy
+        .entities[112]
+        .record[67] ^= 1;
     assert!(non_phase_record_mutation.nyphur_participant().is_err());
     assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
     let stepped_campaign_hash = session.campaign_state_hash();
@@ -322,7 +331,9 @@ fn level_two_nyphur_mode14_rejects_non_family4_holder_carrier() {
     let mut session = inspection
         .level2_reset_session()
         .expect("qualified Nyphur malformed-carrier session");
-    let source_before = session.economy.entities[112].record_bytes().to_vec();
+    let source_before = session.session.state.live.economy.entities[112]
+        .record_bytes()
+        .to_vec();
     let fireball_holder = session
         .nyphur_common_upkeep()
         .expect("qualified Nyphur common carrier")
@@ -332,11 +343,20 @@ fn level_two_nyphur_mode14_rejects_non_family4_holder_carrier() {
     // Reusing the authored family-0 row as a family-4 table entry is a
     // malformed carrier, not a producer. The source-owned class/model/
     // action/parent checks must reject it without touching the source.
-    session.nyphur_dispatcher.common_upkeep.spell_holder_indices[4] = fireball_holder;
+    session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .spell_holder_indices[4] = fireball_holder;
     assert!(
         !session
+            .session
+            .state
+            .live
             .nyphur_dispatcher
-            .step_sub_15fc0(112, &mut session.economy.entities)
+            .step_sub_15fc0(112, &mut session.session.state.live.economy.entities)
     );
     assert_eq!(
         session.economy.entities[112].record_bytes(),
@@ -352,12 +372,20 @@ fn level_two_nyphur_mode14_rejects_non_family4_holder_carrier() {
 
     // A stale externally latched state is equally fail-closed at the
     // mode-14 handler boundary; it cannot consume the family-0 holder.
-    session.nyphur_dispatcher.state_byte = 14;
+    session.session.state.live.nyphur_dispatcher.state_byte = 14;
     let terrain = session.canonical_terrain().clone();
     let players = session.players().to_vec();
     session
+        .session
+        .state
+        .live
         .nyphur_dispatcher
-        .step_sub_161a0(112, &mut session.economy.entities, &players, &terrain)
+        .step_sub_161a0(
+            112,
+            &mut session.session.state.live.economy.entities,
+            &players,
+            &terrain,
+        )
         .expect("malformed mode-14 carrier fails through movement epilogue");
     assert_eq!(session.economy.entities[112].source_word_96(), 0);
     assert_eq!(session.economy.entities[112].source_word_98(), 0);
@@ -423,7 +451,12 @@ fn level_two_ai_modes_0_1_2_are_exact() {
     assert_eq!(mode1_trace.tail_call_count(), 1);
 
     let mut dispatched_mode1 = related.clone();
-    dispatched_mode1.nyphur_dispatcher.state_byte = 1;
+    dispatched_mode1
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .state_byte = 1;
     dispatched_mode1.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         dispatched_mode1
@@ -452,15 +485,22 @@ fn level_two_ai_modes_0_1_2_are_exact() {
         z: 2_048,
     };
     let mut inclusive = related.clone();
-    inclusive.economy.entities[112].set_position(source_position);
-    inclusive.economy.entities[70].set_position(Position {
+    inclusive.session.state.live.economy.entities[112].set_position(source_position);
+    inclusive.session.state.live.economy.entities[70].set_position(Position {
         x: source_position.x + 512,
         ..source_position
     });
     let inclusive_terrain = inclusive.canonical_terrain().clone();
     inclusive
+        .session
+        .state
+        .live
         .nyphur_dispatcher
-        .step_sub_12ff0(112, &mut inclusive.economy.entities, &inclusive_terrain)
+        .step_sub_12ff0(
+            112,
+            &mut inclusive.session.state.live.economy.entities,
+            &inclusive_terrain,
+        )
         .expect("inclusive sub_12FF0 threshold");
     assert_eq!(inclusive.nyphur_dispatcher.common_upkeep.speed, 0);
     assert_eq!(inclusive.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
@@ -470,17 +510,20 @@ fn level_two_ai_modes_0_1_2_are_exact() {
     );
 
     let mut exact_height = related.clone();
-    exact_height.economy.entities[112].set_position(source_position);
-    exact_height.economy.entities[70].set_position(Position {
+    exact_height.session.state.live.economy.entities[112].set_position(source_position);
+    exact_height.session.state.live.economy.entities[70].set_position(Position {
         z: source_position.z - 512,
         ..source_position
     });
     let exact_height_terrain = exact_height.canonical_terrain().clone();
     exact_height
+        .session
+        .state
+        .live
         .nyphur_dispatcher
         .step_sub_12ff0(
             112,
-            &mut exact_height.economy.entities,
+            &mut exact_height.session.state.live.economy.entities,
             &exact_height_terrain,
         )
         .expect("equal target-height delta");
@@ -490,15 +533,22 @@ fn level_two_ai_modes_0_1_2_are_exact() {
     );
 
     let mut exclusive = related.clone();
-    exclusive.economy.entities[112].set_position(source_position);
-    exclusive.economy.entities[70].set_position(Position {
+    exclusive.session.state.live.economy.entities[112].set_position(source_position);
+    exclusive.session.state.live.economy.entities[70].set_position(Position {
         x: source_position.x + 513,
         ..source_position
     });
     let exclusive_terrain = exclusive.canonical_terrain().clone();
     exclusive
+        .session
+        .state
+        .live
         .nyphur_dispatcher
-        .step_sub_12ff0(112, &mut exclusive.economy.entities, &exclusive_terrain)
+        .step_sub_12ff0(
+            112,
+            &mut exclusive.session.state.live.economy.entities,
+            &exclusive_terrain,
+        )
         .expect("exclusive sub_12FF0 threshold");
     assert_eq!(
         exclusive.nyphur_dispatcher.common_upkeep.speed,
@@ -510,13 +560,23 @@ fn level_two_ai_modes_0_1_2_are_exact() {
     );
 
     let mut stale = inclusive.clone();
-    let preserved_roll = stale.economy.entities[112].source_roll();
-    let stale_identity = level2_nyphur_source_identity(&stale.economy.entities[70]).wrapping_add(1);
-    stale.economy.entities[112].record[156..158].copy_from_slice(&stale_identity.to_le_bytes());
+    let preserved_roll = stale.session.state.live.economy.entities[112].source_roll();
+    let stale_identity =
+        level2_nyphur_source_identity(&stale.session.state.live.economy.entities[70])
+            .wrapping_add(1);
+    stale.session.state.live.economy.entities[112].record[156..158]
+        .copy_from_slice(&stale_identity.to_le_bytes());
     let stale_terrain = stale.canonical_terrain().clone();
     stale
+        .session
+        .state
+        .live
         .nyphur_dispatcher
-        .step_sub_12ff0(112, &mut stale.economy.entities, &stale_terrain)
+        .step_sub_12ff0(
+            112,
+            &mut stale.session.state.live.economy.entities,
+            &stale_terrain,
+        )
         .expect("stale identity is a source false result");
     assert_eq!(stale.economy.entities[112].source_roll(), preserved_roll);
 
@@ -533,7 +593,12 @@ fn level_two_ai_modes_0_1_2_are_exact() {
         ]
     );
     let mut dispatched_mode2 = related.clone();
-    dispatched_mode2.nyphur_dispatcher.state_byte = 2;
+    dispatched_mode2
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .state_byte = 2;
     dispatched_mode2.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         dispatched_mode2
@@ -578,7 +643,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         .expect("Level 2 Nyphur mode packet production session");
     let initial_campaign_hash = initial.campaign_state_hash();
     let initial_dispatch_hash = initial.dispatch_observability_hash();
-    let initial_entities = initial.economy.entities.clone();
+    let initial_entities = initial.session.state.live.economy.entities.clone();
     let initial_common = initial
         .nyphur_common_upkeep()
         .expect("initial Nyphur common carrier");
@@ -590,8 +655,8 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         initial.step_outer_turn(PlayerCommand::default(), 0);
     }
     assert_eq!(initial.nyphur_dispatch_state_byte(), 13);
-    let source = initial.economy.entities[112].clone();
-    let target = initial.economy.entities[70].clone();
+    let source = initial.session.state.live.economy.entities[112].clone();
+    let target = initial.session.state.live.economy.entities[70].clone();
     assert!(level2_nyphur_source_identity_matches(&source, &target));
     assert_eq!(source.source_word_96(), target.index);
     assert!(target.model == 0 || target.model == 1);
@@ -603,11 +668,17 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         "the source-owned live target relation remains a valid participant census row"
     );
     let mut stale_relation = initial.clone();
-    stale_relation.economy.entities[112].record[156..158]
+    stale_relation.session.state.live.economy.entities[112].record[156..158]
         .copy_from_slice(&source.source_word_98().wrapping_add(1).to_le_bytes());
     assert!(stale_relation.nyphur_participant().is_err());
     let mut unrelated_census_mutation = initial.clone();
-    unrelated_census_mutation.economy.entities[112].record[158] ^= 1;
+    unrelated_census_mutation
+        .session
+        .state
+        .live
+        .economy
+        .entities[112]
+        .record[158] ^= 1;
     assert!(unrelated_census_mutation.nyphur_participant().is_err());
 
     let expected_roll = i16::try_from(crate::heading_for_positions(
@@ -628,7 +699,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         (13_i8, Level2NyphurDispatchHelper::Sub13850),
     ] {
         let mut candidate = initial.clone();
-        candidate.nyphur_dispatcher.state_byte = state_byte;
+        candidate.session.state.live.nyphur_dispatcher.state_byte = state_byte;
         candidate.step_outer_turn(PlayerCommand::default(), 0);
         let trace = candidate
             .nyphur_dispatch_traces()
@@ -654,7 +725,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
                 ..
             }
         )));
-        let stepped_source = &candidate.economy.entities[112];
+        let stepped_source = &candidate.session.state.live.economy.entities[112];
         assert_eq!(
             stepped_source.entity_rng, source.entity_rng,
             "far state-13 must not consume the movement RNG"
@@ -682,17 +753,26 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     }
 
     let mut direction_carrier = initial.clone();
-    direction_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
+    direction_carrier
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .byte_0x45e = 3;
     let direction_terrain = direction_carrier.canonical_terrain().clone();
     let direction_players = direction_carrier.players().to_vec();
     direction_carrier
+        .session
+        .state
+        .live
         .nyphur_dispatcher
         .step_sub_13850(
             112,
-            &mut direction_carrier.economy.entities,
+            &mut direction_carrier.session.state.live.economy.entities,
             &direction_players,
             &direction_terrain,
-            &direction_carrier.presentation,
+            &direction_carrier.session.definition.presentation,
         )
         .expect("sub_16580 direction carrier increment");
     assert_eq!(
@@ -701,17 +781,26 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     );
 
     let mut reset_carrier = initial.clone();
-    reset_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e = 8;
+    reset_carrier
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .byte_0x45e = 8;
     let reset_terrain = reset_carrier.canonical_terrain().clone();
     let reset_players = reset_carrier.players().to_vec();
     reset_carrier
+        .session
+        .state
+        .live
         .nyphur_dispatcher
         .step_sub_13850(
             112,
-            &mut reset_carrier.economy.entities,
+            &mut reset_carrier.session.state.live.economy.entities,
             &reset_players,
             &reset_terrain,
-            &reset_carrier.presentation,
+            &reset_carrier.session.definition.presentation,
         )
         .expect("sub_16580 terrain carrier reset");
     assert_eq!(reset_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e, 0);
@@ -720,21 +809,29 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     // target slot. This planted negative rejects a naive slot-only helper
     // while leaving all source carriers untouched on failure.
     let mut wrong_identity = initial.clone();
-    let source_before_negative = wrong_identity.economy.entities[112].record_bytes().to_vec();
-    wrong_identity.economy.entities[70].model =
-        wrong_identity.economy.entities[70].model.wrapping_add(1);
-    wrong_identity.economy.entities[70].record[68] = wrong_identity.economy.entities[70].model;
+    let source_before_negative = wrong_identity.session.state.live.economy.entities[112]
+        .record_bytes()
+        .to_vec();
+    wrong_identity.session.state.live.economy.entities[70].model =
+        wrong_identity.session.state.live.economy.entities[70]
+            .model
+            .wrapping_add(1);
+    wrong_identity.session.state.live.economy.entities[70].record[68] =
+        wrong_identity.session.state.live.economy.entities[70].model;
     let wrong_identity_terrain = wrong_identity.canonical_terrain().clone();
     let wrong_identity_players = wrong_identity.players().to_vec();
     assert!(
         wrong_identity
+            .session
+            .state
+            .live
             .nyphur_dispatcher
             .step_sub_13850(
                 112,
-                &mut wrong_identity.economy.entities,
+                &mut wrong_identity.session.state.live.economy.entities,
                 &wrong_identity_players,
                 &wrong_identity_terrain,
-                &wrong_identity.presentation,
+                &wrong_identity.session.definition.presentation,
             )
             .is_err()
     );
@@ -748,8 +845,10 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     // consume RNG and move the source; the structural branch changes only
     // the ordinary outer phase byte and emits the exact call sequence.
     let mut mode5 = initial.clone();
-    mode5.nyphur_dispatcher.state_byte = 5;
-    let mode5_source_before = mode5.economy.entities[112].record_bytes().to_vec();
+    mode5.session.state.live.nyphur_dispatcher.state_byte = 5;
+    let mode5_source_before = mode5.session.state.live.economy.entities[112]
+        .record_bytes()
+        .to_vec();
     mode5.step_outer_turn(PlayerCommand::default(), 0);
     let mode5_trace = mode5
         .nyphur_dispatch_traces()
@@ -789,7 +888,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     let mode13_result = mode13_result.expect("mode-13 production result");
     let stepped_campaign_hash = mode13_result.campaign_state_hash();
     let stepped_dispatch_hash = mode13_result.dispatch_observability_hash();
-    let stepped_entities = mode13_result.economy.entities.clone();
+    let stepped_entities = mode13_result.session.state.live.economy.entities.clone();
     let stepped_common = mode13_result
         .nyphur_common_upkeep()
         .expect("stepped mode-13 common carrier");
@@ -817,13 +916,19 @@ fn level_two_nyphur_sub_148e0_source_order_and_fail_closed_are_exact() {
     let session = inspection
         .level2_reset_session()
         .expect("qualified Level 2 Nyphur selector session");
-    let source = session.economy.entities[112].clone();
+    let source = session.session.state.live.economy.entities[112].clone();
 
     // The qualified package intentionally has no sub_148E0 target rows;
     // the ordinary route must therefore leave both its source relation
     // and Watcom stream untouched rather than borrow sub_14530's model-1
     // target.
-    let mut no_target = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut no_target = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     let rng_before = no_target.watcom_rand_state;
     assert!(
         no_target
@@ -843,7 +948,7 @@ fn level_two_nyphur_sub_148e0_source_order_and_fail_closed_are_exact() {
     // links. It deliberately does not move a target, write word 0x96/0x98,
     // or enter the public dispatcher; it is focused order/nearest-helper
     // coverage, not ordinary activation evidence.
-    let mut indexed_entities = session.economy.entities.clone();
+    let mut indexed_entities = session.session.state.live.economy.entities.clone();
     indexed_entities[1].model = 39;
     indexed_entities[1].record[68] = 39;
     indexed_entities[1].next_relation = Some(2);
@@ -857,7 +962,13 @@ fn level_two_nyphur_sub_148e0_source_order_and_fail_closed_are_exact() {
         vec![1, 2]
     );
 
-    let mut indexed_selector = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut indexed_selector = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     indexed_selector.word_0x244 = 0;
     assert_eq!(
         indexed_selector.step_sub_13ce0(&source, &indexed_entities, &session.players,),
@@ -870,7 +981,13 @@ fn level_two_nyphur_sub_148e0_source_order_and_fail_closed_are_exact() {
     // negative result, but the single draw remains observable.
     indexed_entities[1].model = 57;
     indexed_entities[1].record[68] = 57;
-    let mut model57_selector = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut model57_selector = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     model57_selector.word_0x244 = i16::MAX;
     let mut expected_rng = model57_selector.watcom_rand_state;
     expected_rng = expected_rng
@@ -917,6 +1034,9 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
     session.step_outer_turn(PlayerCommand::default(), 0);
 
     let authored_model39_slots = session
+        .session
+        .state
+        .live
         .economy
         .spheres()
         .iter()
@@ -930,8 +1050,9 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
     let mut selected = None;
     for _ in 0..282 {
         session.step_outer_turn(PlayerCommand::default(), 0);
-        let target_slot =
-            session.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)].source_word_96();
+        let target_slot = session.session.state.live.economy.entities
+            [usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)]
+        .source_word_96();
         if authored_model39_slots.contains(&target_slot) {
             selected = Some(target_slot);
             break;
@@ -939,6 +1060,9 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
     }
     let selected_slot = selected.expect("ordinary sub_148E0 selects an authored model-39 row");
     let selected_sphere = session
+        .session
+        .state
+        .live
         .economy
         .spheres()
         .iter()
@@ -946,6 +1070,72 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
         .expect("selected authored model-39 remains in typed economy carrier");
     assert!(selected_sphere.active);
     assert_eq!(selected_sphere.player_entity_index, 0);
+    session
+        .nyphur_participant()
+        .expect("typed model-39 target remains a valid Nyphur relation");
+    session
+        .day_hud()
+        .expect("typed model-39 target remains valid through the Day HUD projection");
+
+    let mut wrong_identity = session.clone();
+    let wrong_sphere = wrong_identity
+        .session
+        .state
+        .live
+        .economy
+        .economy
+        .spheres
+        .iter_mut()
+        .find(|sphere| sphere.source_entity_index == selected_slot)
+        .expect("selected typed model-39 target for identity negative");
+    wrong_sphere.id = wrong_sphere.id.wrapping_add(1);
+    assert!(
+        wrong_identity.nyphur_participant().is_err(),
+        "the same live slot with a different typed source identity must not validate"
+    );
+
+    let mut retired = session.clone();
+    let surviving_slot = retired
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.active && sphere.source_entity_index != selected_slot)
+        .expect("second live sphere for source-owned merge retirement")
+        .source_entity_index;
+    assert!(
+        retired
+            .economy_mut()
+            .merge_mana_spheres(surviving_slot, selected_slot)
+    );
+    assert!(
+        retired.nyphur_participant().is_err(),
+        "retirement does not erase the stored relation before Nyphur's following source visit"
+    );
+    // Isolate the ordinary sub_5EFA0 relation-cleanup branch from the Castle
+    // overlap hold, which intentionally defers the mailbox callback.
+    retired
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .castle_entity_index = 0;
+    retired
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .word_0x159 = 0;
+    retired.step_outer_turn(PlayerCommand::default(), 0);
+    assert_ne!(
+        retired.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)].source_word_96(),
+        selected_slot,
+        "the following Nyphur source visit clears the retired typed target before any same-callback reselection"
+    );
+    retired
+        .nyphur_participant()
+        .expect("participant validation recovers after source-owned relation cleanup");
     // The shared tail latches state 6 after the selector callback. Its
     // dispatch trace is therefore emitted on the following ordinary pass,
     // preserving the source's state-byte handoff order.
@@ -956,6 +1146,9 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
         })
     );
     let selected_sphere_after_dispatch = session
+        .session
+        .state
+        .live
         .economy
         .spheres()
         .iter()
@@ -977,18 +1170,21 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
         .level2_reset_session()
         .expect("qualified Level 2 Nyphur distance-gate session");
     let source_index = base
+        .session
+        .state
+        .live
         .economy
         .entities
         .iter()
         .position(|entity| entity.index == 112)
         .expect("authored Nyphur source row");
-    let source = base.economy.entities[source_index].clone();
+    let source = base.session.state.live.economy.entities[source_index].clone();
 
     // These are direct gate probes only. They use a detached target value
     // and never rewrite target 70 or enter the public dispatcher; the
     // ordinary source route remains covered by the test above.
     let target_at_distance = |distance: u32| {
-        let mut target = base.economy.entities[70].clone();
+        let mut target = base.session.state.live.economy.entities[70].clone();
         target.set_position(Position {
             x: source.position.x,
             y: source.position.y,
@@ -1006,14 +1202,19 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
                        expected_close: bool| {
         let mut candidate = base.clone();
         let target = target_at_distance(distance);
-        let gate_result = candidate.nyphur_dispatcher.step_sub_14c90(
-            source_index,
-            Some(&target),
-            None,
-            near_distance,
-            far_distance,
-            &mut candidate.economy.entities,
-        );
+        let gate_result = candidate
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .step_sub_14c90(
+                source_index,
+                Some(&target),
+                None,
+                near_distance,
+                far_distance,
+                &mut candidate.session.state.live.economy.entities,
+            );
         assert!(
             gate_result.is_ok(),
             "{label}: distance gate returned an error"
@@ -1062,6 +1263,9 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
         level2_direct_starting_spell_profile(3, 0).expect("bounded family-3 Speed Up profile");
     let speed_activation = speed_profile.word_0x30;
     let speed_holder_slot = base
+        .session
+        .state
+        .live
         .economy
         .entities
         .iter()
@@ -1076,6 +1280,9 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
         })
         .expect("controlled unused family-3 holder slot");
     let speed_holder = speed_up
+        .session
+        .state
+        .live
         .economy
         .entities
         .iter_mut()
@@ -1091,13 +1298,40 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
     speed_holder.active = true;
     speed_holder.life = 0;
     speed_up
+        .session
+        .state
+        .live
         .nyphur_dispatcher
         .common_upkeep
         .spell_holder_indices[3] = speed_holder_slot;
-    speed_up.nyphur_dispatcher.common_upkeep.spell_enabled[3] = 0;
-    speed_up.nyphur_dispatcher.common_upkeep.max_mana = 1_000;
-    speed_up.nyphur_dispatcher.common_upkeep.mana = 1_000;
-    speed_up.nyphur_dispatcher.common_upkeep.speed = -1_234;
+    speed_up
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .spell_enabled[3] = 0;
+    speed_up
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .max_mana = 1_000;
+    speed_up
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .mana = 1_000;
+    speed_up
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .speed = -1_234;
     assert!(
         speed_up
             .nyphur_dispatcher
@@ -1106,6 +1340,9 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
     );
     let speed_target = target_at_distance(4_609);
     let close = speed_up
+        .session
+        .state
+        .live
         .nyphur_dispatcher
         .step_sub_14c90(
             source_index,
@@ -1113,7 +1350,7 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
             None,
             3_328,
             4_608,
-            &mut speed_up.economy.entities,
+            &mut speed_up.session.state.live.economy.entities,
         )
         .expect("family-3 Speed Up boundary branch");
     assert!(!close, ">4608 remains a failed distance gate");
@@ -1130,6 +1367,9 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
         "family-3 Speed Up installs its source cooldown"
     );
     let live_speed_holder = speed_up
+        .session
+        .state
+        .live
         .economy
         .entities
         .iter()
@@ -1183,13 +1423,22 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     let mut selector = ordinary.clone();
     assert_eq!(selector.nyphur_dispatch_state_byte(), 0);
     selector
+        .session
+        .state
+        .live
         .nyphur_dispatcher
         .common_upkeep
         .spell_holder_indices[2] = 113;
-    let selector_source = selector.economy.entities[112].clone();
+    let selector_source = selector.session.state.live.economy.entities[112].clone();
     let expected_axis = selector
+        .session
+        .state
+        .live
         .nyphur_dispatcher
-        .sub_13b00_axis(&selector_source, &selector.economy.entities)
+        .sub_13b00_axis(
+            &selector_source,
+            &selector.session.state.live.economy.entities,
+        )
         .expect("family-2 selector has a free arena cell");
     selector.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(selector.nyphur_dispatch_state_byte(), 3);
@@ -1221,11 +1470,14 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     // test with a non-strict comparison fails this pair.
     let mut threshold_equal = ordinary.clone();
     threshold_equal
+        .session
+        .state
+        .live
         .nyphur_dispatcher
         .common_upkeep
         .spell_holder_indices[2] = 113;
-    threshold_equal.economy.entities[111].model = 2;
-    threshold_equal.economy.entities[111].position = Position {
+    threshold_equal.session.state.live.economy.entities[111].model = 2;
+    threshold_equal.session.state.live.economy.entities[111].position = Position {
         x: expected_axis.x.wrapping_add(0x3000),
         y: expected_axis.y,
         z: expected_axis.z,
@@ -1238,7 +1490,9 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
         Some(expected_axis)
     );
     let mut threshold_beyond = threshold_equal.clone();
-    threshold_beyond.economy.entities[111].position.x = expected_axis.x.wrapping_add(0x3001);
+    threshold_beyond.session.state.live.economy.entities[111]
+        .position
+        .x = expected_axis.x.wrapping_add(0x3001);
     assert_eq!(
         threshold_beyond.nyphur_dispatcher.sub_13b00_axis(
             &threshold_beyond.economy.entities[112],
@@ -1248,10 +1502,14 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     );
     let mut unaffordable = ordinary.clone();
     unaffordable
+        .session
+        .state
+        .live
         .nyphur_dispatcher
         .common_upkeep
         .spell_holder_indices[2] = 113;
-    unaffordable.economy.entities[113].max_mana = unaffordable.economy.entities[112].max_mana + 1;
+    unaffordable.session.state.live.economy.entities[113].max_mana =
+        unaffordable.session.state.live.economy.entities[112].max_mana + 1;
     assert_eq!(
         unaffordable.nyphur_dispatcher.sub_13b00_axis(
             &unaffordable.economy.entities[112],
@@ -1298,10 +1556,10 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
         );
     }
 
-    let source = ordinary.economy.entities[112].clone();
+    let source = ordinary.session.state.live.economy.entities[112].clone();
     let axis = level2_nyphur_axis_position(&source).expect("qualified axis carrier");
     let mut mode3 = ordinary.clone();
-    mode3.nyphur_dispatcher.state_byte = 3;
+    mode3.session.state.live.nyphur_dispatcher.state_byte = 3;
     mode3.step_outer_turn(PlayerCommand::default(), 0);
     let mode3_trace = mode3
         .nyphur_dispatch_traces()
@@ -1326,7 +1584,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
             ..
         }
     )));
-    let mode3_source = &mode3.economy.entities[112];
+    let mode3_source = &mode3.session.state.live.economy.entities[112];
     assert_eq!(
         mode3_source.source_roll(),
         i16::try_from(heading_for_positions(source.position, axis)).expect("mode-3 roll")
@@ -1355,9 +1613,9 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     for _ in 0..53 {
         mode4.step_outer_turn(PlayerCommand::default(), 0);
     }
-    let mode4_source = mode4.economy.entities[112].clone();
+    let mode4_source = mode4.session.state.live.economy.entities[112].clone();
     assert_eq!(mode4_source.source_word_96(), 70);
-    mode4.nyphur_dispatcher.state_byte = 4;
+    mode4.session.state.live.nyphur_dispatcher.state_byte = 4;
     mode4.step_outer_turn(PlayerCommand::default(), 0);
     let mode4_trace = mode4
         .nyphur_dispatch_traces()
@@ -1394,12 +1652,24 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     // untouched. The byte-0x45e fast path makes the tail observable in
     // this private state-byte dispatcher vector.
     let mut stale_identity = mode4;
-    let stale_source_roll = stale_identity.economy.entities[112].source_roll();
-    let target_identity = level2_nyphur_source_identity(&stale_identity.economy.entities[70]);
-    stale_identity.economy.entities[112].record[156..158]
+    let stale_source_roll = stale_identity.session.state.live.economy.entities[112].source_roll();
+    let target_identity =
+        level2_nyphur_source_identity(&stale_identity.session.state.live.economy.entities[70]);
+    stale_identity.session.state.live.economy.entities[112].record[156..158]
         .copy_from_slice(&target_identity.wrapping_add(1).to_le_bytes());
-    stale_identity.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
-    stale_identity.nyphur_dispatcher.state_byte = 4;
+    stale_identity
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .byte_0x45e = 3;
+    stale_identity
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .state_byte = 4;
     stale_identity.step_outer_turn(PlayerCommand::default(), 0);
     let stale_trace = stale_identity
         .nyphur_dispatch_traces()
@@ -1442,7 +1712,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     let mut mode11 = inspection
         .level2_reset_session()
         .expect("mode-11 production carrier");
-    mode11.nyphur_dispatcher.state_byte = 11;
+    mode11.session.state.live.nyphur_dispatcher.state_byte = 11;
     mode11.step_outer_turn(PlayerCommand::default(), 0);
     let mode11_trace = mode11
         .nyphur_dispatch_traces()
@@ -1503,12 +1773,12 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     let mut mode11_order = inspection
         .level2_reset_session()
         .expect("mode-11 order carrier");
-    let order_source = mode11_order.economy.entities[112].clone();
+    let order_source = mode11_order.session.state.live.economy.entities[112].clone();
     let blocked_x = order_source.position.x.to_be_bytes()[0];
     let blocked_y = order_source.position.y.to_be_bytes()[0].wrapping_sub(1);
     mode11_order.canonical_terrain_mut().planes.terrain_types
         [terrain_index(blocked_x, blocked_y)] = 8;
-    mode11_order.nyphur_dispatcher.state_byte = 11;
+    mode11_order.session.state.live.nyphur_dispatcher.state_byte = 11;
     mode11_order.step_outer_turn(PlayerCommand::default(), 0);
     assert!(mode11_order.dispatch_events().iter().any(|event| matches!(
         event,
@@ -1530,7 +1800,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
         .nyphur_common_upkeep()
         .expect("mode-12 baseline common carrier");
     assert_eq!(mode12.nyphur_dispatcher.common_upkeep.watcom_rand_state, 1);
-    mode12.nyphur_dispatcher.state_byte = 12;
+    mode12.session.state.live.nyphur_dispatcher.state_byte = 12;
     mode12.step_outer_turn(PlayerCommand::default(), 0);
     let mode12_trace = mode12
         .nyphur_dispatch_traces()
@@ -1587,8 +1857,8 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 shared-tail production session");
-    let source = session.economy.entities[112].clone();
-    let target = session.economy.entities[111].clone();
+    let source = session.session.state.live.economy.entities[112].clone();
+    let target = session.session.state.live.economy.entities[111].clone();
 
     // sub_14C40/sub_14C60 use the target's source id, model, and class at
     // signed-16 width. A slot-only comparison or an unwrapped sum accepts
@@ -1685,12 +1955,19 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     assert_eq!(level2_nyphur_watcomrand(&mut watcom_state), 5_758);
     assert_eq!(watcom_state, 2_524_885_223);
 
-    let common = session.nyphur_dispatcher.common_upkeep.clone();
+    let common = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     assert!(common.sub_15e60());
     assert!(!common.sub_156f0(2, &session.economy.entities));
     assert!(!common.sub_156f0(26, &session.economy.entities));
     assert!(common.sub_15760(0, &session.economy.entities).is_none());
-    let class5_order = level2_nyphur_class5_bucket_order(&session.economy.entities);
+    let class5_order =
+        level2_nyphur_class5_bucket_order(&session.session.state.live.economy.entities);
     assert_eq!(class5_order.first().copied(), Some(39));
     assert_eq!(class5_order.last().copied(), Some(106));
     // The source's strict distance arbitration selects row 70, not the
@@ -1701,7 +1978,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
             .sub_14530_target(&source, &session.economy.entities),
         Some(70)
     );
-    let mut active_holder_entities = session.economy.entities.clone();
+    let mut active_holder_entities = session.session.state.live.economy.entities.clone();
     active_holder_entities[113].active_value = 1;
     active_holder_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
     assert!(common.sub_15760(0, &active_holder_entities).is_some());
@@ -1714,14 +1991,14 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     palette_probe.step_sub_5c800(0, 1);
     assert_eq!(palette_probe.palette_sub_mod, 2);
 
-    let mut timer_source = session.economy.entities[111].clone();
+    let mut timer_source = session.session.state.live.economy.entities[111].clone();
     timer_source.record[58..60].fill(0);
     timer_source.apply_source_sub_5ef70();
     assert_eq!(
         i16::from_le_bytes([timer_source.record[58], timer_source.record[59]]),
         100
     );
-    let mut timer_non_source = session.economy.entities[112].clone();
+    let mut timer_non_source = session.session.state.live.economy.entities[112].clone();
     timer_non_source.record[58..60].fill(0);
     timer_non_source.apply_source_sub_5ef70();
     assert_eq!(timer_non_source.record[58..60], [0, 0]);
@@ -1734,14 +2011,14 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     visibility_probe.step_sub_5f7e0(0, &mut flags);
     assert_eq!(flags, 0);
     visibility_probe.owner_control_mode = 1;
-    let mut holder = session.economy.entities[114].clone();
+    let mut holder = session.session.state.live.economy.entities[114].clone();
     holder.activation_value = 3;
     let mut activation_flags = 0x320_u32;
     visibility_probe.step_sub_5f7b0(&mut holder, &mut activation_flags, 0x200);
     assert_eq!(holder.active_value, 3);
     assert_eq!(activation_flags, 0x200);
 
-    let mut direct_holder = session.economy.entities[114].clone();
+    let mut direct_holder = session.session.state.live.economy.entities[114].clone();
     direct_holder.active_value = 1;
     direct_holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
     direct_holder.byte_3c = 0;
@@ -1752,7 +2029,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     assert_eq!(direct_holder.record[64], 1);
     assert_eq!(direct_flags, 0);
 
-    let mut non_success_holder = session.economy.entities[114].clone();
+    let mut non_success_holder = session.session.state.live.economy.entities[114].clone();
     non_success_holder.model = 4;
     non_success_holder.record[68] = 4;
     non_success_holder.active_value = 1;
@@ -1767,7 +2044,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     assert_eq!(non_success_holder.active_value, 7);
     assert_eq!(non_success_flags, 0x320);
 
-    let mut failed_holder = session.economy.entities[114].clone();
+    let mut failed_holder = session.session.state.live.economy.entities[114].clone();
     failed_holder.active_value = 0;
     failed_holder.max_mana = 1;
     let mut failed_flags = 0x320_u32;
@@ -1780,14 +2057,14 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     // now-owned family-2 branch must produce its source axis before the
     // remaining fail-closed gates are considered; the still-unowned
     // model-2 branch remains a rejection here.
-    let mut family_two_live = session.nyphur_dispatcher.clone();
+    let mut family_two_live = session.session.state.live.nyphur_dispatcher.clone();
     family_two_live.common_upkeep.spell_holder_indices[2] = 113;
     assert!(
         family_two_live
             .sub_13b00_axis(&source, &session.economy.entities)
             .is_some()
     );
-    let mut model_two_live_entities = session.economy.entities.clone();
+    let mut model_two_live_entities = session.session.state.live.economy.entities.clone();
     model_two_live_entities[111].model = 2;
     assert!(!session.nyphur_dispatcher.owned_tail_fallthrough_is_safe(
         &source,
@@ -1806,11 +2083,11 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     let baseline_campaign_hash = session.campaign_state_hash();
     let baseline_terrain_hash = session.terrain_hash();
     let baseline_dispatch_hash = session.dispatch_observability_hash();
-    let baseline_economy_hash = session.economy.reset_hash();
-    let baseline_economy_events = session.economy.events().to_vec();
-    let baseline_global_rng = session.economy.global_rng;
+    let baseline_economy_hash = session.session.state.live.economy.reset_hash();
+    let baseline_economy_events = session.session.state.live.economy.events().to_vec();
+    let baseline_global_rng = session.session.state.live.economy.global_rng;
     let baseline_runtime = session.runtime.clone();
-    let baseline_entities = session.economy.entities.clone();
+    let baseline_entities = session.session.state.live.economy.entities.clone();
     let baseline_dispatch_events = session.dispatch_events().to_vec();
 
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -1846,7 +2123,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
     assert_eq!(session.nyphur_dispatch_state_byte(), 13);
-    let stepped_source = &session.economy.entities[112];
+    let stepped_source = &session.session.state.live.economy.entities[112];
     assert_eq!(stepped_source.source_word_96(), 70);
     assert!(level2_nyphur_source_identity_matches(
         stepped_source,
@@ -1884,8 +2161,8 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     // The next ordinary cursor dispatch must execute the latched state-13
     // helper before its shared tail.  Capture the source carriers first so
     // a trace-only or tail-only implementation cannot satisfy this test.
-    let transition_source = session.economy.entities[112].clone();
-    let transition_target = session.economy.entities[70].clone();
+    let transition_source = session.session.state.live.economy.entities[112].clone();
+    let transition_target = session.session.state.live.economy.entities[70].clone();
     let transition_common = session
         .nyphur_common_upkeep()
         .expect("state-13 transition common carrier");
@@ -1915,7 +2192,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
             ..
         }
     )));
-    let next_source = &session.economy.entities[112];
+    let next_source = &session.session.state.live.economy.entities[112];
     assert_eq!(
         next_source.entity_rng, transition_source.entity_rng,
         "the far state-13 branch does not consume movement RNG"
@@ -1951,11 +2228,11 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     let stepped_campaign_hash = session.campaign_state_hash();
     let stepped_terrain_hash = session.terrain_hash();
     let stepped_dispatch_hash = session.dispatch_observability_hash();
-    let stepped_economy_hash = session.economy.reset_hash();
-    let stepped_economy_events = session.economy.events().to_vec();
-    let stepped_global_rng = session.economy.global_rng;
+    let stepped_economy_hash = session.session.state.live.economy.reset_hash();
+    let stepped_economy_events = session.session.state.live.economy.events().to_vec();
+    let stepped_global_rng = session.session.state.live.economy.global_rng;
     let stepped_runtime = session.runtime.clone();
-    let stepped_entities = session.economy.entities.clone();
+    let stepped_entities = session.session.state.live.economy.entities.clone();
     let stepped_dispatch_events = session.dispatch_events().to_vec();
     let stepped_traces = session.nyphur_dispatch_traces().to_vec();
 
@@ -2007,8 +2284,9 @@ fn level_two_ai_common_upkeep_matches_0002_0007_0009() {
     let baseline = session
         .nyphur_common_upkeep()
         .expect("qualified Nyphur common carrier");
-    let local_player_before =
-        session.economy.entities[usize::from(session.state.entity_index)].clone();
+    let local_player_before = session.session.state.live.economy.entities
+        [usize::from(session.state.entity_index)]
+    .clone();
     assert_eq!((baseline.player_slot, baseline.player_color_index), (1, 1));
     assert_eq!(session.runtime.local_player_slot, 0);
     assert_eq!(baseline.source_slot, 112);
@@ -2076,9 +2354,10 @@ fn level_two_ai_common_upkeep_matches_0002_0007_0009() {
     assert!(!baseline.palette_modification_enabled);
 
     let baseline_campaign_hash = session.campaign_state_hash();
-    let nyphur_before = session.economy.entities[112].clone();
+    let nyphur_before = session.session.state.live.economy.entities[112].clone();
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let local_player_after = &session.economy.entities[usize::from(session.state.entity_index)];
+    let local_player_after =
+        &session.session.state.live.economy.entities[usize::from(session.state.entity_index)];
     // Common upkeep belongs to the discovered AI row, not the local
     // player projection.  This read-only public-route assertion rejects
     // a local-player shortcut while allowing the player phase callback.
@@ -2152,7 +2431,7 @@ fn level_two_ai_common_upkeep_matches_0002_0007_0009() {
     // source route.  The ordinary route still performs its source
     // movement/clamp, so assert the unrelated source carrier fields rather
     // than treating movement as a forbidden mutation.
-    let nyphur_after = &session.economy.entities[112];
+    let nyphur_after = &session.session.state.live.economy.entities[112];
     assert_eq!(nyphur_after.action, nyphur_before.action);
     assert_eq!(nyphur_after.control_flags, nyphur_before.control_flags);
     assert_eq!(nyphur_after.subspell_index, nyphur_before.subspell_index);
@@ -2237,8 +2516,14 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     // sub_146C0 resolves the source list identity and rejects both the
     // absent and out-of-pool carriers. sub_15730 is inclusive at the
     // max-mana boundary and rejects a one-unit shortfall.
-    let holder_max = session.economy.entities[113].max_mana;
-    let mut carrier = session.nyphur_dispatcher.common_upkeep.clone();
+    let holder_max = session.session.state.live.economy.entities[113].max_mana;
+    let mut carrier = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     assert!(carrier.sub_146c0(1, &session.economy.entities).is_some());
     assert!(carrier.sub_146c0(2, &session.economy.entities).is_none());
     carrier.spell_holder_indices[6] = 113;
@@ -2251,9 +2536,15 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
 
     // sub_15F20 applies SetSpell before checking mana. The failed result
     // must still carry the tier-0 family-6 profile into the holder.
-    let mut mutation_entities = session.economy.entities.clone();
+    let mut mutation_entities = session.session.state.live.economy.entities.clone();
     let before_holder = mutation_entities[113].clone();
-    let mut mutation_probe = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut mutation_probe = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     mutation_probe.spell_holder_indices[6] = 113;
     mutation_probe.max_mana = 1_000;
     mutation_probe.mana = 0;
@@ -2270,8 +2561,14 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     // 6/11/12 table. SetSpell still commits the selected tier before the
     // insufficient-mana result, so both producers retain their exact
     // source payload without borrowing a neighboring family.
-    let mut fireball_profile_entities = session.economy.entities.clone();
-    let mut fireball_profile_probe = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut fireball_profile_entities = session.session.state.live.economy.entities.clone();
+    let mut fireball_profile_probe = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     fireball_profile_probe.spell_enabled[0] = 0;
     fireball_profile_probe.max_mana = 1_000;
     fireball_profile_probe.mana = 0;
@@ -2285,8 +2582,14 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     assert_eq!(fireball_profile_entities[113].max_mana, 250);
     assert_eq!(fireball_profile_entities[113].mana, 22);
 
-    let mut possession_profile_entities = session.economy.entities.clone();
-    let mut possession_profile_probe = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut possession_profile_entities = session.session.state.live.economy.entities.clone();
+    let mut possession_profile_probe = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     possession_profile_probe.spell_enabled[1] = 0;
     possession_profile_probe.max_mana = 1_000;
     possession_profile_probe.mana = 0;
@@ -2307,10 +2610,16 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     // genuine player target with its own active holder consumes exactly
     // one source draw. sub_15910 has the distinct sentinel order but no
     // such draw.
-    let mut rng_15790 = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut rng_15790 = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     let mut rng_15910 = rng_15790.clone();
     rng_15790.word_0x244 = 255;
-    let mut rng_entities = session.economy.entities.clone();
+    let mut rng_entities = session.session.state.live.economy.entities.clone();
     rng_entities[113].active_value = 1;
     rng_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
     assert!(rng_entities[70].active);
@@ -2340,7 +2649,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     assert_eq!(rng_15790.watcom_rand_state, rng_before);
 
     let player_target_slot = player_zero_entity_index;
-    let mut player_target_entities = session.economy.entities.clone();
+    let mut player_target_entities = session.session.state.live.economy.entities.clone();
     player_target_entities[usize::from(player_target_slot)].record[152..154]
         .copy_from_slice(&0_u16.to_le_bytes());
     player_target_entities[113].active_value = 1;
@@ -2368,7 +2677,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     );
 
     let rng_15910_before = rng_15910.watcom_rand_state;
-    let mut rng_entities_without_optional = session.economy.entities.clone();
+    let mut rng_entities_without_optional = session.session.state.live.economy.entities.clone();
     assert_eq!(
         rng_15910.step_sub_15910(&mut rng_entities_without_optional),
         0
@@ -2388,13 +2697,25 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
         Level2NyphurCommonUpkeep::sub_15910_mana_quarter(-1_000),
         -250
     );
-    let mut latch_falsifier_15790 = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut latch_falsifier_15790 = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     latch_falsifier_15790.max_mana = 1_000;
     latch_falsifier_15790.mana = 249;
     latch_falsifier_15790.word_0x1a4 = 0;
     assert!(!latch_falsifier_15790.update_spell_mana_latch_15790());
     assert_eq!(latch_falsifier_15790.word_0x1a4, 1);
-    let mut latch_falsifier_15910 = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut latch_falsifier_15910 = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     latch_falsifier_15910.max_mana = 1_000;
     latch_falsifier_15910.mana = 249;
     latch_falsifier_15910.word_0x1a4 = 0;
@@ -2403,7 +2724,13 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
 
     // The 15790 latch clears at the inclusive recovery boundary after
     // its +6000 clamp reaches max/2.
-    let mut latch = session.nyphur_dispatcher.common_upkeep.clone();
+    let mut latch = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     latch.max_mana = 1_000;
     latch.mana = 248;
     assert!(!latch.update_spell_mana_latch_15790());
@@ -2419,14 +2746,40 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     // Castle relation even on a non-cadence phase. At equality it is a
     // strict negative and the cadence-gated tail remains untouched.
     let mut damaged = session.clone();
-    damaged.nyphur_dispatcher.common_upkeep.castle_entity_index = 70;
-    damaged.nyphur_dispatcher.common_upkeep.life =
-        damaged.nyphur_dispatcher.common_upkeep.max_life / 2 - 1;
-    damaged.economy.entities[112].phase = 1;
+    damaged
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .castle_entity_index = 70;
+    damaged
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .life = damaged
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .max_life
+        / 2
+        - 1;
+    damaged.session.state.live.economy.entities[112].phase = 1;
     let damaged_players = damaged.players().to_vec();
     damaged
+        .session
+        .state
+        .live
         .nyphur_dispatcher
-        .step_sub_12e70(112, &mut damaged.economy.entities, &damaged_players)
+        .step_sub_12e70(
+            112,
+            &mut damaged.session.state.live.economy.entities,
+            &damaged_players,
+        )
         .expect("pre-cadence damaged Castle branch");
     assert_eq!(damaged.nyphur_dispatcher.state_byte, 11);
     assert_eq!(damaged.economy.entities[112].source_word_96(), 70);
@@ -2436,15 +2789,40 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     ));
 
     let mut at_half = session.clone();
-    at_half.nyphur_dispatcher.common_upkeep.castle_entity_index = 70;
-    at_half.nyphur_dispatcher.common_upkeep.life =
-        at_half.nyphur_dispatcher.common_upkeep.max_life / 2;
-    at_half.economy.entities[112].phase = 1;
-    let source_before = at_half.economy.entities[112].clone();
+    at_half
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .castle_entity_index = 70;
+    at_half
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .life = at_half
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .max_life
+        / 2;
+    at_half.session.state.live.economy.entities[112].phase = 1;
+    let source_before = at_half.session.state.live.economy.entities[112].clone();
     let at_half_players = at_half.players().to_vec();
     at_half
+        .session
+        .state
+        .live
         .nyphur_dispatcher
-        .step_sub_12e70(112, &mut at_half.economy.entities, &at_half_players)
+        .step_sub_12e70(
+            112,
+            &mut at_half.session.state.live.economy.entities,
+            &at_half_players,
+        )
         .expect("cadence rejects full-health Castle branch");
     assert_eq!(at_half.nyphur_dispatcher.state_byte, 0);
     assert_eq!(
@@ -2456,11 +2834,17 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     // the unowned dependent carriers: sub_13C50 needs family 2 and then
     // fails closed at sub_155E0; sub_13CE0 reaches its family-1 gate but
     // fails closed at sub_148E0.
-    let mut castle = session.economy.entities[70].clone();
+    let mut castle = session.session.state.live.economy.entities[70].clone();
     castle.action = 4;
     castle.activation_value = 0;
-    let source = session.economy.entities[112].clone();
-    let mut branch_probe = session.nyphur_dispatcher.common_upkeep.clone();
+    let source = session.session.state.live.economy.entities[112].clone();
+    let mut branch_probe = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .clone();
     branch_probe.castle_entity_index = 70;
     branch_probe.max_mana = 1_000;
     assert!(!branch_probe.step_sub_13c50(&source, Some(&castle), &session.economy.entities));
@@ -2476,7 +2860,13 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     // that reachability remains open pending its owning upstream seam.
 
     // The new latch is part of the campaign digest and reset baseline.
-    session.nyphur_dispatcher.common_upkeep.word_0x1a4 = 1;
+    session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .word_0x1a4 = 1;
     assert_ne!(session.campaign_state_hash(), baseline_hash);
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);

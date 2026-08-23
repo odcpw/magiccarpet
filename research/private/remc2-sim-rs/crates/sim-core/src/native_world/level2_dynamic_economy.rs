@@ -2890,8 +2890,6 @@ impl Level2EconomyState {
         {
             return false;
         }
-        self.baseline_castle_stage_footprints
-            .insert(stage, footprint.clone());
         self.castle_stage_footprints.insert(stage, footprint);
         true
     }
@@ -3385,7 +3383,12 @@ impl Level2EconomyState {
     /// The source's subsequent `sub_5FF50` controller walk is represented by
     /// the existing ordered sphere/child vectors; no synthetic child is
     /// allocated here.
-    fn release_castle_excess_mana(&mut self, castle_slot: u16, terrain: &SessionTerrain) {
+    fn release_castle_excess_mana(
+        &mut self,
+        castle_slot: u16,
+        terrain: &SessionTerrain,
+        reset_free_slots: &[u16],
+    ) {
         let Some(castle) = self
             .castle
             .filter(|castle| castle.source_entity_index == castle_slot)
@@ -3411,7 +3414,7 @@ impl Level2EconomyState {
         }
         let fraction = (release / 1_000).clamp(1, 32);
         if self.free_slots.is_empty() {
-            self.rebuild_free_arena();
+            self.rebuild_free_arena(reset_free_slots);
         }
         let sphere_count = fraction.min(i32::try_from(self.free_slots.len()).unwrap_or(i32::MAX));
         if sphere_count == 0 {
@@ -3513,7 +3516,12 @@ impl Level2EconomyState {
     /// overflow, then restoring the old capacity for the following stage
     /// table. No-free arenas still complete this state transition; only the
     /// optional mana-sphere allocations are allowed to fail.
-    fn prepare_castle_stage_destruction(&mut self, castle_slot: u16, terrain: &SessionTerrain) {
+    fn prepare_castle_stage_destruction(
+        &mut self,
+        castle_slot: u16,
+        terrain: &SessionTerrain,
+        reset_free_slots: &[u16],
+    ) {
         let Some(snapshot) = self
             .castle
             .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
@@ -3529,7 +3537,7 @@ impl Level2EconomyState {
         if let Some(castle) = self.castle.as_mut() {
             castle.mana_capacity = reduced_capacity;
         }
-        self.release_castle_excess_mana(castle_slot, terrain);
+        self.release_castle_excess_mana(castle_slot, terrain, reset_free_slots);
         if let Some(castle) = self.castle.as_mut() {
             castle.mana_capacity = snapshot.mana_capacity;
         }
@@ -4042,7 +4050,12 @@ impl Level2EconomyState {
     /// model-41 child. The model-42 allocation is atomic; the bounded
     /// model-79 stage-controller loop may commit a partial chain when the
     /// source arena exhausts.
-    pub fn step_castle_action(&mut self, castle_slot: u16, terrain: &mut SessionTerrain) -> bool {
+    pub fn step_castle_action(
+        &mut self,
+        castle_slot: u16,
+        terrain: &mut SessionTerrain,
+        reset_free_slots: &[u16],
+    ) -> bool {
         let Some(snapshot) = self
             .castle
             .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
@@ -4424,7 +4437,7 @@ impl Level2EconomyState {
                 if let Some(castle) = self.castle.as_mut() {
                     castle.position.z = terrain.ground_height(castle.position);
                 }
-                self.release_castle_excess_mana(castle_slot, terrain);
+                self.release_castle_excess_mana(castle_slot, terrain, reset_free_slots);
                 self.maintain_castle_defenders(castle_slot, terrain);
                 let Some(castle) = self.castle else {
                     self.advance_castle_phase(castle_slot);
@@ -4476,7 +4489,7 @@ impl Level2EconomyState {
                 // Keep the source order: reduce capacity and release
                 // overflow before the destruction sound and stage terrain
                 // removal (`sub_605E0` -> `sub_5FD00` -> `RemoveCastleStage`).
-                self.prepare_castle_stage_destruction(castle_slot, terrain);
+                self.prepare_castle_stage_destruction(castle_slot, terrain, reset_free_slots);
                 if snapshot.level > 0 {
                     // The source sentinel carries the *old* Castle level in
                     // byte 0x46; index that DATA_BUILD record rather than
@@ -4629,7 +4642,7 @@ impl Level2EconomyState {
                 // runs `sub_5FF50` after `sub_605E0` has rebuilt the lower
                 // stage. Allocation failure here must not roll back the
                 // already-committed stage transition.
-                self.release_castle_excess_mana(castle_slot, terrain);
+                self.release_castle_excess_mana(castle_slot, terrain, reset_free_slots);
                 self.maintain_castle_defenders(castle_slot, terrain);
                 if let Some(castle) = self
                     .castle
