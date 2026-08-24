@@ -42,6 +42,7 @@ class Level2EditModeQualificationTests(unittest.TestCase):
     def test_added_legitimate_level2_test_is_accepted_without_global_count_lock(self) -> None:
         prefix = level2.LEVEL2_TEST_FILTER
         names = [
+            level2.CF13_GENERIC_CONSUMER_TEST,
             f"{prefix}.Level2ProductionStartupOpensCampaignSessionAndValidatesDayProfile",
             f"{prefix}.Level2CampaignCabiIsReachableFromManagedSession",
             f"{prefix}.NewLegitimateLevel2ProductionCheck",
@@ -51,8 +52,8 @@ class Level2EditModeQualificationTests(unittest.TestCase):
 
         parsed = level2.parse_level2_report(report)
 
-        self.assertEqual(parsed["selected"], 3)
-        self.assertEqual(parsed["total"], 3)
+        self.assertEqual(parsed["selected"], 4)
+        self.assertEqual(parsed["total"], 4)
         self.assertEqual(parsed["names"], sorted(names))
 
     def test_zero_selected_level2_tests_are_rejected(self) -> None:
@@ -62,9 +63,19 @@ class Level2EditModeQualificationTests(unittest.TestCase):
         with self.assertRaisesRegex(level2.Level2EditModeError, "selection is empty"):
             level2.parse_level2_report(report)
 
+    def test_missing_cf13_generic_consumer_test_is_rejected(self) -> None:
+        report = self.root / "missing-cf13.xml"
+        write_xml(report, [
+            f"{level2.LEVEL2_TEST_FILTER}.Level2ProductionStartupOpensCampaignSessionAndValidatesDayProfile",
+        ])
+
+        with self.assertRaisesRegex(level2.Level2EditModeError, "missing the CF13"):
+            level2.parse_level2_report(report)
+
     def test_selection_rejects_unrelated_level1_test(self) -> None:
         report = self.root / "mixed.xml"
         write_xml(report, [
+            level2.CF13_GENERIC_CONSUMER_TEST,
             f"{level2.LEVEL2_TEST_FILTER}.Level2ProductionStartupOpensCampaignSessionAndValidatesDayProfile",
             "MagicCarpet.Native.Tests.NativeSessionEditModeTests.AbiAndManagedLayoutsArePinned",
         ])
@@ -82,6 +93,25 @@ class Level2EditModeQualificationTests(unittest.TestCase):
 
         self.assertEqual(command[command.index("-assemblyNames") + 1], level2.EDITMODE_ASSEMBLY)
         self.assertEqual(command[command.index("-testFilter") + 1], level2.LEVEL2_TEST_FILTER)
+
+    def test_release_plugin_identity_requires_exact_installed_bytes(self) -> None:
+        project = self.root / "remc2-unity-native"
+        release = self.root / "remc2-sim-rs" / "target" / "release" / "libsim_capi.so"
+        installed = project / "Assets" / "Plugins" / "x86_64" / "libsim_capi.so"
+        release.parent.mkdir(parents=True)
+        installed.parent.mkdir(parents=True)
+        release.write_bytes(b"exact current release")
+        installed.write_bytes(b"exact current release")
+
+        digest = level2.verify_release_plugin_identity(project)
+
+        self.assertEqual(len(digest), 64)
+        installed.write_bytes(b"stale installed plugin")
+        with self.assertRaisesRegex(
+            level2.Level2EditModeError,
+            "does not match the current release",
+        ):
+            level2.verify_release_plugin_identity(project)
 
 
 if __name__ == "__main__":

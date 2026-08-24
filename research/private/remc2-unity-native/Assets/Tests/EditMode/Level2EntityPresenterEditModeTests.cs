@@ -26,7 +26,10 @@ namespace MagicCarpet.Native.Tests
             Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
 
         private static string Level2Package =>
-            Path.Combine(PrivateRoot, "generated/l2-debug3.fJ3PaM/level2");
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_V1") ??
+            Path.Combine(
+                PrivateRoot,
+                "generated/mc-cf02-campaign-package-v1-a/qualified-level2");
 
         private static string Level2DayCache =>
             Path.Combine(PrivateRoot, "generated/level2-day-owner-cache");

@@ -9,6 +9,8 @@ their results without pinning the assembly's evolving global test count.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -20,6 +22,10 @@ from typing import Any
 
 EDITMODE_ASSEMBLY = "MagicCarpet.Native.EditModeTests"
 LEVEL2_TEST_FILTER = "MagicCarpet.Native.Tests.NativeCampaignSessionEditModeTests"
+CF13_GENERIC_CONSUMER_TEST = (
+    LEVEL2_TEST_FILTER
+    + ".Cf13GenericCampaignConsumerOpensStepsDrainsFramesAndResets"
+)
 UNITY_EDITOR = Path("/home/oliver/Unity/Hub/Editor/6000.3.20f1/Editor/Unity")
 UNITY_TIMEOUT_SECONDS = 600
 
@@ -65,6 +71,10 @@ def parse_level2_report(path: Path) -> dict[str, Any]:
     prefix = LEVEL2_TEST_FILTER + "."
     unexpected = sorted(name for name in names if not name.startswith(prefix))
     _require(not unexpected, f"Level 2 selection contains unrelated tests: {unexpected}")
+    _require(
+        CF13_GENERIC_CONSUMER_TEST in names,
+        "Level 2 selection is missing the CF13 generic campaign consumer test",
+    )
 
     results = [case.attrib.get("result", "") for case in cases]
     _require(
@@ -90,6 +100,22 @@ def parse_level2_report(path: Path) -> dict[str, Any]:
         "failed": failed,
         "names": sorted(names),
     }
+
+
+def verify_release_plugin_identity(project: Path) -> str:
+    """Require Unity to load the exact current release artifact."""
+
+    release = project.parent / "remc2-sim-rs" / "target" / "release" / "libsim_capi.so"
+    installed = project / "Assets" / "Plugins" / "x86_64" / "libsim_capi.so"
+    for path, label in ((release, "release plugin"), (installed, "Unity plugin")):
+        _require(path.is_file() and not path.is_symlink(), f"missing {label}: {path}")
+    release_sha256 = hashlib.sha256(release.read_bytes()).hexdigest()
+    installed_sha256 = hashlib.sha256(installed.read_bytes()).hexdigest()
+    _require(
+        hmac.compare_digest(installed_sha256, release_sha256),
+        "Unity plugin does not match the current release libsim_capi.so",
+    )
+    return release_sha256
 
 
 def build_unity_command(
@@ -132,6 +158,7 @@ def run_level2_editmode(
     """Execute Unity and read back only the fresh selected report."""
 
     _require(project.is_dir(), f"Unity project is missing: {project}")
+    plugin_sha256 = verify_release_plugin_identity(project)
     for path, label in ((results, "results"), (log, "log")):
         _require(not path.exists() and not path.is_symlink(), f"pre-existing {label}: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,7 +172,7 @@ def run_level2_editmode(
         timeout=UNITY_TIMEOUT_SECONDS,
     )
     _require(completed.returncode == 0, f"Level 2 Unity command failed ({completed.returncode})")
-    return parse_level2_report(results)
+    return {**parse_level2_report(results), "plugin_sha256": plugin_sha256}
 
 
 def main() -> int:

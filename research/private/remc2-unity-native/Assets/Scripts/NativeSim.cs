@@ -8,7 +8,9 @@ namespace MagicCarpet.Native
         internal const uint AbiVersion = 2;
         internal const int Ok = 0;
         internal const int Bounds = 10;
+        internal const int BufferTooSmall = 11;
         internal const int GenerationMismatch = 12;
+        internal const int CursorExpired = 13;
         internal const uint TerrainTypes = 0;
         internal const uint TerrainHeight = 1;
         internal const uint TerrainShade = 2;
@@ -73,6 +75,10 @@ namespace MagicCarpet.Native
         internal const byte CampaignEventEconomy = 10;
         internal const byte CampaignEventAuthoredGroup = 11;
         internal const byte CampaignEventError = 255;
+        internal const uint CampaignEffectDispatch = 0x100;
+        internal const uint CampaignEffectSharedSpell = 0x101;
+        internal const uint CampaignEffectFlight = 0x102;
+        internal const uint CampaignEffectSceneChange = 0x103;
         internal const byte AudioActionPreparedPending = 0;
         internal const byte AudioActionStart = 1;
         internal const byte AudioActionRestart = 2;
@@ -194,17 +200,25 @@ namespace MagicCarpet.Native
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal uint[] reserved;
 
-            internal static CampaignSelection Level2Day()
+            internal static CampaignSelection Create(
+                ushort externalLevel,
+                ushort internalLevel,
+                byte mapType)
             {
                 return new CampaignSelection
                 {
                     abiVersion = AbiVersion,
                     structSize = 32,
-                    externalLevel = 2,
-                    internalLevel = 1,
-                    mapType = 0,
+                    externalLevel = externalLevel,
+                    internalLevel = internalLevel,
+                    mapType = mapType,
                     reserved = new uint[4]
                 };
+            }
+
+            internal static CampaignSelection Level2Day()
+            {
+                return Create(2, 1, 0);
             }
         }
 
@@ -1925,6 +1939,24 @@ namespace MagicCarpet.Native
                     objectiveSelector = byte.MaxValue
                 };
             }
+
+            internal static PresentationFrameQuery CampaignSubset(
+                ulong generation,
+                ulong tick)
+            {
+                return new PresentationFrameQuery
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 64,
+                    generation = generation,
+                    tick = tick,
+                    presentationRevision = tick,
+                    viewportWidth = TerrainFrameWidth,
+                    viewportHeight = TerrainFrameHeight,
+                    screenStride = TerrainFrameWidth,
+                    vgaResolution = 1
+                };
+            }
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -2302,6 +2334,27 @@ namespace MagicCarpet.Native
             uint eventCapacity,
             uint eventElementSize,
             out uint eventCount);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_events_copy_since(
+            ulong handle,
+            ref EventQuery query,
+            [Out] NativeEvent[] buffer,
+            uint capacity,
+            uint elementSize,
+            out EventBatch batch,
+            uint batchSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_presentation_frame_copy(
+            ulong handle,
+            ref PresentationFrameQuery query,
+            [Out] byte[] indexBuffer,
+            uint indexCapacity,
+            IntPtr provenanceBuffer,
+            uint provenanceCapacity,
+            out PresentationFrameInfo info,
+            uint infoSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_economy_events(

@@ -546,6 +546,8 @@ namespace MagicCarpet.Native
         private bool level2MinimapProjectionReady;
         private OwnerAssetCache.Level2DayHudDescriptor level2DayHudDescriptor;
         private NativeSim.CampaignEvent[] level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
+        private NativeSim.NativeEvent[] level2CampaignEffects =
+            Array.Empty<NativeSim.NativeEvent>();
         private NativeSim.CampaignAuthoredGroupEvent[] level2AuthoredGroupEvents =
             Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
         private Level2IndexedWorldPresenter level2IndexedWorldPresenter;
@@ -1009,6 +1011,19 @@ namespace MagicCarpet.Native
 
         internal NativeSim.CampaignEvent[] Level2ProductionStepEvents =>
             level2StepEvents;
+
+        internal NativeSim.NativeEvent[] Level2ProductionCampaignEffects =>
+            level2CampaignEffects;
+
+        internal ulong Level2ProductionCampaignEffectCursor =>
+            campaignSession?.EffectCursor ?? 0;
+
+        internal NativeSim.PresentationFrameInfo Level2ProductionCampaignFrameInfo =>
+            campaignSession?.CampaignFrameInfo ?? default;
+
+        internal NativeCampaignSession.CampaignPackageIdentity
+            Level2ProductionCampaignPackageIdentity =>
+                campaignSession?.PackageIdentity ?? default;
 
         internal NativeSim.CampaignAuthoredGroupEvent[] Level2ProductionAuthoredGroupEvents =>
             level2AuthoredGroupEvents;
@@ -2421,6 +2436,7 @@ namespace MagicCarpet.Native
                 argument2: argument2);
             level2StepSnapshot = result.snapshot;
             level2StepEvents = result.events;
+            level2CampaignEffects = campaignSession.DrainEffects();
             // Rust owns whether opcode 40 was accepted. Selected casting on a
             // later fixed turn must use that returned value, never the raw
             // presentation cursor or the outgoing command argument.
@@ -8459,6 +8475,11 @@ namespace MagicCarpet.Native
             SyncLevel2SelectedSpellFromRust();
             level2StepSnapshot = default;
             level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
+            level2CampaignEffects = campaignSession.DrainEffects();
+            Require(
+                level2CampaignEffects.Length == 0 &&
+                campaignSession.EffectCursor == 0,
+                "reset campaign journal is empty at cursor zero");
             level2AuthoredGroupEvents =
                 Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
             level2TerrainState = campaignSession.TerrainState();
@@ -11704,12 +11725,18 @@ namespace MagicCarpet.Native
             ownerAssetCache = OwnerAssetCache.OpenAndValidateLevel2(assetCachePath);
             level2DayHudDescriptor = ownerAssetCache.DayHud;
             MaterializeLevel2DayHud();
-            campaignSession = NativeCampaignSession.OpenLevel2(
+            campaignSession = NativeCampaignSession.Open(
                 packagePath,
+                NativeSim.CampaignSelection.Level2Day(),
                 assetCachePath);
             try
             {
                 campaignWorldInfo = campaignSession.WorldInfo();
+                level2CampaignEffects = campaignSession.DrainEffects();
+                Require(
+                    level2CampaignEffects.Length == 0 &&
+                    campaignSession.EffectCursor == 0,
+                    "opened campaign journal is empty at cursor zero");
                 InitializeLevel2SpellPresentation();
                 SeedLevel2LocalPlayerPosition();
                 level2SpellMenuCursor = -1;
@@ -11748,7 +11775,9 @@ namespace MagicCarpet.Native
                 UpdateLevel2IndexedFrame(level2TerrainState.tick);
                 level2StartupReady = true;
                 Debug.Log(
-                    $"MC_LEVEL2_STARTUP VERIFIED profile=2/1/Day " +
+                    $"MC_CAMPAIGN_STARTUP VERIFIED selection=2/1/Day " +
+                    $"manifest={campaignSession.PackageIdentity.ManifestSha256} " +
+                    $"definition={campaignSession.PackageIdentity.DefinitionSha256} " +
                     $"entities={campaignWorldInfo.entityCount} " +
                     $"active={campaignWorldInfo.activeEntityCount} " +
                     $"players={campaignWorldInfo.playerCount} " +
@@ -11785,6 +11814,7 @@ namespace MagicCarpet.Native
             if (HasArgument(arguments, "-mc-level2"))
             {
                 package = ArgumentValue(arguments, "-mc-package") ??
+                          Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_V1") ??
                           Environment.GetEnvironmentVariable("MC_LEVEL2_PACKAGE_PATH");
                 closure = ArgumentValue(arguments, "-mc-closure") ??
                           Environment.GetEnvironmentVariable("MC_CLOSURE_PATH");
@@ -11796,7 +11826,7 @@ namespace MagicCarpet.Native
 #if UNITY_EDITOR
                 package ??= Path.GetFullPath(Path.Combine(
                     Application.dataPath,
-                    "../../generated/l2-debug3.fJ3PaM/level2"));
+                    "../../generated/mc-cf02-campaign-package-v1-a/qualified-level2"));
 #endif
                 if (string.IsNullOrWhiteSpace(package))
                 {
@@ -12183,6 +12213,7 @@ namespace MagicCarpet.Native
             level2MinimapMarks = Array.Empty<NativeSim.CampaignMinimapMark>();
             level2MinimapProjectionReady = false;
             level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
+            level2CampaignEffects = Array.Empty<NativeSim.NativeEvent>();
             level2AuthoredGroupEvents = Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
             level2StepInputX = 0;
             level2StepInputY = 0;

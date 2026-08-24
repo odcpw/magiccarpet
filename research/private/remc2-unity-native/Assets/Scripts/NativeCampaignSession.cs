@@ -8,63 +8,61 @@ using System.Threading;
 
 namespace MagicCarpet.Native
 {
-    /// Managed reachability for the additive Level 2 campaign C ABI.
-    /// This is intentionally separate from NativeSession: the legacy handle
-    /// remains Level 1-only while the campaign handle owns its own generation,
-    /// event buffer, and reset lifecycle.
+    /// One managed consumer for descriptor-backed campaign sessions. Retained
+    /// Level 2 methods are presentation adapters over this handle; Rust remains
+    /// the sole owner of gameplay state, ordering, effects, and reset identity.
     internal sealed class NativeCampaignSession : IDisposable
     {
-        internal const string ExpectedLevel2ManifestSha256 =
-            "9ae0691e109e5c5fbcd6447b111cc8232377b86c336d1eeca90696f45aab8954";
-        private static readonly IReadOnlyDictionary<string, string>
-            ExpectedLevel2PackageFiles =
-            new Dictionary<string, string>
+        internal readonly struct CampaignPackageIdentity
+        {
+            internal CampaignPackageIdentity(
+                string packagePath,
+                string manifestSha256,
+                string definitionSha256,
+                NativeSim.CampaignSelection selection)
             {
-                ["authored-level.bin"] =
-                    "9041c66e605d573ec9aa2cbe9d8d8daabd8db3602fcfce4898f64e21fc37405e",
-                ["collision-masks.bin"] =
-                    "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432",
-                ["entities-post-features.bin"] =
-                    "9c6acead68279d3737046e9dcfd035d261c92886eb4e80961ed70e2119a84a23",
-                ["entities.bin"] =
-                    "155055a020d642641baff6674253605c309a7891342e05a7878f784e752dab7a",
-                ["feature-allocator.bin"] =
-                    "7d20f7d0446512b72ba7b699ecb9fcb4fa3eddcd6d782aabdd823af77a840ea1",
-                ["feature-construction-inputs.bin"] =
-                    "3054ad4408a00a4b154ec4406ab28eb5c4906bc346dcb5bc4c1748f5b10f0205",
-                ["feature-end.bin"] =
-                    "646b7b6664587a3c1c3b76ed6d37a8367f9f183a7758f3beef2a3e20064bc4bc",
-                ["feature-start.bin"] =
-                    "363264d46bf0e2dc74e39ab75ab77b65216500472b2ae3912f4eb2b901bacee3",
-                ["players.bin"] =
-                    "f8a13183f5792ea143e9b6bf32e69ede726520e118a12c1699d159f266006395",
-                ["presentation.bin"] =
-                    "2944b802258550f24f0537accc4d5764d81dd28a080a935cc9c0f0d1fc1f67f2",
-                ["runtime.bin"] =
-                    "6f1734d967a5e739d493faafdb41a822669966db46f9ffbb30cf1cc8bad30133",
-                ["terrain-post-features.bin"] =
-                    "c9e1b5dbaff7368d6de3e6d39f6bc9f5bc9ce43ba81e456850ec30832c8177f8",
-                ["terrain-pre-features.bin"] =
-                    "f41592426acdb0012d8f2543ce663453bf9a2ff68289475f8283aafff024b513",
-                ["terrain.bin"] =
-                    "94772b6401bb2aec8c7644123f4da676f9e97f61f5790a72b03aa36eec7d7447",
-                ["manifest.json"] = ExpectedLevel2ManifestSha256
-            };
+                PackagePath = packagePath;
+                ManifestSha256 = manifestSha256;
+                DefinitionSha256 = definitionSha256;
+                Selection = selection;
+            }
+
+            internal string PackagePath { get; }
+            internal string ManifestSha256 { get; }
+            internal string DefinitionSha256 { get; }
+            internal NativeSim.CampaignSelection Selection { get; }
+        }
 
         private static int activeSessionCount;
         private long handleBits;
         private ulong generation;
         private ulong tick;
+        private ulong effectCursor;
         private readonly bool dayMusicAvailable;
+        private readonly CampaignPackageIdentity packageIdentity;
+        private readonly NativeSim.CampaignWorldInfo initialWorldInfo;
+        private NativeSim.PresentationFrameInfo campaignFrameInfo;
+        private readonly byte[] campaignFrameIndices =
+            new byte[NativeSim.TerrainFramePixels];
+        private readonly byte[] campaignFrameScratchIndices =
+            new byte[NativeSim.TerrainFramePixels];
+        private readonly byte[] dayCompatibilityFrameIndices =
+            new byte[NativeSim.DayIndexedFrameIndexBytes];
         private readonly byte[] dayIndexedFrameIndices =
             new byte[NativeSim.DayIndexedFrameIndexBytes];
         private readonly byte[] dayIndexedFramePalette =
             new byte[NativeSim.DayIndexedFramePaletteBytes];
 
-        private NativeCampaignSession(ulong handle, bool dayMusicAvailable)
+        private NativeCampaignSession(
+            ulong handle,
+            bool dayMusicAvailable,
+            CampaignPackageIdentity packageIdentity,
+            NativeSim.CampaignWorldInfo initialWorldInfo)
         {
             handleBits = unchecked((long)handle);
             this.dayMusicAvailable = dayMusicAvailable;
+            this.packageIdentity = packageIdentity;
+            this.initialWorldInfo = initialWorldInfo;
             Interlocked.Increment(ref activeSessionCount);
         }
 
@@ -88,26 +86,50 @@ namespace MagicCarpet.Native
 
         internal ulong Tick => tick;
 
+        internal ulong EffectCursor => effectCursor;
+
+        internal CampaignPackageIdentity PackageIdentity => packageIdentity;
+
+        internal NativeSim.CampaignSelection Selection => packageIdentity.Selection;
+
+        internal NativeSim.CampaignWorldInfo InitialWorldInfo => initialWorldInfo;
+
+        internal NativeSim.PresentationFrameInfo CampaignFrameInfo => campaignFrameInfo;
+
+        internal byte[] CampaignFrameIndices => campaignFrameIndices;
+
         internal byte[] DayIndexedFrameIndices => dayIndexedFrameIndices;
 
         internal byte[] DayIndexedFramePalette => dayIndexedFramePalette;
 
         internal static NativeCampaignSession OpenLevel2(string packagePath)
         {
-            return OpenLevel2(packagePath, null);
+            return Open(packagePath, NativeSim.CampaignSelection.Level2Day(), null);
         }
 
         internal static NativeCampaignSession OpenLevel2(
             string packagePath,
             string assetCachePath)
         {
+            return Open(
+                packagePath,
+                NativeSim.CampaignSelection.Level2Day(),
+                assetCachePath);
+        }
+
+        internal static NativeCampaignSession Open(
+            string packagePath,
+            NativeSim.CampaignSelection selection,
+            string assetCachePath = null)
+        {
             if (string.IsNullOrWhiteSpace(packagePath))
             {
                 throw new InvalidDataException(
-                    "Level 2 campaign package path must be non-empty");
+                    "campaign package path must be non-empty");
             }
             packagePath = Path.GetFullPath(packagePath);
-            ValidateLevel2PackageIdentity(packagePath);
+            ValidateSelection(selection);
+            var identity = ReadPackageIdentity(packagePath, selection);
             NativeSim.AssertLayouts();
             if (NativeSim.mc_native_abi_version() != NativeSim.AbiVersion)
             {
@@ -117,7 +139,6 @@ namespace MagicCarpet.Native
 
             var package = Encoding.UTF8.GetBytes(packagePath);
             var closure = Array.Empty<byte>();
-            var selection = NativeSim.CampaignSelection.Level2Day();
             var overrideCachePath = !string.IsNullOrWhiteSpace(assetCachePath);
             int status;
             ulong handle;
@@ -135,49 +156,152 @@ namespace MagicCarpet.Native
                     package, checked((uint)package.Length), closure, 0,
                     ref selection, out handle);
             }
-            NativeSession.Check(status, "open Level 2 campaign session");
+            NativeSession.Check(status, "open campaign session");
             if (handle == 0)
             {
                 throw new InvalidOperationException(
                     "campaign session returned handle zero");
             }
-            return new NativeCampaignSession(handle, overrideCachePath);
+            try
+            {
+                var worldStatus = NativeSim.mc_native_campaign_world_info(
+                    handle,
+                    out var worldInfo,
+                    64);
+                NativeSession.Check(worldStatus, "read opened campaign world identity");
+                ValidateWorldInfo(worldInfo, selection);
+                var afterOpen = ReadPackageIdentity(packagePath, selection);
+                if (!SameIdentity(identity, afterOpen))
+                {
+                    throw new InvalidDataException(
+                        "campaign package or definition changed while opening");
+                }
+                return new NativeCampaignSession(
+                    handle,
+                    overrideCachePath,
+                    identity,
+                    worldInfo);
+            }
+            catch (Exception error)
+            {
+                var destroyStatus = NativeSim.mc_native_campaign_session_destroy(handle);
+                if (destroyStatus != NativeSim.Ok)
+                {
+                    throw new InvalidOperationException(
+                        "campaign open validation failed and handle cleanup returned " +
+                        $"status {destroyStatus}: {NativeSession.ReadLastError()}",
+                        error);
+                }
+                throw;
+            }
         }
 
-        private static void ValidateLevel2PackageIdentity(string packagePath)
+        internal static CampaignPackageIdentity ReadPackageIdentity(
+            string packagePath,
+            NativeSim.CampaignSelection selection)
         {
             if (string.IsNullOrWhiteSpace(packagePath))
             {
                 throw new InvalidDataException(
-                    "Level 2 campaign package path must be non-empty");
+                    "campaign package path must be non-empty");
             }
 
             var package = Path.GetFullPath(packagePath);
             if (!Directory.Exists(package))
             {
                 throw new InvalidDataException(
-                    $"Level 2 campaign package is missing: {package}");
+                    $"campaign package is missing: {package}");
+            }
+            if ((File.GetAttributes(package) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new InvalidDataException(
+                    $"campaign package cannot be a symbolic link: {package}");
             }
 
-            using var sha256 = SHA256.Create();
-            foreach (var expected in ExpectedLevel2PackageFiles)
+            var manifest = RequireRegularFile(package, "manifest.json");
+            var definition = RequireRegularFile(package, "campaign-definition.json");
+            return new CampaignPackageIdentity(
+                package,
+                Sha256(manifest),
+                Sha256(definition),
+                selection);
+        }
+
+        private static string RequireRegularFile(string packagePath, string name)
+        {
+            var file = Path.Combine(packagePath, name);
+            if (!File.Exists(file))
             {
-                var file = Path.Combine(package, expected.Key);
-                if (!File.Exists(file))
-                {
-                    throw new InvalidDataException(
-                        $"Level 2 campaign package is missing {expected.Key}");
-                }
-                var digest = BitConverter.ToString(
-                        sha256.ComputeHash(File.ReadAllBytes(file)))
-                    .Replace("-", string.Empty)
-                    .ToLowerInvariant();
-                if (digest != expected.Value)
-                {
-                    throw new InvalidDataException(
-                        $"Level 2 campaign package identity mismatch for " +
-                        $"{expected.Key}: {digest}");
-                }
+                throw new InvalidDataException(
+                    $"campaign package is missing {name}");
+            }
+            var attributes = File.GetAttributes(file);
+            if ((attributes & FileAttributes.ReparsePoint) != 0 ||
+                (attributes & FileAttributes.Directory) != 0)
+            {
+                throw new InvalidDataException(
+                    $"campaign package {name} must be a regular file");
+            }
+            return file;
+        }
+
+        private static string Sha256(string file)
+        {
+            using var sha256 = SHA256.Create();
+            using var input = File.OpenRead(file);
+            return BitConverter.ToString(sha256.ComputeHash(input))
+                .Replace("-", string.Empty)
+                .ToLowerInvariant();
+        }
+
+        private static bool SameIdentity(
+            CampaignPackageIdentity left,
+            CampaignPackageIdentity right)
+        {
+            return left.PackagePath == right.PackagePath &&
+                   left.ManifestSha256 == right.ManifestSha256 &&
+                   left.DefinitionSha256 == right.DefinitionSha256 &&
+                   SameSelection(left.Selection, right.Selection);
+        }
+
+        private static bool SameSelection(
+            NativeSim.CampaignSelection left,
+            NativeSim.CampaignSelection right)
+        {
+            return left.externalLevel == right.externalLevel &&
+                   left.internalLevel == right.internalLevel &&
+                   left.mapType == right.mapType;
+        }
+
+        private static void ValidateSelection(NativeSim.CampaignSelection selection)
+        {
+            if (selection.abiVersion != NativeSim.AbiVersion ||
+                selection.structSize != 32 ||
+                selection.reserved0 != 0 ||
+                !AllZero(selection.reserved))
+            {
+                throw new InvalidDataException(
+                    "campaign selection has an invalid ABI or reserved state");
+            }
+        }
+
+        private static void ValidateWorldInfo(
+            NativeSim.CampaignWorldInfo info,
+            NativeSim.CampaignSelection selection)
+        {
+            if (info.abiVersion != NativeSim.AbiVersion ||
+                info.structSize != 64 ||
+                info.externalLevel != selection.externalLevel ||
+                info.internalLevel != selection.internalLevel ||
+                info.mapType != selection.mapType ||
+                info.terrainWidth == 0 ||
+                info.terrainHeight == 0 ||
+                info.resetStateHash == 0 ||
+                info.reserved0 != 0 ||
+                !AllZero(info.reserved))
+            {
+                throw new InvalidDataException(
+                    "native campaign world identity does not match the requested selection");
             }
         }
 
@@ -188,7 +312,185 @@ namespace MagicCarpet.Native
                 out var info,
                 64);
             NativeSession.Check(status, "read campaign world info");
+            ValidateWorldInfo(info, packageIdentity.Selection);
             return info;
+        }
+
+        internal int CopyEffects(
+            ulong cursor,
+            NativeSim.NativeEvent[] buffer,
+            out NativeSim.EventBatch batch)
+        {
+            if (buffer == null)
+            {
+                throw new ArgumentNullException(nameof(buffer));
+            }
+            var query = NativeSim.EventQuery.Create(generation, cursor);
+            return NativeSim.mc_native_campaign_events_copy_since(
+                Handle,
+                ref query,
+                buffer,
+                checked((uint)buffer.Length),
+                72,
+                out batch,
+                56);
+        }
+
+        internal NativeSim.NativeEvent[] DrainEffects()
+        {
+            const int PageCapacity = 1_024;
+            const int RetainedEffectBound = 16_384;
+            var cursor = effectCursor;
+            var effects = new List<NativeSim.NativeEvent>();
+            while (true)
+            {
+                var page = new NativeSim.NativeEvent[PageCapacity];
+                var status = CopyEffects(cursor, page, out var batch);
+                NativeSession.Check(status, "copy campaign effects");
+                ValidateEffectBatch(batch, generation, cursor, page.Length);
+                for (var index = 0; index < checked((int)batch.written); index++)
+                {
+                    var effect = page[index];
+                    ValidateEffect(
+                        effect,
+                        generation,
+                        checked(cursor + (ulong)index + 1));
+                    effects.Add(effect);
+                }
+                if (effects.Count > RetainedEffectBound)
+                {
+                    throw new InvalidOperationException(
+                        "campaign effect journal exceeds the retained safety bound");
+                }
+                cursor = batch.nextCursor;
+                if (batch.hasMore == 0)
+                {
+                    break;
+                }
+                if (batch.written == 0)
+                {
+                    throw new InvalidOperationException(
+                        "campaign effect journal page made no progress");
+                }
+            }
+            effectCursor = cursor;
+            return effects.ToArray();
+        }
+
+        private static void ValidateEffectBatch(
+            NativeSim.EventBatch batch,
+            ulong expectedGeneration,
+            ulong requestedCursor,
+            int capacity)
+        {
+            if (batch.abiVersion != NativeSim.AbiVersion ||
+                batch.structSize != 56 ||
+                batch.generation != expectedGeneration ||
+                batch.written > checked((uint)capacity) ||
+                batch.hasMore > 1 ||
+                batch.nextCursor != requestedCursor + batch.written ||
+                batch.eventHead < batch.nextCursor ||
+                (batch.hasMore == 0 && batch.nextCursor != batch.eventHead) ||
+                (batch.hasMore != 0 && batch.nextCursor >= batch.eventHead) ||
+                !AllZero(batch.reserved0) ||
+                !AllZero(batch.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native campaign effect page violates the generic journal contract");
+            }
+        }
+
+        private static void ValidateEffect(
+            NativeSim.NativeEvent effect,
+            ulong expectedGeneration,
+            ulong expectedSequence)
+        {
+            if (effect.abiVersion != NativeSim.AbiVersion ||
+                effect.structSize != 72 ||
+                effect.generation != expectedGeneration ||
+                effect.sequence != expectedSequence ||
+                effect.stateHash == 0 ||
+                (effect.kind != NativeSim.CampaignEffectDispatch &&
+                 effect.kind != NativeSim.CampaignEffectSharedSpell &&
+                 effect.kind != NativeSim.CampaignEffectFlight &&
+                 effect.kind != NativeSim.CampaignEffectSceneChange) ||
+                !AllZero(effect.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native campaign effect violates the generic journal contract");
+            }
+        }
+
+        internal NativeSim.PresentationFrameInfo CopyPresentationFrame(
+            ulong expectedTick)
+        {
+            var query = NativeSim.PresentationFrameQuery.CampaignSubset(
+                generation,
+                expectedTick);
+            var status = NativeSim.mc_native_campaign_presentation_frame_copy(
+                Handle,
+                ref query,
+                campaignFrameScratchIndices,
+                checked((uint)campaignFrameScratchIndices.Length),
+                IntPtr.Zero,
+                0,
+                out var info,
+                128);
+            NativeSession.Check(status, "copy generic campaign presentation frame");
+            ValidateCampaignFrameInfo(info, generation, expectedTick);
+            Buffer.BlockCopy(
+                campaignFrameScratchIndices,
+                0,
+                campaignFrameIndices,
+                0,
+                campaignFrameIndices.Length);
+            campaignFrameInfo = info;
+            return info;
+        }
+
+        internal static void ValidateCampaignFrameInfo(
+            NativeSim.PresentationFrameInfo info,
+            ulong expectedGeneration,
+            ulong expectedTick)
+        {
+            var expectedFlags =
+                NativeSim.TerrainFrameIsolatedSkyTerrain |
+                NativeSim.TerrainFrameSkySeeded |
+                NativeSim.TerrainFrameNonTerrainOmitted;
+            if (info.abiVersion != NativeSim.AbiVersion ||
+                info.structSize != 128 ||
+                info.generation != expectedGeneration ||
+                info.tick != expectedTick ||
+                info.presentationRevision != expectedTick ||
+                info.immutableInputHash == 0 ||
+                info.width != NativeSim.TerrainFrameWidth ||
+                info.height != NativeSim.TerrainFrameHeight ||
+                info.stride != NativeSim.TerrainFrameWidth ||
+                info.viewportWidth != NativeSim.TerrainFrameWidth ||
+                info.indexBytes != checked((uint)NativeSim.TerrainFramePixels) ||
+                info.provenanceBytes != 0 ||
+                info.flags != expectedFlags ||
+                info.effectivePostprocessMode != 0 ||
+                info.historyState != 1 ||
+                info.newlyCommitted > 1 ||
+                info.reserved0 != 0 ||
+                info.indexHash == 0 ||
+                info.provenanceHash != 0 ||
+                info.lightingHash != 0 ||
+                info.sourceArenaHash != 0 ||
+                info.overlayPixelsWritten != 0 ||
+                info.overlayStageCount != 0 ||
+                info.reserved1 != 0 ||
+                info.reserved2 != 0 ||
+                info.reserved3 != 0 ||
+                info.reserved4 != 0 ||
+                info.reserved5 != 0 ||
+                info.reserved6 != 0 ||
+                info.reserved7 != 0)
+            {
+                throw new InvalidOperationException(
+                    "native campaign frame violates the generic presentation subset");
+            }
         }
 
         internal NativeSim.CampaignTerrainState TerrainState()
@@ -221,13 +523,14 @@ namespace MagicCarpet.Native
         internal NativeSim.CampaignDayIndexedFrameInfo CopyDayIndexedFrame(
             ulong expectedTick)
         {
+            var generic = CopyPresentationFrame(expectedTick);
             var info = RenderDayIndexedFrame(expectedTick);
             var status = NativeSim.mc_native_campaign_day_indexed_frame_copy(
                 Handle,
                 generation,
                 expectedTick,
-                dayIndexedFrameIndices,
-                checked((uint)dayIndexedFrameIndices.Length),
+                dayCompatibilityFrameIndices,
+                checked((uint)dayCompatibilityFrameIndices.Length),
                 dayIndexedFramePalette,
                 checked((uint)dayIndexedFramePalette.Length),
                 out var indexWritten,
@@ -240,6 +543,18 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "Level 2 Day indexed frame copy returned incomplete buffers");
             }
+            if (generic.indexHash != info.indexHash ||
+                !campaignFrameIndices.SequenceEqual(dayCompatibilityFrameIndices))
+            {
+                throw new InvalidOperationException(
+                    "generic campaign frame disagrees with the retained Level 2 Day adapter");
+            }
+            Buffer.BlockCopy(
+                campaignFrameIndices,
+                0,
+                dayIndexedFrameIndices,
+                0,
+                dayIndexedFrameIndices.Length);
             return info;
         }
 
@@ -1044,11 +1359,27 @@ namespace MagicCarpet.Native
                 checked((uint)events.Length),
                 48,
                 out var eventCount);
-            NativeSession.Check(status, "step Level 2 campaign session");
+            NativeSession.Check(status, "step campaign session");
             if (eventCount > (uint)events.Length)
             {
                 throw new InvalidOperationException(
                     $"campaign event count {eventCount} exceeds buffer {events.Length}");
+            }
+            if (snapshot.abiVersion != NativeSim.AbiVersion ||
+                snapshot.structSize != 112 ||
+                snapshot.generation != generation ||
+                snapshot.revision != checked(tick + 1) ||
+                snapshot.stateHash == 0 ||
+                snapshot.terrainHash == 0 ||
+                snapshot.eventCount != eventCount ||
+                snapshot.playerSlot != playerSlot ||
+                snapshot.reserved1 != 0 ||
+                !AllZero(snapshot.reserved0) ||
+                !AllZero(snapshot.reserved) ||
+                AllZero(snapshot.dispatchHash))
+            {
+                throw new InvalidOperationException(
+                    "native campaign step returned an invalid generic snapshot");
             }
             generation = snapshot.generation;
             tick = snapshot.revision;
@@ -1169,9 +1500,22 @@ namespace MagicCarpet.Native
         internal void Reset()
         {
             var status = NativeSim.mc_native_campaign_session_reset(Handle);
-            NativeSession.Check(status, "reset Level 2 campaign session");
+            NativeSession.Check(status, "reset campaign session");
             generation++;
             tick = 0;
+            effectCursor = 0;
+            campaignFrameInfo = default;
+            Array.Clear(campaignFrameIndices, 0, campaignFrameIndices.Length);
+            Array.Clear(
+                campaignFrameScratchIndices,
+                0,
+                campaignFrameScratchIndices.Length);
+            Array.Clear(
+                dayCompatibilityFrameIndices,
+                0,
+                dayCompatibilityFrameIndices.Length);
+            Array.Clear(dayIndexedFrameIndices, 0, dayIndexedFrameIndices.Length);
+            Array.Clear(dayIndexedFramePalette, 0, dayIndexedFramePalette.Length);
         }
 
         public void Dispose()

@@ -12,7 +12,10 @@ namespace MagicCarpet.Native.Tests
             Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
 
         private static string Level2Package =>
-            Path.Combine(PrivateRoot, "generated/l2-debug3.fJ3PaM/level2");
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_V1") ??
+            Path.Combine(
+                PrivateRoot,
+                "generated/mc-cf02-campaign-package-v1-a/qualified-level2");
 
         private static string Level2DayCache =>
             Path.Combine(PrivateRoot, "generated/level2-day-owner-cache");
@@ -54,6 +57,194 @@ namespace MagicCarpet.Native.Tests
             }
 
             Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void Cf13GenericCampaignConsumerOpensStepsDrainsFramesAndResets()
+        {
+            var selection = NativeSim.CampaignSelection.Level2Day();
+            byte[] initialIndices;
+            ulong initialFrameHash;
+            ulong steppedCursor;
+            using (var session = NativeCampaignSession.Open(
+                       Level2Package,
+                       selection,
+                       Level2DayCache))
+            {
+                var identity = session.PackageIdentity;
+                Assert.That(identity.PackagePath, Is.EqualTo(Path.GetFullPath(Level2Package)));
+                Assert.That(identity.ManifestSha256.Length, Is.EqualTo(64));
+                Assert.That(identity.DefinitionSha256.Length, Is.EqualTo(64));
+                Assert.That(identity.ManifestSha256, Is.Not.EqualTo(identity.DefinitionSha256));
+                Assert.That(
+                    (identity.Selection.externalLevel,
+                     identity.Selection.internalLevel,
+                     identity.Selection.mapType),
+                    Is.EqualTo(((ushort)2, (ushort)1, (byte)0)));
+                Assert.That(session.InitialWorldInfo.resetStateHash, Is.Not.Zero);
+                Assert.That(session.DrainEffects(), Is.Empty);
+                Assert.That(session.EffectCursor, Is.Zero);
+
+                var initialFrame = session.CopyPresentationFrame(0);
+                initialIndices = session.CampaignFrameIndices.ToArray();
+                initialFrameHash = initialFrame.indexHash;
+                Assert.That(initialFrame.newlyCommitted, Is.EqualTo(1));
+                Assert.That(initialFrame.provenanceBytes, Is.Zero);
+                Assert.That(
+                    initialFrame.flags &
+                    (NativeSim.PresentationFrameCompositorComplete |
+                     NativeSim.PresentationFrameHasProvenance |
+                     NativeSim.PresentationFrameOverlaysComposited |
+                     NativeSim.PresentationFramePostprocessComplete |
+                     NativeSim.PresentationFrameLightingComplete),
+                    Is.Zero);
+
+                var repeatedFrame = session.CopyPresentationFrame(0);
+                Assert.That(repeatedFrame.newlyCommitted, Is.Zero);
+                Assert.That(repeatedFrame.indexHash, Is.EqualTo(initialFrameHash));
+                Assert.That(session.CampaignFrameIndices, Is.EqualTo(initialIndices));
+
+                var localPlayer = session.Players()
+                    .Single(player => player.slot == 0 && player.active != 0);
+                var localEntity = session.Entities()
+                    .Single(entity => entity.entityIndex == localPlayer.entityIndex);
+                var step = session.Step(localEntity.x, localEntity.y, localEntity.z);
+                var effects = session.DrainEffects();
+                Assert.That(effects, Is.Not.Empty);
+                Assert.That(
+                    effects.Select(effect => effect.sequence),
+                    Is.EqualTo(Enumerable.Range(1, effects.Length)
+                        .Select(index => (ulong)index)));
+                Assert.That(
+                    effects.All(effect =>
+                        effect.generation == session.Generation &&
+                        effect.stateHash == step.snapshot.stateHash &&
+                        new[]
+                        {
+                            NativeSim.CampaignEffectDispatch,
+                            NativeSim.CampaignEffectSharedSpell,
+                            NativeSim.CampaignEffectFlight,
+                            NativeSim.CampaignEffectSceneChange
+                        }.Contains(effect.kind)),
+                    Is.True);
+                steppedCursor = session.EffectCursor;
+                Assert.That(steppedCursor, Is.EqualTo((ulong)effects.Length));
+                Assert.That(session.DrainEffects(), Is.Empty);
+                Assert.That(session.EffectCursor, Is.EqualTo(steppedCursor));
+
+                var futureQuery = NativeSim.EventQuery.Create(
+                    session.Generation,
+                    checked(session.EffectCursor + 1));
+                var futureBuffer = new NativeSim.NativeEvent[1];
+                var futureStatus = NativeSim.mc_native_campaign_events_copy_since(
+                    session.Handle,
+                    ref futureQuery,
+                    futureBuffer,
+                    1,
+                    72,
+                    out _,
+                    56);
+                Assert.That(futureStatus, Is.EqualTo(NativeSim.Bounds));
+                Assert.That(session.EffectCursor, Is.EqualTo(steppedCursor));
+                Assert.That(session.Tick, Is.EqualTo(1));
+
+                var smallQuery = NativeSim.PresentationFrameQuery.CampaignSubset(
+                    session.Generation,
+                    session.Tick);
+                var tooSmall = Enumerable.Repeat(
+                    (byte)0xa5,
+                    NativeSim.TerrainFramePixels - 1).ToArray();
+                var smallStatus = NativeSim.mc_native_campaign_presentation_frame_copy(
+                    session.Handle,
+                    ref smallQuery,
+                    tooSmall,
+                    checked((uint)tooSmall.Length),
+                    IntPtr.Zero,
+                    0,
+                    out _,
+                    128);
+                Assert.That(smallStatus, Is.EqualTo(NativeSim.BufferTooSmall));
+                Assert.That(tooSmall.All(value => value == 0xa5), Is.True);
+                Assert.That(session.Tick, Is.EqualTo(1));
+                Assert.That(session.EffectCursor, Is.EqualTo(steppedCursor));
+
+                var oldGeneration = session.Generation;
+                session.Reset();
+                Assert.That((session.Generation, session.Tick), Is.EqualTo((1ul, 0ul)));
+                Assert.That(session.EffectCursor, Is.Zero);
+                Assert.That(session.DrainEffects(), Is.Empty);
+
+                var staleQuery = NativeSim.EventQuery.Create(oldGeneration, steppedCursor);
+                var staleStatus = NativeSim.mc_native_campaign_events_copy_since(
+                    session.Handle,
+                    ref staleQuery,
+                    futureBuffer,
+                    1,
+                    72,
+                    out _,
+                    56);
+                Assert.That(staleStatus, Is.EqualTo(NativeSim.GenerationMismatch));
+                var staleFrameQuery = NativeSim.PresentationFrameQuery.CampaignSubset(
+                    oldGeneration,
+                    0);
+                var staleFrameStatus = NativeSim.mc_native_campaign_presentation_frame_copy(
+                    session.Handle,
+                    ref staleFrameQuery,
+                    new byte[NativeSim.TerrainFramePixels],
+                    NativeSim.TerrainFramePixels,
+                    IntPtr.Zero,
+                    0,
+                    out _,
+                    128);
+                Assert.That(staleFrameStatus, Is.EqualTo(NativeSim.GenerationMismatch));
+
+                var resetFrame = session.CopyPresentationFrame(0);
+                Assert.That((resetFrame.generation, resetFrame.tick), Is.EqualTo((1ul, 0ul)));
+                Assert.That(resetFrame.indexHash, Is.EqualTo(initialFrameHash));
+                Assert.That(session.CampaignFrameIndices, Is.EqualTo(initialIndices));
+                var retainedDay = session.CopyDayIndexedFrame(0);
+                Assert.That(retainedDay.indexHash, Is.EqualTo(resetFrame.indexHash));
+                Assert.That(session.DayIndexedFrameIndices, Is.EqualTo(initialIndices));
+            }
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+
+            var root = new GameObject("CF13 generic campaign production consumer");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(
+                    Level2Package,
+                    Level2DayCache);
+                Assert.That(runtime.Level2ProductionStartupReady, Is.True);
+                Assert.That(
+                    runtime.Level2ProductionCampaignPackageIdentity.DefinitionSha256,
+                    Is.Not.Empty);
+                Assert.That(
+                    runtime.Level2ProductionCampaignFrameInfo.indexHash,
+                    Is.EqualTo(initialFrameHash));
+                runtime.QualificationDriveLevel2Frames(1);
+                Assert.That(runtime.Level2ProductionCampaignEffects, Is.Not.Empty);
+                Assert.That(
+                    runtime.Level2ProductionCampaignEffectCursor,
+                    Is.EqualTo((ulong)runtime.Level2ProductionCampaignEffects.Length));
+                Assert.That(runtime.Level2ProductionCampaignFrameInfo.tick, Is.EqualTo(1));
+                runtime.QualificationResetLevel2Production();
+                Assert.That(runtime.Level2ProductionCampaignEffectCursor, Is.Zero);
+                Assert.That(runtime.Level2ProductionCampaignEffects, Is.Empty);
+                Assert.That(
+                    (runtime.Level2ProductionCampaignFrameInfo.generation,
+                     runtime.Level2ProductionCampaignFrameInfo.tick,
+                     runtime.Level2ProductionCampaignFrameInfo.indexHash),
+                    Is.EqualTo((1ul, 0ul, initialFrameHash)));
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
         }
 
@@ -394,7 +585,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        public void Level2CampaignPackageRejectsMissingCollisionMasksBeforeNativeOpen()
+        public void GenericCampaignPackageRejectsMissingManifestMemberWithoutHandleLeak()
         {
             var temporaryPackage = Path.Combine(
                 Path.GetTempPath(),
@@ -410,9 +601,56 @@ namespace MagicCarpet.Native.Tests
                 }
                 File.Delete(Path.Combine(temporaryPackage, "collision-masks.bin"));
 
-                var error = Assert.Throws<InvalidDataException>(
-                    () => NativeCampaignSession.OpenLevel2(temporaryPackage));
-                StringAssert.Contains("collision-masks.bin", error.Message);
+                var error = Assert.Throws<InvalidOperationException>(
+                    () => NativeCampaignSession.Open(
+                        temporaryPackage,
+                        NativeSim.CampaignSelection.Level2Day()));
+                StringAssert.Contains("campaign preflight stage 2", error.Message);
+                StringAssert.Contains("exact member set", error.Message);
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+            }
+            finally
+            {
+                if (Directory.Exists(temporaryPackage))
+                {
+                    Directory.Delete(temporaryPackage, true);
+                }
+            }
+        }
+
+        [Test]
+        public void GenericCampaignRejectsMutatedDefinitionAndSelectionMismatchWithoutLeaks()
+        {
+            var temporaryPackage = Path.Combine(
+                Path.GetTempPath(),
+                $"magiccarpet-campaign-definition-{Guid.NewGuid():N}");
+            try
+            {
+                Directory.CreateDirectory(temporaryPackage);
+                foreach (var source in Directory.GetFiles(Level2Package))
+                {
+                    File.Copy(
+                        source,
+                        Path.Combine(temporaryPackage, Path.GetFileName(source)));
+                }
+                File.AppendAllText(
+                    Path.Combine(temporaryPackage, "campaign-definition.json"),
+                    "\n");
+
+                var mutation = Assert.Throws<InvalidOperationException>(
+                    () => NativeCampaignSession.Open(
+                        temporaryPackage,
+                        NativeSim.CampaignSelection.Level2Day()));
+                StringAssert.Contains("campaign preflight stage 3", mutation.Message);
+                StringAssert.Contains("campaign-definition.json", mutation.Message);
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+
+                var mismatch = Assert.Throws<InvalidOperationException>(
+                    () => NativeCampaignSession.Open(
+                        Level2Package,
+                        NativeSim.CampaignSelection.Create(2, 1, 1)));
+                StringAssert.Contains("campaign preflight stage 1", mismatch.Message);
+                StringAssert.Contains("caller/outer selection", mismatch.Message);
                 Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
             }
             finally
@@ -440,7 +678,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.Level2ProductionStartupReady, Is.False);
                 Assert.That(runtime.Level2ProductionFatalError, Is.Not.Null.And.Not.Empty);
                 StringAssert.Contains(
-                    "identity mismatch",
+                    "campaign-definition.json",
                     runtime.Level2ProductionFatalError);
                 Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
                 Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
@@ -1388,12 +1626,12 @@ namespace MagicCarpet.Native.Tests
             int requiredMana,
             int sourcePassBound)
         {
-            // Pinned by the existing strict C-ABI Possession predecessor:
-            // 384 child speed + observed 16 player speed, across two source
-            // callbacks. CampaignEntitySnapshot deliberately omits the
-            // transient FlightState speed, so this is a test input fixture,
-            // not managed movement/physics authority.
-            const ushort StrictPossessionLaunchYOffset = 800;
+            // Pinned by the existing source-exact native C-ABI Possession
+            // predecessor after the approach pass. These are managed test
+            // inputs, not Unity movement or collision authority.
+            const ushort StrictPossessionLaunchXOffset = 257;
+            const ushort StrictPossessionLaunchYOffset = 197;
+            const short StrictPossessionLaunchZOffset = 150;
             const byte ManaSphereClaimedEconomyCode = 2;
 
             // The established public Castle predecessor starts from the
@@ -1464,9 +1702,15 @@ namespace MagicCarpet.Native.Tests
             var player = session.Entities().Single(candidate =>
                 candidate.active == 1 && candidate.entityIndex == approach.snapshot.playerEntityIndex);
             Assert.That(player.fov, Is.EqualTo(0));
-            var launchX = unchecked((ushort)(target.x + 256));
+            target = session.ManaSpheres().Single(candidate =>
+                candidate.active == 1 && candidate.sphereId == target.sphereId);
+            Assert.That(
+                (target.x, target.y, target.z),
+                Is.EqualTo(((ushort)640, (ushort)45_142, (short)272)),
+                "the managed fixture must observe the source-exact post-approach target carrier");
+            var launchX = unchecked((ushort)(target.x + StrictPossessionLaunchXOffset));
             var launchY = unchecked((ushort)(target.y + StrictPossessionLaunchYOffset));
-            var launchZ = unchecked((short)(target.z - player.fov));
+            var launchZ = unchecked((short)(target.z + StrictPossessionLaunchZOffset));
             var stepped = StepLevel2SpellPresentation(
                 session,
                 presenter,
@@ -1706,13 +1950,18 @@ namespace MagicCarpet.Native.Tests
             int sourcePassBound,
             ulong rootTick)
         {
-            // Pin the existing C-ABI Invisible predecessor's first ordinary
-            // Castle defender return. This is a public Rust economy receipt,
-            // not an entity inspection or managed mana mutation.
+            // Pin the existing source-exact C-ABI predecessor: the defender
+            // first collects the five-sphere merged payload, then returns all
+            // six claimed spheres to the Castle. These are ordered public Rust
+            // economy receipts, not managed mana mutation.
+            const byte CastleDefenderCollectedEconomyCode = 16;
             const byte CastleDefenderArrivedEconomyCode = 7;
-            const int FirstDefenderMana = 2_560;
-            NativeSim.CampaignEconomyEvent firstDefender = default;
-            ulong defenderTick = 0;
+            const int FirstCollectionMana = 2_560;
+            const int FirstArrivalMana = 3_072;
+            NativeSim.CampaignEconomyEvent firstCollection = default;
+            NativeSim.CampaignEconomyEvent firstArrival = default;
+            ulong collectionTick = 0;
+            ulong arrivalTick = 0;
             for (var sourcePass = 0; sourcePass < sourcePassBound; sourcePass++)
             {
                 var stepped = StepLevel2SpellPresentation(
@@ -1724,28 +1973,42 @@ namespace MagicCarpet.Native.Tests
                     flags: 0);
                 // Poll directly after every ordinary neutral source turn so
                 // a return cannot be mistaken for a cached/revision wait.
-                var defenderReturns = session.EconomyEvents()
+                var economyEvents = session.EconomyEvents();
+                var collections = economyEvents
+                    .Where(receipt => receipt.code == CastleDefenderCollectedEconomyCode)
+                    .ToArray();
+                if (collectionTick == 0 && collections.Length != 0)
+                {
+                    firstCollection = collections.Single();
+                    collectionTick = stepped.snapshot.revision;
+                }
+                var arrivals = economyEvents
                     .Where(receipt => receipt.code == CastleDefenderArrivedEconomyCode)
                     .ToArray();
-                if (defenderReturns.Length != 0)
+                if (arrivalTick == 0 && arrivals.Length != 0)
                 {
-                    firstDefender = defenderReturns.Single();
-                    defenderTick = stepped.snapshot.revision;
+                    firstArrival = arrivals.Single();
+                    arrivalTick = stepped.snapshot.revision;
                 }
                 var hud = session.DayHudState(stepped.snapshot.revision);
-                if (defenderTick > rootTick &&
+                if (collectionTick > rootTick &&
+                    arrivalTick > collectionTick &&
                     hud.localPlayerMaxMana >= requiredMana &&
                     hud.localPlayerMana >= requiredMana)
                 {
-                    Assert.That(firstDefender.value0, Is.EqualTo(FirstDefenderMana));
-                    Assert.That(firstDefender.primaryId, Is.Not.Zero);
-                    Assert.That(firstDefender.entity0, Is.Not.Zero);
+                    Assert.That(firstCollection.value0, Is.EqualTo(FirstCollectionMana));
+                    Assert.That(firstArrival.value0, Is.EqualTo(FirstArrivalMana));
+                    Assert.That(firstCollection.primaryId, Is.Not.Zero);
+                    Assert.That(firstArrival.primaryId, Is.Not.Zero);
+                    Assert.That(firstCollection.entity0, Is.Not.Zero);
+                    Assert.That(firstArrival.entity0, Is.Not.Zero);
                     return;
                 }
             }
             Assert.Fail(
-                $"ordinary f38-to-f1 Castle route did not publish its first {FirstDefenderMana}-mana " +
-                $"defender return and recover {requiredMana} Rust-owned HUD mana within " +
+                $"ordinary f38-to-f1 Castle route did not publish its ordered " +
+                $"{FirstCollectionMana}-mana collection and {FirstArrivalMana}-mana return " +
+                $"or recover {requiredMana} Rust-owned HUD mana within " +
                 $"{sourcePassBound} source passes");
         }
 
