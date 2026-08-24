@@ -5205,6 +5205,12 @@ pub struct ManaSphere {
     pub velocity_y: i16,
     pub vertical_velocity: i16,
     pub yaw: i16,
+    /// Source `NewEvent_4A050` initializes both words to 300 and every
+    /// model-39 constructor used by the recovered routes retains that value.
+    /// The fading/protected branch of `TransformArcherToMana_35940` then
+    /// decrements `life` independently.
+    pub max_life: i32,
+    pub life: i32,
     pub mana: i32,
     /// Zero is neutral; otherwise this is the owning player entity.
     pub owner_entity_index: u16,
@@ -10263,6 +10269,8 @@ impl Level1MissionState {
             velocity_y: velocity.y.cast_signed(),
             vertical_velocity,
             yaw,
+            max_life: 300,
+            life: 300,
             mana,
             owner_entity_index: 0,
             player_entity_index: 0,
@@ -10417,6 +10425,8 @@ impl Level1MissionState {
             velocity_y: velocity.y.cast_signed(),
             vertical_velocity,
             yaw,
+            max_life: 300,
+            life: 300,
             mana,
             owner_entity_index,
             player_entity_index: owner_entity_index,
@@ -18142,6 +18152,8 @@ impl Level1MissionState {
             velocity_y: 0,
             vertical_velocity,
             yaw: 0,
+            max_life: 300,
+            life: 300,
             mana,
             owner_entity_index: self.castle_owner_entity_index,
             player_entity_index: self.castle_owner_entity_index,

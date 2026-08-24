@@ -1041,6 +1041,8 @@ impl Level2EconomyState {
                 velocity_y: velocity.y.cast_signed(),
                 vertical_velocity,
                 yaw,
+                max_life: 300,
+                life: 300,
                 mana: sphere_mana,
                 owner_entity_index,
                 player_entity_index: owner_entity_index,
@@ -2556,6 +2558,92 @@ impl Level2EconomyState {
             sphere.attraction_step = 0;
             sphere.attraction_distance_high = 0;
         }
+
+        // `AddBallon_60AB0` marks a nearby model-39 row with byte-0 bit
+        // `0x40` and stores the class-3/model-3 defender in `word_0x96`.
+        // On the sphere's own `TransformArcherToMana_35940` visit this branch
+        // replaces ordinary rolling physics: the sphere turns toward that
+        // exact defender, moves 16 source units while the XY distance is
+        // 16..=1024, and otherwise snaps X/Y before converging vertically.
+        // An invalid or out-of-range relation clears only the attraction bit;
+        // it does not fall through to ordinary physics in the same visit.
+        let defender_attracted = self.spheres[sphere_index].control_flags & 0x40 != 0;
+        if defender_attracted {
+            let defender_slot = self.spheres[sphere_index].assigned_defender_slot;
+            let defender = self
+                .castle_children
+                .iter()
+                .find(|child| {
+                    child.active
+                        && child.source_entity_index == defender_slot
+                        && child.source_class == 3
+                        && child.model == 3
+                })
+                .copied();
+            let mut position_changed = false;
+            if let Some(defender) = defender {
+                let sphere = &mut self.spheres[sphere_index];
+                sphere.vertical_velocity = 128;
+                sphere.yaw =
+                    i16::try_from(heading_for_positions(sphere.position, defender.position))
+                        .expect("Castle-attracted mana-sphere heading fits");
+                let distance = level2_wrapping_target_distance(sphere.position, defender.position);
+                if distance <= 1_024 {
+                    let mut predicted = sphere.position;
+                    if distance >= 16 {
+                        crate::move_entity(&mut predicted, sphere.yaw, 0, 16);
+                    } else {
+                        predicted.x = defender.position.x;
+                        predicted.y = defender.position.y;
+                        if predicted.z >= defender.position.z {
+                            if i32::from(predicted.z) > i32::from(defender.position.z) + 512 {
+                                predicted.z = predicted.z.wrapping_sub(32);
+                            }
+                        } else {
+                            predicted.z = predicted.z.wrapping_add(32);
+                        }
+                    }
+                    let ground = terrain.ground_height(predicted);
+                    if ground > predicted.z {
+                        predicted.z = ground;
+                    }
+                    sphere.position = predicted;
+                    position_changed = true;
+                } else {
+                    sphere.control_flags &= !0x40;
+                }
+            } else {
+                self.spheres[sphere_index].control_flags &= !0x40;
+            }
+
+            if position_changed {
+                let position = self.spheres[sphere_index].position;
+                self.map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: sphere_slot,
+                        active: true,
+                        x: position.x,
+                        y: position.y,
+                    })
+                    .expect("Castle-attracted sphere source slot fits the map chain");
+            }
+            let sphere = &mut self.spheres[sphere_index];
+            if sphere.control_flags & LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT != 0 {
+                sphere.life = sphere.life.wrapping_sub(1);
+                match sphere.life {
+                    12 => sphere.control_flags |= 0x0100_0000,
+                    6 => {
+                        sphere.control_flags |= 0x0080_0000;
+                        sphere.control_flags &= !0x0100_0000;
+                    }
+                    0 => sphere.control_flags |= ENTITY_DRAW_DISABLED_BIT,
+                    _ => {}
+                }
+            }
+            sphere.phase = sphere.phase.wrapping_add(1);
+            self.refresh_owner_mana_rows();
+            return true;
+        }
         let grounded;
         {
             let sphere = &mut self.spheres[sphere_index];
@@ -2608,7 +2696,6 @@ impl Level2EconomyState {
                 sphere.velocity_y = i16::try_from(i32::from(sphere.velocity_y) * 250 / 256)
                     .expect("Level 2 sphere velocity fits");
             }
-            sphere.phase = sphere.phase.wrapping_add(1);
         }
         let position = self.spheres[sphere_index].position;
         self.map_chains
@@ -2620,7 +2707,10 @@ impl Level2EconomyState {
             })
             .expect("Level 2 sphere source slot fits the map chain");
 
-        if grounded {
+        let merge_suppressed = self.spheres[sphere_index].control_flags
+            & LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT
+            != 0;
+        if grounded && !merge_suppressed {
             let sphere = self.spheres[sphere_index];
             let absorbed_slot = level2_first_colliding_mana_sphere_slot(
                 &self.map_chains,
@@ -2632,6 +2722,24 @@ impl Level2EconomyState {
                 self.merge_mana_spheres(sphere_slot, absorbed_slot);
             }
         }
+        let sphere = self
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.active && sphere.source_entity_index == sphere_slot)
+            .expect("the source sphere remains after absorbing a collision peer");
+        if sphere.control_flags & LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT != 0 {
+            sphere.life = sphere.life.wrapping_sub(1);
+            match sphere.life {
+                12 => sphere.control_flags |= 0x0100_0000,
+                6 => {
+                    sphere.control_flags |= 0x0080_0000;
+                    sphere.control_flags &= !0x0100_0000;
+                }
+                0 => sphere.control_flags |= ENTITY_DRAW_DISABLED_BIT,
+                _ => {}
+            }
+        }
+        sphere.phase = sphere.phase.wrapping_add(1);
         self.refresh_owner_mana_rows();
         true
     }
@@ -3052,36 +3160,54 @@ impl Level2EconomyState {
         };
         let target_owner = self.spheres[target_index].owner_entity_index;
         let source_owner = self.spheres[source_index].owner_entity_index;
-        let owner = if target_owner == 0 {
-            source_owner
-        } else if source_owner == 0 {
-            target_owner
-        } else if self.owner_class.get(&target_owner) == Some(&10)
-            && self.owner_class.get(&source_owner) == Some(&10)
+        let target_relation = self.spheres[target_index].player_entity_index;
+        let source_relation = self.spheres[source_index].player_entity_index;
+        let source_control_flags = self.spheres[source_index].control_flags;
+        // `sub_36D50` arbitrates through the sole source
+        // `playerEntityIndex_0x94` relation.  The Rust semantic owner may
+        // intentionally differ (for example after a Nyphur relation write),
+        // so select a side by the raw relation and copy both projections from
+        // that winning sphere instead of treating either field as an alias.
+        let source_wins = if target_relation == 0 {
+            source_relation != 0
+        } else if source_relation == 0 || target_relation == source_relation {
+            false
+        } else if self.owner_class.get(&target_relation) == Some(&10)
+            && self.owner_class.get(&source_relation) == Some(&10)
         {
-            target_owner
-        } else if self.owner_class.get(&target_owner) == Some(&10)
-            && self.owner_class.get(&source_owner) != Some(&10)
+            false
+        } else if self.owner_class.get(&target_relation) == Some(&10)
+            && self.owner_class.get(&source_relation) != Some(&10)
         {
-            source_owner
-        } else if self.owner_class.get(&source_owner) == Some(&10)
-            && self.owner_class.get(&target_owner) != Some(&10)
+            true
+        } else if self.owner_class.get(&source_relation) == Some(&10)
+            && self.owner_class.get(&target_relation) != Some(&10)
         {
-            target_owner
+            false
         } else if self
             .owner_max_mana
-            .get(&target_owner)
+            .get(&target_relation)
             .copied()
             .unwrap_or_default()
             > self
                 .owner_max_mana
-                .get(&source_owner)
+                .get(&source_relation)
                 .copied()
                 .unwrap_or_default()
         {
-            target_owner
+            false
         } else {
+            true
+        };
+        let owner = if source_wins {
             source_owner
+        } else {
+            target_owner
+        };
+        let player_relation = if source_wins {
+            source_relation
+        } else {
+            target_relation
         };
         let source_mana = self.spheres[source_index].mana;
         let target_id = self.spheres[target_index].id;
@@ -3090,6 +3216,11 @@ impl Level2EconomyState {
         let source_position = self.spheres[source_index].position;
         self.spheres[target_index].mana = self.spheres[target_index].mana.wrapping_add(source_mana);
         self.spheres[target_index].owner_entity_index = owner;
+        self.spheres[target_index].player_entity_index = player_relation;
+        if target_relation == 0 && source_relation != 0 && source_control_flags & 0x0020_0000 != 0 {
+            // Neutral-target adoption also inherits source byte-2 bit 0x20.
+            self.spheres[target_index].control_flags |= 0x0020_0000;
+        }
         self.spheres[source_index].assigned_carrier_id = 0;
         self.spheres[source_index].assigned_defender_slot = 0;
         self.map_chains
@@ -4294,6 +4425,8 @@ impl Level2EconomyState {
                 velocity_y: 0,
                 vertical_velocity,
                 yaw: 0,
+                max_life: 300,
+                life: 300,
                 mana: sphere_mana,
                 owner_entity_index: castle.owner_entity_index,
                 // `sub_5FD00` writes the Castle root's raw id relation, not

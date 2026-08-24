@@ -1191,6 +1191,8 @@ fn level2_static_mana_spheres_from_entities(
                 velocity_y: 0,
                 vertical_velocity: 0,
                 yaw: entity.yaw,
+                max_life: entity.max_life,
+                life: entity.life,
                 mana: entity.mana,
                 owner_entity_index: player_entity_index,
                 player_entity_index,
@@ -3741,7 +3743,7 @@ fn level2_nyphur_participant(
     players: &[PlayerSnapshot],
     entities: &[EntitySnapshot],
     runtime: &RuntimeSnapshot,
-    baseline_entity: &EntitySnapshot,
+    baseline_entities: &[EntitySnapshot],
     target_identity: impl Fn(u16) -> Option<i16>,
 ) -> Result<Level2NyphurParticipant> {
     let player = players
@@ -3769,6 +3771,9 @@ fn level2_nyphur_participant(
     let entity = entities
         .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
         .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
+    let baseline_entity = baseline_entities
+        .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+        .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur baseline entity row is absent"))?;
     let source_relation_is_valid = entity.source_word_96() == 0
         || target_identity(entity.source_word_96())
             .is_some_and(|identity| entity.source_word_98() == identity);
@@ -3797,13 +3802,22 @@ fn level2_nyphur_participant(
     let fireball = entities
         .get(usize::from(LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX))
         .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur Fireball holder is absent"))?;
+    let baseline_fireball = baseline_entities
+        .get(usize::from(LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX))
+        .ok_or_else(|| {
+            NativeWorldError::new("Level 2 Nyphur baseline Fireball holder is absent")
+        })?;
     if !fireball.active
         || fireball.class != 15
         || fireball.model != 0
         || fireball.action != 0
         || fireball.old_map_entity() != LEVEL2_NYPHUR_ENTITY_INDEX
         || fireball.next_entity() != LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
-        || sha256_hex(fireball.record_bytes()) != LEVEL2_NYPHUR_FIREBALL_SHA256
+        || !level2_nyphur_holder_record_matches_census(
+            fireball,
+            baseline_fireball,
+            LEVEL2_NYPHUR_FIREBALL_SHA256,
+        )
     {
         return Err(NativeWorldError::new(
             "Level 2 Nyphur Fireball holder relation changed",
@@ -3813,13 +3827,22 @@ fn level2_nyphur_participant(
     let possession = entities
         .get(usize::from(LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX))
         .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur Possession holder is absent"))?;
+    let baseline_possession = baseline_entities
+        .get(usize::from(LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX))
+        .ok_or_else(|| {
+            NativeWorldError::new("Level 2 Nyphur baseline Possession holder is absent")
+        })?;
     if !possession.active
         || possession.class != 15
         || possession.model != 1
         || possession.action != 3
         || possession.old_map_entity() != LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
         || possession.next_entity() != 0
-        || sha256_hex(possession.record_bytes()) != LEVEL2_NYPHUR_POSSESSION_SHA256
+        || !level2_nyphur_holder_record_matches_census(
+            possession,
+            baseline_possession,
+            LEVEL2_NYPHUR_POSSESSION_SHA256,
+        )
     {
         return Err(NativeWorldError::new(
             "Level 2 Nyphur Possession holder relation changed",
@@ -3878,19 +3901,47 @@ fn level2_nyphur_entity_record_matches_census(
         return false;
     }
     let mut normalized = record.to_vec();
-    // The ordinary Nyphur pass owns its entity RNG, yaw, target-heading roll,
-    // position, phase, and word-0x96/0x98 target relation. Keep reset bytes for
-    // the constructor hash while the caller separately validates any live
-    // relation and retains every unrelated census byte.
+    // The ordinary Nyphur pass owns its entity RNG, yaw, pitch,
+    // target-heading roll, position, phase, actual speed, and word-0x96/0x98
+    // target relation. Common upkeep also rewrites mana regeneration from
+    // max mana. Keep reset bytes for the constructor hash while the caller
+    // separately validates any live relation and retains every unrelated
+    // census byte.
     normalized[24..26].copy_from_slice(&baseline_record[24..26]);
     normalized[32..34].copy_from_slice(&baseline_record[32..34]);
+    normalized[34..36].copy_from_slice(&baseline_record[34..36]);
     normalized[36..38].copy_from_slice(&baseline_record[36..38]);
     normalized[80..86].copy_from_slice(&baseline_record[80..86]);
+    normalized[134..136].copy_from_slice(&baseline_record[134..136]);
+    normalized[140..144].copy_from_slice(&baseline_record[140..144]);
     normalized[154..158].copy_from_slice(&baseline_record[154..158]);
     normalized[66] = LEVEL2_NYPHUR_INITIAL_PHASE;
     let mut hasher = Sha256::new();
     hasher.update(normalized);
     format!("{:x}", hasher.finalize()) == LEVEL2_NYPHUR_ENTITY_SHA256
+}
+
+fn level2_nyphur_holder_record_matches_census(
+    holder: &EntitySnapshot,
+    baseline_holder: &EntitySnapshot,
+    expected_baseline_hash: &str,
+) -> bool {
+    let record = holder.record_bytes();
+    let baseline_record = baseline_holder.record_bytes();
+    if record.len() != baseline_record.len()
+        || record.get(66) != Some(&holder.phase)
+        || record.get(50..52) != Some(holder.active_value.to_le_bytes().as_slice())
+        || sha256_hex(baseline_record) != expected_baseline_hash
+    {
+        return false;
+    }
+    let mut normalized = record.to_vec();
+    // The holder callbacks own word-0x30, the active countdown, and the
+    // common UpdateEntities phase. Parent/next links, class/model/action,
+    // spell profile and every unrelated byte remain constructor evidence.
+    normalized[48..52].copy_from_slice(&baseline_record[48..52]);
+    normalized[66] = baseline_record[66];
+    sha256_hex(&normalized) == expected_baseline_hash
 }
 
 fn level2_bad_stones(

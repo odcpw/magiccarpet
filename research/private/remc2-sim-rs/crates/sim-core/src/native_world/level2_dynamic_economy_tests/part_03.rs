@@ -762,13 +762,28 @@
             )
         };
 
-        // Positive production route: source arbitration installs the sphere
-        // target, then one outer turn visits the sphere and holder in source
-        // order.  The holder receives the sphere payload and the sphere is
-        // disabled/unlinked before the retained arena is reclaimed.
-        let (mut session, baseline_hash, castle_slot, defender_slot, holder_position) = setup();
+        // Positive production route: source arbitration installs a sphere
+        // outside the defender AABB but inside AddBallon's Day attraction
+        // radius. The lower-slot defender first moves 48 and marks the sphere;
+        // the higher-slot model-39 callback then consumes that relation and
+        // moves 16 back toward the defender in the same numeric source pass.
+        // Repeated ordinary passes converge, transfer the payload, and leave
+        // the hidden sphere allocated until the following source boundary.
+        let (mut session, baseline_hash, castle_slot, defender_slot, _) = setup();
+        let holder_position = Position {
+            x: 4_096,
+            y: 4_096,
+            z: 0,
+        };
+        session
+            .economy_mut()
+            .castle_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("Castle defender sphere holder")
+            .position = holder_position;
         let target_position = Position {
-            x: holder_position.x.wrapping_add(100),
+            x: holder_position.x.wrapping_add(800),
             ..holder_position
         };
         let sphere_id = session
@@ -809,6 +824,41 @@
             sphere_slot
         );
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let first_child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .copied()
+            .expect("live attracted-sphere defender");
+        let first_sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .copied()
+            .expect("attracted sphere remains after the first pass");
+        assert_eq!(first_child.mana, 0);
+        assert_ne!(first_sphere.control_flags & 0x40, 0);
+        assert_eq!(first_sphere.assigned_defender_slot, defender_slot);
+        assert_eq!(first_sphere.vertical_velocity, 128);
+        assert_eq!(
+            level2_wrapping_target_distance(first_child.position, first_sphere.position),
+            736,
+            "one source pass must close by defender speed 48 plus sphere attraction 16"
+        );
+        for _ in 0..16 {
+            if session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .is_some_and(|child| child.mana == 321)
+            {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
         let child = session
             .economy()
             .castle_children()

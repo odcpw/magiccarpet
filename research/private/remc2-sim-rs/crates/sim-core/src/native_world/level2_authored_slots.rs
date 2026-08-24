@@ -544,6 +544,10 @@ impl Level2EconomyState {
         &self.spheres
     }
 
+    pub(super) fn spheres_mut(&mut self) -> &mut [ManaSphere] {
+        &mut self.spheres
+    }
+
     #[must_use]
     pub fn death_bursts(&self) -> &[Level2DeathBurst] {
         &self.death_bursts
@@ -1931,6 +1935,8 @@ impl Level2EconomyState {
             // authored spheres before their later source rows are visited.
             vertical_velocity: 128,
             yaw: 0,
+            max_life: 300,
+            life: 300,
             mana: AUTHORED_MANA,
             owner_entity_index: 0,
             player_entity_index: 0,
@@ -6037,6 +6043,8 @@ impl Level2EconomyState {
             hasher.update(sphere.velocity_y.to_le_bytes());
             hasher.update(sphere.vertical_velocity.to_le_bytes());
             hasher.update(sphere.yaw.to_le_bytes());
+            hasher.update(sphere.max_life.to_le_bytes());
+            hasher.update(sphere.life.to_le_bytes());
             hasher.update(sphere.mana.to_le_bytes());
             hasher.update(sphere.owner_entity_index.to_le_bytes());
             hasher.update(sphere.player_entity_index.to_le_bytes());

@@ -2791,17 +2791,6 @@ impl Level2ResetSession {
                 } else {
                     parent_mana_regen
                 };
-                if let Some(parent) = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .entities
-                    .get_mut(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
-                {
-                    parent.set_mana_regen(mana_regen);
-                }
-
                 if fresh {
                     let mut launch_position = parent.position;
                     let direction_bits = parent.control_flags & 0x0300;
@@ -2867,6 +2856,25 @@ impl Level2ResetSession {
                             sound_id: 40,
                         });
                     }
+                }
+                // Pinned `sub_69640` attempts the allocation and emits its
+                // launch sound before `sub_68DE0` charges the parent. Keep
+                // the common carrier and the fixed entity projection in
+                // lockstep so the next Nyphur visit consumes that charge.
+                self.session
+                    .state
+                    .live
+                    .nyphur_dispatcher
+                    .apply_holder_mana_regen(mana_regen);
+                if let Some(parent) = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get_mut(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+                {
+                    parent.set_mana_regen(mana_regen);
                 }
                 next_active_value = holder.active_value.wrapping_sub(1);
             }
@@ -4074,18 +4082,11 @@ impl Level2ResetSession {
     /// the mutable reset session. The typed view is deliberately fallible so
     /// a stale or cross-player holder relation cannot become authority.
     pub fn nyphur_participant(&self) -> Result<Level2NyphurParticipant> {
-        let baseline_entity = self
-            .session
-            .baseline
-            .economy
-            .entities
-            .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
-            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
         level2_nyphur_participant(
             &self.session.state.live.core.players,
             &self.session.state.live.economy.entities,
             &self.session.state.live.core.runtime,
-            baseline_entity,
+            &self.session.baseline.economy.entities,
             |source_slot| {
                 self.session
                     .state
@@ -9072,11 +9073,12 @@ impl Level2ResetSession {
                 let terrain = &self.session.state.live.terrain;
                 let players = &self.session.state.live.core.players;
                 let source_arena = &mut self.session.state.live.economy;
+                let (entities, economy) = (&mut source_arena.entities, &mut source_arena.economy);
                 match self.session.state.live.nyphur_dispatcher.step_dispatch(
                     pass,
                     source_slot,
-                    &mut source_arena.entities,
-                    source_arena.economy.spheres(),
+                    entities,
+                    economy.spheres_mut(),
                     players,
                     terrain,
                     &self.session.definition.presentation,

@@ -681,6 +681,8 @@ fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_chang
         velocity_y: 0,
         vertical_velocity: 0,
         yaw: 0,
+        max_life: 300,
+        life: 300,
         mana: 321,
         owner_entity_index: 111,
         player_entity_index: 111,

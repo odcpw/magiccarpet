@@ -181,6 +181,12 @@ impl EntitySnapshot {
         u16::from_le_bytes([self.record[152], self.record[153]])
     }
 
+    /// Keep the source `playerEntityIndex_0x94_148` relation in the lossless
+    /// record when an authoritative callback claims a dynamic target.
+    pub(super) fn set_source_player_entity_index(&mut self, player_entity_index: u16) {
+        self.record[152..154].copy_from_slice(&player_entity_index.to_le_bytes());
+    }
+
     /// Return the source draw-disable state written by
     /// `DisableEntityDrawing04_57F10`. This is byte 17 bit 2 (the 0x400 bit
     /// of the control dword), not byte 16 bit 0 used by pickup ownership.
@@ -251,10 +257,10 @@ impl EntitySnapshot {
         self.record[134..136].copy_from_slice(&actual_speed.to_le_bytes());
     }
 
-    /// Raw source `minSpeed_0x84_132`, consumed by `sub_13890` before its
-    /// common movement callback.
+    /// Raw source `minSpeed_0x84_132`, exported four bytes after the source
+    /// offset and consumed by the Nyphur movement callbacks.
     pub(super) fn minimum_speed(&self) -> i16 {
-        i16::from_le_bytes([self.record[132], self.record[133]])
+        i16::from_le_bytes([self.record[136], self.record[137]])
     }
 
     /// Keep the source life field in lockstep with a common AI upkeep write.

@@ -1140,6 +1140,8 @@
                     velocity_y: 0,
                     vertical_velocity: 0,
                     yaw: 0,
+                    max_life: 300,
+                    life: 300,
                     mana: 512,
                     owner_entity_index: 0,
                     player_entity_index: 0,
@@ -2852,8 +2854,13 @@
                 .find(|sphere| sphere.id == target_id)
                 .expect("merged target");
             assert_eq!(
-                (target.owner_entity_index, target.mana),
-                (vector.expected_owner, 150)
+                (
+                    target.owner_entity_index,
+                    target.player_entity_index,
+                    target.mana,
+                ),
+                (vector.expected_owner, vector.expected_owner, 150),
+                "sub_36D50 keeps the semantic owner and raw player relation on the same winning side"
             );
             assert!(
                 session
@@ -4225,4 +4232,161 @@
         assert_eq!(session.terrain_hash(), replay_terrain_hash);
         assert_eq!(session.campaign_state_hash(), replay_campaign_hash);
         assert_eq!(session.ordinary().reset_hash(), replay_ordinary_hash);
+    }
+
+    #[test]
+    fn level_two_mana_sphere_new_event_life_fades_and_reclaims_on_source_boundaries() {
+        let mut session = level_two_possession_lifecycle_session();
+        let sphere = session
+            .economy_mut()
+            .allocate_authored_model39(348, 344, Position::default())
+            .expect("NewEvent-backed model-39 allocation");
+        let slot = sphere.source_entity_index;
+        assert_eq!((sphere.max_life, sphere.life), (300, 300));
+        let peer_slot = session
+            .economy_mut()
+            .allocate_authored_model39(349, 344, Position::default())
+            .expect("overlapping model-39 merge discriminator")
+            .source_entity_index;
+
+        {
+            let mut economy = session.economy_mut();
+            for sphere in economy
+                .spheres
+                .iter_mut()
+                .filter(|sphere| [slot, peer_slot].contains(&sphere.source_entity_index))
+            {
+                sphere.position = Position::default();
+                sphere.velocity_x = 0;
+                sphere.velocity_y = 0;
+                sphere.vertical_velocity = 0;
+                if sphere.source_entity_index == slot {
+                    sphere.control_flags |= LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT;
+                    sphere.life = 13;
+                }
+            }
+        }
+        let rng_before = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .expect("fading model-39 carrier")
+            .entity_rng;
+
+        assert!(session.economy_mut().step_mana_sphere_slot(slot));
+        let at_twelve = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .expect("life-12 model-39 carrier");
+        assert_eq!(at_twelve.life, 12);
+        assert_ne!(at_twelve.control_flags & 0x0100_0000, 0);
+        assert_eq!(at_twelve.entity_rng, rng_before);
+        assert!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| sphere.source_entity_index == peer_slot),
+            "source byte[1] bit 0x20 suppresses the current sphere's collision/merge call"
+        );
+
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .expect("life-7 model-39 carrier")
+            .life = 7;
+        assert!(session.economy_mut().step_mana_sphere_slot(slot));
+        let at_six = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .expect("life-6 model-39 carrier");
+        assert_eq!(at_six.life, 6);
+        assert_ne!(at_six.control_flags & 0x0080_0000, 0);
+        assert_eq!(at_six.control_flags & 0x0100_0000, 0);
+
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .expect("life-1 model-39 carrier")
+            .life = 1;
+        assert!(session.economy_mut().step_mana_sphere_slot(slot));
+        let hidden = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .expect("hidden model-39 remains reserved for this pass");
+        assert_eq!(hidden.life, 0);
+        assert_ne!(hidden.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert!(!session.economy().free_slots.contains(&slot));
+
+        session
+            .economy_mut()
+            .reclaim_inactive_slots_at_source_boundary();
+        assert!(session
+            .economy()
+            .spheres()
+            .iter()
+            .all(|sphere| sphere.source_entity_index != slot));
+        assert!(session.economy().free_slots.contains(&slot));
+    }
+
+    #[test]
+    fn level_two_mana_sphere_fade_hides_then_reclaims_through_production_scheduler() {
+        let mut session = level_two_possession_lifecycle_session();
+        let sphere = session
+            .economy_mut()
+            .allocate_authored_model39(348, 344, Position::default())
+            .expect("scheduled model-39 allocation");
+        let slot = sphere.source_entity_index;
+        let generation = session.economy().slot_generation(slot);
+        {
+            let mut economy = session.economy_mut();
+            let sphere = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == slot)
+                .expect("scheduled model-39 carrier");
+            sphere.control_flags |= LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT;
+            sphere.life = 1;
+            sphere.vertical_velocity = 0;
+        }
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let hidden = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .expect("callback-hidden sphere remains reserved until the next source boundary");
+        assert_eq!(hidden.life, 0);
+        assert_ne!(hidden.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!(session.economy().slot_generation(slot), generation);
+        assert!(!session.economy().free_slots.contains(&slot));
+        assert!(session.cf10_production_schedule_receipts().iter().any(
+            |receipt| matches!(
+                receipt,
+                crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                    slot: visited,
+                    ..
+                } if *visited == slot
+            )
+        ));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session
+            .economy()
+            .spheres()
+            .iter()
+            .all(|sphere| sphere.source_entity_index != slot));
+        assert!(session.economy().free_slots.contains(&slot));
     }

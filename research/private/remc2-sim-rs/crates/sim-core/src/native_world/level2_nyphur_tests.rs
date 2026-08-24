@@ -1069,6 +1069,7 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
         .find(|sphere| sphere.source_entity_index == selected_slot)
         .expect("selected authored model-39 remains in typed economy carrier");
     assert!(selected_sphere.active);
+    assert_eq!((selected_sphere.max_life, selected_sphere.life), (300, 300));
     assert_eq!(selected_sphere.player_entity_index, 0);
     session
         .nyphur_participant()
@@ -1092,6 +1093,36 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
     assert!(
         wrong_identity.nyphur_participant().is_err(),
         "the same live slot with a different typed source identity must not validate"
+    );
+
+    let mut dead = session.clone();
+    dead.session
+        .state
+        .live
+        .economy
+        .economy
+        .spheres
+        .iter_mut()
+        .find(|sphere| sphere.source_entity_index == selected_slot)
+        .expect("selected typed model-39 target for life negative")
+        .life = 0;
+    dead.session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .castle_entity_index = 0;
+    dead.session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .word_0x159 = 0;
+    dead.step_outer_turn(PlayerCommand::default(), 0);
+    assert_ne!(
+        dead.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)].source_word_96(),
+        selected_slot,
+        "a projected typed sphere at source life zero must fail the following upkeep relation gate"
     );
 
     let mut retired = session.clone();
@@ -1163,6 +1194,845 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
 }
 
 #[test]
+fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified ordinary Nyphur pursuit route");
+    let baseline_campaign_hash = session.campaign_state_hash();
+    let authored_features = session.mission().authored_features().to_vec();
+    let feature_position = |index: u16| {
+        authored_features
+            .iter()
+            .copied()
+            .find(|feature| feature.index == index)
+            .expect("authored switch-chain feature")
+            .world_position(0)
+    };
+    let local_player = session.state.entity_index;
+    let row342_position = feature_position(342);
+    session
+        .set_level2_entity_position(local_player, row342_position)
+        .expect("public player input for imported row 342");
+    let mut group23_activated = false;
+    for _ in 0..8 {
+        session
+            .set_level2_entity_position(local_player, row342_position)
+            .expect("public player remains on imported row 342");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        group23_activated |= session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 23,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == [343, 344]
+            )
+        });
+        if group23_activated {
+            break;
+        }
+    }
+    assert!(group23_activated, "imported row 342 must activate group 23");
+
+    let row344_position = feature_position(344);
+    session
+        .set_level2_entity_position(local_player, row344_position)
+        .expect("public player moves to authored row 344");
+    let before_group24 = session
+        .economy()
+        .spheres()
+        .iter()
+        .filter(|sphere| sphere.active)
+        .map(|sphere| sphere.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    let mut authored_model39_slots = BTreeSet::new();
+    let mut group24_activated = false;
+    for _ in 0..16 {
+        session
+            .set_level2_entity_position(local_player, row344_position)
+            .expect("public player remains on authored row 344");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        group24_activated |= session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 24,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref()
+                    == [345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 361, 362, 363, 364]
+            )
+        });
+        if group24_activated {
+            authored_model39_slots.extend(
+                session
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .filter(|sphere| {
+                        sphere.active && !before_group24.contains(&sphere.source_entity_index)
+                    })
+                    .map(|sphere| sphere.source_entity_index),
+            );
+            break;
+        }
+    }
+    assert!(group24_activated, "authored row 344 must activate group 24");
+    assert_eq!(authored_model39_slots.len(), 10);
+
+    let row348_position = feature_position(348);
+    let target_slot = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| {
+            sphere.active
+                && authored_model39_slots.contains(&sphere.source_entity_index)
+                && (sphere.position.x, sphere.position.y) == (row348_position.x, row348_position.y)
+        })
+        .map(|sphere| sphere.source_entity_index)
+        .expect("ordinary group-24 route materializes authored row 348");
+    let target = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.source_entity_index == target_slot)
+        .expect("authored row 348 remains addressable after construction");
+    assert_eq!((target.max_life, target.life), (300, 300));
+    let pre_pursuit_projectiles = session
+        .economy()
+        .possession_projectiles()
+        .iter()
+        .filter(|projectile| {
+            projectile.holder_entity_index == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+        })
+        .map(|projectile| {
+            (
+                projectile.source_entity_index,
+                session
+                    .economy()
+                    .slot_generation(projectile.source_entity_index),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let target_xy = (row348_position.x, row348_position.y);
+    let mut replay = session.clone();
+    let mut selection = None;
+    let mut crossed_3328 = None;
+    let mut crossed_1024 = None;
+    let mut activation = None;
+    let mut minimum_distance = u32::MAX;
+    let mut last_observation = None;
+    let mut state6_visits_after_selection = 0_u8;
+    for turn in 1..=240_u16 {
+        let had_selection = selection.is_some();
+        let source_before =
+            session.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)].clone();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        replay.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.campaign_state_hash(),
+            replay.campaign_state_hash(),
+            "ordinary state-6 pursuit must replay identically at turn {turn}"
+        );
+        assert_eq!(session.dispatch_events(), replay.dispatch_events());
+        assert_eq!(
+            session.nyphur_dispatch_traces(),
+            replay.nyphur_dispatch_traces()
+        );
+        let source = &session.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)];
+        let selected_target = source.source_word_96();
+        if selection.is_none() {
+            if !authored_model39_slots.contains(&selected_target) {
+                continue;
+            }
+            assert_eq!(
+                selected_target, target_slot,
+                "the first ordinary authored selection must be source-nearest row 348"
+            );
+        }
+        assert_eq!(
+            selected_target, target_slot,
+            "ordinary selector must retain authored row 348 through pursuit"
+        );
+        if had_selection {
+            state6_visits_after_selection = state6_visits_after_selection.saturating_add(1);
+            let common = session
+                .nyphur_common_upkeep()
+                .expect("ordinary state-6 common carrier remains valid");
+            match state6_visits_after_selection {
+                1 => {
+                    assert_eq!(
+                        source.position, source_before.position,
+                        "the first mode-6 visit cannot apply its newly requested speed"
+                    );
+                    assert_eq!(source.actual_speed, 0);
+                    assert_eq!(common.speed, 80);
+                }
+                2 => {
+                    assert_eq!(
+                        (source.position.x, source.position.y),
+                        (source_before.position.x, source_before.position.y),
+                        "the following visit eases actual speed before XY displacement"
+                    );
+                    assert_eq!(source.actual_speed, 16);
+                }
+                3 => assert_ne!(
+                    (source.position.x, source.position.y),
+                    (source_before.position.x, source_before.position.y),
+                    "the third visit must move using the prior visit's actual speed"
+                ),
+                _ => {}
+            }
+        }
+        let Some(sphere) = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.active && sphere.source_entity_index == target_slot)
+        else {
+            panic!("selected authored row 348 must remain a live typed sphere");
+        };
+        assert_eq!(
+            (sphere.position.x, sphere.position.y),
+            target_xy,
+            "flat authored row 348 must remain stationary in XY"
+        );
+        let distance = level2_wrapping_target_distance(source.position, sphere.position);
+        minimum_distance = minimum_distance.min(distance);
+        last_observation = Some((
+            turn,
+            target_slot,
+            source.position,
+            sphere.position,
+            distance,
+        ));
+        if selection.is_none() {
+            selection = Some((turn, distance));
+        }
+        if distance <= 3_328 {
+            crossed_3328.get_or_insert(turn);
+        }
+        if distance <= 1_024 {
+            crossed_1024.get_or_insert(turn);
+        }
+        if sphere.player_entity_index == source.source_id {
+            activation = Some((turn, target_slot, distance));
+            break;
+        }
+    }
+
+    let (_, initial_distance) = selection.unwrap_or_else(|| {
+        panic!(
+            "ordinary selector never chooses row 348; minimum={minimum_distance}, last={last_observation:?}, common={:?}, events={:?}",
+            session.nyphur_common_upkeep(),
+            session.dispatch_events()
+        )
+    });
+    assert!(
+        initial_distance > 3_328,
+        "positive route must prove a natural far-to-near crossing, got {initial_distance}"
+    );
+    let crossed_3328 = crossed_3328.expect("state-6 pursuit naturally crosses 3328");
+    let crossed_1024 = crossed_1024.expect("state-6 pursuit naturally crosses 1024");
+    let (activation_turn, target_slot, activation_distance) =
+        activation.expect("mode 6 claims the typed target after family-1 activation");
+    assert!(crossed_3328 <= crossed_1024 && crossed_1024 <= activation_turn);
+    assert!(activation_distance <= 1_024);
+    assert!(session.nyphur_dispatch_traces().iter().any(|trace| {
+        trace.source_slot == LEVEL2_NYPHUR_ENTITY_INDEX
+            && trace.state_byte == 6
+            && trace.calls.contains(&Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub135c0,
+            ))
+    }));
+    assert_eq!(
+        session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .expect("claimed typed target remains addressable")
+            .player_entity_index,
+        LEVEL2_NYPHUR_ENTITY_INDEX
+    );
+    assert!(
+        session.economy().spheres().iter().all(|sphere| {
+            sphere.source_entity_index == target_slot
+                || !authored_model39_slots.contains(&sphere.source_entity_index)
+                || sphere.player_entity_index == 0
+        }),
+        "mode 6 must publish only the selected target relation"
+    );
+
+    let projectile = session
+        .economy()
+        .possession_projectiles()
+        .iter()
+        .find(|projectile| {
+            projectile.holder_entity_index == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                && !pre_pursuit_projectiles.contains(&(
+                    projectile.source_entity_index,
+                    session
+                        .economy()
+                        .slot_generation(projectile.source_entity_index),
+                ))
+        })
+        .copied()
+        .expect("the genuine holder-114 callback creates a new family-1 projectile generation");
+    let projectile_generation = session
+        .economy()
+        .slot_generation(projectile.source_entity_index);
+    let possession_profile = level2_direct_starting_spell_profile(1, 0)
+        .expect("qualified Nyphur family-1 holder uses the source tier-0 profile");
+    assert_eq!(
+        session
+            .nyphur_common_upkeep()
+            .expect("ordinary Nyphur common carrier remains valid")
+            .spell_enabled[1],
+        LEVEL2_NYPHUR_SPELL_COOLDOWNS[1],
+        "sub_14E10 installs the exact family-1 cooldown"
+    );
+    assert_eq!(
+        session.economy.entities[usize::from(LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX)].active_value,
+        possession_profile.word_0x30.cast_signed().wrapping_sub(1),
+        "the same-pass holder callback consumes exactly one activation tick"
+    );
+    assert_eq!(
+        session.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)].mana_regen,
+        -possession_profile.max_mana,
+        "fresh sub_69640/sub_68DE0 charges the exact family-1 mana cost"
+    );
+    let activation_upkeep = session
+        .nyphur_common_upkeep()
+        .expect("activation leaves the common carrier valid");
+    assert_eq!(
+        (activation_upkeep.mana, activation_upkeep.mana_regen),
+        (1_000, -possession_profile.max_mana),
+        "the charge is deferred until the following Nyphur visit"
+    );
+    assert_eq!(
+        session
+            .shared_spells()
+            .activation_events()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                crate::FlightEvent::PrepareSound {
+                    entity_index,
+                    player_index: -1,
+                    sound_id: 40,
+                    ..
+                } if *entity_index == projectile.source_entity_index
+            ))
+            .count(),
+        1,
+        "the successful source allocation emits exactly one launch sound bound to the new row"
+    );
+    assert!(
+        projectile.active,
+        "a fresh family-1 flyer remains live after its first callback"
+    );
+    assert_eq!(
+        projectile.phase, 1,
+        "the scheduled callback advances byte 0x3e once"
+    );
+    let schedule_receipts = session.cf10_production_schedule_receipts();
+    assert!(
+        schedule_receipts.iter().any(|receipt| matches!(
+            receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                if *slot == projectile.source_entity_index
+        )),
+        "the new projectile must run through its scheduled source callback"
+    );
+    assert!(
+        schedule_receipts.iter().any(|receipt| matches!(
+            receipt,
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. }
+                if *slot == projectile.source_entity_index
+        )),
+        "the new projectile callback must complete its source epilogue"
+    );
+    let callback_position = |slot| {
+        schedule_receipts.iter().position(|receipt| {
+            matches!(
+                receipt,
+                crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                    slot: callback_slot,
+                    ..
+                } if *callback_slot == slot
+            )
+        })
+    };
+    let nyphur_callback = callback_position(LEVEL2_NYPHUR_ENTITY_INDEX)
+        .expect("the activation pass dispatches Nyphur first");
+    let holder_callback = callback_position(LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX)
+        .expect("the activation pass dispatches holder 114");
+    let projectile_callback = callback_position(projectile.source_entity_index)
+        .expect("the activation pass dispatches the higher-slot projectile");
+    assert!(nyphur_callback < holder_callback && holder_callback < projectile_callback);
+
+    let mut terminal_phase = None;
+    let mut verified_following_charge = false;
+    for _ in 0..=u16::try_from(POSSESSION_PROJECTILE_LIFETIME_TICKS)
+        .expect("possession lifetime fits a bounded test loop")
+    {
+        let before = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|candidate| {
+                candidate.source_entity_index == projectile.source_entity_index
+                    && session
+                        .economy()
+                        .slot_generation(candidate.source_entity_index)
+                        == projectile_generation
+            })
+            .copied()
+            .expect("the active flyer generation remains addressable until its terminal callback");
+        assert!(before.active);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        replay.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+        assert!(
+            session.dispatch_events() == replay.dispatch_events()
+                && session.nyphur_dispatch_traces() == replay.nyphur_dispatch_traces()
+        );
+        let after = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|candidate| {
+                candidate.source_entity_index == projectile.source_entity_index
+                    && session
+                        .economy()
+                        .slot_generation(candidate.source_entity_index)
+                        == projectile_generation
+            })
+            .copied()
+            .expect("a terminal callback hides the flyer before following-pass reclaim");
+        assert_eq!(after.phase, before.phase.wrapping_add(1));
+        let receipts = session.cf10_production_schedule_receipts();
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                if *slot == projectile.source_entity_index
+        )));
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. }
+                if *slot == projectile.source_entity_index
+        )));
+        if !verified_following_charge {
+            let following_upkeep = session
+                .nyphur_common_upkeep()
+                .expect("following Nyphur common carrier remains valid");
+            assert_eq!(following_upkeep.mana, 900);
+            assert_eq!(following_upkeep.mana_regen, 0);
+            assert_eq!(following_upkeep.spell_enabled[1], 9);
+            verified_following_charge = true;
+        }
+        if !after.active {
+            terminal_phase = Some(after.phase);
+            break;
+        }
+    }
+    assert!(
+        terminal_phase.is_some(),
+        "the genuine family-1 flyer reaches its source terminal callback"
+    );
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    replay.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+    assert_eq!(session.dispatch_events(), replay.dispatch_events());
+    assert_eq!(
+        session.nyphur_dispatch_traces(),
+        replay.nyphur_dispatch_traces()
+    );
+    assert!(
+        session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .all(|candidate| {
+                candidate.source_entity_index != projectile.source_entity_index
+                    || session
+                        .economy()
+                        .slot_generation(candidate.source_entity_index)
+                        != projectile_generation
+            }),
+        "the following scheduler prologue reclaims the terminal flyer generation"
+    );
+
+    session.reset();
+    replay.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+    assert_eq!(replay.campaign_state_hash(), baseline_campaign_hash);
+}
+
+#[test]
+fn level_two_nyphur_avoidance_packed_directions_los_and_zero_rng_are_exact() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 avoidance session");
+    let mut terrain = session.canonical_terrain().clone();
+    terrain.planes.terrain_types.fill(0);
+
+    let origin = Position::default();
+    terrain.planes.terrain_types[terrain_index(0, u8::MAX)] = 8;
+    assert_eq!(level2_nyphur_sub_16730(&terrain, origin, 0, false), 1);
+    assert_eq!(level2_nyphur_sub_16730(&terrain, origin, 0, true), 1);
+    terrain.planes.terrain_types.fill(0);
+
+    for (right_side, previous, blocker, expected) in [
+        (true, 1_u8, (31_u8, 31_u8), 0x0608_u16),
+        (true, 2, (33, 31), 0x0c01),
+        (true, 4, (33, 33), 0x0902),
+        (true, 8, (31, 33), 0x0304),
+        (false, 1, (33, 31), 0x0302),
+        (false, 2, (33, 33), 0x0604),
+        (false, 4, (31, 33), 0x0c08),
+        (false, 8, (31, 31), 0x0901),
+    ] {
+        terrain.planes.terrain_types.fill(0);
+        terrain.planes.terrain_types[terrain_index(blocker.0, blocker.1)] = 8;
+        assert_eq!(
+            level2_nyphur_sub_16730(
+                &terrain,
+                Position {
+                    x: 32 << 8,
+                    y: 32 << 8,
+                    z: 0,
+                },
+                previous,
+                right_side,
+            ),
+            expected
+        );
+    }
+
+    terrain.planes.terrain_types.fill(0);
+    assert!(!level2_nyphur_sub_16e70(&terrain, (31, 31), (35, 31)));
+    terrain.planes.terrain_types[terrain_index(35, 31)] = 8;
+    assert!(level2_nyphur_sub_16e70(&terrain, (31, 31), (35, 31)));
+    terrain.planes.terrain_types[terrain_index(35, 31)] = 0;
+    terrain.planes.terrain_types[terrain_index(31, 31)] = 8;
+    assert!(level2_nyphur_sub_16e70(&terrain, (31, 31), (35, 31)));
+
+    terrain.planes.terrain_types.fill(0);
+    session.session.state.live.economy.entities[112].set_position(Position {
+        x: 32 << 8,
+        y: 32 << 8,
+        z: 256,
+    });
+    session.session.state.live.economy.entities[70].set_position(Position {
+        x: 40 << 8,
+        y: 33 << 8,
+        z: 256,
+    });
+    let target = session.session.state.live.economy.entities[70].clone();
+    session.session.state.live.economy.entities[112].set_source_relation(&target);
+    session.session.state.live.economy.entities[112].set_yaw(0);
+    session.session.state.live.economy.entities[112].set_source_roll(0);
+    session.session.state.live.economy.entities[112].set_actual_speed(16);
+    session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .speed = 80;
+    session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .word_0xe_14 = 0;
+    session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .byte_0x45e = 1;
+    session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .byte_0x45f = 0;
+    terrain.planes.terrain_types[terrain_index(32, 31)] = 8;
+    let entity_rng = session.session.state.live.economy.entities[112].entity_rng;
+    let watcom_rng = session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .watcom_rand_state;
+    session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .step_sub_16580(
+            112,
+            &mut session.session.state.live.economy.entities,
+            &terrain,
+        )
+        .expect("source avoidance turn");
+    let source = &session.session.state.live.economy.entities[112];
+    let common = &session.session.state.live.nyphur_dispatcher.common_upkeep;
+    assert_eq!((common.byte_0x45e, common.byte_0x45f), (1, 1));
+    assert_eq!((source.yaw, source.source_roll()), (1_536, 1_536));
+    assert_eq!(source.actual_speed, 0);
+    assert_eq!((common.speed, common.word_0xe_14), (0, 1));
+    assert_eq!(source.entity_rng, entity_rng);
+    assert_eq!(common.watcom_rand_state, watcom_rng);
+
+    let mut left = session.clone();
+    let mut right = session.clone();
+    let mut symmetric = terrain.clone();
+    symmetric.planes.terrain_types.fill(0);
+    symmetric.planes.terrain_types[terrain_index(29, 31)] = 8;
+    symmetric.planes.terrain_types[terrain_index(31, 32)] = 8;
+    for (candidate, target_y, expected_state) in [
+        (&mut left, 32_u16 << 8, 1_u8),
+        (&mut right, 33_u16 << 8, 2_u8),
+    ] {
+        candidate.session.state.live.economy.entities[70].set_position(Position {
+            x: 20 << 8,
+            y: target_y,
+            z: 256,
+        });
+        let target = candidate.session.state.live.economy.entities[70].clone();
+        candidate.session.state.live.economy.entities[112].set_source_relation(&target);
+        candidate
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .common_upkeep
+            .byte_0x45e = 0;
+        candidate
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .common_upkeep
+            .byte_0x45f = 0;
+        candidate
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .step_sub_16580(
+                112,
+                &mut candidate.session.state.live.economy.entities,
+                &symmetric,
+            )
+            .expect("forty-step obstacle side selection");
+        assert_eq!(
+            candidate
+                .session
+                .state
+                .live
+                .nyphur_dispatcher
+                .common_upkeep
+                .byte_0x45e,
+            expected_state
+        );
+    }
+}
+
+#[test]
+fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_are_exact() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let base = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 family-1 session");
+    let source_parameter = base.economy.entities[112]
+        .parameter_relation
+        .expect("qualified Nyphur parameter relation");
+    assert_eq!(source_parameter, 67);
+    assert_eq!(
+        i16::from_le_bytes([
+            base.session.definition.presentation.entity_parameters[usize::from(source_parameter)]
+                [14],
+            base.session.definition.presentation.entity_parameters[usize::from(source_parameter)]
+                [15],
+        ]),
+        -4,
+        "sub_135C0 must use the decoded one-based source parameter row"
+    );
+
+    let prepare_family1 = |candidate: &mut super::super::Level2ResetSession| {
+        let target = candidate.session.state.live.economy.entities[70].clone();
+        let source = &mut candidate.session.state.live.economy.entities[112];
+        source.set_source_relation(&target);
+        source.set_yaw(0);
+        source.set_source_roll(0);
+        source.set_control_flags(source.control_flags | 0x0000_0100);
+        let live = &mut candidate.session.state.live;
+        assert_eq!(
+            live.nyphur_dispatcher
+                .common_upkeep
+                .step_sub_15f20(1, 0, &mut live.economy.entities),
+            1
+        );
+    };
+
+    let mut angle_rejected = base.clone();
+    prepare_family1(&mut angle_rejected);
+    angle_rejected.session.state.live.economy.entities[112].set_source_roll(170);
+    let target = angle_rejected.session.state.live.economy.entities[70].clone();
+    let pitch_before = angle_rejected.session.state.live.economy.entities[112].pitch;
+    let live = &mut angle_rejected.session.state.live;
+    assert!(!live.nyphur_dispatcher.step_sub_14e10_family1(
+        112,
+        &target,
+        &mut live.economy.entities,
+    ));
+    assert_eq!(live.economy.entities[112].control_flags & 0x0000_0100, 0);
+    assert_eq!(live.economy.entities[112].pitch, pitch_before);
+    assert_eq!(live.nyphur_dispatcher.common_upkeep.word_0x1a2, 0);
+
+    let mut counter_rejected = base.clone();
+    prepare_family1(&mut counter_rejected);
+    counter_rejected
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .word_0x1a2 = -1;
+    let target = counter_rejected.session.state.live.economy.entities[70].clone();
+    let live = &mut counter_rejected.session.state.live;
+    assert!(!live.nyphur_dispatcher.step_sub_14e10_family1(
+        112,
+        &target,
+        &mut live.economy.entities,
+    ));
+    assert_eq!(live.economy.entities[112].control_flags & 0x0000_0100, 0);
+    assert_eq!(live.nyphur_dispatcher.common_upkeep.word_0x1a2, -1);
+
+    let mut accepted = base.clone();
+    prepare_family1(&mut accepted);
+    accepted.session.state.live.economy.entities[112].set_source_roll(169);
+    let source_before = accepted.session.state.live.economy.entities[112].clone();
+    let target = accepted.session.state.live.economy.entities[70].clone();
+    let horizontal = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+        source_before.position,
+        target.position,
+    ));
+    let expected_pitch = crate::pitch_for_delta(
+        i32::try_from(horizontal).expect("family-1 XY distance"),
+        i32::from(target.position.z) - i32::from(source_before.position.z),
+    );
+    let live = &mut accepted.session.state.live;
+    assert!(live.nyphur_dispatcher.step_sub_14e10_family1(
+        112,
+        &target,
+        &mut live.economy.entities,
+    ));
+    assert_eq!(live.economy.entities[112].pitch, expected_pitch);
+    assert_eq!(live.nyphur_dispatcher.common_upkeep.word_0x1a2, 1);
+    assert_eq!(
+        live.nyphur_dispatcher.common_upkeep.spell_enabled[1],
+        LEVEL2_NYPHUR_SPELL_COOLDOWNS[1]
+    );
+
+    let mut wrapped_counter = base.clone();
+    prepare_family1(&mut wrapped_counter);
+    wrapped_counter.session.state.live.economy.entities[112].set_source_roll(169);
+    wrapped_counter
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .word_0x1a2 = 7;
+    let target = wrapped_counter.session.state.live.economy.entities[70].clone();
+    let live = &mut wrapped_counter.session.state.live;
+    assert!(live.nyphur_dispatcher.step_sub_14e10_family1(
+        112,
+        &target,
+        &mut live.economy.entities,
+    ));
+    assert_eq!(live.nyphur_dispatcher.common_upkeep.word_0x1a2, -28);
+
+    let mut clear_terrain = base.canonical_terrain().clone();
+    clear_terrain.planes.terrain_types.fill(0);
+    for (angle, expected_relation) in [(27_i16, 777_u16), (28_i16, 0_u16)] {
+        let mut candidate = base.clone();
+        let source_position = Position {
+            x: 20_000,
+            y: 20_000,
+            z: 512,
+        };
+        let target_position = Position {
+            x: 20_512,
+            y: 20_000,
+            z: 512,
+        };
+        candidate.session.state.live.economy.entities[112].set_position(source_position);
+        candidate.session.state.live.economy.entities[112].source_id = 777;
+        candidate.session.state.live.economy.entities[112].record[30..32]
+            .copy_from_slice(&777_u16.to_le_bytes());
+        candidate.session.state.live.economy.entities[70].set_position(target_position);
+        candidate.session.state.live.economy.entities[70].set_source_player_entity_index(0);
+        let target = candidate.session.state.live.economy.entities[70].clone();
+        candidate.session.state.live.economy.entities[112].set_source_relation(&target);
+        let heading = i16::try_from(heading_for_positions(source_position, target_position))
+            .expect("state-6 boundary heading");
+        candidate.session.state.live.economy.entities[112]
+            .set_yaw(heading.wrapping_add(angle) & 0x07ff);
+        candidate
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .common_upkeep
+            .spell_enabled[1] = 0;
+        candidate
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .common_upkeep
+            .word_0x1a2 = 0;
+        let presentation = candidate.session.definition.presentation.clone();
+        candidate
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .step_sub_135c0(
+                112,
+                &mut candidate.session.state.live.economy.entities,
+                &clear_terrain,
+                &presentation,
+            )
+            .expect("state-6 relation boundary");
+        assert_eq!(
+            candidate.session.state.live.economy.entities[70].source_player_entity_index(),
+            expected_relation,
+            "relation handoff boundary {angle}"
+        );
+    }
+}
+
+#[test]
 fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
@@ -1186,12 +2056,12 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
     let target_at_distance = |distance: u32| {
         let mut target = base.session.state.live.economy.entities[70].clone();
         target.set_position(Position {
-            x: source.position.x,
-            y: source.position.y,
-            z: source
+            x: source
                 .position
-                .z
-                .wrapping_add(i16::try_from(distance).expect("distance fits source coordinate")),
+                .x
+                .wrapping_add(u16::try_from(distance).expect("distance fits source coordinate")),
+            y: source.position.y,
+            z: source.position.z,
         });
         target
     };
@@ -1242,6 +2112,31 @@ fn level_two_nyphur_sub_14c90_boundaries_match_pinned_source() {
     // Pinned sub_135C0 (mode 6) calls sub_14C90 with 1024/3072.
     assert_gate("mode-6 distance == 1024", 1_024, 3_072, 1_024, true);
     assert_gate("mode-6 distance == 1025", 1_024, 3_072, 1_025, false);
+
+    let mut vertical_only = base.clone();
+    let mut vertical_target = vertical_only.session.state.live.economy.entities[70].clone();
+    vertical_target.set_position(Position {
+        x: source.position.x,
+        y: source.position.y,
+        z: source.position.z.wrapping_add(20_000),
+    });
+    assert!(
+        vertical_only
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .step_sub_14c90(
+                source_index,
+                Some(&vertical_target),
+                None,
+                1_024,
+                3_072,
+                &mut vertical_only.session.state.live.economy.entities,
+            )
+            .expect("source XY-only distance gate accepts a vertical-only delta")
+    );
+    assert_eq!(vertical_only.nyphur_dispatcher.common_upkeep.speed, 0);
 
     // Pinned sub_13710 (mode 7) calls sub_14C90 with 2048/3584.
     assert_gate("mode-7 distance == 2048", 2_048, 3_584, 2_048, true);
@@ -1593,7 +2488,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
         mode3.nyphur_dispatcher.common_upkeep.word_0xe_14, 1,
         "sub_13100's sub_14C90 gate carries the vertical step"
     );
-    let mode3_distance = level2_nyphur_source_distance_3d(source.position, axis);
+    let mode3_distance = level2_wrapping_target_distance(source.position, axis);
     if mode3_distance <= 2_048 {
         assert_eq!(mode3.nyphur_dispatcher.common_upkeep.speed, 0);
     } else {
@@ -1768,8 +2663,8 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
 
     // In the no-castle inactive-holder fallthrough, the source writes
     // minimum speed and word_0xe_14 before the single sub_16580 call.
-    // A blocked terrain probe makes that ordering observable even though
-    // the helper ultimately fails closed.
+    // A blocked terrain probe then enters the source avoidance state machine;
+    // it is handled state, not an error/refusal path.
     let mut mode11_order = inspection
         .level2_reset_session()
         .expect("mode-11 order carrier");
@@ -1780,7 +2675,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
         [terrain_index(blocked_x, blocked_y)] = 8;
     mode11_order.session.state.live.nyphur_dispatcher.state_byte = 11;
     mode11_order.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(mode11_order.dispatch_events().iter().any(|event| matches!(
+    assert!(mode11_order.dispatch_events().iter().all(|event| !matches!(
         event,
         Level2DispatchEvent::Error {
             source_slot: 112,
@@ -1788,10 +2683,26 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
         }
     )));
     assert_eq!(
-        mode11_order.nyphur_dispatcher.common_upkeep.speed,
-        order_source.minimum_speed()
+        mode11_order.nyphur_dispatcher.common_upkeep.speed, 0,
+        "avoidance stops the source before installing the new heading"
     );
+    assert_eq!(mode11_order.economy.entities[112].actual_speed, 0);
     assert_eq!(mode11_order.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
+    assert_eq!(
+        (
+            mode11_order.nyphur_dispatcher.common_upkeep.byte_0x45e,
+            mode11_order.nyphur_dispatcher.common_upkeep.byte_0x45f,
+        ),
+        (1, 1),
+        "the blocked north probe chooses the pinned left-side avoidance row"
+    );
+    assert_eq!(
+        (
+            mode11_order.economy.entities[112].yaw,
+            mode11_order.economy.entities[112].source_roll(),
+        ),
+        (1_536, 1_536)
+    );
 
     let mut mode12 = inspection
         .level2_reset_session()
@@ -2290,6 +3201,15 @@ fn level_two_ai_common_upkeep_matches_0002_0007_0009() {
     assert_eq!((baseline.player_slot, baseline.player_color_index), (1, 1));
     assert_eq!(session.runtime.local_player_slot, 0);
     assert_eq!(baseline.source_slot, 112);
+    assert_eq!(
+        session.session.state.live.economy.entities[112].minimum_speed(),
+        80
+    );
+    assert_eq!(
+        &session.session.state.live.economy.entities[112].record_bytes()[132..138],
+        &[0, 0, 0, 0, 80, 0],
+        "the four-byte export prefix places source actualSpeed/minSpeed at 134/136"
+    );
     assert_eq!(baseline.castle_entity_index, 0);
     assert_eq!(baseline.phase, 113);
     assert_eq!(baseline.word_0x1a2, 0);

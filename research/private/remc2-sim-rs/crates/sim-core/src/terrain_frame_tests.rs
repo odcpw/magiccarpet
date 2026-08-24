@@ -1212,6 +1212,8 @@ fn owner_cache_goat_world_frame_is_interleaved_and_deterministic() {
         velocity_y: 0,
         vertical_velocity: 0,
         yaw: 0,
+        max_life: 300,
+        life: 300,
         mana: 256,
         owner_entity_index: 0,
         player_entity_index: 0,
