@@ -300,8 +300,10 @@ const LEVEL2_SPELL_TIER_THRESHOLDS: [[i32; 3]; PLAYER_SPELL_COUNT] = [
 const FRAME_ASSET_COUNT: usize = 76;
 const LEVEL_ONE_CONTROL_MODE_SEAM_DEFAULT: u8 = 0;
 const LEVEL2_UPSTREAM_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
+// GOLDEN-CHANGE: source-backed rooted class-5 constructor TMAP choices were
+// added to the owner asset closure; gameplay/event/audio identity is unchanged.
 const LEVEL2_QUALIFIED_CLOSURE_SHA256: &str =
-    "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc";
+    "5f1935977111a911f8c0b954214fe89d3e9e6fa949a37df21be7668800ee101e";
 const LEVEL2_QUALIFIED_OWNER_MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v5";
 const LEVEL2_QUALIFIED_PLAYERS_COMPONENT_MAGIC: &str = "MCP1";
 const LEVEL2_QUALIFIED_PLAYERS_COMPONENT_VERSION: u64 = 4;

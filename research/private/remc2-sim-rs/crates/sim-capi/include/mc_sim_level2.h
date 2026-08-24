@@ -16,6 +16,9 @@
 extern "C" {
 #endif
 
+/* Generic live row supplied by the descriptor-backed campaign arena. */
+#define MC_AUTHORITY_CAMPAIGN_LIVE 9u
+
 /* Additive generic campaign selection; legacy v2 layouts are unchanged. */
 typedef struct McCampaignSelectionV2 {
     uint32_t abi_version;

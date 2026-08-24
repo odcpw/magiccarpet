@@ -310,7 +310,9 @@ impl DayIndexedFrameAssets {
             &outputs,
             MATERIAL_DESCRIPTOR_PATH,
             "canonical_json_day_material_descriptor",
-            if qualified_v5 { 64_911 } else { 64_695 },
+            // GOLDEN-CHANGE: the qualified v5 descriptor now carries 20
+            // additional rooted class-5 TMAP rows; v4 remains historical.
+            if qualified_v5 { 74_421 } else { 64_695 },
             &[
                 "owner_data:DATA/PALD-0.DAT",
                 "owner_data:DATA/TABLESD.DAT",
@@ -898,7 +900,9 @@ fn qualified_profile_json() -> Value {
     json!({
         "catalog_file_sha256": "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44",
         "catalog_sha256": "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e",
-        "closure_sha256": "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc",
+        // GOLDEN-CHANGE: only rooted class-5 constructor TMAP reachability was
+        // added; the qualified simulation and event behavior did not change.
+        "closure_sha256": "5f1935977111a911f8c0b954214fe89d3e9e6fa949a37df21be7668800ee101e",
         "external_level": MATERIAL_PACKAGE_LEVEL,
         "internal_level": MATERIAL_INTERNAL_LEVEL,
         "map_type": {"id": MATERIAL_MAP_TYPE_ID, "name": "Day"},

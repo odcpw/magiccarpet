@@ -107,7 +107,10 @@ CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
 GENERATOR_VERSION = "1.15.0"
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 EXPECTED_LEVEL2_PACKAGE = "dc8f973ee9a2f53863a2e2e3743b6fa4b9ef947d3ce0b27b79d3ba86de318b80"
-EXPECTED_LEVEL2_CLOSURE = "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc"
+# GOLDEN-CHANGE: add only the source-backed rooted class-5 constructor TMAP
+# choices; simulation/event/audio identities and the package/catalog pins stay
+# unchanged. Closure tests prove 20 additions and zero removals.
+EXPECTED_LEVEL2_CLOSURE = "5f1935977111a911f8c0b954214fe89d3e9e6fa949a37df21be7668800ee101e"
 EXPECTED_LEVEL2_CATALOG = "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e"
 EXPECTED_LEVEL2_CATALOG_FILE = "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44"
 LEVEL2_OWNER_PACKAGE_IDENTITY = {

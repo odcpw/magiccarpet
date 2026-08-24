@@ -2482,6 +2482,64 @@ pub(super) fn campaign_entity_snapshot(entity: &EntitySnapshot) -> McCampaignEnt
     }
 }
 
+pub(super) fn campaign_live_bee_entity_snapshot(
+    source: &sim_core::native_world::Level2AuthoredBeeSource,
+) -> McCampaignEntitySnapshotV2 {
+    McCampaignEntitySnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignEntitySnapshotV2>(),
+        entity_index: source.source_entity_index,
+        source_id: source.entity_id,
+        next_relation: u16::MAX,
+        parameter_relation: u16::MAX,
+        authority: MC_AUTHORITY_CAMPAIGN_LIVE,
+        // This common projection is consumed by presentation clients.  A
+        // source row hidden during its callback remains identifiable by its
+        // authority/class/model/action with active=0 until the following
+        // source boundary actually removes the arena occupant.
+        active: u8::from(source.active && source.drawing_enabled),
+        class_id: source.source_class,
+        model: source.model,
+        action: source.action,
+        phase: source.source_byte_3e,
+        x: source.position.x,
+        y: source.position.y,
+        z: source.position.z,
+        yaw: source.yaw,
+        pitch: source.pitch,
+        fov: 0,
+        actual_speed: source.actual_speed,
+        reserved: [0; 4],
+    }
+}
+
+pub(super) fn campaign_live_class5_entity_snapshot(
+    source: &sim_core::native_world::Level2AuthoredClass5Source,
+) -> McCampaignEntitySnapshotV2 {
+    McCampaignEntitySnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignEntitySnapshotV2>(),
+        entity_index: source.source_entity_index,
+        source_id: source.source_entity_index,
+        next_relation: u16::MAX,
+        parameter_relation: u16::MAX,
+        authority: MC_AUTHORITY_CAMPAIGN_LIVE,
+        active: u8::from(source.active && source.drawing_enabled),
+        class_id: 5,
+        model: source.model,
+        action: source.action,
+        phase: source.source_byte_3e,
+        x: source.position.x,
+        y: source.position.y,
+        z: source.position.z,
+        yaw: source.yaw,
+        pitch: source.pitch,
+        fov: source.fov,
+        actual_speed: source.actual_speed,
+        reserved: [0; 4],
+    }
+}
+
 pub(super) fn asset_ref(world: &NativeWorld, index: u32) -> AbiResult<&AssetRef> {
     let index = usize::try_from(index)
         .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "asset index does not fit usize"))?;
@@ -2595,7 +2653,9 @@ pub(super) fn load_optional_level2_day_music(
         &audio_root,
         "audio/descriptor.json",
         171_379,
-        "53b04308fe28b218d122fb515c12e902259eab60c1b91bc031bd154ca8aa477a",
+        // GOLDEN-CHANGE: only the bound Level 2 asset-closure hash changed;
+        // audio records, XMI bytes, ordering, and runtime behavior did not.
+        "1f12bd22eca4c8e5da6fae3bba02cd3bd62b3db90bcb372bfcebca1dd2cf4d66",
     )?;
     let _ = read_qualified_cache_file(
         &audio_root,

@@ -44,6 +44,11 @@ pub const MC_AUTHORITY_SELECTOR_FRAME_LIVE: u8 = 5;
 pub const MC_AUTHORITY_LEVEL1_MISSION_LIVE: u8 = 6;
 pub const MC_AUTHORITY_SESSION_TERRAIN_LIVE: u8 = 7;
 pub const MC_AUTHORITY_VILLAGER_LIVE: u8 = 8;
+/// One source-slot row projected from the canonical descriptor-backed
+/// campaign arena.  This authority is generic: class/model/action remain
+/// compatibility payload inside the MC2 adapter and do not select a public
+/// Level-N session or ABI.
+pub const MC_AUTHORITY_CAMPAIGN_LIVE: u8 = 9;
 pub const MC_LEVEL1_HOUSE_COMPLETION_ALLOCATED: u32 = 1;
 pub const MC_LEVEL1_HOUSE_COMPLETION_ALLOCATION_FAILED: u32 = 2;
 pub const MC_LEVEL1_EXIT_FLAG_PALETTE_VISUAL_CURRENT: u8 = 1 << 0;

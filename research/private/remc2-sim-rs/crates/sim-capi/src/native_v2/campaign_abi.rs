@@ -2805,9 +2805,49 @@ pub extern "C" fn mc_native_campaign_entities_copy(
             "campaign entity element",
         )?;
         with_campaign_session(handle, |session| {
-            let entities = match &session.kind {
-                CampaignSessionKind::Level1 { world } => world.entities(),
-                CampaignSessionKind::Level2 { inspection, .. } => inspection.entities(),
+            let mut entities = match &session.kind {
+                CampaignSessionKind::Level1 { world } => world
+                    .entities()
+                    .iter()
+                    .map(campaign_entity_snapshot)
+                    .collect::<Vec<_>>(),
+                CampaignSessionKind::Level2 {
+                    inspection, reset, ..
+                } => {
+                    let mut rows = inspection
+                        .entities()
+                        .iter()
+                        .map(campaign_entity_snapshot)
+                        .collect::<Vec<_>>();
+                    let mut occupied = BTreeSet::new();
+                    for source in reset.economy().authored_bees() {
+                        let slot = usize::from(source.source_entity_index);
+                        if slot >= rows.len() || !occupied.insert(source.source_entity_index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!(
+                                    "campaign live Bee source slot {} is invalid or duplicated",
+                                    source.source_entity_index
+                                ),
+                            ));
+                        }
+                        rows[slot] = campaign_live_bee_entity_snapshot(source);
+                    }
+                    for source in reset.economy().authored_class5() {
+                        let slot = usize::from(source.source_entity_index);
+                        if slot >= rows.len() || !occupied.insert(source.source_entity_index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!(
+                                    "campaign live class-5 source slot {} is invalid or duplicated",
+                                    source.source_entity_index
+                                ),
+                            ));
+                        }
+                        rows[slot] = campaign_live_class5_entity_snapshot(source);
+                    }
+                    rows
+                }
             };
             let start = usize::try_from(start_index).map_err(|_| {
                 AbiError::new(MC_STATUS_BOUNDS, "campaign entity start exceeds usize")
@@ -2827,12 +2867,8 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                     "campaign entity buffer is null",
                 ));
             }
-            for (offset, entity) in entities.iter().skip(start).take(count).enumerate() {
-                unsafe {
-                    buffer
-                        .add(offset)
-                        .write_unaligned(campaign_entity_snapshot(entity))
-                };
+            for (offset, entity) in entities.drain(start..start + count).enumerate() {
+                unsafe { buffer.add(offset).write_unaligned(entity) };
             }
             write_output(
                 out_written,

@@ -49,8 +49,10 @@ namespace MagicCarpet.Native
             "6806c7204d17220ecc0430759f784aea8ee2ddb2";
         private const string Level2PackageHash =
             "dc8f973ee9a2f53863a2e2e3743b6fa4b9ef947d3ce0b27b79d3ba86de318b80";
+        // GOLDEN-CHANGE: source-backed rooted class-5 constructor TMAP choices
+        // were added; simulation/event/audio identity remains unchanged.
         private const string Level2ClosureHash =
-            "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc";
+            "5f1935977111a911f8c0b954214fe89d3e9e6fa949a37df21be7668800ee101e";
         private const string Level2OwnerManifestSchema =
             "mc2-owner-level-export/v5";
         private const string Level2PlayersComponentMagic = "MCP1";

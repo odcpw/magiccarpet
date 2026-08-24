@@ -101,6 +101,7 @@ namespace MagicCarpet.Native
         internal const byte Level1MissionLive = 6;
         internal const byte SessionTerrainLive = 7;
         internal const byte VillagerLive = 8;
+        internal const byte CampaignLive = 9;
         internal const byte Level1ExitPaletteNone = 0;
         internal const byte Level1ExitPaletteEntryFlash = 1;
         internal const byte Level1ExitPaletteBlack = 2;

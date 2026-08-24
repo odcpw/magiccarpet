@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import shutil
 import struct
 import tempfile
@@ -500,6 +501,105 @@ class Level2ClosureContractTests(unittest.TestCase):
         }
         self.assertIn("owner_data:DATA/MSPRD0-0.DAT", dynamic)
         self.assertNotIn("owner_data:DATA/MSPRN0-0.DAT", dynamic)
+
+    def test_folded_rooted_class5_constructor_textures_are_dynamic_dependencies(self) -> None:
+        self.assertEqual(
+            self.document["selectors"]["folded_rooted_class5_particle_parameters"],
+            [0, 3, 88, 219, 220],
+        )
+        dynamic = {
+            item["asset_id"]
+            for item in self.document["sets"]["dynamic_dependencies"]["assets"]
+        }
+        expected_selectors = {
+            *range(8, 11),
+            *range(14, 22),
+            *range(30, 38),
+            *range(138, 141),
+            158,
+        }
+        self.assertTrue(
+            {
+                f"owner_data:DATA/TMAPS0-0.DAT#{selector}"
+                for selector in expected_selectors
+            }.issubset(dynamic)
+        )
+        edge_selectors: dict[str, list[int]] = {}
+        for item in self.document["edges"]:
+            source = item["from"]
+            if not source.startswith("folded_rooted_class5_particle_parameter["):
+                continue
+            edge_selectors.setdefault(source, []).append(
+                int(item["to"].rsplit("#", 1)[1])
+            )
+        self.assertEqual(
+            {source: sorted(selectors) for source, selectors in edge_selectors.items()},
+            {
+                "folded_rooted_class5_particle_parameter[0]": [8, 9, 10],
+                "folded_rooted_class5_particle_parameter[3]": list(range(14, 22)),
+                "folded_rooted_class5_particle_parameter[88]": list(range(30, 38)),
+                "folded_rooted_class5_particle_parameter[219]": [138, 139, 140],
+                "folded_rooted_class5_particle_parameter[220]": [158],
+            },
+        )
+        edge_sources = set(edge_selectors)
+        self.assertEqual(
+            edge_sources,
+            {
+                "folded_rooted_class5_particle_parameter[0]",
+                "folded_rooted_class5_particle_parameter[3]",
+                "folded_rooted_class5_particle_parameter[88]",
+                "folded_rooted_class5_particle_parameter[219]",
+                "folded_rooted_class5_particle_parameter[220]",
+            },
+        )
+        self.assertTrue(
+            all(
+                f"folded_rooted_class5_particle_parameter[{parameter}]"
+                not in edge_sources
+                for parameter in (*range(89, 105), 195)
+            )
+        )
+
+    def test_folded_rooted_class5_tuple_drift_fails_closed(self) -> None:
+        expected = closure.LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[3]
+        closure.LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[3] = {
+            **expected,
+            "base_tmap": expected["base_tmap"] + 1,
+        }
+        try:
+            with self.assertRaisesRegex(
+                closure.ClosureError, "folded class-5 presentation tuple changed"
+            ):
+                closure.build_closure(
+                    LEVEL2_EXPORT, CATALOG, OWNER, TRACE_A, TRACE_B, "level2"
+                )
+        finally:
+            closure.LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[3] = expected
+
+    def test_level2_provenance_is_invariant_to_invocation_path(self) -> None:
+        absolute = closure.build_closure(
+            LEVEL2_EXPORT, CATALOG, OWNER, TRACE_A, TRACE_B, "level2"
+        )
+        previous = Path.cwd()
+        try:
+            os.chdir(TOOL_PATH.parent)
+            tool_relative = closure.build_closure(
+                Path("../generated/l2-debug3.fJ3PaM/level2"),
+                Path("../remc2-atlas/semantics/generated/owner-asset-catalog.json"),
+                Path("../remc2-native-runtime/CD_Files"),
+                TRACE_A,
+                TRACE_B,
+                "level2",
+            )
+        finally:
+            os.chdir(previous)
+        self.assertEqual(absolute["source"], tool_relative["source"])
+        self.assertEqual(absolute["closure_sha256"], tool_relative["closure_sha256"])
+        self.assertEqual(
+            absolute["source"]["level_export"]["path"],
+            "../generated/l2-debug3.fJ3PaM/level2",
+        )
 
     def test_day_closure_is_repeatable(self) -> None:
         again = closure.build_closure(

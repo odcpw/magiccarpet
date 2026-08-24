@@ -2983,6 +2983,29 @@ fn open_level2_campaign_handle_with_asset_cache(cache: &Path) -> u64 {
     handle
 }
 
+fn campaign_entities_public(handle: u64) -> Vec<McCampaignEntitySnapshotV2> {
+    let mut count = 0;
+    assert_eq!(
+        mc_native_campaign_entity_count(handle, &raw mut count),
+        MC_STATUS_OK
+    );
+    let mut rows = vec![McCampaignEntitySnapshotV2::default(); count as usize];
+    let mut written = 0;
+    assert_eq!(
+        mc_native_campaign_entities_copy(
+            handle,
+            0,
+            rows.as_mut_ptr(),
+            count,
+            struct_size::<McCampaignEntitySnapshotV2>(),
+            &raw mut written,
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(written, count);
+    rows
+}
+
 fn copy_tree(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).expect("create temporary cache directory");
     for entry in fs::read_dir(source).expect("read source cache directory") {

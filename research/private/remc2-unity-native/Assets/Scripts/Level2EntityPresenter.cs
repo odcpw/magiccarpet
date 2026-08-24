@@ -140,7 +140,12 @@ namespace MagicCarpet.Native
     internal enum Level2EntityFamily : byte
     {
         Goat = 1,
-        Villager = 2
+        Villager = 2,
+        Bee = 3,
+        Multipart = 4,
+        Archer = 5,
+        Model9 = 6,
+        Trader = 7
     }
 
     /// <summary>
@@ -199,7 +204,8 @@ namespace MagicCarpet.Native
     }
 
     /// <summary>
-    /// Presents the typed Level 2 Goat and ordinary Villager source rows.
+    /// Presents the typed Level 2 Goat, ordinary Villager, and admitted live
+    /// class-5 source rows.
     /// Every frame is validated before the registry is mutated. A malformed,
     /// stale, duplicate, or unbound frame clears the registry instead of
     /// leaving a prior Unity view or creating a placeholder.
@@ -218,6 +224,11 @@ namespace MagicCarpet.Native
         private const ushort VillagerParameterRelation = 100;
         private const byte Class5 = 5;
         private const byte GoatModel = 1;
+        private const byte BeeModel = 2;
+        private const byte MultipartModel = 3;
+        private const byte ArcherModel = 4;
+        private const byte Model9 = 9;
+        private const byte TraderModel = 14;
         private const byte VillagerModel = 13;
 
         private static readonly int[] Mode20YawLookup =
@@ -265,7 +276,7 @@ namespace MagicCarpet.Native
         internal Level2EntityPresenter(Transform parent)
         {
             root = new GameObject(
-                "Level 2 Goat and Villager entity presentation").transform;
+                "Level 2 Rust entity presentation").transform;
             ownsRoot = true;
             if (parent != null)
             {
@@ -479,7 +490,7 @@ namespace MagicCarpet.Native
             out List<Projection> projections)
         {
             projections = new List<Projection>(GoatCount +
-                                                Level2VillagerEntityIndices.Length);
+                                                Level2VillagerEntityIndices.Length + 16);
             if (entities == null || goats == null ||
                 entities.Length != EntityCount || goats.Length != GoatCount)
             {
@@ -555,7 +566,8 @@ namespace MagicCarpet.Native
                         selector,
                         goat.yaw,
                         SourceToUnity(goat.x, goat.y, goat.z),
-                        mirrored));
+                        mirrored,
+                        true));
             }
 
             for (var ordinal = 0; ordinal < GoatCount; ordinal++)
@@ -632,7 +644,8 @@ namespace MagicCarpet.Native
                         selector,
                         entity.yaw,
                         SourceToUnity(entity.x, entity.y, entity.z),
-                        mirrored));
+                        mirrored,
+                        true));
             }
 
             foreach (var entity in entities)
@@ -644,6 +657,53 @@ namespace MagicCarpet.Native
                 {
                     return false;
                 }
+            }
+
+            foreach (var entity in entities)
+            {
+                if (entity.authority != NativeSim.CampaignLive)
+                {
+                    continue;
+                }
+
+                if (entity.active > 1 ||
+                    entity.classId != Class5 ||
+                    entity.sourceId != entity.entityIndex ||
+                    entity.nextRelation != ushort.MaxValue ||
+                    entity.parameterRelation != ushort.MaxValue ||
+                    !TryClass5Sprite(
+                        entity.model,
+                        entity.action,
+                        out var family,
+                        out var renderParameter,
+                        out var baseTmap,
+                        out var logicalHeight,
+                        out var renderMode) ||
+                    !TryDirectionalSelection(
+                        renderMode,
+                        baseTmap,
+                        entity.yaw,
+                        cameraYaw,
+                        out var selector,
+                        out var mirrored))
+                {
+                    return false;
+                }
+
+                projections.Add(
+                    new Projection(
+                        family,
+                        generation,
+                        tick,
+                        entity.entityIndex,
+                        renderParameter,
+                        baseTmap,
+                        logicalHeight,
+                        selector,
+                        entity.yaw,
+                        SourceToUnity(entity.x, entity.y, entity.z),
+                        mirrored,
+                        entity.active != 0));
             }
 
             return true;
@@ -672,6 +732,111 @@ namespace MagicCarpet.Native
         private static bool KnownVillagerAction(byte action)
         {
             return action >= 104 && action <= 111;
+        }
+
+        private static bool TryClass5Sprite(
+            byte model,
+            byte action,
+            out Level2EntityFamily family,
+            out ushort renderParameter,
+            out int baseTmap,
+            out int logicalHeight,
+            out byte renderMode)
+        {
+            switch (model)
+            {
+                case BeeModel when action >= 16 && action <= 23:
+                    family = Level2EntityFamily.Bee;
+                    renderParameter = 3;
+                    baseTmap = 14;
+                    logicalHeight = 150;
+                    renderMode = 17;
+                    return true;
+                case MultipartModel when action >= 25 && action <= 31:
+                    family = Level2EntityFamily.Multipart;
+                    renderParameter = 88;
+                    baseTmap = 30;
+                    logicalHeight = 180;
+                    renderMode = 17;
+                    return true;
+                case ArcherModel when action >= 33 && action <= 39:
+                    family = Level2EntityFamily.Archer;
+                    renderParameter = 0;
+                    baseTmap = 8;
+                    logicalHeight = 250;
+                    renderMode = 20;
+                    return true;
+                case Model9 when action == 72 || action == 73:
+                    family = Level2EntityFamily.Model9;
+                    renderParameter = 220;
+                    baseTmap = 158;
+                    logicalHeight = 125;
+                    renderMode = 0;
+                    return true;
+                case TraderModel when action >= 112 && action <= 119:
+                    family = Level2EntityFamily.Trader;
+                    renderParameter = 219;
+                    baseTmap = 138;
+                    logicalHeight = 250;
+                    renderMode = 20;
+                    return true;
+                default:
+                    family = default;
+                    renderParameter = 0;
+                    baseTmap = 0;
+                    logicalHeight = 0;
+                    renderMode = 0;
+                    return false;
+            }
+        }
+
+        private static bool TryDirectionalSelection(
+            byte renderMode,
+            int baseTmap,
+            short entityYaw,
+            short cameraYaw,
+            out int selector,
+            out bool mirrored)
+        {
+            switch (renderMode)
+            {
+                case 0:
+                    selector = baseTmap;
+                    mirrored = false;
+                    return true;
+                case 17:
+                    Mode17Selection(
+                        baseTmap,
+                        entityYaw,
+                        cameraYaw,
+                        out selector,
+                        out mirrored);
+                    return true;
+                case 20:
+                    Mode20Selection(
+                        baseTmap,
+                        entityYaw,
+                        cameraYaw,
+                        out selector,
+                        out mirrored);
+                    return true;
+                default:
+                    selector = 0;
+                    mirrored = false;
+                    return false;
+            }
+        }
+
+        private static void Mode17Selection(
+            int baseTmap,
+            short entityYaw,
+            short cameraYaw,
+            out int selector,
+            out bool mirrored)
+        {
+            var orientation = ((((int)entityYaw - (ushort)cameraYaw) >> 3) & 0xf0) >> 4;
+            selector = baseTmap + (orientation < 8 ? orientation : 15 - orientation);
+            mirrored = orientation >= 8;
         }
 
         private static bool TryVillagerSprite(
@@ -924,7 +1089,7 @@ namespace MagicCarpet.Native
             view.Visual.localScale = scale;
             view.Filter.sharedMesh = GetQuad(projection.Mirrored);
             view.Renderer.sharedMaterial = materials[projection.Selector];
-            view.Renderer.enabled = true;
+            view.Renderer.enabled = projection.Visible;
             view.Presentation = new Level2EntityPresentation(
                 projection.Family,
                 projection.Generation,
@@ -1139,7 +1304,8 @@ namespace MagicCarpet.Native
                 int selector,
                 short sourceYaw,
                 Vector3 sourcePosition,
-                bool mirrored)
+                bool mirrored,
+                bool visible)
             {
                 Family = family;
                 Generation = generation;
@@ -1152,6 +1318,7 @@ namespace MagicCarpet.Native
                 SourceYaw = sourceYaw;
                 SourcePosition = sourcePosition;
                 Mirrored = mirrored;
+                Visible = visible;
             }
 
             internal Level2EntityFamily Family { get; }
@@ -1165,6 +1332,7 @@ namespace MagicCarpet.Native
             internal short SourceYaw { get; }
             internal Vector3 SourcePosition { get; }
             internal bool Mirrored { get; }
+            internal bool Visible { get; }
         }
 
         private sealed class View

@@ -1568,6 +1568,47 @@ fn level2_campaign_public_family0_fireball_reaches_authored_bee_mailbox() {
     }
     let bee = read_bee().expect("action-17 production Bee");
     assert_eq!(bee.action, 17);
+    let projected_bee = campaign_entities_public(handle)[119];
+    assert_eq!(
+        (
+            projected_bee.entity_index,
+            projected_bee.source_id,
+            projected_bee.authority,
+            projected_bee.active,
+            projected_bee.class_id,
+            projected_bee.model,
+            projected_bee.action,
+            projected_bee.phase,
+            projected_bee.x,
+            projected_bee.y,
+            projected_bee.z,
+        ),
+        (
+            bee.source_entity_index,
+            bee.entity_id,
+            MC_AUTHORITY_CAMPAIGN_LIVE,
+            1,
+            bee.source_class,
+            bee.model,
+            bee.action,
+            bee.source_byte_3e,
+            bee.position.x,
+            bee.position.y,
+            bee.position.z,
+        ),
+        "the existing common entity copy must expose the one live folded Bee row"
+    );
+    assert_eq!(
+        (
+            projected_bee.yaw,
+            projected_bee.pitch,
+            projected_bee.actual_speed,
+        ),
+        (bee.yaw, bee.pitch, bee.actual_speed)
+    );
+    assert_eq!(projected_bee.next_relation, u16::MAX);
+    assert_eq!(projected_bee.parameter_relation, u16::MAX);
+    assert_eq!(projected_bee.reserved, [0; 4]);
 
     let (entity_fov, player_entity_index) = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
@@ -1635,6 +1676,11 @@ fn level2_campaign_public_family0_fireball_reaches_authored_bee_mailbox() {
     assert!(collision_events.iter().any(|event| {
         event.kind == 8 && event.family == 41 && event.source_slot == projectile.source_entity_index
     }));
+    let pending_projection = campaign_entities_public(handle)[119];
+    assert_eq!(pending_projection.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
+    assert_eq!(pending_projection.active, 1);
+    assert_eq!(pending_projection.action, pending.action);
+    assert_eq!(pending_projection.phase, pending.source_byte_3e);
 
     let (_, _) = step_level2_campaign_public(handle, input);
     let consumed = read_bee().expect("target Bee remains public after mailbox consume");
@@ -1646,6 +1692,67 @@ fn level2_campaign_public_family0_fireball_reaches_authored_bee_mailbox() {
     assert_eq!(consumed.pending_damage, 250);
     assert_eq!(consumed.pending_attacker_entity_index, 0);
     assert_eq!(consumed.damage_attacker_entity_index, player_entity_index);
+    let consumed_projection = campaign_entities_public(handle)[119];
+    assert_eq!(consumed_projection.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
+    assert_eq!(consumed_projection.active, 1);
+    assert_eq!(consumed_projection.action, 18);
+    assert_eq!(consumed_projection.phase, consumed.source_byte_3e);
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
+fn level2_campaign_common_entities_project_remaining_live_class5_rows() {
+    let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+    with_campaign_session_mut(handle, |session| {
+        let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "class-5 projection proof requires a Level 2 campaign session",
+            ));
+        };
+        reset
+            .set_level2_selected_objective_stage_state(2)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))
+    })
+    .expect("select the ordinary group-22 activation sentinel");
+    let _ = step_level2_campaign_public(
+        handle,
+        McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: valid_command(),
+            player_slot: 0,
+            speed_index: 0,
+            ..McCampaignStepInputV2::default()
+        },
+    );
+
+    let sources = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "class-5 projection proof requires a Level 2 campaign session",
+            ));
+        };
+        Ok(reset.economy().authored_class5().to_vec())
+    })
+    .expect("read ordinary class-5 roots");
+    let rows = campaign_entities_public(handle);
+    assert_eq!(sources.len(), 7);
+    for source in sources {
+        let row = rows[usize::from(source.source_entity_index)];
+        assert_eq!(row.entity_index, source.source_entity_index);
+        assert_eq!(row.source_id, source.source_entity_index);
+        assert_eq!(row.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
+        assert_eq!(row.active, u8::from(source.active && source.drawing_enabled));
+        assert_eq!((row.class_id, row.model, row.action), (5, source.model, source.action));
+        assert_eq!(row.phase, source.source_byte_3e);
+        assert_eq!((row.x, row.y, row.z), (source.position.x, source.position.y, source.position.z));
+        assert_eq!((row.yaw, row.pitch, row.fov), (source.yaw, source.pitch, source.fov));
+        assert_eq!(row.actual_speed, source.actual_speed);
+        assert_eq!(row.reserved, [0; 4]);
+    }
     assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
 }
 

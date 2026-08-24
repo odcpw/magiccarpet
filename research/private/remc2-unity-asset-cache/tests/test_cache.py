@@ -1749,8 +1749,23 @@ class Level2DayMaterialTests(unittest.TestCase):
         self.assertEqual(descriptor["tablesd"]["bytes"], 83456)
         self.assertEqual(descriptor["clrd"]["entries"], 4096)
         self.assertEqual(descriptor["bl32n"]["tile_count"], 152)
-        self.assertEqual(len(descriptor["tmaps0"]["selectors"]), 129)
+        self.assertEqual(len(descriptor["tmaps0"]["selectors"]), 149)
+        self.assertTrue(
+            {
+                *range(8, 11),
+                *range(14, 22),
+                *range(30, 38),
+                *range(138, 141),
+                158,
+            }.issubset(descriptor["tmaps0"]["selectors"])
+        )
         self.assertEqual(descriptor["gpu_ready"]["indexed_format"], "R8_UNORM")
+        with self.assertRaisesRegex(cache.CacheError, "closure binding mismatch"):
+            cache.validate_day_material_cache(
+                self.first,
+                cache.EXPECTED_LEVEL2_PACKAGE,
+                "bee3b7a4fd585d6631523b87217978cbfa58ed08cd494fa7921486053de1dccc",
+            )
 
     def test_material_manifest_tamper_is_rejected(self) -> None:
         path = self.first / "manifest.json"

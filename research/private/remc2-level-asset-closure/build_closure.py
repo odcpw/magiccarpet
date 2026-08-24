@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import struct
 from pathlib import Path
 import sys
@@ -20,6 +21,7 @@ from typing import Any, Iterable
 
 
 TRACE_TOOL_ROOT = Path(__file__).resolve().parents[1] / "remc2-frame-trace"
+TOOL_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(TRACE_TOOL_ROOT))
 from trace_format import parse_trace, qualify_trace  # noqa: E402
 
@@ -43,6 +45,18 @@ ENTITY_CLASS_OFFSET = 67
 ENTITY_MODEL_OFFSET = 68
 ENTITY_BUILD_INDEX_OFFSET = 74
 ENTITY_PARTICLE_PARAMETER_OFFSET = 94
+# These source constructors are admitted by the folded Level 2 class-5
+# scheduler even when their rows are born after the exported reset snapshot.
+# The parameter/base/mode triples are pinned by the remc2 constructors and the
+# exported presentation table; adding them to the dynamic closure prevents the
+# client cache from silently stopping at reset-time actors.
+LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS = {
+    0: {"family": "archer", "base_tmap": 8, "render_mode": 20},
+    3: {"family": "bee", "base_tmap": 14, "render_mode": 17},
+    88: {"family": "multipart", "base_tmap": 30, "render_mode": 17},
+    219: {"family": "trader", "base_tmap": 138, "render_mode": 20},
+    220: {"family": "model9", "base_tmap": 158, "render_mode": 0},
+}
 OBJECTIVE_INDEX_BASES = (
     0x30, 0x36, 0x3C, 0x42, 0x45, 0x48, 0x4D, 0x4F, 0x56, 0x5C,
     0x61, 0x66, 0x69, 0x6E, 0x73, 0x76, 0x7C, 0x7E, 0x83, 0x85,
@@ -60,6 +74,11 @@ D4750 = (
 
 class ClosureError(ValueError):
     """Input or join failure that makes a deterministic closure unsafe."""
+
+
+def canonical_provenance_path(path: Path) -> str:
+    """Serialize local inputs relative to this tool, independent of caller cwd."""
+    return Path(os.path.relpath(path.resolve(), TOOL_ROOT)).as_posix()
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -1051,6 +1070,35 @@ def build_level2_closure(
         if strategy not in {"base", "base_transparent"}:
             for choice in render_choice_candidates(base, mode, group_indices):
                 dynamic_assets.append(catalog.tmap_asset(catalog.tmaps[choice]))
+    for parameter_index, expected in sorted(
+        LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS.items()
+    ):
+        if parameter_index >= len(presentation["particles"]):
+            raise ClosureError(
+                f"folded class-5 particle parameter is out of bounds: {parameter_index}"
+            )
+        parameter = presentation["particles"][parameter_index]
+        base = parameter["base_tmap"]
+        mode = parameter["render_mode"]
+        if (base, mode) != (expected["base_tmap"], expected["render_mode"]):
+            raise ClosureError(
+                f"folded class-5 presentation tuple changed: {expected['family']}"
+            )
+        members = catalog.tmap_group(base)
+        group_indices = [member["index"] for member in members]
+        for choice in render_choice_candidates(base, mode, group_indices):
+            asset = catalog.tmap_asset(catalog.tmaps[choice])
+            dynamic_assets.append(asset)
+            edges.append(
+                edge(
+                    f"folded_rooted_class5_particle_parameter[{parameter_index}]",
+                    asset["asset_id"],
+                    f"{expected['family']} constructor TMAP render choice",
+                    f"presentation.bin.particles[{parameter_index}]",
+                    "proven",
+                    "EventsFunctions.cpp:33751-34135; GameRenderOriginal.cpp render-mode dispatch",
+                )
+            )
     footprints = parse_build_footprints(owner_root, entities["active_build_indices"])
     scene_assets.extend(footprints)
     for asset in footprints:
@@ -1155,13 +1203,13 @@ def build_level2_closure(
         },
         "source": {
             "level_export": {
-                "path": str(export_dir),
+                "path": canonical_provenance_path(export_dir),
                 "package_sha256": export_manifest["package_sha256"],
                 **owner_identity,
                 "files": source_files,
             },
             "owner_catalog": {
-                "path": str(catalog_path),
+                "path": canonical_provenance_path(catalog_path),
                 "catalog_sha256": catalog_data.get("catalog_sha256"),
                 "file_sha256": sha256_file(catalog_path),
             },
@@ -1179,6 +1227,9 @@ def build_level2_closure(
             "terrain_graphics_flags": terrain_flags,
             "objective_language_selector": objective_selector,
             "active_particle_parameters": entities["active_particle_parameters"],
+            "folded_rooted_class5_particle_parameters": sorted(
+                LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS
+            ),
             "active_build_indices": entities["active_build_indices"],
             "audio": {"sound_bank": selectors["sound_bank"], "music_observation": "not_supplied"},
         },
