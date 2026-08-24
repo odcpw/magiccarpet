@@ -31,6 +31,7 @@ use std::{
 
 use campaign_facade::{
     CampaignFacade, InternalCampaignAdapter, InternalCampaignOpen, SealedLevel1Adapter,
+    campaign_effect_snapshot,
 };
 use sha2::{Digest, Sha256};
 #[cfg(test)]
@@ -40,6 +41,11 @@ use sim_core::{
     POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING, PlayerCommand, Position, PositionalSoundCommand,
     StepEvidence,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
+    campaign::{
+        CampaignSession as DescriptorCampaignSession,
+        journal::{EffectCursor, EffectPageError},
+        spec::CampaignSelection,
+    },
     classic_hd::{ClassicHdFrameWriter, ClassicHdRenderProfile, byte_hash},
     classic_hd_raster::rasterize_classic_hd_terrain,
     classic_hd_render_graph::{

@@ -2076,3 +2076,724 @@ fn campaign_day_indexed_frame_is_generation_bound_complete_and_fail_closed() {
         MC_STATUS_OK
     );
 }
+
+fn open_cf12_descriptor_campaign() -> u64 {
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+    let cache = qualified_level2_day_owner_cache();
+    let package = package.to_string_lossy();
+    let cache = cache.to_string_lossy();
+    let selection = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 2,
+        internal_level: 1,
+        map_type: 0,
+        ..McCampaignSelectionV2::default()
+    };
+    let mut handle = 0;
+    assert_eq!(
+        mc_native_campaign_session_open_with_asset_cache(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            cache.as_ptr(),
+            cache.len() as u32,
+            &raw const selection,
+            &raw mut handle,
+        ),
+        MC_STATUS_OK,
+        "{}",
+        LAST_ERROR.with(|value| value.borrow().clone())
+    );
+    assert_ne!(handle, 0);
+    handle
+}
+
+fn cf12_frame_query(generation: u64, tick: u64) -> McPresentationFrameQueryV2 {
+    McPresentationFrameQueryV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McPresentationFrameQueryV2>(),
+        generation,
+        tick,
+        presentation_revision: tick,
+        viewport_width: 320,
+        viewport_height: 200,
+        screen_stride: 320,
+        vga_resolution: 1,
+        ..McPresentationFrameQueryV2::default()
+    }
+}
+
+fn cf12_world_info(handle: u64) -> McCampaignWorldInfoV2 {
+    let mut info = McCampaignWorldInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_world_info(
+            handle,
+            &raw mut info,
+            struct_size::<McCampaignWorldInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    info
+}
+
+#[test]
+fn cf12_generic_campaign_lifecycle_journal_and_frame_route() {
+    const INDEX_BYTES: usize = 320 * 200;
+    const EFFECT_CAPACITY: usize = 16_384;
+
+    let handle = open_cf12_descriptor_campaign();
+    let initial_world = cf12_world_info(handle);
+    assert_eq!(
+        (
+            initial_world.external_level,
+            initial_world.internal_level,
+            initial_world.map_type,
+        ),
+        (2, 1, 0)
+    );
+
+    let initial_effect_query = McEventQueryV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McEventQueryV2>(),
+        generation: 0,
+        cursor: 0,
+        reserved: [0; 4],
+    };
+    let mut initial_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const initial_effect_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut initial_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(
+        (
+            initial_batch.generation,
+            initial_batch.next_cursor,
+            initial_batch.event_head,
+            initial_batch.written,
+            initial_batch.has_more,
+        ),
+        (0, 0, 0, 0, 0)
+    );
+
+    let initial_frame_query = cf12_frame_query(0, 0);
+    let mut initial_indices = vec![0; INDEX_BYTES];
+    let mut initial_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const initial_frame_query,
+            initial_indices.as_mut_ptr(),
+            initial_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut initial_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK,
+        "{}",
+        LAST_ERROR.with(|value| value.borrow().clone())
+    );
+    assert_eq!(
+        (
+            initial_frame.generation,
+            initial_frame.tick,
+            initial_frame.presentation_revision,
+            initial_frame.width,
+            initial_frame.height,
+            initial_frame.stride,
+            initial_frame.index_bytes,
+            initial_frame.provenance_bytes,
+            initial_frame.newly_committed,
+        ),
+        (0, 0, 0, 320, 200, 320, INDEX_BYTES as u32, 0, 1)
+    );
+    assert_ne!(initial_frame.index_hash, 0);
+    assert_eq!(byte_hash(&initial_indices), initial_frame.index_hash);
+    assert_eq!(
+        initial_frame.flags,
+        MC_TERRAIN_FRAME_ISOLATED_SKY_TERRAIN
+            | MC_TERRAIN_FRAME_SKY_SEEDED
+            | MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED
+    );
+    assert_eq!(
+        initial_frame.flags
+            & (MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE
+                | MC_PRESENTATION_FRAME_HAS_PROVENANCE
+                | MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED
+                | MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE
+                | MC_PRESENTATION_FRAME_LIGHTING_COMPLETE),
+        0,
+        "the generic bridge must not overclaim the retained Day terrain frame"
+    );
+
+    let mut repeated_indices = vec![0; INDEX_BYTES];
+    let mut repeated_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const initial_frame_query,
+            repeated_indices.as_mut_ptr(),
+            repeated_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut repeated_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(repeated_indices, initial_indices);
+    assert_eq!(repeated_frame.index_hash, initial_frame.index_hash);
+    assert_eq!(repeated_frame.newly_committed, 0);
+
+    let (step, legacy_events, legacy_event_count) = step_level2_campaign_once(handle, 0);
+    assert_eq!((step.generation, step.revision), (0, 1));
+    assert!(legacy_event_count > 0);
+    assert_eq!(legacy_events[0].generation, 0);
+
+    let mut effects = vec![McEventV2::default(); EFFECT_CAPACITY];
+    let mut effect_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const initial_effect_query,
+            effects.as_mut_ptr(),
+            effects.len() as u32,
+            struct_size::<McEventV2>(),
+            &raw mut effect_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    let effects = &effects[..effect_batch.written as usize];
+    assert!(!effects.is_empty());
+    assert_eq!(effect_batch.next_cursor, effect_batch.event_head);
+    assert_eq!(effect_batch.has_more, 0);
+    for (index, effect) in effects.iter().enumerate() {
+        assert_eq!(effect.generation, 0);
+        assert_eq!(effect.sequence, index as u64 + 1);
+        assert_eq!(effect.state_hash, step.state_hash);
+        assert!([
+            campaign_facade::MC_CAMPAIGN_EFFECT_DISPATCH,
+            campaign_facade::MC_CAMPAIGN_EFFECT_SHARED_SPELL,
+            campaign_facade::MC_CAMPAIGN_EFFECT_FLIGHT,
+            campaign_facade::MC_CAMPAIGN_EFFECT_SCENE_CHANGE,
+        ]
+        .contains(&effect.kind));
+    }
+
+    let stepped_frame_query = cf12_frame_query(0, 1);
+    let mut stepped_indices = vec![0; INDEX_BYTES];
+    let mut stepped_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const stepped_frame_query,
+            stepped_indices.as_mut_ptr(),
+            stepped_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut stepped_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!((stepped_frame.tick, stepped_frame.newly_committed), (1, 1));
+
+    let mut entity_count = 0;
+    assert_eq!(
+        mc_native_campaign_entity_count(handle, &raw mut entity_count),
+        MC_STATUS_OK,
+        "the retained Level 2 adapter must observe the same descriptor handle"
+    );
+    assert_eq!(entity_count, initial_world.entity_count);
+
+    assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+    let mut stale_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const initial_effect_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut stale_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_GENERATION_MISMATCH
+    );
+    let reset_effect_query = McEventQueryV2 {
+        generation: 1,
+        ..initial_effect_query
+    };
+    let mut reset_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const reset_effect_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut reset_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!((reset_batch.generation, reset_batch.written), (1, 0));
+
+    let reset_frame_query = cf12_frame_query(1, 0);
+    let mut reset_indices = vec![0; INDEX_BYTES];
+    let mut reset_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const reset_frame_query,
+            reset_indices.as_mut_ptr(),
+            reset_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut reset_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!((reset_frame.generation, reset_frame.tick), (1, 0));
+    assert_eq!(reset_frame.index_hash, initial_frame.index_hash);
+    assert_eq!(reset_indices, initial_indices);
+    assert_eq!(cf12_world_info(handle).reset_state_hash, initial_world.reset_state_hash);
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
+fn cf12_generic_campaign_abi_failures_are_atomic() {
+    const INDEX_BYTES: usize = 320 * 200;
+    const EFFECT_CAPACITY: usize = 16_384;
+
+    let expired = campaign_abi::campaign_effect_page_error(EffectPageError::ExpiredCursor {
+        first_available: 7,
+        requested: 6,
+    });
+    assert_eq!(expired.status, MC_STATUS_CURSOR_EXPIRED);
+
+    let handle = open_cf12_descriptor_campaign();
+    let initial_world = cf12_world_info(handle);
+    let step_input = McCampaignStepInputV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignStepInputV2>(),
+        generation: 0,
+        command: valid_command(),
+        player_slot: 0,
+        player_x: 123,
+        player_y: 456,
+        player_z: 7,
+        ..McCampaignStepInputV2::default()
+    };
+    let mut failed_snapshot = McCampaignStepSnapshotV2 {
+        generation: u64::MAX,
+        state_hash: u64::MAX,
+        ..McCampaignStepSnapshotV2::default()
+    };
+    let failed_snapshot_before = failed_snapshot;
+    let mut failed_event_count = 99;
+    assert_eq!(
+        mc_native_campaign_session_step(
+            handle,
+            &raw const step_input,
+            &raw mut failed_snapshot,
+            struct_size::<McCampaignStepSnapshotV2>(),
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McCampaignEventV2>(),
+            &raw mut failed_event_count,
+        ),
+        MC_STATUS_BUFFER_TOO_SMALL
+    );
+    assert_eq!(failed_snapshot, failed_snapshot_before);
+    assert_eq!(failed_event_count, 0);
+    assert_eq!(cf12_world_info(handle), initial_world);
+
+    let empty_query = McEventQueryV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McEventQueryV2>(),
+        generation: 0,
+        cursor: 0,
+        reserved: [0; 4],
+    };
+    let mut empty_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const empty_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut empty_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(empty_batch.written, 0, "failed step must not append effects");
+
+    let (step, _, _) = step_level2_campaign_once(handle, 0);
+    let valid_query = empty_query;
+    let mut sentinel_batch = McEventBatchV2 {
+        generation: u64::MAX,
+        next_cursor: u64::MAX,
+        event_head: u64::MAX,
+        written: u32::MAX,
+        ..McEventBatchV2::default()
+    };
+    let sentinel_before = sentinel_batch;
+    let mut bad_version = valid_query;
+    bad_version.abi_version += 1;
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const bad_version,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_UNSUPPORTED_VERSION
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_NULL_POINTER
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const valid_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>() - 1,
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_STRUCT_TOO_SMALL
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const valid_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>() - 1,
+        ),
+        MC_STATUS_STRUCT_TOO_SMALL
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    let mut short_query = valid_query;
+    short_query.struct_size -= 1;
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const short_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_STRUCT_TOO_SMALL
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    let mut reserved_query = valid_query;
+    reserved_query.reserved[2] = 1;
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const reserved_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_RESERVED_NONZERO
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    let future_query = McEventQueryV2 {
+        cursor: u64::MAX,
+        ..valid_query
+    };
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const future_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_BOUNDS
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const valid_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_BUFFER_TOO_SMALL
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const valid_query,
+            std::ptr::null_mut(),
+            EFFECT_CAPACITY as u32,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_NULL_POINTER
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            u64::MAX,
+            &raw const valid_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_UNKNOWN_HANDLE
+    );
+    assert_eq!(sentinel_batch, sentinel_before);
+
+    let mut query_storage = vec![0_u8; size_of::<McEventQueryV2>() + 1];
+    let unaligned_query = unsafe { query_storage.as_mut_ptr().add(1).cast::<McEventQueryV2>() };
+    unsafe { unaligned_query.write_unaligned(valid_query) };
+    let mut event_storage = vec![0_u8; size_of::<McEventV2>() * EFFECT_CAPACITY + 1];
+    let unaligned_events = unsafe { event_storage.as_mut_ptr().add(1).cast::<McEventV2>() };
+    let mut batch_storage = vec![0_u8; size_of::<McEventBatchV2>() + 1];
+    let unaligned_batch = unsafe { batch_storage.as_mut_ptr().add(1).cast::<McEventBatchV2>() };
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            unaligned_query,
+            unaligned_events,
+            EFFECT_CAPACITY as u32,
+            struct_size::<McEventV2>(),
+            unaligned_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    let unaligned_batch = unsafe { unaligned_batch.read_unaligned() };
+    assert!(unaligned_batch.written > 0);
+    let first_unaligned_event = unsafe { unaligned_events.read_unaligned() };
+    assert_eq!((first_unaligned_event.sequence, first_unaligned_event.state_hash), (1, step.state_hash));
+
+    let frame_query = cf12_frame_query(0, 1);
+    let mut short_indices = vec![0xa5; INDEX_BYTES - 1];
+    let mut frame_info = McPresentationFrameInfoV2 {
+        generation: u64::MAX,
+        index_hash: u64::MAX,
+        ..McPresentationFrameInfoV2::default()
+    };
+    let frame_info_before = frame_info;
+    let mut versioned_frame_query = frame_query;
+    versioned_frame_query.abi_version += 1;
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const versioned_frame_query,
+            std::ptr::null_mut(),
+            INDEX_BYTES as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut frame_info,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_UNSUPPORTED_VERSION
+    );
+    assert_eq!(frame_info, frame_info_before);
+    let mut reserved_frame_query = frame_query;
+    reserved_frame_query.reserved[0] = 1;
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const reserved_frame_query,
+            std::ptr::null_mut(),
+            INDEX_BYTES as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut frame_info,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_RESERVED_NONZERO
+    );
+    assert_eq!(frame_info, frame_info_before);
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const frame_query,
+            std::ptr::null_mut(),
+            INDEX_BYTES as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut frame_info,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_NULL_POINTER
+    );
+    assert_eq!(frame_info, frame_info_before);
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const frame_query,
+            short_indices.as_mut_ptr(),
+            short_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut frame_info,
+            struct_size::<McPresentationFrameInfoV2>() - 1,
+        ),
+        MC_STATUS_STRUCT_TOO_SMALL
+    );
+    assert_eq!(frame_info, frame_info_before);
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const frame_query,
+            short_indices.as_mut_ptr(),
+            short_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut frame_info,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_BUFFER_TOO_SMALL
+    );
+    assert_eq!(short_indices, vec![0xa5; INDEX_BYTES - 1]);
+    assert_eq!(frame_info, frame_info_before);
+    let mut bad_frame_query = frame_query;
+    bad_frame_query.menu_overlay = 1;
+    let mut good_indices = vec![0x5a; INDEX_BYTES];
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const bad_frame_query,
+            good_indices.as_mut_ptr(),
+            good_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut frame_info,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(good_indices, vec![0x5a; INDEX_BYTES]);
+    assert_eq!(frame_info, frame_info_before);
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const frame_query,
+            good_indices.as_mut_ptr(),
+            good_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut frame_info,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(frame_info.newly_committed, 1, "failed copies must not commit the frame");
+    assert_eq!(byte_hash(&good_indices), frame_info.index_hash);
+
+    assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+    let stale_frame_before = frame_info;
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const frame_query,
+            good_indices.as_mut_ptr(),
+            good_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut frame_info,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_GENERATION_MISMATCH
+    );
+    assert_eq!(frame_info, stale_frame_before);
+    let stale_event_before = sentinel_batch;
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const valid_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut sentinel_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_GENERATION_MISMATCH
+    );
+    assert_eq!(sentinel_batch, stale_event_before);
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+    let cache = qualified_level2_day_owner_cache();
+    let package = package.to_string_lossy();
+    let cache = cache.to_string_lossy();
+    let mismatched_selection = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 1,
+        internal_level: 0,
+        map_type: 1,
+        ..McCampaignSelectionV2::default()
+    };
+    let mut mismatched_handle = u64::MAX;
+    assert_eq!(
+        mc_native_campaign_session_open_with_asset_cache(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            cache.as_ptr(),
+            cache.len() as u32,
+            &raw const mismatched_selection,
+            &raw mut mismatched_handle,
+        ),
+        MC_STATUS_VALIDATION_FAILED
+    );
+    assert_eq!(mismatched_handle, 0);
+}

@@ -219,15 +219,67 @@ pub(super) fn with_projection_session_mut<T>(
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+pub(super) enum CampaignLevel2Authority {
+    Legacy(Level2ResetSession),
+    Descriptor(DescriptorCampaignSession),
+}
+
+impl CampaignLevel2Authority {
+    fn descriptor(&self) -> AbiResult<&DescriptorCampaignSession> {
+        match self {
+            Self::Descriptor(session) => Ok(session),
+            Self::Legacy(_) => Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "generic campaign observation requires a descriptor-backed session",
+            )),
+        }
+    }
+
+    fn reset_authority(&mut self) {
+        match self {
+            Self::Legacy(session) => session.reset(),
+            Self::Descriptor(session) => session.reset(),
+        }
+    }
+
+    fn step_authority(&mut self, command: PlayerCommand, speed_index: u8) -> Vec<StepEvidence> {
+        match self {
+            Self::Legacy(session) => session.step_outer_turn(command, speed_index),
+            Self::Descriptor(session) => session.step(command, speed_index),
+        }
+    }
+}
+
+impl std::ops::Deref for CampaignLevel2Authority {
+    type Target = Level2ResetSession;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Legacy(session) => session,
+            Self::Descriptor(session) => session.level2_compatibility(),
+        }
+    }
+}
+
+impl std::ops::DerefMut for CampaignLevel2Authority {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Legacy(session) => session,
+            Self::Descriptor(session) => session.level2_compatibility_mut(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(super) enum CampaignSessionKind {
     Level1 {
         world: Arc<NativeWorld>,
     },
     Level2 {
         inspection: Arc<NativeWorldInspection>,
-        reset: Level2ResetSession,
-        day_frame_assets: Option<DayIndexedFrameAssets>,
+        reset: CampaignLevel2Authority,
+        day_frame_assets: Option<Arc<DayIndexedFrameAssets>>,
         day_frame_state: DayIndexedFrameState,
     },
 }
@@ -333,11 +385,14 @@ impl CampaignDayMusicLifecycle {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct CampaignSessionRecord {
     pub(super) kind: CampaignSessionKind,
     pub(super) generation: u64,
     pub(super) day_music: Option<CampaignDayMusicLifecycle>,
+    /// Transport metadata needed by the frozen `McEventV2.state_hash` field.
+    /// Keys are zero-based canonical EffectJournal sequences.
+    pub(super) effect_state_hashes: BTreeMap<u64, u64>,
 }
 
 #[derive(Default)]
@@ -553,60 +608,107 @@ pub(super) fn open_campaign_session(
             "package_dir must be non-empty",
         ));
     }
-    let expected = sim_core::mission_content::MissionContentProfile::from_metadata(
-        selection.external_level,
-        selection.internal_level,
-        selection.map_type,
-    )
-    .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-    let session = if expected.is_level2() {
-        let inspection = match asset_cache_path.as_deref() {
-            Some(cache_root) => {
-                let root = Path::new(cache_root);
-                if root.join("components/gameplay/manifest.json").is_file() {
-                    NativeWorld::inspect_level2_with_owner_cache(
-                        &package,
-                        root.join("components/gameplay"),
-                    )
-                } else {
-                    NativeWorld::inspect_level2(&package)
-                }
-            }
-            None => NativeWorld::inspect_level2(&package),
+    let package_root = Path::new(&package);
+    let descriptor_backed = package_root.join("campaign-definition.json").is_file();
+    let session = if descriptor_backed {
+        let campaign_selection = CampaignSelection {
+            external_level: selection.external_level,
+            internal_level: selection.internal_level,
+            map_type_id: selection.map_type,
+        };
+        let gameplay_cache = asset_cache_path.as_deref().and_then(|cache_root| {
+            let root = Path::new(cache_root);
+            root.join("components/gameplay/manifest.json")
+                .is_file()
+                .then(|| root.join("components/gameplay"))
+        });
+        let mut campaign = match gameplay_cache {
+            Some(cache_root) => DescriptorCampaignSession::open_with_owner_cache(
+                package_root,
+                cache_root,
+                campaign_selection,
+            ),
+            None => DescriptorCampaignSession::open(package_root, campaign_selection),
         }
         .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-        let mut reset = inspection
-            .level2_reset_session()
-            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-        reset.select_level2_campaign_entry_stage();
-        let day_frame_assets = load_optional_level2_day_frame_assets(asset_cache_path.as_deref())?;
+        campaign
+            .level2_compatibility_mut()
+            .select_level2_campaign_entry_stage();
+        let generation = campaign.generation();
+        let inspection = Arc::new(campaign.inspection().clone());
+        let day_frame_assets =
+            load_optional_level2_day_frame_assets(asset_cache_path.as_deref())?.map(Arc::new);
         let day_music = load_optional_level2_day_music(asset_cache_path.as_deref())?;
         CampaignSessionRecord {
             kind: CampaignSessionKind::Level2 {
-                inspection: Arc::new(inspection),
-                reset,
+                inspection,
+                reset: CampaignLevel2Authority::Descriptor(campaign),
                 day_frame_assets,
-                day_frame_state: DayIndexedFrameState::new(0),
+                day_frame_state: DayIndexedFrameState::new(generation),
             },
-            generation: 0,
+            generation,
             day_music,
+            effect_state_hashes: BTreeMap::new(),
         }
     } else {
-        let closure = utf8_input(closure_path, closure_path_len, "closure_path")?;
-        if closure.is_empty() {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Level 1 campaign sessions require closure_path",
-            ));
-        }
-        let world = NativeWorld::load(&package, &closure)
+        let expected = sim_core::mission_content::MissionContentProfile::from_metadata(
+            selection.external_level,
+            selection.internal_level,
+            selection.map_type,
+        )
+        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+        if expected.is_level2() {
+            let inspection = match asset_cache_path.as_deref() {
+                Some(cache_root) => {
+                    let root = Path::new(cache_root);
+                    if root.join("components/gameplay/manifest.json").is_file() {
+                        NativeWorld::inspect_level2_with_owner_cache(
+                            &package,
+                            root.join("components/gameplay"),
+                        )
+                    } else {
+                        NativeWorld::inspect_level2(&package)
+                    }
+                }
+                None => NativeWorld::inspect_level2(&package),
+            }
             .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-        CampaignSessionRecord {
-            kind: CampaignSessionKind::Level1 {
-                world: Arc::new(world),
-            },
-            generation: 0,
-            day_music: None,
+            let mut reset = inspection
+                .level2_reset_session()
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            reset.select_level2_campaign_entry_stage();
+            let day_frame_assets =
+                load_optional_level2_day_frame_assets(asset_cache_path.as_deref())?.map(Arc::new);
+            let day_music = load_optional_level2_day_music(asset_cache_path.as_deref())?;
+            CampaignSessionRecord {
+                kind: CampaignSessionKind::Level2 {
+                    inspection: Arc::new(inspection),
+                    reset: CampaignLevel2Authority::Legacy(reset),
+                    day_frame_assets,
+                    day_frame_state: DayIndexedFrameState::new(0),
+                },
+                generation: 0,
+                day_music,
+                effect_state_hashes: BTreeMap::new(),
+            }
+        } else {
+            let closure = utf8_input(closure_path, closure_path_len, "closure_path")?;
+            if closure.is_empty() {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Level 1 campaign sessions require closure_path",
+                ));
+            }
+            let world = NativeWorld::load(&package, &closure)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            CampaignSessionRecord {
+                kind: CampaignSessionKind::Level1 {
+                    world: Arc::new(world),
+                },
+                generation: 0,
+                day_music: None,
+                effect_state_hashes: BTreeMap::new(),
+            }
         }
     };
     let handle = with_campaign_registry_mut(|registry| registry.insert(session))?;
@@ -639,9 +741,13 @@ pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
                 ..
             } = &mut session.kind
             {
-                reset.reset();
+                reset.reset_authority();
                 session.generation = session.generation.wrapping_add(1);
+                if let CampaignLevel2Authority::Descriptor(campaign) = reset {
+                    debug_assert_eq!(campaign.generation(), session.generation);
+                }
                 day_frame_state.reset(session.generation);
+                session.effect_state_hashes.clear();
                 if session.day_music.is_some() {
                     session.day_music = Some(CampaignDayMusicLifecycle::start_day());
                 }
@@ -1497,7 +1603,7 @@ pub extern "C" fn mc_native_campaign_session_step(
         validate_embedded_command(&input.command)?;
         let command = player_command(input.command)?;
         with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign step requires a Level 2 campaign session",
@@ -1540,69 +1646,397 @@ pub extern "C" fn mc_native_campaign_session_step(
                     ),
                 ));
             }
+            let player_entity_index = player.entity_index;
+            let mut candidate_record = session.clone();
+            let snapshot = {
+                let CampaignSessionRecord {
+                    kind,
+                    generation,
+                    day_music,
+                    effect_state_hashes,
+                } = &mut candidate_record;
+                let CampaignSessionKind::Level2 { reset, .. } = kind else {
+                    unreachable!("candidate preserves the validated Level 2 variant")
+                };
+                let effect_head_before = reset
+                    .descriptor()
+                    .ok()
+                    .map(|campaign| campaign.effect_cursor().next_sequence);
+                let music_event_start = reset.context.events.len();
+                reset.state.entity_index = player_entity_index;
+                reset.state.position = Position {
+                    x: input.player_x,
+                    y: input.player_y,
+                    z: input.player_z,
+                };
+                reset.step_authority(command, input.speed_index);
 
-            let mut candidate = reset.clone();
-            let music_event_start = candidate.context.events.len();
-            candidate.state.entity_index = player.entity_index;
-            candidate.state.position = Position {
-                x: input.player_x,
-                y: input.player_y,
-                z: input.player_z,
-            };
-            candidate.step_outer_turn(command, input.speed_index);
-
-            if let Some(day_music) = session.day_music.as_mut() {
-                for event in &candidate.context.events[music_event_start..] {
-                    if let FlightEvent::UpdateMusic {
-                        mode,
-                        timer_multiplier,
-                    } = *event
-                    {
-                        day_music.update(mode, timer_multiplier);
+                if let Some(day_music) = day_music.as_mut() {
+                    for event in &reset.context.events[music_event_start..] {
+                        if let FlightEvent::UpdateMusic {
+                            mode,
+                            timer_multiplier,
+                        } = *event
+                        {
+                            day_music.update(mode, timer_multiplier);
+                        }
                     }
                 }
-            }
 
-            let event_rows = candidate
-                .dispatch_events()
-                .iter()
-                .enumerate()
-                .map(|(ordinal, event)| campaign_event_snapshot(session.generation, ordinal, event))
-                .collect::<Vec<_>>();
-            copy_slice(&event_rows, events, event_capacity, out_event_count)?;
-            let mut event_kind_mask = 0_u32;
-            for event in &event_rows {
-                if (1..=32).contains(&event.kind) {
-                    event_kind_mask |= 1_u32 << u32::from(event.kind - 1);
+                let state_hash = reset.campaign_state_hash();
+                if let (Some(first), Ok(campaign)) = (effect_head_before, reset.descriptor()) {
+                    let next = campaign.effect_cursor().next_sequence;
+                    for sequence in first..next {
+                        effect_state_hashes.insert(sequence, state_hash);
+                    }
+                    while effect_state_hashes.len() > 16_384 {
+                        let _ = effect_state_hashes.pop_first();
+                    }
                 }
-            }
-            let snapshot = McCampaignStepSnapshotV2 {
-                abi_version: MC_NATIVE_ABI_VERSION,
-                struct_size: struct_size::<McCampaignStepSnapshotV2>(),
-                generation: session.generation,
-                revision: candidate.state.tick,
-                state_hash: candidate.campaign_state_hash(),
-                terrain_hash: candidate.terrain_hash(),
-                dispatch_hash: decode_sha256_hex(&candidate.dispatch_observability_hash()),
-                event_count: u32::try_from(event_rows.len()).map_err(|_| {
-                    AbiError::new(MC_STATUS_BOUNDS, "campaign event count exceeds u32")
-                })?,
-                event_kind_mask,
-                player_slot: input.player_slot,
-                reserved_0: [0; 3],
-                player_entity_index: candidate.state.entity_index,
-                reserved_1: 0,
-                x: candidate.state.position.x,
-                y: candidate.state.position.y,
-                z: candidate.state.position.z,
-                reserved: [0; 4],
+
+                let event_rows = reset
+                    .dispatch_events()
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, event)| campaign_event_snapshot(*generation, ordinal, event))
+                    .collect::<Vec<_>>();
+                copy_slice(&event_rows, events, event_capacity, out_event_count)?;
+                let mut event_kind_mask = 0_u32;
+                for event in &event_rows {
+                    if (1..=32).contains(&event.kind) {
+                        event_kind_mask |= 1_u32 << u32::from(event.kind - 1);
+                    }
+                }
+                McCampaignStepSnapshotV2 {
+                    abi_version: MC_NATIVE_ABI_VERSION,
+                    struct_size: struct_size::<McCampaignStepSnapshotV2>(),
+                    generation: *generation,
+                    revision: reset.state.tick,
+                    state_hash,
+                    terrain_hash: reset.terrain_hash(),
+                    dispatch_hash: decode_sha256_hex(&reset.dispatch_observability_hash()),
+                    event_count: u32::try_from(event_rows.len()).map_err(|_| {
+                        AbiError::new(MC_STATUS_BOUNDS, "campaign event count exceeds u32")
+                    })?,
+                    event_kind_mask,
+                    player_slot: input.player_slot,
+                    reserved_0: [0; 3],
+                    player_entity_index: reset.state.entity_index,
+                    reserved_1: 0,
+                    x: reset.state.position.x,
+                    y: reset.state.position.y,
+                    z: reset.state.position.z,
+                    reserved: [0; 4],
+                }
             };
-            *reset = candidate;
+            *session = candidate_record;
             Ok(snapshot)
         })
-        .and_then(|snapshot| {
+        .map(|snapshot| {
             write_output(out_snapshot, snapshot);
-            Ok(())
+            ()
+        })
+    })
+}
+
+/// Page the canonical descriptor-backed campaign EffectJournal through the
+/// frozen revisioned event layouts. `cursor` is the number of effects already
+/// consumed; projected event sequences remain one-based like the sealed ABI.
+pub(super) fn campaign_effect_page_error(error: EffectPageError) -> AbiError {
+    match error {
+        EffectPageError::StaleGeneration { expected, actual } => AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            format!("campaign effect generation {actual} does not match {expected}"),
+        ),
+        EffectPageError::ExpiredCursor {
+            first_available,
+            requested,
+        } => AbiError::new(
+            MC_STATUS_CURSOR_EXPIRED,
+            format!("campaign effect cursor {requested} predates {first_available}"),
+        ),
+        EffectPageError::FutureCursor {
+            next_sequence,
+            requested,
+        } => AbiError::new(
+            MC_STATUS_BOUNDS,
+            format!("campaign effect cursor {requested} is beyond {next_sequence}"),
+        ),
+        EffectPageError::OutputTooSmall { pending } => AbiError::new(
+            MC_STATUS_BUFFER_TOO_SMALL,
+            format!("campaign effect page has {pending} pending rows"),
+        ),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_events_copy_since(
+    handle: u64,
+    query: *const McEventQueryV2,
+    buffer: *mut McEventV2,
+    capacity: u32,
+    element_size: u32,
+    out_batch: *mut McEventBatchV2,
+    out_batch_size: u32,
+) -> i32 {
+    boundary_value(out_batch, out_batch_size, || {
+        require_element_size::<McEventV2>(element_size, "campaign effect event")?;
+        let query = read_versioned_input(query, "campaign effect query")?;
+        validate_reserved(&query.reserved, "campaign effect query")?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "generic campaign effects require a descriptor-backed session",
+                ));
+            };
+            let campaign = reset.descriptor()?;
+            if query.generation != session.generation || query.generation != campaign.generation() {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign effect generation {} does not match {}",
+                        query.generation,
+                        campaign.generation()
+                    ),
+                ));
+            }
+            let page = campaign
+                .effects_after(
+                    EffectCursor {
+                        generation: query.generation,
+                        next_sequence: query.cursor,
+                    },
+                    usize::try_from(capacity).map_err(|_| {
+                        AbiError::new(MC_STATUS_BOUNDS, "campaign effect capacity exceeds usize")
+                    })?,
+                )
+                .map_err(campaign_effect_page_error)?;
+            if !page.records.is_empty() && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign effect output buffer is null",
+                ));
+            }
+            let current_state_hash = campaign.state_hash();
+            let rows = page
+                .records
+                .iter()
+                .map(|record| {
+                    campaign_effect_snapshot(
+                        query.generation,
+                        session
+                            .effect_state_hashes
+                            .get(&record.sequence)
+                            .copied()
+                            .unwrap_or(current_state_hash),
+                        record,
+                    )
+                })
+                .collect::<Vec<_>>();
+            for (index, row) in rows.iter().enumerate() {
+                // SAFETY: non-null was checked for the bounded page and the
+                // caller supplied capacity records. Unaligned C storage is an
+                // intentional v2 ABI capability.
+                unsafe { buffer.add(index).write_unaligned(*row) };
+            }
+            let head = campaign.effect_cursor().next_sequence;
+            Ok(McEventBatchV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McEventBatchV2>(),
+                generation: query.generation,
+                next_cursor: page.next_cursor.next_sequence,
+                event_head: head,
+                written: u32::try_from(rows.len()).expect("bounded effect page fits u32"),
+                has_more: u8::from(page.next_cursor.next_sequence < head),
+                reserved_0: [0; 3],
+                reserved: [0; 4],
+            })
+        })
+    })
+}
+
+/// Copy the current descriptor-backed campaign presentation through the
+/// frozen generic v2 frame layout.
+///
+/// The qualified Level 2 producer is presently an indexed 320x200 Day
+/// terrain frame. It deliberately reports no provenance or compositor-
+/// complete flags: this bridge exposes the real shared presentation subset,
+/// not a claim that the retained Level 2 client composition is folded yet.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_presentation_frame_copy(
+    handle: u64,
+    query: *const McPresentationFrameQueryV2,
+    index_buffer: *mut u8,
+    index_capacity: u32,
+    provenance_buffer: *mut u8,
+    provenance_capacity: u32,
+    out_info: *mut McPresentationFrameInfoV2,
+    out_info_size: u32,
+) -> i32 {
+    boundary_value(out_info, out_info_size, || {
+        let query = read_versioned_input(query, "campaign presentation frame query")?;
+        validate_reserved(&query.reserved, "campaign presentation frame query")?;
+        if query.reserved_0 != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_RESERVED_NONZERO,
+                "campaign presentation frame query reserved_0 must be zero",
+            ));
+        }
+        if query.viewport_width != LEVEL1_VIEW_WIDTH as u16
+            || query.viewport_height != LEVEL1_VIEW_HEIGHT as u16
+            || query.screen_stride != LEVEL1_VIEW_WIDTH as u16
+            || query.vga_resolution != 1
+        {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "campaign presentation frame requires the qualified 320x200 Day profile",
+            ));
+        }
+        for (name, value) in [
+            ("configured_blur_mode", query.configured_blur_mode),
+            ("blur_capability", query.blur_capability),
+            ("high_speed_system", query.high_speed_system),
+            ("scratch_present", query.scratch_present),
+            ("spatial_smoothing", query.spatial_smoothing),
+            ("minimap_enabled", query.minimap_enabled),
+            ("top_bar_enabled", query.top_bar_enabled),
+            ("menu_overlay", query.menu_overlay),
+            ("game_paused", query.game_paused),
+            ("level_end", query.level_end),
+            ("objective_selector", query.objective_selector),
+            ("objective_textbox", query.objective_textbox),
+            ("tutorial_or_briefing", query.tutorial_or_briefing),
+            ("help_popup", query.help_popup),
+            ("debug_text", query.debug_text),
+        ] {
+            if value != 0 {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("campaign presentation frame does not yet support nonzero {name}"),
+                ));
+            }
+        }
+        let required =
+            u32::try_from(LEVEL1_VIEW_PIXELS).expect("qualified Day frame extent fits u32");
+        if index_capacity < required {
+            return Err(AbiError::new(
+                MC_STATUS_BUFFER_TOO_SMALL,
+                format!(
+                    "campaign presentation frame requires {required} index bytes, got {index_capacity}"
+                ),
+            ));
+        }
+        if index_buffer.is_null() {
+            return Err(AbiError::new(
+                MC_STATUS_NULL_POINTER,
+                "campaign presentation index buffer is null",
+            ));
+        }
+        // The current Day frame has no retained provenance plane. Accept a
+        // null, zero-capacity sidecar and report zero bytes instead of
+        // fabricating provenance or claiming compositor completeness.
+        let _ = (provenance_buffer, provenance_capacity);
+        with_campaign_session_mut(handle, |session| {
+            if query.generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign presentation generation {} does not match {}",
+                        query.generation, session.generation
+                    ),
+                ));
+            }
+            let CampaignSessionKind::Level2 {
+                inspection,
+                reset,
+                day_frame_assets,
+                day_frame_state,
+            } = &mut session.kind
+            else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign presentation requires a descriptor-backed session",
+                ));
+            };
+            let campaign = reset.descriptor()?;
+            if campaign.generation() != query.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    "campaign presentation generation does not match its Rust authority",
+                ));
+            }
+            if query.tick != campaign.tick() || query.presentation_revision != query.tick {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign presentation revision {}/{} does not match tick {}",
+                        query.tick,
+                        query.presentation_revision,
+                        campaign.tick()
+                    ),
+                ));
+            }
+            let assets = day_frame_assets.as_ref().ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_VALIDATION_FAILED,
+                    "campaign presentation requires a qualified owner cache",
+                )
+            })?;
+            let newly_committed = match day_frame_state.current_frame() {
+                Some(frame) if frame.generation == query.generation && frame.tick == query.tick => {
+                    false
+                }
+                Some(_) | None => {
+                    day_frame_state
+                        .render_current(inspection, reset, assets, query.generation)
+                        .map_err(|error| {
+                            AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!("campaign presentation render failed: {error}"),
+                            )
+                        })?;
+                    true
+                }
+            };
+            let frame = day_frame_state
+                .current_frame()
+                .expect("successful Day render commits a current frame");
+            // SAFETY: the index buffer was checked non-null and large enough
+            // for the exact fixed-profile frame before any presentation state
+            // was mutated.
+            unsafe {
+                index_buffer.copy_from_nonoverlapping(frame.indices.as_ptr(), LEVEL1_VIEW_PIXELS)
+            };
+            Ok(McPresentationFrameInfoV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McPresentationFrameInfoV2>(),
+                generation: query.generation,
+                tick: query.tick,
+                presentation_revision: query.presentation_revision,
+                immutable_input_hash: frame.terrain_input_hash,
+                width: frame.width,
+                height: frame.height,
+                stride: frame.width,
+                viewport_width: query.viewport_width,
+                index_bytes: required,
+                provenance_bytes: 0,
+                flags: MC_TERRAIN_FRAME_ISOLATED_SKY_TERRAIN
+                    | MC_TERRAIN_FRAME_SKY_SEEDED
+                    | MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED,
+                effective_postprocess_mode: 0,
+                history_state: 1,
+                newly_committed: u8::from(newly_committed),
+                reserved_0: 0,
+                index_hash: frame.index_hash,
+                provenance_hash: 0,
+                lighting_hash: 0,
+                source_arena_hash: 0,
+                overlay_pixels_written: 0,
+                overlay_stage_count: 0,
+                reserved_1: 0,
+                reserved: [0; 6],
+            })
         })
     })
 }

@@ -4018,6 +4018,10 @@ impl NativeWorld {
         definition: &ValidatedCampaignDefinition,
         owner_cache: Option<&Path>,
     ) -> Result<NativeWorldInspection> {
+        let owner_export_package_sha256 =
+            definition.owner_export_package_sha256().map_err(|error| {
+                NativeWorldError::new(format!("campaign owner-export identity failed: {error}"))
+            })?;
         let read = |name: &str| {
             definition.read_member(name).map_err(|error| {
                 NativeWorldError::new(format!("campaign member read failed: {error}"))
@@ -4088,7 +4092,7 @@ impl NativeWorld {
         );
         let (level2_castle_stage_footprints, level2_house_build_footprints) = owner_cache
             .map(|owner_cache| {
-                load_level2_castle_stage_footprints(owner_cache, &definition.package_sha256)
+                load_level2_castle_stage_footprints(owner_cache, &owner_export_package_sha256)
             })
             .transpose()?
             .unwrap_or_default();
@@ -4097,7 +4101,7 @@ impl NativeWorld {
             profile: OwnerPackageProfile::Level2,
             schema: OwnerPackageSchema::V5,
             metadata,
-            package_sha256: definition.package_sha256.clone(),
+            package_sha256: owner_export_package_sha256,
             terrain_planes,
             terrain,
             entities: entities.into_boxed_slice(),

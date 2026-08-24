@@ -760,6 +760,29 @@ impl CampaignDefinition {
             .map(|requirement| &requirement.key)
     }
 
+    /// Reconstruct the identity of the wrapped owner-level export.
+    ///
+    /// The campaign envelope adds exactly `campaign-definition.json` to the
+    /// already hash-bound export. Owner caches remain bound to that wrapped
+    /// export, not to the later envelope, so consumers must keep the two
+    /// identities distinct.
+    pub(crate) fn owner_export_package_sha256(&self) -> Result<String> {
+        let mut identity = Vec::new();
+        for (name, expected_sha256) in &self.member_hashes {
+            if name == "campaign-definition.json" {
+                continue;
+            }
+            let bytes = self.read_member(name)?;
+            identity.extend_from_slice(name.as_bytes());
+            identity.push(0);
+            identity.extend_from_slice(expected_sha256.as_bytes());
+            identity.push(0);
+            identity.extend_from_slice(bytes.len().to_string().as_bytes());
+            identity.push(b'\n');
+        }
+        Ok(sha256_hex(&identity))
+    }
+
     /// Re-read one validated package member for a session consumer.
     ///
     /// Preflight validates the complete package before a session can exist,
@@ -2378,6 +2401,19 @@ mod tests {
         );
         assert_eq!(definition.campaign_spec.objectives.len(), 5);
         assert!(!definition.required_behaviors.is_empty());
+    }
+
+    #[test]
+    fn cf12_descriptor_preflight_rejects_an_uncompiled_capability() {
+        let reject = |_: &super::BehaviorKey| false;
+        let error = CampaignDefinition::preflight(fixture(), CampaignSelection::LEVEL2, &reject)
+            .expect_err("an uncompiled descriptor capability must fail before reset state");
+        assert_eq!(error.stage, ValidationStage::BehaviorClosure);
+        assert!(
+            error
+                .message
+                .contains("compiled registry is missing capability")
+        );
     }
 
     #[test]

@@ -497,6 +497,37 @@ impl DayIndexedFrameState {
         self.current_frame = Some(frame.clone());
         Ok(frame)
     }
+
+    /// Render the authority's current revision for an observational client.
+    ///
+    /// Unlike the retained Level-2 compatibility endpoint, a generic client
+    /// is not required to poll every intervening presentation tick. This does
+    /// not advance simulation or presentation history; the Day producer is a
+    /// pure projection of the current authoritative state.
+    pub fn render_current(
+        &mut self,
+        inspection: &NativeWorldInspection,
+        session: &Level2ResetSession,
+        assets: &DayIndexedFrameAssets,
+        generation: u64,
+    ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
+        if generation != self.generation {
+            return Err(DayIndexedFrameError::new(format!(
+                "Day indexed frame generation {generation} does not match {}",
+                self.generation
+            )));
+        }
+        let tick = session.state.tick;
+        if self.current_tick.is_some_and(|current| tick < current) {
+            return Err(DayIndexedFrameError::new(format!(
+                "Day indexed frame tick {tick} predates the committed presentation revision"
+            )));
+        }
+        let frame = render_level2_day_indexed_frame(inspection, session, assets, generation)?;
+        self.current_tick = Some(tick);
+        self.current_frame = Some(frame.clone());
+        Ok(frame)
+    }
 }
 
 /// Render one ordinary Level 2 frame from the public package/session route.

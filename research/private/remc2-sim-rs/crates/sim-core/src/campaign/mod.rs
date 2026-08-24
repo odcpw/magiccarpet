@@ -26,6 +26,7 @@ pub mod state;
 pub use crate::native_world::Level2ResetSession;
 
 use dispatch::CAMPAIGN_BEHAVIOR_REGISTRY;
+use journal::{EffectCursor, EffectPage, EffectPageError};
 use spec::{CampaignDefinition, CampaignPackageError, CampaignSelection};
 
 /// Failure to validate or materialize a campaign session. A validation error
@@ -130,6 +131,36 @@ impl CampaignSession {
         self.level2.reset();
     }
 
+    /// Current runtime generation of the one folded session authority.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.level2.session.generation
+    }
+
+    /// Current source tick of the one folded session authority.
+    #[must_use]
+    pub fn tick(&self) -> u64 {
+        self.level2.state.tick
+    }
+
+    /// Cursor immediately after the last retained production effect.
+    #[must_use]
+    pub fn effect_cursor(&self) -> EffectCursor {
+        self.level2.effect_journal().cursor(self.generation())
+    }
+
+    /// Page the canonical ordered production journal without exposing a
+    /// mutable journal or any Level-2-specific event sidecar.
+    pub fn effects_after(
+        &self,
+        cursor: EffectCursor,
+        capacity: usize,
+    ) -> Result<EffectPage, EffectPageError> {
+        self.level2
+            .effect_journal()
+            .page(self.generation(), cursor, capacity)
+    }
+
     #[must_use]
     pub fn state_hash(&self) -> u64 {
         self.level2.campaign_state_hash()
@@ -215,9 +246,15 @@ mod tests {
             ValidationStage::ResetState
         );
         assert_eq!(campaign.definition().identity, CampaignSelection::LEVEL2);
-        assert_eq!(
+        assert_ne!(
             campaign.definition().package_sha256,
-            campaign.inspection().package_sha256()
+            campaign.inspection().package_sha256(),
+            "campaign envelope and wrapped owner export have distinct identities"
+        );
+        assert_eq!(
+            campaign.inspection().package_sha256(),
+            legacy_inspection.package_sha256(),
+            "materialized world and owner cache bind to the wrapped export identity"
         );
         assert_eq!(campaign.state_hash(), legacy.campaign_state_hash());
         assert_eq!(campaign.terrain_hash(), legacy.terrain_hash());

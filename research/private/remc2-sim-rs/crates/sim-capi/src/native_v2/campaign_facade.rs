@@ -1,13 +1,15 @@
-//! Internal campaign lifecycle seam for the sealed Level 1 session.
+//! Internal campaign lifecycle adapters and frozen effect projection.
 //!
-//! This is static adapter dispatch only. It deliberately adds no public ABI,
-//! runtime registry, descriptor variant, or alternate session state.
+//! Adapter selection remains static and adds no runtime registry or alternate
+//! authority. CF-12 also projects the canonical descriptor-backed journal into
+//! the existing public event layout without exposing Level-2 carrier types.
 
 use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use sha2::{Digest, Sha256};
 use sim_core::{
-    FlightTuning, PlayerCommand,
+    FlightEvent, FlightTuning, PlayerCommand, SpellFireSource,
+    campaign::journal::{CampaignEffect, EffectRecord},
     game_definition::{
         GameDefinition, Mc2OwnedInputs, SemanticId, SemanticValue, default_catalog, load_mc2_owned,
     },
@@ -17,14 +19,164 @@ use sim_core::{
         LongitudinalControl, RuntimeActorId, RuntimeParticipantId,
     },
     goat::GoatBehaviorConfig,
-    native_world::NativeWorld,
+    native_world::{Level2SharedSpellEvent, NativeWorld},
 };
 
 use super::{
-    AbiError, AbiResult, MC_STATUS_INVALID_ARGUMENT, MC_STATUS_IO_ERROR,
-    MC_STATUS_VALIDATION_FAILED, McSessionSnapshotV2, SessionDefinitionTuning, SessionRecord,
-    validation::load_terrain_frame_assets,
+    AbiError, AbiResult, MC_ASSET_REF_NONE, MC_NATIVE_ABI_VERSION, MC_STATUS_INVALID_ARGUMENT,
+    MC_STATUS_IO_ERROR, MC_STATUS_VALIDATION_FAILED, McEventV2, McSessionSnapshotV2,
+    SessionDefinitionTuning, SessionRecord, struct_size, validation::load_terrain_frame_assets,
 };
+
+pub(super) const MC_CAMPAIGN_EFFECT_DISPATCH: u32 = 0x100;
+pub(super) const MC_CAMPAIGN_EFFECT_SHARED_SPELL: u32 = 0x101;
+pub(super) const MC_CAMPAIGN_EFFECT_FLIGHT: u32 = 0x102;
+pub(super) const MC_CAMPAIGN_EFFECT_SCENE_CHANGE: u32 = 0x103;
+
+/// Project one canonical campaign effect into the already-frozen `McEventV2`
+/// transport layout. The broad `kind` selects the effect domain; `code` and
+/// the scalar payload remain a transport projection, never gameplay authority.
+pub(super) fn campaign_effect_snapshot(
+    generation: u64,
+    state_hash: u64,
+    record: &EffectRecord,
+) -> McEventV2 {
+    let mut row = McEventV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McEventV2>(),
+        generation,
+        sequence: record.sequence.wrapping_add(1),
+        state_hash,
+        player_index: -1,
+        asset_ref_index: MC_ASSET_REF_NONE,
+        ..McEventV2::default()
+    };
+    match &record.effect {
+        CampaignEffect::Dispatch(event) => {
+            let (pass, kind, family, flags, source_slot) = event.campaign_projection();
+            row.kind = MC_CAMPAIGN_EFFECT_DISPATCH;
+            row.code = u32::from(pass)
+                | (u32::from(kind) << 8)
+                | (u32::from(family) << 16)
+                | (u32::from(flags) << 24);
+            row.entity_index = source_slot;
+            row.value_0 = i32::try_from(record.turn).unwrap_or(i32::MAX);
+        }
+        CampaignEffect::SharedSpell(event) => {
+            row.kind = MC_CAMPAIGN_EFFECT_SHARED_SPELL;
+            match *event {
+                Level2SharedSpellEvent::SpellCollected {
+                    source_slot,
+                    player_entity_index,
+                    family,
+                } => {
+                    row.code = 1;
+                    row.entity_index = source_slot;
+                    row.value_0 = i32::from(player_entity_index);
+                    row.value_1 = i32::from(family);
+                }
+                Level2SharedSpellEvent::SpellAcquired {
+                    source_slot,
+                    player_entity_index,
+                    family,
+                    holder_action,
+                } => {
+                    row.code = 2;
+                    row.entity_index = source_slot;
+                    row.value_0 = i32::from(player_entity_index);
+                    row.value_1 = i32::from(family) | (i32::from(holder_action) << 8);
+                }
+                Level2SharedSpellEvent::ShieldDamageApplied {
+                    target_entity_index,
+                    attacker_entity_index,
+                    damage,
+                } => {
+                    row.code = 3 | (u32::from(attacker_entity_index) << 8);
+                    row.entity_index = target_entity_index;
+                    row.value_0 = damage.raw_damage;
+                    row.value_1 = damage.applied_damage;
+                }
+                Level2SharedSpellEvent::ExperienceScrollCollected {
+                    source_slot,
+                    player_entity_index,
+                } => {
+                    row.code = 4;
+                    row.entity_index = source_slot;
+                    row.value_0 = i32::from(player_entity_index);
+                }
+                Level2SharedSpellEvent::AbilityImproved {
+                    source_family,
+                    tier,
+                } => {
+                    row.code = 5;
+                    row.value_0 = i32::from(tier);
+                    row.value_1 = i32::from(source_family);
+                }
+            }
+        }
+        CampaignEffect::Flight(event) => {
+            row.kind = MC_CAMPAIGN_EFFECT_FLIGHT;
+            match *event {
+                FlightEvent::PrepareSound {
+                    entity_index,
+                    player_index,
+                    sound_id,
+                    ..
+                } => {
+                    row.code = 1;
+                    row.entity_index = entity_index;
+                    row.player_index = player_index;
+                    row.value_0 = i32::from(sound_id);
+                }
+                FlightEvent::EndLoop {
+                    entity_index,
+                    player_index,
+                    sound_id,
+                    ..
+                } => {
+                    row.code = 2;
+                    row.entity_index = entity_index;
+                    row.player_index = player_index;
+                    row.value_0 = i32::from(sound_id);
+                }
+                FlightEvent::UpdateMusic {
+                    mode,
+                    timer_multiplier,
+                } => {
+                    row.code = 3;
+                    row.value_0 = i32::from(mode);
+                    row.value_1 = i32::from(timer_multiplier);
+                }
+                FlightEvent::RequestSpellActivation {
+                    source,
+                    holder_entity_index,
+                    direction_mask,
+                } => {
+                    row.code = 4;
+                    row.entity_index = holder_entity_index;
+                    row.value_0 = match source {
+                        SpellFireSource::Left => 1,
+                        SpellFireSource::Right => 2,
+                        SpellFireSource::Selected => 3,
+                    };
+                    row.value_1 = i32::from(direction_mask);
+                }
+                FlightEvent::ShowHelpHint { hint_index, state } => {
+                    row.code = 5;
+                    row.value_0 = i32::from(hint_index);
+                    row.value_1 = i32::from(state);
+                }
+            }
+        }
+        CampaignEffect::SceneChange { scene } => {
+            row.kind = MC_CAMPAIGN_EFFECT_SCENE_CHANGE;
+            row.code = 1;
+            row.value_0 = i32::from(*scene);
+            row.value_1 = i32::try_from(record.turn).unwrap_or(i32::MAX);
+        }
+    }
+    row
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct InternalCampaignKey {

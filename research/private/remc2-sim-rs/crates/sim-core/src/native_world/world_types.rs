@@ -3530,7 +3530,10 @@ impl NativeWorldInspection {
         &self,
         definition: &ValidatedCampaignDefinition,
     ) -> Result<()> {
-        if self.package_sha256 != definition.package_sha256
+        let owner_export_package_sha256 = definition
+            .owner_export_package_sha256()
+            .map_err(|error| NativeWorldError::new(error.to_string()))?;
+        if self.package_sha256 != owner_export_package_sha256
             || self.metadata.external_level != definition.identity.external_level
             || self.metadata.internal_level != definition.identity.internal_level
             || self.metadata.map_type.id() != definition.identity.map_type_id

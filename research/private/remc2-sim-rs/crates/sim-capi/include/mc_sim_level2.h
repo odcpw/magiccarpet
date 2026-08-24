@@ -58,6 +58,16 @@ enum {
     MC_CAMPAIGN_EVENT_ERROR = 255
 };
 
+/* Broad domains used by the generic descriptor-backed EffectJournal bridge.
+ * The frozen McEventV2 code/value fields carry the domain-specific variant;
+ * sequence is one-based while query/batch cursors count consumed records. */
+enum {
+    MC_CAMPAIGN_EFFECT_DISPATCH = 0x100,
+    MC_CAMPAIGN_EFFECT_SHARED_SPELL = 0x101,
+    MC_CAMPAIGN_EFFECT_FLIGHT = 0x102,
+    MC_CAMPAIGN_EFFECT_SCENE_CHANGE = 0x103
+};
+
 /* One bounded, explicitly typed Level 2 source-pass event. */
 typedef struct McCampaignEventV2 {
     uint32_t abi_version;
@@ -743,6 +753,18 @@ int32_t mc_native_campaign_session_step(
     McCampaignStepSnapshotV2 *out_snapshot, uint32_t out_snapshot_size,
     McCampaignEventV2 *events, uint32_t event_capacity,
     uint32_t event_element_size, uint32_t *out_event_count);
+/* Generic descriptor-backed observation bridges. Existing named Level 2
+ * event and Day-frame functions remain compatibility adapters. The current
+ * Day producer reports zero provenance bytes and incomplete compositor flags. */
+int32_t mc_native_campaign_events_copy_since(
+    uint64_t handle, const McEventQueryV2 *query,
+    McEventV2 *buffer, uint32_t capacity, uint32_t element_size,
+    McEventBatchV2 *out_batch, uint32_t out_batch_size);
+int32_t mc_native_campaign_presentation_frame_copy(
+    uint64_t handle, const McPresentationFrameQueryV2 *query,
+    uint8_t *index_buffer, uint32_t index_capacity,
+    uint8_t *provenance_buffer, uint32_t provenance_capacity,
+    McPresentationFrameInfoV2 *out_info, uint32_t out_info_size);
 int32_t mc_native_campaign_world_info(
     uint64_t handle, McCampaignWorldInfoV2 *out_info, uint32_t out_info_size);
 int32_t mc_native_campaign_terrain_state(
