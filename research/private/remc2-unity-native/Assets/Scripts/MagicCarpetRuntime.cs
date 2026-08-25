@@ -11660,6 +11660,22 @@ namespace MagicCarpet.Native
             return null;
         }
 
+        /// <summary>
+        /// Open one neutral engine session where the package itself selects
+        /// the adapter profile (MC2-owned or campaign descriptor); no level
+        /// flag participates. Campaign sessions are currently transport-only:
+        /// open/step/page/reset are proven over the neutral contract while
+        /// presentation composition stays on the existing campaign route.
+        /// </summary>
+        internal static EngineSessionTransport OpenEngineSessionForPackage(
+            string package,
+            string closure,
+            string assetCache)
+        {
+            NativeSim.AssertLayouts();
+            return new EngineSessionTransport(package, closure, assetCache);
+        }
+
         private static NativeSession OpenSessionWithAssetCache(
             string package,
             string closure,

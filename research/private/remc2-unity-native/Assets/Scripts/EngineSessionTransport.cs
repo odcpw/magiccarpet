@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -10,14 +11,21 @@ namespace MagicCarpet.Native
     /// <summary>
     /// Managed transport for the neutral Rust GameSession contract. This type
     /// parses observations but owns no gameplay state; every command and read
-    /// crosses the explicitly versioned native ABI.
+    /// crosses the explicitly versioned native ABI. The session profile is
+    /// selected by the package itself: a campaign descriptor envelope opens
+    /// the campaign adapter behind the same handles and negotiated contract.
     /// </summary>
     internal sealed class EngineSessionTransport
     {
         internal const string EngineContract = "carpet-flight-game-session/v1";
         internal const string TransportContract = "carpet-flight-native-json/v1";
+        internal const string OwnedProfile = "mc2-owned";
+        internal const string CampaignProfile = "mc2-campaign";
+        private const string CampaignDescriptorEnvelope = "campaign-definition.json";
         private static readonly string[] RequiredCapabilities =
             { "snapshot", "step", "reset", "events", "audio", "presentation_assets" };
+        private static readonly string[] RequiredCampaignCapabilities =
+            { "snapshot", "step", "reset", "events" };
 
         private delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
 
@@ -31,8 +39,17 @@ namespace MagicCarpet.Native
             public string u64_counter_encoding;
             public string u64_hash_encoding;
             public string[] capabilities;
+            public SessionProfile[] session_profiles;
             public Limits limits;
             public string unknown_command_fields;
+        }
+
+        [Serializable]
+        internal sealed class SessionProfile
+        {
+            public string profile;
+            public string snapshot_value;
+            public string[] capabilities;
         }
 
         [Serializable]
@@ -96,6 +113,25 @@ namespace MagicCarpet.Native
         {
             public Identity identity;
             public SnapshotValue value;
+        }
+
+        [Serializable]
+        internal sealed class CampaignSnapshotValue
+        {
+            public string tick;
+            public string effect_head;
+            public string state_hash;
+            public string terrain_hash;
+            public string effect_journal_sha256;
+            public Pose player_pose;
+            public Motion player_motion;
+        }
+
+        [Serializable]
+        internal sealed class CampaignSnapshotObservation
+        {
+            public Identity identity;
+            public CampaignSnapshotValue value;
         }
 
         [Serializable]
@@ -229,7 +265,20 @@ namespace MagicCarpet.Native
 
         internal Contract NegotiatedContract { get; }
 
+        internal string Profile { get; }
+
         internal SnapshotObservation Current { get; private set; }
+
+        internal CampaignSnapshotObservation CurrentCampaign { get; private set; }
+
+        private Identity CurrentIdentity =>
+            Profile == CampaignProfile ? CurrentCampaign.identity : Current.identity;
+
+        internal static bool IsCampaignPackage(string packagePath)
+        {
+            return !string.IsNullOrWhiteSpace(packagePath) &&
+                File.Exists(Path.Combine(packagePath, CampaignDescriptorEnvelope));
+        }
 
         internal EngineSessionTransport(
             string packagePath,
@@ -239,16 +288,39 @@ namespace MagicCarpet.Native
         {
             NegotiatedContract = ReadContract();
             ValidateContract(NegotiatedContract);
-            if (string.IsNullOrWhiteSpace(packagePath) ||
-                string.IsNullOrWhiteSpace(closurePath) ||
-                string.IsNullOrWhiteSpace(assetCachePath))
+            Profile = IsCampaignPackage(packagePath) ? CampaignProfile : OwnedProfile;
+            byte[] closure;
+            byte[] cache;
+            if (Profile == CampaignProfile)
             {
-                throw new ArgumentException(
-                    "neutral engine session requires explicit package, closure, and asset-cache paths");
+                if (!string.IsNullOrWhiteSpace(closurePath))
+                {
+                    throw new ArgumentException(
+                        "campaign descriptor packages do not accept a closure path");
+                }
+                if (!string.IsNullOrWhiteSpace(workspacePath))
+                {
+                    throw new ArgumentException(
+                        "campaign descriptor packages have no workspace-authored variant route yet");
+                }
+                closure = Array.Empty<byte>();
+                cache = string.IsNullOrWhiteSpace(assetCachePath)
+                    ? Array.Empty<byte>()
+                    : Encoding.UTF8.GetBytes(assetCachePath);
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(packagePath) ||
+                    string.IsNullOrWhiteSpace(closurePath) ||
+                    string.IsNullOrWhiteSpace(assetCachePath))
+                {
+                    throw new ArgumentException(
+                        "neutral engine session requires explicit package, closure, and asset-cache paths");
+                }
+                closure = Encoding.UTF8.GetBytes(closurePath);
+                cache = Encoding.UTF8.GetBytes(assetCachePath);
             }
             var package = Encoding.UTF8.GetBytes(packagePath);
-            var closure = Encoding.UTF8.GetBytes(closurePath);
-            var cache = Encoding.UTF8.GetBytes(assetCachePath);
             var workspace = string.IsNullOrWhiteSpace(workspacePath)
                 ? null
                 : Encoding.UTF8.GetBytes(workspacePath);
@@ -281,8 +353,10 @@ namespace MagicCarpet.Native
             Handle = handle;
             try
             {
-                Current = Snapshot();
-                if (ParseCounter(Current.identity.session_id, "session_id") != Handle)
+                var sessionId = Profile == CampaignProfile
+                    ? CampaignSnapshot().identity.session_id
+                    : Snapshot().identity.session_id;
+                if (ParseCounter(sessionId, "session_id") != Handle)
                 {
                     throw new InvalidOperationException(
                         "neutral session identity does not match its native handle");
@@ -297,6 +371,7 @@ namespace MagicCarpet.Native
 
         internal SnapshotObservation Snapshot()
         {
+            RequireProfile(OwnedProfile, "the game snapshot observation");
             var result = ReadJson<SnapshotObservation>(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_session_snapshot_json_v1(
@@ -308,7 +383,45 @@ namespace MagicCarpet.Native
             return result;
         }
 
+        internal CampaignSnapshotObservation CampaignSnapshot()
+        {
+            RequireProfile(CampaignProfile, "the campaign snapshot observation");
+            var result = ReadJson<CampaignSnapshotObservation>(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    NativeSim.mc_game_session_snapshot_json_v1(
+                        Handle, buffer, capacity, out length),
+                "read neutral campaign snapshot");
+            ValidateIdentity(result.identity);
+            ValidateCampaignSnapshot(result.value, result.identity);
+            CurrentCampaign = result;
+            return result;
+        }
+
         internal SnapshotObservation Step(
+            sbyte roll,
+            sbyte pitch,
+            sbyte flags,
+            ushort lookYaw,
+            ushort lookPitch)
+        {
+            RequireProfile(OwnedProfile, "the game step observation");
+            StepNative(roll, pitch, flags, lookYaw, lookPitch);
+            return Snapshot();
+        }
+
+        internal CampaignSnapshotObservation CampaignStep(
+            sbyte roll,
+            sbyte pitch,
+            sbyte flags,
+            ushort lookYaw,
+            ushort lookPitch)
+        {
+            RequireProfile(CampaignProfile, "the campaign step observation");
+            StepNative(roll, pitch, flags, lookYaw, lookPitch);
+            return CampaignSnapshot();
+        }
+
+        private void StepNative(
             sbyte roll,
             sbyte pitch,
             sbyte flags,
@@ -344,23 +457,35 @@ namespace MagicCarpet.Native
             Check(
                 NativeSim.mc_game_session_step_json_v1(
                     Handle,
-                    ParseCounter(Current.identity.generation, "generation"),
-                    ParseCounter(Current.identity.tick, "tick"),
+                    ParseCounter(CurrentIdentity.generation, "generation"),
+                    ParseCounter(CurrentIdentity.tick, "tick"),
                     bytes,
                     checked((uint)bytes.Length)),
                 "step neutral engine session");
-            return Snapshot();
         }
 
         internal SnapshotObservation Reset()
         {
+            RequireProfile(OwnedProfile, "the game reset observation");
+            ResetNative();
+            return Snapshot();
+        }
+
+        internal CampaignSnapshotObservation CampaignReset()
+        {
+            RequireProfile(CampaignProfile, "the campaign reset observation");
+            ResetNative();
+            return CampaignSnapshot();
+        }
+
+        private void ResetNative()
+        {
             Check(
                 NativeSim.mc_game_session_reset_v1(
                     Handle,
-                    ParseCounter(Current.identity.generation, "generation"),
-                    ParseCounter(Current.identity.tick, "tick")),
+                    ParseCounter(CurrentIdentity.generation, "generation"),
+                    ParseCounter(CurrentIdentity.tick, "tick")),
                 "reset neutral engine session");
-            return Snapshot();
         }
 
         internal EventObservation Events(string cursor, uint limit = 1024)
@@ -369,8 +494,8 @@ namespace MagicCarpet.Native
             {
                 throw new ArgumentOutOfRangeException(nameof(limit));
             }
-            var generation = ParseCounter(Current.identity.generation, "generation");
-            var tick = ParseCounter(Current.identity.tick, "tick");
+            var generation = ParseCounter(CurrentIdentity.generation, "generation");
+            var tick = ParseCounter(CurrentIdentity.tick, "tick");
             var parsedCursor = ParseCounter(cursor, "cursor");
             var result = ReadJson<EventObservation>(
                 (IntPtr buffer, uint capacity, out uint length) =>
@@ -386,16 +511,29 @@ namespace MagicCarpet.Native
                 "read neutral events");
             ValidateIdentity(result.identity);
             if (result.value == null || result.value.events == null ||
-                result.value.compatibility == null ||
                 result.value.requested_cursor != cursor)
             {
                 throw new InvalidOperationException("neutral event page is incomplete");
+            }
+            // The MC2-owned adapter proves retained event/audio identities via
+            // its receipt; the campaign adapter retains none, and a fabricated
+            // receipt must never be accepted.
+            if (Profile == OwnedProfile && result.value.compatibility == null)
+            {
+                throw new InvalidOperationException("neutral event page is incomplete");
+            }
+            if (Profile == CampaignProfile &&
+                !string.IsNullOrEmpty(result.value.compatibility?.contract))
+            {
+                throw new InvalidOperationException(
+                    "campaign event page carries an unexpected compatibility receipt");
             }
             return result;
         }
 
         internal AudioObservation Audio(string eventSequence)
         {
+            RequireProfile(OwnedProfile, "the positional audio capability");
             var generation = ParseCounter(Current.identity.generation, "generation");
             var tick = ParseCounter(Current.identity.tick, "tick");
             var sequence = ParseCounter(eventSequence, "event_sequence");
@@ -421,6 +559,7 @@ namespace MagicCarpet.Native
 
         internal PresentationAssetObservation PresentationAsset(string semanticId)
         {
+            RequireProfile(OwnedProfile, "the authored presentation-asset capability");
             if (string.IsNullOrWhiteSpace(semanticId))
             {
                 throw new ArgumentException("semantic asset ID is required", nameof(semanticId));
@@ -456,6 +595,7 @@ namespace MagicCarpet.Native
 
         internal NativeSim.SessionSnapshot CompatibilitySnapshot()
         {
+            RequireProfile(OwnedProfile, "the same-state compatibility projection");
             var neutral = Snapshot();
             Check(
                 NativeSim.mc_native_session_snapshot(Handle, out var legacy, 120),
@@ -519,6 +659,40 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "native engine contract or required capabilities are unsupported");
             }
+            ValidateProfile(
+                contract, OwnedProfile, "game_snapshot/v1", RequiredCapabilities);
+            ValidateProfile(
+                contract,
+                CampaignProfile,
+                "campaign_snapshot/v1",
+                RequiredCampaignCapabilities);
+        }
+
+        private static void ValidateProfile(
+            Contract contract,
+            string profile,
+            string snapshotValue,
+            string[] capabilities)
+        {
+            var declared = contract.session_profiles?.SingleOrDefault(
+                value => value?.profile == profile);
+            if (declared == null ||
+                declared.snapshot_value != snapshotValue ||
+                declared.capabilities == null ||
+                !capabilities.SequenceEqual(declared.capabilities))
+            {
+                throw new InvalidOperationException(
+                    $"native engine contract does not negotiate the {profile} session profile");
+            }
+        }
+
+        private void RequireProfile(string required, string what)
+        {
+            if (Profile != required)
+            {
+                throw new InvalidOperationException(
+                    $"{what} is not negotiated for the {Profile} session profile");
+            }
         }
 
         private static void ValidateIdentity(Identity identity)
@@ -546,6 +720,27 @@ namespace MagicCarpet.Native
             ParseCounter(value.action_sequence, "action_sequence");
             ParseHash(value.state_hash, "state_hash");
             ParseHash(value.conformance_hash, "conformance_hash");
+        }
+
+        private static void ValidateCampaignSnapshot(CampaignSnapshotValue value, Identity identity)
+        {
+            if (value == null || value.player_pose == null || value.player_motion == null ||
+                value.tick != identity.tick)
+            {
+                throw new InvalidOperationException("neutral campaign snapshot is incomplete");
+            }
+            ParseCounter(value.effect_head, "effect_head");
+            ParseHash(value.state_hash, "state_hash");
+            ParseHash(value.terrain_hash, "terrain_hash");
+            if (value.effect_journal_sha256 == null ||
+                value.effect_journal_sha256.Length != 64 ||
+                value.effect_journal_sha256.Any(character =>
+                    (character < '0' || character > '9') &&
+                    (character < 'a' || character > 'f')))
+            {
+                throw new InvalidOperationException(
+                    "effect_journal_sha256 is not a lowercase SHA-256 hex receipt");
+            }
         }
 
         private static T ReadJson<T>(JsonRead read, string operation) where T : class

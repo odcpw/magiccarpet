@@ -106,6 +106,12 @@ namespace MagicCarpet.Native
                 packagePath, closurePath, assetCachePath, workspacePath);
             try
             {
+                if (transport.Profile != EngineSessionTransport.OwnedProfile)
+                {
+                    throw new InvalidOperationException(
+                        "campaign engine sessions are transport-only; the Level 1 " +
+                        "presentation projection is not composed for the campaign profile");
+                }
                 return new NativeSession(transport.Handle, transport);
             }
             catch

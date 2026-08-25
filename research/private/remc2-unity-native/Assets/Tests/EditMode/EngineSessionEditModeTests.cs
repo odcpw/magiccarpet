@@ -76,6 +76,12 @@ namespace MagicCarpet.Native.Tests
                 PrivateRoot,
                 "remc2-unity-native/qualification/level1-reference-corpus.json");
 
+        private static string CampaignPackagePath =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_V1") ??
+            Path.Combine(
+                PrivateRoot,
+                "generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+
         private static IReadOnlyDictionary<int, Checkpoint> Checkpoints()
         {
             var corpus = JsonUtility.FromJson<Corpus>(File.ReadAllText(CorpusPath));
@@ -217,7 +223,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(contract.engine_contract, Is.EqualTo(EngineSessionTransport.EngineContract));
             Assert.That(contract.transport_contract, Is.EqualTo(EngineSessionTransport.TransportContract));
             Assert.That(contract.capabilities, Is.EqualTo(new[]
-                { "snapshot", "step", "reset", "events", "audio" }));
+                { "snapshot", "step", "reset", "events", "audio", "presentation_assets" }));
 
             var unsupported = new EngineSessionTransport.Contract
             {
@@ -337,6 +343,138 @@ namespace MagicCarpet.Native.Tests
             {
                 Directory.Delete(root, true);
             }
+        }
+
+        [Test]
+        public void NeutralManagedCampaignProfileOpensStepsPagesResetsAndFailsClosed()
+        {
+            var transport = MagicCarpetRuntime.OpenEngineSessionForPackage(
+                CampaignPackagePath, null, null);
+            try
+            {
+                Assert.That(
+                    transport.Profile,
+                    Is.EqualTo(EngineSessionTransport.CampaignProfile));
+                var campaignProfile = transport.NegotiatedContract.session_profiles
+                    .Single(profile =>
+                        profile.profile == EngineSessionTransport.CampaignProfile);
+                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v1"));
+                Assert.That(
+                    campaignProfile.capabilities,
+                    Is.EqualTo(new[] { "snapshot", "step", "reset", "events" }));
+
+                var initial = transport.CampaignSnapshot();
+                Assert.That(initial.identity.generation, Is.EqualTo("1"));
+                Assert.That(initial.identity.tick, Is.EqualTo("0"));
+                Assert.That(initial.value.tick, Is.EqualTo("0"));
+                Assert.That(initial.value.effect_head, Is.EqualTo("0"));
+                Assert.That(initial.value.state_hash, Has.Length.EqualTo(16));
+                Assert.That(initial.value.terrain_hash, Has.Length.EqualTo(16));
+                Assert.That(initial.value.effect_journal_sha256, Has.Length.EqualTo(64));
+
+                for (var poll = 0; poll < 3; poll++)
+                {
+                    var read = transport.CampaignSnapshot();
+                    Assert.That(read.value.state_hash, Is.EqualTo(initial.value.state_hash));
+                    Assert.That(
+                        read.value.effect_journal_sha256,
+                        Is.EqualTo(initial.value.effect_journal_sha256));
+                }
+
+                var stepped = transport.CampaignStep(0, 0, 0x01, 0, 0);
+                Assert.That(stepped.identity.tick, Is.EqualTo("1"));
+                var head = ulong.Parse(stepped.value.effect_head);
+                Assert.That(head, Is.GreaterThan(0UL));
+
+                var cursor = "0";
+                var drained = 0UL;
+                while (true)
+                {
+                    var page = transport.Events(cursor);
+                    foreach (var gameEvent in page.value.events)
+                    {
+                        drained++;
+                        Assert.That(gameEvent.sequence, Is.EqualTo(drained.ToString()));
+                        Assert.That(gameEvent.event_id, Does.Not.Contain("level"));
+                        Assert.That(gameEvent.event_id, Does.Not.Contain("source"));
+                        Assert.That(gameEvent.event_id, Does.Not.Contain("slot"));
+                    }
+                    if (!page.value.has_more) break;
+                    cursor = page.value.next_cursor;
+                }
+                Assert.That(drained, Is.EqualTo(head));
+
+                Assert.Throws<InvalidOperationException>(() => transport.Snapshot());
+                Assert.Throws<InvalidOperationException>(() => transport.Step(0, 0, 0, 0, 0));
+                Assert.Throws<InvalidOperationException>(() => transport.Audio("1"));
+                Assert.Throws<InvalidOperationException>(() =>
+                    transport.PresentationAsset("presentation.spell.fireball.projectile_asset"));
+                Assert.Throws<InvalidOperationException>(() => transport.CompatibilitySnapshot());
+
+                var reset = transport.CampaignReset();
+                Assert.That(reset.identity.generation, Is.EqualTo("2"));
+                Assert.That(reset.identity.tick, Is.EqualTo("0"));
+                Assert.That(reset.value.state_hash, Is.EqualTo(initial.value.state_hash));
+                Assert.That(
+                    reset.value.effect_journal_sha256,
+                    Is.EqualTo(initial.value.effect_journal_sha256));
+
+                var stale = Encoding.UTF8.GetBytes("{}");
+                Assert.That(
+                    NativeSim.mc_game_session_step_json_v1(
+                        transport.Handle, 1, 0, stale, checked((uint)stale.Length)),
+                    Is.EqualTo(NativeSim.GenerationMismatch));
+
+                var replay = transport.CampaignStep(0, 0, 0x01, 0, 0);
+                Assert.That(replay.identity.generation, Is.EqualTo("2"));
+                Assert.That(replay.value.state_hash, Is.EqualTo(stepped.value.state_hash));
+                Assert.That(
+                    replay.value.effect_journal_sha256,
+                    Is.EqualTo(stepped.value.effect_journal_sha256));
+            }
+            finally
+            {
+                transport.Destroy();
+            }
+        }
+
+        [Test]
+        public void NeutralManagedRegistryServesOwnedAndCampaignSessionsTogether()
+        {
+            using var owned = NativeSession.OpenEngine(
+                PackagePath, ClosurePath, AssetCachePath);
+            var campaign = MagicCarpetRuntime.OpenEngineSessionForPackage(
+                CampaignPackagePath, null, null);
+            try
+            {
+                Assert.That(campaign.Handle, Is.Not.EqualTo(owned.Handle));
+                var ownedBefore = owned.EngineSnapshot();
+                var stepped = campaign.CampaignStep(0, 0, 0x01, 0, 0);
+                Assert.That(stepped.identity.tick, Is.EqualTo("1"));
+                var ownedAfter = owned.EngineSnapshot();
+                Assert.That(ownedAfter.identity.tick, Is.EqualTo(ownedBefore.identity.tick));
+                Assert.That(
+                    ownedAfter.value.state_hash,
+                    Is.EqualTo(ownedBefore.value.state_hash));
+            }
+            finally
+            {
+                campaign.Destroy();
+            }
+            Assert.That(owned.EngineSnapshot().identity.generation, Is.EqualTo("1"));
+        }
+
+        [Test]
+        public void NeutralManagedCampaignSelectionIsByPackageAndFailsClosedOnWrongShapes()
+        {
+            Assert.Throws<ArgumentException>(() =>
+                MagicCarpetRuntime.OpenEngineSessionForPackage(
+                    CampaignPackagePath, ClosurePath, null));
+            Assert.Throws<ArgumentException>(() =>
+                MagicCarpetRuntime.OpenEngineSessionForPackage(
+                    PackagePath, null, AssetCachePath));
+            Assert.Throws<InvalidOperationException>(() =>
+                NativeSession.OpenEngine(CampaignPackagePath, null, null));
         }
 
         [Test]

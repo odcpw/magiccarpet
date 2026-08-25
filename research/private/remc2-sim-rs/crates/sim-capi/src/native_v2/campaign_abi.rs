@@ -173,7 +173,7 @@ pub(super) fn with_session<T>(
             let guard = entry.lock().map_err(|_| {
                 AbiError::new(MC_STATUS_LOCK_FAILED, "neutral session lock is poisoned")
             })?;
-            operation(guard.backend().projection())
+            operation(guard.legacy_projection()?)
         }
     }
 }
@@ -214,7 +214,7 @@ pub(super) fn with_projection_session_mut<T>(
             let mut guard = entry.lock().map_err(|_| {
                 AbiError::new(MC_STATUS_LOCK_FAILED, "neutral session lock is poisoned")
             })?;
-            operation(guard.backend_mut().projection_mut())
+            operation(guard.legacy_projection_mut()?)
         }
     }
 }
