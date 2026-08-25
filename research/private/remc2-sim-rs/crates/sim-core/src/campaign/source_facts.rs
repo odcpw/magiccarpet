@@ -68,6 +68,10 @@ pub(crate) struct SourceFactContext<'a> {
     pub files: &'a BTreeMap<String, (u64, String)>,
     pub members: &'a BTreeMap<String, Vec<u8>>,
     pub authored_collision_provenance: &'a [SelectorProvenance],
+    /// Census-profiled identity of the qualified collision-mask bank for the
+    /// validated selection.  The profile table in `spec` owns these values.
+    pub collision_bank_bytes: usize,
+    pub collision_bank_sha256: &'a str,
 }
 
 const SOURCE_ARTIFACTS: &[(&str, u64, &str)] = &[
@@ -539,11 +543,10 @@ pub(crate) fn validate_source_facts(
         .get("collision-masks.bin")
         .ok_or_else(|| "collision-mask member is absent".to_owned())?;
     decode_collision_masks(collision, &expected_selectors)?;
-    if collision.len() != 4_638
-        || super::spec::sha256_hex(collision)
-            != "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432"
+    if collision.len() != context.collision_bank_bytes
+        || super::spec::sha256_hex(collision) != context.collision_bank_sha256
     {
-        return Err("Level 2 collision SourceFact differs from qualified bytes".to_owned());
+        return Err("collision SourceFact differs from the census-qualified bytes".to_owned());
     }
     Ok(result)
 }

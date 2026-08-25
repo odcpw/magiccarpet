@@ -180,7 +180,7 @@ def test_campaign_package_v1_full_planted_negative_set(campaign_twins: tuple[Pat
     authored = (package / "authored-level.bin").read_bytes()
     entities = (package / "entities.bin").read_bytes()
     _requirements, capabilities = _campaign_required_behaviors(
-        _campaign_decode_behavior_rows(authored, entities)
+        _campaign_decode_behavior_rows(authored, entities, 114)
     )
     missing_capability = set(capabilities)
     missing_capability.remove(sorted(missing_capability)[0])
@@ -324,22 +324,87 @@ def test_campaign_package_v1_additional_closed_union_and_carrier_negatives(
     struct.pack_into("<h", authored, 1091 + first_authored * 20 + 2, -2)
     with pytest.raises(AssertionError, match="exceeds schema-v1 width"):
         _campaign_decode_behavior_rows(
-            bytes(authored), (package / "entities.bin").read_bytes()
+            bytes(authored), (package / "entities.bin").read_bytes(), 114
         )
 
 
-def test_campaign_package_v1_flag_is_level2_only(tmp_path: Path) -> None:
+def test_campaign_package_v1_flag_is_census_profiled_only(tmp_path: Path) -> None:
     exporter = Path(os.environ.get("MC2_LEVEL_EXPORTER_BIN", "/tmp/magiccarpet-remc2-level-exporter-build/remc2-level-exporter"))
     owner_root = Path(os.environ.get("MC2_OWNER_ROOT", str(ROOT / "research/private/remc2-native-runtime")))
-    result = subprocess.run(
-        [
-            str(exporter), "--owner-root", str(owner_root), "--output", str(tmp_path / "level1"),
-            "--level", "1", "--campaign-package-v1",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
+    for level in ("1", "4"):
+        output = tmp_path / f"level{level}"
+        result = subprocess.run(
+            [
+                str(exporter), "--owner-root", str(owner_root), "--output", str(output),
+                "--level", level, "--campaign-package-v1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+        assert "admits only census-profiled external levels" in result.stderr
+        assert not output.exists()
+
+
+@pytest.fixture(scope="module")
+def level3_campaign_twins() -> tuple[Path, Path]:
+    exporter = Path(os.environ.get("MC2_LEVEL_EXPORTER_BIN", "/tmp/magiccarpet-remc2-level-exporter-build/remc2-level-exporter"))
+    if not exporter.is_file():
+        raise AssertionError("CF-14 tests require the clean built remc2-level-exporter")
+    owner_root = Path(os.environ.get("MC2_OWNER_ROOT", str(ROOT / "research/private/remc2-native-runtime")))
+    generated_root = ROOT / "research/private/generated"
+    generated_root.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="mc-cf14-package-v1-", dir=generated_root))
+    first, second = scratch / "level3-a", scratch / "level3-b"
+    command = [
+        str(exporter),
+        "--owner-root", str(owner_root),
+        "--level", "3",
+        "--campaign-package-v1",
+    ]
+    try:
+        for output in (first, second):
+            subprocess.run(
+                command + ["--output", str(output)],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        yield first, second
+    finally:
+        shutil.rmtree(scratch)
+
+
+def test_cf14_level3_campaign_package_uses_shared_schema(level3_campaign_twins: tuple[Path, Path]) -> None:
+    first, second = level3_campaign_twins
+    verify(first)
+    verify(second)
+    assert tree_bytes(first) == tree_bytes(second)
+    manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema"] == "mc2-owner-campaign-package/v1"
+    assert manifest["level"] == {
+        "external": 3,
+        "internal": 2,
+        "map_type": {"id": 0, "name": "Day"},
+    }
+    definition = json.loads((first / "campaign-definition.json").read_text(encoding="utf-8"))
+    assert definition["schema"] == "mc2-campaign-definition/v1"
+    assert definition["identity"] == {"external_level": 3, "internal_level": 2, "map_type_id": 0}
+    assert len(definition["campaign_spec"]["objectives"]) == 5
+    live_pairs = sorted(
+        (row["selector"]["class"], row["selector"]["action"])
+        for row in definition["required_behaviors"]
     )
-    assert result.returncode != 0
-    assert "currently admits only external Level 2" in result.stderr
-    assert not (tmp_path / "level1").exists()
+    # mc-iol7n census receipt: the fifteen live Level 3 reset selectors,
+    # including the three census-delta capabilities (2,21), (11,16), (14,6)
+    # that stay uncompiled until their shared-behavior leaves land.
+    assert live_pairs == [
+        (2, 0), (2, 3), (2, 21), (3, 0), (5, 31), (5, 72), (5, 232), (10, 52),
+        (11, 0), (11, 4), (11, 16), (11, 32), (14, 6), (15, 19), (15, 34),
+    ]
+    # A caller pinning the wrong selection still fails closed.
+    with pytest.raises(AssertionError, match="selection mismatch"):
+        verify(first, expected_campaign_selection=(2, 1, 0))

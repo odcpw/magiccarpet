@@ -61,9 +61,14 @@ pub struct CampaignSession {
 }
 
 impl CampaignSession {
-    /// Validate and open a campaign package. Contract v1 currently admits the
-    /// qualified Level 2 definition only; unsupported identities fail during
-    /// descriptor preflight rather than selecting a fallback implementation.
+    /// Validate and open a campaign package. Contract v1 admits the
+    /// census-profiled selections (qualified Level 2 and Level 3); unsupported
+    /// identities fail during descriptor preflight rather than selecting a
+    /// fallback implementation.  A profiled selection whose census-delta
+    /// shared-behavior leaves are not yet compiled (Level 3: ClassAction 2/21,
+    /// 11/16, 14/6 per mc-iol7n) fails closed at behavior closure before this
+    /// materializer runs, so the folded shared authority below stays the one
+    /// live engine and no per-level route exists.
     pub fn open(
         package_root: impl AsRef<Path>,
         selection: CampaignSelection,
@@ -200,7 +205,10 @@ mod tests {
     use super::{CampaignOpenError, CampaignSelection, CampaignSession, Level2ResetSession};
     use crate::{
         PlayerCommand,
-        campaign::spec::ValidationStage,
+        campaign::{
+            dispatch::CAMPAIGN_BEHAVIOR_REGISTRY,
+            spec::{BehaviorSelector, CampaignDefinition, ValidationStage},
+        },
         native_world::{Level2NyphurDispatchCall, NativeWorld},
     };
     use std::{
@@ -226,6 +234,16 @@ mod tests {
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2")
+            },
+            PathBuf::from,
+        )
+    }
+
+    fn level_three_descriptor_fixture_path() -> PathBuf {
+        std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
             },
             PathBuf::from,
         )
@@ -308,6 +326,160 @@ mod tests {
         };
         assert_eq!(error.stage, ValidationStage::OuterManifest);
         assert!(!MATERIALIZER_CALLED.load(Ordering::SeqCst));
+    }
+
+    /// mc-iol7n census receipt: the fifteen live Level 3 reset selectors.
+    const CF14_LEVEL3_LIVE_PAIRS: [(u8, u8); 15] = [
+        (2, 0),
+        (2, 3),
+        (2, 21),
+        (3, 0),
+        (5, 31),
+        (5, 72),
+        (5, 232),
+        (10, 52),
+        (11, 0),
+        (11, 4),
+        (11, 16),
+        (11, 32),
+        (14, 6),
+        (15, 19),
+        (15, 34),
+    ];
+
+    /// mc-iol7n census delta: live Level 3 selectors whose shared-behavior
+    /// leaves have not landed.  Each is a separate blocking leaf; CF-14 owns
+    /// only the descriptor/composition route and must fail closed on them.
+    const CF14_LEVEL3_MISSING_PAIRS: [(u8, u8); 3] = [(2, 21), (11, 16), (14, 6)];
+
+    #[test]
+    fn cf14_level3_descriptor_uses_shared_engine() {
+        let package = level_three_descriptor_fixture_path();
+
+        // The one shared descriptor engine validates the qualified owner
+        // Level 3 package through every data stage (identity, members, typed
+        // members, source facts, operations, reset receipt) with no per-level
+        // route.  Only the compiled-capability gate is exercised separately
+        // below, so this receipt binds stages 1-7 and 9 to the census facts.
+        let accept = |_: &super::spec::BehaviorKey| true;
+        let definition =
+            CampaignDefinition::preflight(&package, CampaignSelection::LEVEL3, &accept)
+                .expect("census-profiled Level 3 descriptor validates through the shared engine");
+        assert_eq!(definition.completed_stage, ValidationStage::ResetState);
+        assert_eq!(definition.identity, CampaignSelection::LEVEL3);
+        assert!(definition.reset_state_receipt.structurally_validated);
+        assert_eq!(definition.source_facts.len(), 3);
+        assert_eq!(definition.campaign_spec.objectives.len(), 5);
+        assert_eq!(
+            definition
+                .campaign_spec
+                .reset_sources
+                .feature_boundary
+                .len(),
+            7
+        );
+        assert!(definition.campaign_spec.initial_activation.is_empty());
+        assert_eq!(
+            definition.campaign_spec.presentation_recipe.map_type, "Day",
+            "Level 3 reuses the shared Day presentation facts"
+        );
+        let live_pairs = definition
+            .required_behavior_keys()
+            .map(|key| match key.selector {
+                BehaviorSelector::ClassAction { class, action } => (class, action),
+                ref other => panic!("live root uses non-ClassAction selector {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            live_pairs,
+            CF14_LEVEL3_LIVE_PAIRS.to_vec(),
+            "descriptor live roots must equal the census receipt"
+        );
+        let missing = definition
+            .required_behavior_keys()
+            .filter(|key| CAMPAIGN_BEHAVIOR_REGISTRY.entry(key).is_none())
+            .map(|key| match key.selector {
+                BehaviorSelector::ClassAction { class, action } => (class, action),
+                ref other => panic!("missing root uses non-ClassAction selector {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            missing,
+            CF14_LEVEL3_MISSING_PAIRS.to_vec(),
+            "exactly the census-delta shared-behavior leaves stay uncompiled"
+        );
+
+        // The production route consumes the same compiled registry and must
+        // fail closed at behavior closure, before any materialization, session
+        // state, or handle exists.
+        static MATERIALIZER_CALLED: AtomicBool = AtomicBool::new(false);
+        MATERIALIZER_CALLED.store(false, Ordering::SeqCst);
+        let result =
+            CampaignSession::open_with_materializer(&package, CampaignSelection::LEVEL3, |_| {
+                MATERIALIZER_CALLED.store(true, Ordering::SeqCst);
+                panic!("materializer must not run while census-delta leaves are uncompiled")
+            });
+        let CampaignOpenError::Preflight(error) =
+            result.expect_err("Level 3 open fails while census-delta leaves are uncompiled")
+        else {
+            panic!("Level 3 open escaped descriptor preflight");
+        };
+        assert_eq!(error.stage, ValidationStage::BehaviorClosure);
+        assert!(
+            error
+                .message
+                .contains("compiled registry is missing capability"),
+            "closure failure must name the compiled-capability gate: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("class: 2") && error.message.contains("action: 21"),
+            "closure failure must name the first census-delta capability: {}",
+            error.message
+        );
+        assert!(!MATERIALIZER_CALLED.load(Ordering::SeqCst));
+
+        // The public route fails with the identical fail-closed receipt.
+        let public_error = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect_err("public Level 3 open fails identically");
+        assert_eq!(public_error, CampaignOpenError::Preflight(error));
+
+        // Selection mismatch fails at the outer manifest before member decode.
+        let mismatch = CampaignDefinition::preflight(&package, CampaignSelection::LEVEL2, &accept)
+            .expect_err("Level 2 caller against the Level 3 package must fail");
+        assert_eq!(mismatch.stage, ValidationStage::OuterManifest);
+
+        // An unprofiled selection can never borrow the Level 3 route.
+        let unprofiled = CampaignSelection {
+            external_level: 4,
+            internal_level: 3,
+            map_type_id: 0,
+        };
+        let unknown = CampaignDefinition::preflight(&package, unprofiled, &accept)
+            .expect_err("an unprofiled selection must fail closed");
+        assert_eq!(unknown.stage, ValidationStage::OuterManifest);
+
+        // A mutated member fails the hash stage before any typed decode.
+        let tampered_root = std::env::temp_dir().join(format!(
+            "mc-cf14-tamper-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&tampered_root).expect("create tamper scratch");
+        for entry in std::fs::read_dir(&package).expect("enumerate Level 3 package") {
+            let entry = entry.expect("inspect Level 3 package entry");
+            std::fs::copy(entry.path(), tampered_root.join(entry.file_name()))
+                .expect("copy Level 3 member into tamper scratch");
+        }
+        let terrain_path = tampered_root.join("terrain.bin");
+        let mut terrain = std::fs::read(&terrain_path).expect("read tamper terrain");
+        terrain[0] ^= 0x01;
+        std::fs::write(&terrain_path, terrain).expect("write tampered terrain");
+        let tampered =
+            CampaignDefinition::preflight(&tampered_root, CampaignSelection::LEVEL3, &accept)
+                .expect_err("a mutated member must fail the hash stage");
+        assert_eq!(tampered.stage, ValidationStage::MemberHashes);
+        std::fs::remove_dir_all(&tampered_root).expect("remove tamper scratch");
     }
 
     #[test]

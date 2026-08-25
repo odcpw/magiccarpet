@@ -2799,3 +2799,149 @@ fn cf12_generic_campaign_abi_failures_are_atomic() {
     );
     assert_eq!(mismatched_handle, 0);
 }
+
+fn cf14_level3_descriptor_package() -> PathBuf {
+    std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
+        },
+        PathBuf::from,
+    )
+}
+
+#[test]
+fn cf14_level3_uses_generic_campaign_abi() {
+    // The census-profiled Level 3 selection travels the one generic campaign
+    // ABI route.  With the mc-iol7n census-delta shared-behavior leaves still
+    // uncompiled, open must fail closed at descriptor behavior closure -- not
+    // at any per-level selection whitelist -- and must allocate no handle.
+    let package = cf14_level3_descriptor_package();
+    let package = package.to_string_lossy();
+    let selection = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 3,
+        internal_level: 2,
+        map_type: 0,
+        ..McCampaignSelectionV2::default()
+    };
+    let mut handle = u64::MAX;
+    assert_eq!(
+        mc_native_campaign_session_open(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            &raw const selection,
+            &raw mut handle,
+        ),
+        MC_STATUS_VALIDATION_FAILED
+    );
+    assert_eq!(handle, 0, "failed Level 3 open must not allocate a handle");
+    let closure_error = LAST_ERROR.with(|value| value.borrow().clone());
+    assert!(
+        closure_error.contains("compiled registry is missing capability"),
+        "Level 3 must reach the shared compiled-capability gate: {closure_error}"
+    );
+    assert!(
+        closure_error.contains("class: 2") && closure_error.contains("action: 21"),
+        "closure failure must name the first census-delta capability: {closure_error}"
+    );
+    assert!(
+        !closure_error.contains("caller/outer"),
+        "Level 3 identity must be admitted by the generic route: {closure_error}"
+    );
+    assert_eq!(
+        mc_native_campaign_session_destroy(0),
+        MC_STATUS_UNKNOWN_HANDLE,
+        "no campaign session may exist after the fail-closed Level 3 open"
+    );
+
+    // A mismatched caller triple against the same package fails at the outer
+    // manifest stage, before behavior closure.
+    let mismatched = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 2,
+        internal_level: 1,
+        map_type: 0,
+        ..McCampaignSelectionV2::default()
+    };
+    let mut mismatched_handle = u64::MAX;
+    assert_eq!(
+        mc_native_campaign_session_open(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            &raw const mismatched,
+            &raw mut mismatched_handle,
+        ),
+        MC_STATUS_VALIDATION_FAILED
+    );
+    assert_eq!(mismatched_handle, 0);
+    let mismatch_error = LAST_ERROR.with(|value| value.borrow().clone());
+    assert!(
+        mismatch_error.contains("campaign preflight stage 1"),
+        "selection mismatch must fail at the outer manifest: {mismatch_error}"
+    );
+
+    // An unprofiled selection can never borrow the generic route.
+    let unprofiled = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 4,
+        internal_level: 3,
+        map_type: 0,
+        ..McCampaignSelectionV2::default()
+    };
+    let mut unprofiled_handle = u64::MAX;
+    assert_eq!(
+        mc_native_campaign_session_open(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            &raw const unprofiled,
+            &raw mut unprofiled_handle,
+        ),
+        MC_STATUS_VALIDATION_FAILED
+    );
+    assert_eq!(unprofiled_handle, 0);
+    let unprofiled_error = LAST_ERROR.with(|value| value.borrow().clone());
+    assert!(
+        unprofiled_error.contains("campaign preflight stage 1"),
+        "unprofiled selections must fail closed at the outer manifest: {unprofiled_error}"
+    );
+
+    // rg-style guard: the generic ABI stays free of per-level Level 3 symbols.
+    // The needles are assembled at runtime so this test cannot match itself.
+    let forbidden = [
+        format!("mc_native_{}", "level3"),
+        format!("Level{}Session", 3),
+        format!("mc_native_{}", "level2"),
+    ];
+    let mut sources = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(directory) = sources.pop() {
+        for entry in std::fs::read_dir(&directory).expect("enumerate sim-capi sources") {
+            let entry = entry.expect("inspect sim-capi source entry");
+            let path = entry.path();
+            if path.is_dir() {
+                sources.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read sim-capi source");
+            for needle in &forbidden {
+                assert!(
+                    !source.contains(needle.as_str()),
+                    "forbidden per-level ABI symbol {needle} in {}",
+                    path.display()
+                );
+            }
+        }
+    }
+}

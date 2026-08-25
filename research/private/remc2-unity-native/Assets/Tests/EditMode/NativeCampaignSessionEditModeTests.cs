@@ -23,6 +23,12 @@ namespace MagicCarpet.Native.Tests
         private static string Level1Package =>
             Path.Combine(PrivateRoot, "generated/level1-export-m");
 
+        private static string Level3Package =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_LEVEL3_V1") ??
+            Path.Combine(
+                PrivateRoot,
+                "generated/mc-cf14-campaign-package-v1-a/qualified-level3");
+
         [Test]
         public void Level2ProductionStartupOpensCampaignSessionAndValidatesDayProfile()
         {
@@ -660,6 +666,35 @@ namespace MagicCarpet.Native.Tests
                     Directory.Delete(temporaryPackage, true);
                 }
             }
+        }
+
+        [Test]
+        public void Cf14GenericLevel3FailsClosedAtSharedBehaviorClosureWithoutLeaks()
+        {
+            // mc-iol7n census delta: the live Level 3 selectors (2,21), (11,16)
+            // and (14,6) have no compiled shared-behavior leaves yet.  The
+            // generic managed consumer must admit the census-profiled Level 3
+            // identity through the one descriptor route and fail closed at the
+            // shared compiled-capability gate, without allocating a session.
+            var closure = Assert.Throws<InvalidOperationException>(
+                () => NativeCampaignSession.Open(
+                    Level3Package,
+                    NativeSim.CampaignSelection.Create(3, 2, 0)));
+            StringAssert.Contains(
+                "compiled registry is missing capability",
+                closure.Message);
+            StringAssert.DoesNotContain("caller/outer", closure.Message);
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+
+            // A mismatched caller triple against the same package fails at the
+            // outer manifest stage before behavior closure.
+            var mismatch = Assert.Throws<InvalidOperationException>(
+                () => NativeCampaignSession.Open(
+                    Level3Package,
+                    NativeSim.CampaignSelection.Level2Day()));
+            StringAssert.Contains("campaign preflight stage 1", mismatch.Message);
+            StringAssert.Contains("caller/outer selection", mismatch.Message);
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
         }
 
         [Test]

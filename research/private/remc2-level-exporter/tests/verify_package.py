@@ -55,6 +55,34 @@ V4_FILES = V3_FILES | {"collision-masks.bin"}
 V5_FILES = V4_FILES
 CAMPAIGN_FILES = V5_FILES | {"campaign-definition.json"}
 REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+# Census-proven per-level campaign profile facts keyed by the outer selection
+# (external, internal, map_type_id).  Level 2 values are the qualified Day
+# reset census; Level 3 values are the mc-iol7n byte-identical twin exports.
+# A selection without an entry fails closed before any member is decoded.
+CAMPAIGN_PROFILES = {
+    (2, 1, 0): {
+        "map_type_name": "Day",
+        "active_entities": 114,
+        "collision_bank_bytes": 4638,
+        "collision_bank_sha256": "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432",
+        "bound_player_slots": 2,
+        "runtime_player_count": 2,
+        "runtime_music_selector": 2,
+        "objective_stage_forms": {3, 5, 7, 9},
+        "objective_count": 5,
+    },
+    (3, 2, 0): {
+        "map_type_name": "Day",
+        "active_entities": 252,
+        "collision_bank_bytes": 3718,
+        "collision_bank_sha256": "e1c2bd67c7ce43d0378d274431c252c9a427bf1a17bb638a344940433f06f5e6",
+        "bound_player_slots": 1,
+        "runtime_player_count": 1,
+        "runtime_music_selector": 2,
+        "objective_stage_forms": {0, 5, 7},
+        "objective_count": 5,
+    },
+}
 CAMPAIGN_SOURCE_ARTIFACTS = {
     "CD_Files/DATA/BUILD0-0.DAT": (80064, "3db5d9a763dedafbe3077eeeef47431da0b5d397e311f6ee46719a0fc51e8e5d"),
     "CD_Files/DATA/BUILD0-0.TAB": (462, "e064a1520e96f65c13fde9a05918d240ee4f708ab6aefc793ec8b391f220c05e"),
@@ -1535,7 +1563,7 @@ def _campaign_member_ref(value: object, files: dict, label: str, *, schema: str 
     return result
 
 
-def _campaign_decode_behavior_rows(authored: bytes, entities: bytes) -> list[dict]:
+def _campaign_decode_behavior_rows(authored: bytes, entities: bytes, expected_active_entities: int) -> list[dict]:
     require(len(authored) == 0x6604 and authored[6] == 0, "campaign authored member identity/layout changed")
     rows: list[dict] = []
     for index in range(1200):
@@ -1589,7 +1617,7 @@ def _campaign_decode_behavior_rows(authored: bytes, entities: bytes) -> list[dic
             "model": entities[offset + 68],
             "subtype": entities[offset + 70],
         })
-    require(active_count == 114, "Level 2 active entity count differs")
+    require(active_count == expected_active_entities, "campaign active entity count differs from the census profile")
     rows.sort(key=lambda row: (row["authored_record"], row["initial_source_slot"] is not None, row["initial_source_slot"] or 0))
     return rows
 
@@ -1638,7 +1666,7 @@ def _campaign_required_behaviors(rows: list[dict]) -> tuple[list[dict], set[tupl
     return requirements, set(provenance)
 
 
-def _campaign_validate_reset_members(package: Path, spec: dict, files: dict) -> tuple[bytes, bytes, bytes]:
+def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, profile: dict) -> tuple[bytes, bytes, bytes]:
     authored_descriptor = _campaign_member_ref(
         spec["authored_records"], files, "campaign_spec.authored_records",
         schema="mc2-authored-level/v1", count=1200, record_bytes=20,
@@ -1649,7 +1677,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict) -> 
         schema="mc2-entity-arena/v1", count=1000, record_bytes=176,
     )
     entities = (package / entities_descriptor["member"]).read_bytes()
-    expected_rows = _campaign_decode_behavior_rows(authored, entities)
+    expected_rows = _campaign_decode_behavior_rows(authored, entities, profile["active_entities"])
     require(_strict_equal(spec["authored_behavior_rows"], expected_rows), "authored_behavior_rows differ from fresh authored/reset decode")
 
     players_descriptor = _campaign_member_ref(
@@ -1664,11 +1692,11 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict) -> 
         require(u16(players, offset) == slot, f"player slot/index mismatch at {slot}")
         require(players[offset + 2] in (0, 1) and players[offset + 3] == 0, f"player {slot} flags are invalid")
         require(u16(players, offset + 4) < 1000, f"player {slot} entity relation is out of bounds")
-        if slot < 2:
+        if slot < profile["bound_player_slots"]:
             entity = u16(players, offset + 4)
             require(
                 entities[12 + entity * 176 + 2] == 1,
-                f"Level 2 active player {slot} does not reference an active entity",
+                f"campaign active player {slot} does not reference an active entity",
             )
         require(players[offset + 50 : offset + 54] == bytes(4), f"player {slot} host time is not normalized")
 
@@ -1685,7 +1713,11 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict) -> 
     )
     runtime = (package / runtime_descriptor["member"]).read_bytes()
     require(len(runtime) == 2754 and runtime[:4] == b"MCR1" and (u16(runtime, 4), u16(runtime, 6)) == (1, 0), "campaign runtime header/extent changed")
-    require((u16(runtime, 16), u16(runtime, 18), u32(runtime, 32)) == (0, 2, 2), "campaign runtime Level 2 scalars changed")
+    require(
+        (u16(runtime, 16), u16(runtime, 18), u32(runtime, 32))
+        == (0, profile["runtime_player_count"], profile["runtime_music_selector"]),
+        "campaign runtime census profile scalars changed",
+    )
     accepted_stage_types = {0, 3, 5, 7, 9}
     for index in range(8):
         offset = 192 + index * 14
@@ -1787,7 +1819,7 @@ def _campaign_decode_collision(content: bytes, authored_selectors: list[int]) ->
     return selectors
 
 
-def _campaign_validate_source_facts(package: Path, facts_value: object, files: dict, behavior_rows: list[dict]) -> None:
+def _campaign_validate_source_facts(package: Path, facts_value: object, files: dict, behavior_rows: list[dict], profile: dict) -> None:
     require(isinstance(facts_value, list), "source_facts is not an array")
     facts = facts_value
     require(len(facts) == 3, "Level 2 requires exactly three proven SourceFacts")
@@ -1846,11 +1878,11 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
     require(feature_selectors == sorted(set(authored_selectors)), "feature construction selectors differ from authored provenance")
     collision = (package / "collision-masks.bin").read_bytes()
     _campaign_decode_collision(collision, authored_selectors)
-    require(len(collision) == LEVEL2_COLLISION_MASK_BANK_BYTES and hashlib.sha256(collision).hexdigest() == LEVEL2_COLLISION_MASK_BANK_SHA256, "Level 2 collision SourceFact differs from qualified bytes")
+    require(len(collision) == profile["collision_bank_bytes"] and hashlib.sha256(collision).hexdigest() == profile["collision_bank_sha256"], "collision SourceFact differs from the census-qualified bytes")
 
 
-def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, package: Path) -> None:
-    require(spec["initial_activation"] == [], "Level 2 schema-v1 has no proven initial-activation operation")
+def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, package: Path, profile: dict) -> None:
+    require(spec["initial_activation"] == [], "schema-v1 has no proven initial-activation operation")
     expected_objectives = []
     inactive_seen = False
     for index in range(8):
@@ -1860,13 +1892,13 @@ def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, pack
             inactive_seen = True
             require((selector, axis_x, axis_y) == (0, 0, 0), f"inactive objective row {index} has payload")
             continue
-        require(not inactive_seen and stage in {3, 5, 7, 9}, f"objective row {index} has an unproven operation form")
+        require(not inactive_seen and stage in profile["objective_stage_forms"], f"objective row {index} has an unproven operation form")
         expected_objectives.append({
             "operands": {"axis_x": axis_x, "axis_y": axis_y, "objective_selector": selector, "objective_slot": index, "stage_index": stage},
             "operation_kind": 1,
             "operation_version": 1,
         })
-    require(len(expected_objectives) == 5 and _strict_equal(spec["objectives"], expected_objectives), "objective operations differ from authored Level 2 rows")
+    require(len(expected_objectives) == profile["objective_count"] and _strict_equal(spec["objectives"], expected_objectives), "objective operations differ from the authored census-profiled rows")
     for index, operation in enumerate(spec["objectives"]):
         _exact_object(operation, {"operation_kind", "operation_version", "operands"}, f"objectives[{index}]")
         _exact_object(operation["operands"], {"axis_x", "axis_y", "objective_selector", "objective_slot", "stage_index"}, f"objectives[{index}].operands")
@@ -1925,7 +1957,7 @@ def verify_campaign_package(
     package: Path,
     manifest: dict,
     *,
-    expected_selection: tuple[int, int, int] = (2, 1, 0),
+    expected_selection: tuple[int, int, int] | None = None,
     campaign_capabilities: set[tuple[int, int, int, int]] | None = None,
 ) -> dict:
     # Stage 1: closed outer shape and normalized identities.
@@ -1938,7 +1970,13 @@ def verify_campaign_package(
         _bounded_integer(level["internal"], 0xFFFF, "internal level"),
         _bounded_integer(map_type["id"], 0xFF, "map type id"),
     )
-    require(outer_selection == expected_selection and map_type["name"] == "Day", "campaign caller/outer Level 2 selection mismatch")
+    profile = CAMPAIGN_PROFILES.get(outer_selection)
+    require(profile is not None, "campaign outer selection has no census-proven profile")
+    require(
+        (expected_selection is None or outer_selection == expected_selection)
+        and map_type["name"] == profile["map_type_name"],
+        "campaign caller/outer selection mismatch",
+    )
     files = _exact_object(manifest["files"], CAMPAIGN_FILES, "campaign manifest.files")
     for name, raw_metadata in files.items():
         _normalized_member_name(name, "campaign member name")
@@ -1979,21 +2017,21 @@ def verify_campaign_package(
         _bounded_integer(identity_value["internal_level"], 0xFFFF, "campaign definition internal level"),
         _bounded_integer(identity_value["map_type_id"], 0xFF, "campaign definition map type id"),
     )
-    require(definition_selection == outer_selection == expected_selection, "campaign definition/outer/caller selection mismatch")
+    require(definition_selection == outer_selection, "campaign definition/outer/caller selection mismatch")
     spec = _exact_object(root["campaign_spec"], {"authored_records", "authored_behavior_rows", "reset_sources", "initial_rng", "initial_activation", "objectives", "presentation_recipe"}, "campaign_spec")
     reset_sources = _exact_object(spec["reset_sources"], {"terrain", "entities", "players", "runtime", "feature_boundary"}, "campaign_spec.reset_sources")
 
     # Stage 5: all compiled member decoders and cross-member topology.
-    authored, _entities, _runtime = _campaign_validate_reset_members(package, spec, files)
+    authored, _entities, _runtime = _campaign_validate_reset_members(package, spec, files, profile)
     presentation = (package / "presentation.bin").read_bytes()
     require(len(presentation) == 10720 and presentation[:4] == b"MCV1" and (u16(presentation, 4), u16(presentation, 6), u32(presentation, 8)) == (1, 0, 347), "presentation snapshot layout changed")
 
     # Stage 6: immutable SourceFacts; presentation output is never consulted.
     behavior_rows = spec["authored_behavior_rows"]
-    _campaign_validate_source_facts(package, root["source_facts"], files, behavior_rows)
+    _campaign_validate_source_facts(package, root["source_facts"], files, behavior_rows, profile)
 
-    # Stage 7: reviewed Level 2 operations only.
-    _campaign_validate_operations(spec, authored, files, package)
+    # Stage 7: reviewed census-profiled operations only.
+    _campaign_validate_operations(spec, authored, files, package, profile)
     _campaign_validate_presentation(spec["presentation_recipe"], files)
 
     # Stage 8: source-derived post-GenerateEvents runtime roots, then compiled
@@ -2017,7 +2055,7 @@ def verify(
     upstream_root: Path | None = None,
     *,
     enforce_reference_hashes: bool = True,
-    expected_campaign_selection: tuple[int, int, int] = (2, 1, 0),
+    expected_campaign_selection: tuple[int, int, int] | None = None,
     campaign_capabilities: set[tuple[int, int, int, int]] | None = None,
 ) -> dict:
     package = package.resolve(strict=True)

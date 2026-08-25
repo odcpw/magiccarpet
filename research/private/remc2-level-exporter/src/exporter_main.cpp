@@ -269,6 +269,9 @@ struct Arguments {
     bool campaign_package_v1 = false;
 };
 
+struct CampaignEmissionProfile;
+const CampaignEmissionProfile* campaign_emission_profile(std::uint16_t external);
+
 Arguments parse_arguments(int argc, char** argv) {
     Arguments result;
     bool level_seen = false;
@@ -292,7 +295,8 @@ Arguments parse_arguments(int argc, char** argv) {
             std::cout << "usage: remc2-level-exporter --owner-root PATH --output PRIVATE_PATH "
                          "[--level EXTERNAL_LEVEL] [--campaign-package-v1]\n"
                          "  --level EXTERNAL_LEVEL  owner-data level 1..25 (default: 1)\n"
-                         "  --campaign-package-v1   emit the closed Level 2 campaign envelope\n";
+                         "  --campaign-package-v1   emit the closed campaign envelope for a "
+                         "census-profiled level\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown argument: " + argument);
@@ -301,8 +305,10 @@ Arguments parse_arguments(int argc, char** argv) {
     if (result.owner_root.empty() || result.output.empty()) {
         throw std::runtime_error("--owner-root and --output are required");
     }
-    if (result.campaign_package_v1 && result.level.external != 2) {
-        throw std::runtime_error("--campaign-package-v1 currently admits only external Level 2");
+    if (result.campaign_package_v1 &&
+        campaign_emission_profile(result.level.external) == nullptr) {
+        throw std::runtime_error(
+            "--campaign-package-v1 admits only census-profiled external levels 2 and 3");
     }
     return result;
 }
@@ -1586,6 +1592,31 @@ struct CampaignBehaviorRow {
     std::vector<std::uint16_t> initial_dispatch_sites;
 };
 
+// Census-proven per-level campaign emission facts.  Level 2 values are the
+// preserved Day reset census; Level 3 values are the mc-iol7n byte-identical
+// twin exports.  Any external level without an entry fails closed before any
+// campaign envelope is staged.
+struct CampaignEmissionProfile {
+    std::uint16_t external = 0;
+    std::uint16_t internal = 0;
+    std::uint8_t map_type_id = 0;
+    std::uint32_t active_entities = 0;
+    std::uint16_t number_of_players = 0;
+    std::initializer_list<std::int8_t> objective_stage_forms;
+    std::size_t objective_count = 0;
+};
+
+const CampaignEmissionProfile* campaign_emission_profile(std::uint16_t external) {
+    static const CampaignEmissionProfile kProfiles[] = {
+        {2, 1, 0, 114, 2, {3, 5, 7, 9}, 5},
+        {3, 2, 0, 252, 1, {0, 5, 7}, 5},
+    };
+    for (const auto& profile : kProfiles) {
+        if (profile.external == external) return &profile;
+    }
+    return nullptr;
+}
+
 struct CampaignBehaviorKey {
     std::uint16_t dispatch_site = 0;
     std::uint8_t selector_kind = 0;
@@ -1641,7 +1672,7 @@ std::vector<CampaignBehaviorRow> decode_campaign_behavior_rows(
         const std::uint16_t model = read_u16_le(authored, offset + 14, "authored model");
         if (class_id > 255 || subtype < 0 || subtype > 255 || model > 255 || action < -1 ||
             action > 255) {
-            throw std::runtime_error("Level 2 authored behavior row exceeds schema-v1 selector width");
+            throw std::runtime_error("campaign authored behavior row exceeds schema-v1 selector width");
         }
         CampaignBehaviorRow row;
         row.authored_record = static_cast<std::uint16_t>(index);
@@ -1667,7 +1698,7 @@ std::vector<CampaignBehaviorRow> decode_campaign_behavior_rows(
         CampaignBehaviorRow row;
         row.authored_record = read_u16_le(entities, offset + 30, "entity source id");
         if (row.authored_record >= kAuthoredFeatures) {
-            throw std::runtime_error("Level 2 reset entity source id is out of bounds");
+            throw std::runtime_error("campaign reset entity source id is out of bounds");
         }
         row.has_initial_source_slot = true;
         row.initial_source_slot = static_cast<std::uint16_t>(slot);
@@ -1734,7 +1765,9 @@ canonical_json campaign_required_behaviors(const std::vector<CampaignBehaviorRow
     return result;
 }
 
-canonical_json campaign_objective_operations(const Bytes& authored) {
+canonical_json campaign_objective_operations(
+    const Bytes& authored,
+    const CampaignEmissionProfile& profile) {
     canonical_json result = canonical_json::array();
     bool inactive_seen = false;
     for (std::size_t index = 0; index < 8; ++index) {
@@ -1746,12 +1779,17 @@ canonical_json campaign_objective_operations(const Bytes& authored) {
         if (stage == -1) {
             inactive_seen = true;
             if (selector != 0 || axis_x != 0 || axis_y != 0) {
-                throw std::runtime_error("inactive Level 2 objective row contains payload");
+                throw std::runtime_error("inactive campaign objective row contains payload");
             }
             continue;
         }
-        if (inactive_seen || (stage != 3 && stage != 5 && stage != 7 && stage != 9)) {
-            throw std::runtime_error("Level 2 objective rows exceed the proven schema-v1 forms");
+        const bool proven_form = std::find(
+            profile.objective_stage_forms.begin(),
+            profile.objective_stage_forms.end(),
+            stage) != profile.objective_stage_forms.end();
+        if (inactive_seen || !proven_form) {
+            throw std::runtime_error(
+                "campaign objective rows exceed the census-proven schema-v1 forms");
         }
         result.push_back({
             {"operands", {
@@ -1765,8 +1803,9 @@ canonical_json campaign_objective_operations(const Bytes& authored) {
             {"operation_version", 1}
         });
     }
-    if (result.size() != 5) {
-        throw std::runtime_error("Level 2 objective operation count differs from accepted evidence");
+    if (result.size() != profile.objective_count) {
+        throw std::runtime_error(
+            "campaign objective operation count differs from the census receipt");
     }
     return result;
 }
@@ -1791,7 +1830,7 @@ canonical_json campaign_source_facts(
         });
     }
     if (selector_provenance.empty()) {
-        throw std::runtime_error("Level 2 source facts require authored collision selectors");
+        throw std::runtime_error("campaign source facts require authored collision selectors");
     }
 
     canonical_json facts = canonical_json::array();
@@ -1836,7 +1875,8 @@ canonical_json campaign_source_facts(
     return facts;
 }
 
-canonical_json build_level_two_campaign_definition(
+canonical_json build_campaign_definition(
+    const CampaignEmissionProfile& profile,
     const json& legacy_manifest,
     const json& file_manifest,
     const Bytes& authored,
@@ -1901,7 +1941,7 @@ canonical_json build_level_two_campaign_definition(
             {"authored_records", authored_records},
             {"initial_activation", canonical_json::array()},
             {"initial_rng", initial_rng},
-            {"objectives", campaign_objective_operations(authored)},
+            {"objectives", campaign_objective_operations(authored, profile)},
             {"presentation_recipe", presentation_recipe},
             {"reset_sources", {
                 {"entities", reset_entities},
@@ -1914,9 +1954,9 @@ canonical_json build_level_two_campaign_definition(
             }}
         }},
         {"identity", {
-            {"external_level", 2},
-            {"internal_level", 1},
-            {"map_type_id", 0}
+            {"external_level", profile.external},
+            {"internal_level", profile.internal},
+            {"map_type_id", profile.map_type_id}
         }},
         {"required_behaviors", campaign_required_behaviors(behavior_rows)},
         {"schema", "mc2-campaign-definition/v1"},
@@ -2943,7 +2983,29 @@ int run(const Arguments& arguments) {
     // its own reset seal only when that corpus is qualified.
     if (!level_one) manifest.erase("reset_projection");
     if (arguments.campaign_package_v1) {
-        const canonical_json definition = build_level_two_campaign_definition(
+        const CampaignEmissionProfile* campaign_profile =
+            campaign_emission_profile(arguments.level.external);
+        if (campaign_profile == nullptr) {
+            throw std::runtime_error(
+                "campaign envelope requested for a level without a census emission profile");
+        }
+        if (campaign_profile->internal != arguments.level.internal ||
+            campaign_profile->map_type_id != map_profile.id) {
+            throw std::runtime_error(
+                "live level identity disagrees with the census campaign emission profile");
+        }
+        if (active_entities != campaign_profile->active_entities) {
+            throw std::runtime_error(
+                "campaign active entity count differs from the census receipt (actual " +
+                std::to_string(active_entities) + ")");
+        }
+        if (D41A0_0.LevelIndex_0xc != 0 ||
+            D41A0_0.NumberOfPlayers_0xe != campaign_profile->number_of_players) {
+            throw std::runtime_error(
+                "campaign local player slot/count differs from the census receipt");
+        }
+        const canonical_json definition = build_campaign_definition(
+            *campaign_profile,
             manifest,
             file_manifest,
             authored_bytes,
