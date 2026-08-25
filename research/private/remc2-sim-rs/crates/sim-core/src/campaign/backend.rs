@@ -300,7 +300,7 @@ impl GameAdapter for Mc2CampaignAdapter {
     ) -> Result<Self::Backend, Self::Error> {
         let catalog = default_catalog().map_err(CampaignBackendError::Definition)?;
         require_catalog_defaults(definition, &catalog)?;
-        let campaign = match &input.owner_cache {
+        let mut campaign = match &input.owner_cache {
             Some(owner_cache) => CampaignSession::open_with_owner_cache(
                 &input.package_root,
                 owner_cache,
@@ -309,6 +309,14 @@ impl GameAdapter for Mc2CampaignAdapter {
             None => CampaignSession::open(&input.package_root, ACCEPTED_CAMPAIGN_PROFILE),
         }
         .map_err(CampaignBackendError::Open)?;
+        // The neutral session is the campaign route: bind the authored
+        // campaign entry stage before the first generation is exposed, like
+        // the retained `mc_native_campaign_*` opens. The pristine
+        // generation-0 state rebases, so reset restores the entry-staged
+        // baseline instead of the raw package selector.
+        campaign
+            .level2_compatibility_mut()
+            .select_level2_campaign_entry_stage();
         Ok(Mc2CampaignBackend {
             campaign,
             package_graph_hash: definition.package_graph_hash().to_owned(),
@@ -447,6 +455,16 @@ impl GameSessionBackend for Mc2CampaignBackend {
 }
 
 impl Mc2CampaignBackend {
+    /// Read-only view of this backend's one live campaign authority for the
+    /// retained `mc_native_campaign_*` presentation projections. No mutable
+    /// counterpart exists: the neutral session lifecycle stays the only
+    /// campaign gameplay writer.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn compatibility_campaign(&self) -> &CampaignSession {
+        &self.campaign
+    }
+
     fn opaque_runtime_handle(&self, namespace: &[u8], source_value: u64) -> u64 {
         let mut digest = Sha256::new();
         digest.update(b"mc2-campaign-runtime-handle/v1\0");
@@ -670,6 +688,11 @@ mod tests {
         )
         .unwrap();
         let mut direct = CampaignSession::open(&root, CampaignSelection::LEVEL2).unwrap();
+        // The direct authority mirrors the campaign route's entry binding so
+        // the equality below stays discriminating for every later value.
+        direct
+            .level2_compatibility_mut()
+            .select_level2_campaign_entry_stage();
         assert_matches_direct(&neutral, &direct);
         let initial = neutral.snapshot();
         assert_eq!(initial.identity.generation, 1);
