@@ -1,17 +1,17 @@
 use super::{
     BTreeSet, Digest, EntityAuthority, EntitySnapshot, FlightWorld, LEVEL2_NYPHUR_ENTITY_INDEX,
-    LEVEL2_NYPHUR_SOURCE_SPELL_TIER_COUNT, LEVEL2_NYPHUR_SPELL_COOLDOWNS, Level2SetSpellProfile,
-    ManaSphere, MapType, MissionContentSession, NativeWorldError, PLAYER_SPELL_COUNT,
-    PlayerSnapshot, Position, PresentationSelectors, Result, RuntimeRelation, RuntimeSnapshot,
-    SessionTerrain, Sha256, SourceAudioCallTag, angle_distance, heading_for_positions,
-    level2_applied_tier, level2_direct_starting_spell_profile, level2_nyphur_participant,
-    level2_set_spell_profile, level2_wrapping_target_distance, mark_source_audio_call,
-    terrain_index,
+    LEVEL2_NYPHUR_SOURCE_SPELL_TIER_COUNT, LEVEL2_NYPHUR_SPELL_COOLDOWNS, Level2CastleState,
+    Level2SetSpellProfile, ManaSphere, MapType, MissionContentSession, NativeWorldError,
+    PLAYER_SPELL_COUNT, PlayerSnapshot, Position, PresentationSelectors, Result, RuntimeRelation,
+    RuntimeSnapshot, SessionTerrain, Sha256, SourceAudioCallTag, angle_distance,
+    heading_for_positions, level2_applied_tier, level2_direct_starting_spell_profile,
+    level2_nyphur_participant, level2_set_spell_profile, level2_wrapping_target_distance,
+    mark_source_audio_call, terrain_index,
 };
 #[cfg(test)]
 use super::{
-    LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX, Level2DispatchEvent, NativeWorld,
-    POSSESSION_PROJECTILE_LIFETIME_TICKS, PlayerCommand,
+    LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX, LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX,
+    Level2DispatchEvent, NativeWorld, POSSESSION_PROJECTILE_LIFETIME_TICKS, PlayerCommand,
 };
 
 /// Pinned `sub_15790` spell-family order, including its zero-terminated tail
@@ -768,6 +768,16 @@ impl Level2NyphurCommonUpkeep {
         [0_u8, 7, 0x12, 0x10, 0x14, 0x15, 9]
             .into_iter()
             .any(|family| self.source_spell_holder_slot(family).is_some())
+    }
+
+    /// Pinned `sub_164B0`: the `sub_13E40` entry gate resolves each of its
+    /// nine offensive families through `sub_146C0`, so a stale or dead
+    /// holder row does not count. The source family order is retained even
+    /// though the disjunction has no side effects.
+    fn sub_164b0(&self, entities: &[EntitySnapshot]) -> bool {
+        [0x11_u8, 0x10, 0x12, 7, 9, 0x14, 0x13, 0x15, 0]
+            .into_iter()
+            .any(|family| self.sub_146c0(family, entities).is_some())
     }
 
     /// Pinned `sub_13DC0`: the damaged-source Castle relation is tested
@@ -1991,10 +2001,18 @@ fn level2_nyphur_linked_source_order(
     order
 }
 
+/// Walk the source `dword_38519` class-3 list. `UpdateEntities_57730`
+/// re-links this list on every pass by appending each live class-3 row in
+/// ascending source-slot order, so the dispatch-time list is exactly the
+/// ascending slot sweep of the live rows. This keeps a projected Castle
+/// root (class 3, model 2) in its source slot position without mutating
+/// the authored `next_relation` bytes of the wizard rows.
 fn level2_nyphur_class3_source_order(entities: &[EntitySnapshot]) -> Vec<u16> {
-    level2_nyphur_linked_source_order(entities, |entity| {
-        entity.active && entity.life >= 0 && entity.class == 3
-    })
+    entities
+        .iter()
+        .filter(|entity| entity.active && entity.life >= 0 && entity.class == 3)
+        .map(|entity| entity.index)
+        .collect()
 }
 
 /// Rebuild the source `dword_38523` list used by `sub_148E0`. `UpdateEntities`
@@ -2078,6 +2096,76 @@ fn level2_nyphur_project_mana_sphere(
     entity.record[140..148].fill(0);
     entity.record[148..152].copy_from_slice(&sphere.mana.to_le_bytes());
     entity.record[152..154].copy_from_slice(&sphere.player_entity_index.to_le_bytes());
+}
+
+/// Project the live typed Castle root into the indexed class-3 carrier
+/// consumed by `sub_13B00`, `sub_13E40`, and the shared class-3 scans. The
+/// typed economy arena remains authoritative; this is a per-dispatch view
+/// over an otherwise inactive source slot, exactly like the model-39 sphere
+/// projection above. The shift quadruple is carried so `sub_106C0` overlap
+/// probes see the Castle footprint written by `SetShiftByCastle_49EC0`.
+fn level2_nyphur_project_castle_root(entity: &mut EntitySnapshot, castle: Level2CastleState) {
+    entity.index = castle.source_entity_index;
+    entity.source_id = castle.source_id_entity_index;
+    entity.authority = EntityAuthority::FrozenObserved;
+    entity.active = true;
+    entity.max_life = castle.max_life;
+    entity.life = castle.life;
+    entity.next_relation = None;
+    entity.class = 3;
+    entity.model = 2;
+    entity.control_flags = castle.control_flags;
+    entity.entity_rng = 0;
+    entity.action = castle.action;
+    entity.action_marker = 0;
+    entity.level_gate = 0;
+    entity.position = castle.position;
+    entity.yaw = 0;
+    entity.pitch = 0;
+    entity.fov = 0;
+    entity.phase = castle.phase;
+    entity.subspell_index = 0;
+    entity.byte_3b = 0;
+    entity.byte_3c = 0;
+    entity.font_type_index = 0;
+    entity.active_value = 0;
+    entity.activation_value = 0;
+    entity.mana_regen = 0;
+    entity.actual_speed = 0;
+    entity.max_mana = castle.mana_capacity;
+    entity.mana_cost = 0;
+    entity.mana = castle.mana;
+    entity.particle_parameter_index = None;
+    entity.parameter_relation = None;
+
+    entity.record[0..2].copy_from_slice(&castle.source_entity_index.to_le_bytes());
+    entity.record[2] = 1;
+    entity.record[4..8].fill(0);
+    entity.record[8..12].copy_from_slice(&castle.max_life.to_le_bytes());
+    entity.record[12..16].copy_from_slice(&castle.life.to_le_bytes());
+    entity.record[16..20].copy_from_slice(&castle.control_flags.to_le_bytes());
+    entity.record[24..26].fill(0);
+    entity.record[30..32].copy_from_slice(&castle.source_id_entity_index.to_le_bytes());
+    entity.record[32..38].fill(0);
+    entity.record[46..48].fill(0);
+    entity.record[50..54].fill(0);
+    entity.record[63..66].fill(0);
+    entity.record[66] = castle.phase;
+    entity.record[67] = 3;
+    entity.record[68] = 2;
+    entity.record[73] = castle.action;
+    entity.record[74] = 0;
+    entity.record[80..82].copy_from_slice(&castle.position.x.to_le_bytes());
+    entity.record[82..84].copy_from_slice(&castle.position.y.to_le_bytes());
+    entity.record[84..86].copy_from_slice(&castle.position.z.to_le_bytes());
+    entity.record[86..88].copy_from_slice(&castle.shift_yaw.to_le_bytes());
+    entity.record[88..90].copy_from_slice(&castle.shift_pitch.to_le_bytes());
+    entity.record[90..92].copy_from_slice(&castle.shift_roll.to_le_bytes());
+    entity.record[92..94].copy_from_slice(&castle.shift_fov.to_le_bytes());
+    entity.record[132..136].fill(0);
+    entity.record[140..148].fill(0);
+    entity.record[148..152].copy_from_slice(&castle.mana.to_le_bytes());
+    entity.record[152..154].fill(0);
 }
 
 fn level2_nyphur_rebuild_class10_source_order(entities: &mut [EntitySnapshot]) {
@@ -2643,12 +2731,14 @@ impl Level2NyphurDispatcher {
     /// The owned mode wrappers run between the common callback and the shared
     /// tail; their exact source symbol and call position are retained in the
     /// returned trace.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn step_dispatch(
         &mut self,
         pass: u8,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
         mana_spheres: &mut [ManaSphere],
+        castle: Option<Level2CastleState>,
         players: &[PlayerSnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
@@ -2698,6 +2788,43 @@ impl Level2NyphurDispatcher {
             }
             level2_nyphur_project_mana_sphere(entity, *sphere, source_id);
             projected_dynamic_slots.insert(usize::from(source_slot));
+            projected_carrier = true;
+        }
+
+        // The typed Castle root is the sole class-3/model-2 authority; the
+        // qualified package imports no Castle seed rows. UpdateEntities keeps
+        // the live root inside the rebuilt class-3 list, so `sub_13B00` and
+        // `sub_13E40` must see it in its source slot for exactly one
+        // dispatch, without the projection ever becoming a second live row.
+        if let Some(castle) = castle.filter(|castle| castle.active) {
+            let castle_slot = castle.source_entity_index;
+            if castle_slot == 0 {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur Castle carrier uses the null source slot",
+                ));
+            }
+            if seen_spheres.contains(&castle_slot) {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur Castle carrier collides with a model-39 carrier slot",
+                ));
+            }
+            let Some(entity) = projected_entities.get_mut(usize::from(castle_slot)) else {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur Castle carrier source slot is outside the entity arena",
+                ));
+            };
+            if entity.index != castle_slot {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur Castle carrier source index does not match its slot",
+                ));
+            }
+            if entity.active {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur Castle carrier collides with a live entity row",
+                ));
+            }
+            level2_nyphur_project_castle_root(entity, castle);
+            projected_dynamic_slots.insert(usize::from(castle_slot));
             projected_carrier = true;
         }
 
@@ -2797,6 +2924,7 @@ impl Level2NyphurDispatcher {
             4 => self.step_sub_131f0(source_slot, entities, terrain)?,
             5 => Self::step_nmemneed0(),
             6 => self.step_sub_135c0(source_slot, entities, terrain, presentation)?,
+            7 => self.step_sub_13710(source_slot, entities, terrain, presentation)?,
             8 => self.step_sub_13830(source_slot, entities, players, terrain, presentation)?,
             9 => self.step_sub_13870(source_slot, entities, players, terrain, presentation)?,
             11 => self.step_sub_133b0(source_slot, entities, terrain)?,
@@ -2807,7 +2935,7 @@ impl Level2NyphurDispatcher {
         }
         let tail_calls = if selected_state == 0 { 2 } else { 1 };
         for _ in 0..tail_calls {
-            self.step_sub_12e70(source_slot, entities, players)?;
+            self.step_sub_12e70(source_slot, entities, players, presentation)?;
         }
         Ok((
             snapshot,
@@ -2866,7 +2994,7 @@ impl Level2NyphurDispatcher {
             }
 
             let activated =
-                accepted && self.step_sub_14e10_family1(source_index, &target, entities);
+                accepted && self.step_sub_14e10_case0(1, source_index, &target, entities);
             if activated {
                 let target_heading = i16::try_from(heading_for_positions(
                     entities[source_index].position,
@@ -2897,11 +3025,32 @@ impl Level2NyphurDispatcher {
         self.step_sub_16580(source_index, entities, terrain)
     }
 
-    /// The family-1 branch of pinned `sub_14E10`. This is kept at the mode-6
-    /// boundary because the older common helper models only the shared holder
-    /// activation tail used by other, separately qualified modes.
-    fn step_sub_14e10_family1(
+    /// Route one selected spell family through the pinned `sub_14E10`
+    /// switch shape. Families `0/1/7/0x16` share the aimed-caster case-0
+    /// branch owned here. Every other family the qualified selectors can
+    /// scan has no live Level 2 holder (`sub_15F20` therefore never returns
+    /// it), so those switch cases fail closed instead of borrowing the
+    /// wrong angle gate or fabricating a holder.
+    fn step_sub_14e10_selected(
         &mut self,
+        family: u8,
+        source_index: usize,
+        target: &EntitySnapshot,
+        entities: &mut [EntitySnapshot],
+    ) -> bool {
+        match family {
+            0 | 1 | 7 | 0x16 => self.step_sub_14e10_case0(family, source_index, target, entities),
+            _ => false,
+        }
+    }
+
+    /// The case `0/1/7/0x16` branch of pinned `sub_14E10`: the aimed-caster
+    /// angle gate, pitch write toward the stored target, `word_0x1A2` burst
+    /// counter, and the shared holder activation tail. Mode 6 reaches it
+    /// with family 1; mode 7 and the state-13 body reach it with family 0.
+    fn step_sub_14e10_case0(
+        &mut self,
+        family: u8,
         source_index: usize,
         target: &EntitySnapshot,
         entities: &mut [EntitySnapshot],
@@ -2922,7 +3071,7 @@ impl Level2NyphurDispatcher {
             target.position,
         ));
         let pitch = crate::pitch_for_delta(
-            i32::try_from(horizontal).expect("Nyphur family-1 XY distance fits signed 32 bits"),
+            i32::try_from(horizontal).expect("Nyphur case-0 XY distance fits signed 32 bits"),
             i32::from(target.position.z) - i32::from(source.position.z),
         );
         entities[source_index].set_pitch(pitch);
@@ -2931,14 +3080,92 @@ impl Level2NyphurDispatcher {
             let gap = i32::from(self.common_upkeep.word_0x246) - 255;
             let sign = if gap < 0 { -1 } else { 0 };
             self.common_upkeep.word_0x1a2 = i16::try_from(((gap - sign * 8 + sign) >> 3) - 1)
-                .expect("Nyphur family-1 counter reset fits signed 16 bits");
+                .expect("Nyphur case-0 counter reset fits signed 16 bits");
         }
 
-        let activated =
-            self.common_upkeep
-                .step_sub_14e10(1, source.model, &mut source_control_flags, entities);
+        let activated = self.common_upkeep.step_sub_14e10(
+            family,
+            source.model,
+            &mut source_control_flags,
+            entities,
+        );
         entities[source_index].set_control_flags(source_control_flags);
         activated
+    }
+
+    /// Pinned `sub_13710` (mode 7): validate the stored attack-target
+    /// identity, steer toward it, approach through the 2048/3584 distance
+    /// gate, and only on the source reflex cadence offer `sub_15910`'s
+    /// family scan to the shared `sub_14E10` activation. A failed offer
+    /// zeroes the requested speed and descends toward the target altitude;
+    /// a successful cast reaches `sub_16580` without the altitude write,
+    /// and a cadence miss changes nothing beyond the shared gate's own
+    /// speed/latch writes.
+    fn step_sub_13710(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+        presentation: &PresentationSelectors,
+    ) -> Result<()> {
+        let source_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_13710 source row is absent")
+            })?;
+        let source = entities[source_index].clone();
+        let parameter_index = source.parameter_relation.ok_or_else(|| {
+            NativeWorldError::new("Level 2 Nyphur sub_13710 source parameter is absent")
+        })?;
+        let parameter = presentation
+            .entity_parameters
+            .get(usize::from(parameter_index))
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_13710 parameter row is absent")
+            })?;
+        let vertical_step = i16::from_le_bytes([parameter[14], parameter[15]]);
+        let target = entities
+            .get(usize::from(source.source_word_96()))
+            .cloned()
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_13710 target row is absent")
+            })?;
+        if !level2_nyphur_source_identity_matches(&source, &target) {
+            return self.step_sub_16580(source_index, entities, terrain);
+        }
+
+        let roll = i16::try_from(heading_for_positions(source.position, target.position))
+            .expect("Nyphur sub_13710 roll fits the signed source angle carrier");
+        entities[source_index].set_source_roll(roll);
+        if self.step_sub_14c90(source_index, Some(&target), None, 2_048, 3_584, entities)? {
+            // Mode 7 repeats the shared tail's reflex cadence on the source
+            // phase byte; the divisor expression is identical, so the same
+            // pinned period carrier is used.
+            let period = self.common_upkeep.cadence_period();
+            if u16::from(source.phase) % period == 0 {
+                let family = self.common_upkeep.step_sub_15910(entities);
+                let activated = family >= 0
+                    && self.step_sub_14e10_selected(
+                        family.cast_unsigned(),
+                        source_index,
+                        &target,
+                        entities,
+                    );
+                if !activated {
+                    self.common_upkeep.speed = 0;
+                    let vertical_delta = i32::from(entities[source_index].position.z)
+                        - (i32::from(target.position.z) + 512);
+                    let direction = vertical_delta.signum() as i16;
+                    let mut position = entities[source_index].position;
+                    position.z = position
+                        .z
+                        .wrapping_add(direction.wrapping_mul(vertical_step));
+                    entities[source_index].set_position(position);
+                }
+            }
+        }
+        self.step_sub_16580(source_index, entities, terrain)
     }
 
     /// The pinned case-5 helper is `_nmemneed_0`, a weak stub that returns zero
@@ -3739,26 +3966,36 @@ impl Level2NyphurDispatcher {
         // returned-one path reaches this caller's family-0/1 selection.
         let close =
             self.step_sub_14c90(source_index, Some(&target), None, 3_328, 4_608, entities)?;
-        if !close {
+        // A negative `word_0x1A2` burst counter skips the entire cast and
+        // zigzag/altitude block: only the shared gate's near-branch writes
+        // and `sub_16580` run until the common callback recovers it.
+        if !close || self.common_upkeep.word_0x1a2 < 0 {
             return self.step_sub_16580(source_index, entities, terrain);
         }
-        if self.common_upkeep.word_0x1a2 >= 0 {
-            let family =
-                self.common_upkeep
-                    .step_sub_15790(source.source_word_96(), entities, players);
-            if family >= 0 && self.source_spell_ready(family.cast_unsigned(), entities) {
-                let mut source_control_flags = source.control_flags;
-                if self.common_upkeep.step_sub_14e10(
-                    family.cast_unsigned(),
-                    source.model,
-                    &mut source_control_flags,
-                    entities,
-                ) {
-                    entities[source_index].set_control_flags(source_control_flags);
-                    return self.step_sub_16580(source_index, entities, terrain);
-                }
+        let family = self
+            .common_upkeep
+            .step_sub_15790(source.source_word_96(), entities, players);
+        if family >= 0
+            && self.source_spell_ready(family.cast_unsigned(), entities)
+            && self.step_sub_14e10_selected(family.cast_unsigned(), source_index, &target, entities)
+        {
+            // A successful cast on a model-0/1 target clears the source war
+            // latch toward that owner's color. Only a genuine player carrier
+            // supplies the color word; the qualified class-5 model-0/1
+            // creatures have none, and their pinned write lands on a latch
+            // that is already zero, so the resolved-owner write below is the
+            // only observable effect.
+            if matches!(target.model, 0 | 1)
+                && let Some(owner) = players
+                    .iter()
+                    .find(|player| player.entity_index == target.index)
+            {
+                let latch = 4 * usize::from(owner.player_color_index()) + 5;
+                self.common_upkeep.set_auxiliary_word(latch, 0);
             }
+            return self.step_sub_16580(source_index, entities, terrain);
         }
+        self.common_upkeep.speed = 0;
 
         if matches!(target.model, 0 | 1) {
             let counter = self.common_upkeep.byte_0x45d;
@@ -4012,6 +4249,7 @@ impl Level2NyphurDispatcher {
         source_slot: u16,
         entities: &mut [EntitySnapshot],
         players: &[PlayerSnapshot],
+        presentation: &PresentationSelectors,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -4057,7 +4295,22 @@ impl Level2NyphurDispatcher {
             return Ok(());
         }
 
-        // The selector bodies between `sub_13C50` and `sub_13CE0` are owned
+        // `sub_13E40` is the second cadence-gated selector: an admitted
+        // enemy Castle latches mode 7 with the single authoritative source
+        // relation write, exactly between `sub_13C50` and `sub_14030`.
+        if let Some(target_index) =
+            self.step_sub_13e40(source_index, entities, players, presentation)?
+        {
+            let target = entities
+                .get(usize::from(target_index))
+                .cloned()
+                .ok_or_else(|| NativeWorldError::new("Level 2 sub_13E40 target row is absent"))?;
+            entities[source_index].set_source_relation(&target);
+            self.state_byte = 7;
+            return Ok(());
+        }
+
+        // The selector bodies between `sub_13E40` and `sub_13CE0` are owned
         // by other Beads. This gate is source-shaped rather than a generic
         // fallback: it rejects the tail unless every unowned prerequisite is
         // mechanically absent for the current indexed Level 2 rows.
@@ -4100,6 +4353,106 @@ impl Level2NyphurDispatcher {
             .step_sub_14630(&mut entities[source_index], castle.as_ref());
         self.state_byte = state;
         Ok(())
+    }
+
+    /// Pinned `sub_13E40`: the state-7 Castle-attack selector. The entry
+    /// gate requires one live offensive holder (`sub_164B0`) and rejects an
+    /// AI that could still build its own Castle (`!CastleEntityIndex` with a
+    /// live family-2 holder). Each enemy class-3/model-2 row is admitted by
+    /// the owner-threat clause (threshold word, owner far from the Castle,
+    /// no owner/Castle overlap) or by the own-castle mana clause, the
+    /// nearest admitted row wins strictly in source order, and the winner
+    /// must sit inside the squared parameter-word-0x1C perception radius.
+    /// The caller owns the single source relation write and the state-7
+    /// latch; this selector itself mutates nothing.
+    fn step_sub_13e40(
+        &self,
+        source_index: usize,
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+        presentation: &PresentationSelectors,
+    ) -> Result<Option<u16>> {
+        let source = &entities[source_index];
+        if !self.common_upkeep.sub_164b0(entities) {
+            return Ok(None);
+        }
+        if self.common_upkeep.castle_entity_index == 0
+            && self.common_upkeep.sub_146c0(2, entities).is_some()
+        {
+            return Ok(None);
+        }
+
+        // The source reads its own Castle row blindly; with no Castle the
+        // index is zero and the read lands on the inactive sentinel row.
+        let own_castle_mana = entities
+            .get(usize::from(self.common_upkeep.castle_entity_index))
+            .map_or(0, |own_castle| own_castle.mana);
+        let mut best = None;
+        let mut best_distance = u32::MAX;
+        for candidate_index in level2_nyphur_class3_source_order(entities) {
+            let Some(candidate) = entities.get(usize::from(candidate_index)) else {
+                continue;
+            };
+            if candidate.source_id == source.source_id || candidate.model != 2 {
+                continue;
+            }
+            let Some(owner) = entities.get(usize::from(candidate.source_id)) else {
+                continue;
+            };
+            // The threat clause reads the owner's player color carrier. A
+            // Castle whose recorded owner has no player row cannot supply
+            // that color word and fails closed instead of indexing a
+            // neighboring threshold entry.
+            let Some(owner_player) = players
+                .iter()
+                .find(|player| player.entity_index == candidate.source_id)
+            else {
+                continue;
+            };
+            let threshold_index = 4 * usize::from(owner_player.player_color_index()) + 4;
+            let threshold = i32::from(self.common_upkeep.auxiliary_word(threshold_index));
+            let threat = 50_000_i32
+                - i32::from(self.common_upkeep.word_0x242) * (owner.max_mana / 10) / 255
+                < threshold;
+            let owner_far =
+                level2_nyphur_source_distance_xy_euclidean_sq(owner.position, candidate.position)
+                    > 0x0384_0000;
+            let admitted = (threat && owner_far && !level2_nyphur_strict_overlap(owner, candidate))
+                || own_castle_mana
+                    > 640 * (255 - i32::from(self.common_upkeep.word_0x242)) + candidate.mana;
+            if !admitted {
+                continue;
+            }
+            let distance =
+                level2_nyphur_source_distance_xy_euclidean_sq(source.position, candidate.position);
+            if distance < best_distance {
+                best = Some(candidate_index);
+                best_distance = distance;
+            }
+        }
+        let Some(best_index) = best else {
+            return Ok(None);
+        };
+
+        let parameter_index = source.parameter_relation.ok_or_else(|| {
+            NativeWorldError::new("Level 2 Nyphur sub_13E40 source parameter is absent")
+        })?;
+        let parameter = presentation
+            .entity_parameters
+            .get(usize::from(parameter_index))
+            .ok_or_else(|| {
+                NativeWorldError::new("Level 2 Nyphur sub_13E40 parameter row is absent")
+            })?;
+        let perception = i32::from(i16::from_le_bytes([parameter[28], parameter[29]]));
+        let best_row = entities
+            .get(usize::from(best_index))
+            .ok_or_else(|| NativeWorldError::new("Level 2 sub_13E40 nearest row is absent"))?;
+        if level2_nyphur_source_distance_xy_euclidean_sq(best_row.position, source.position)
+            >= perception.wrapping_mul(perception) as u32
+        {
+            return Ok(None);
+        }
+        Ok(Some(best_index))
     }
 
     /// Pinned `sub_13B00`: when the AI has no Castle and its family-2 holder
@@ -4210,13 +4563,13 @@ impl Level2NyphurDispatcher {
         // remaining predicates below cover only selectors owned elsewhere.
 
         let source_order = level2_nyphur_class3_source_order(entities);
-        // sub_13E40 and sub_14250 scan the source class-3 list for model 2 and
-        // model 3 targets. They are not present in the qualified indexed
-        // list, so their mode packets cannot be selected here.
+        // sub_13E40 (model 2) is owned above; sub_14250 scans the class-3
+        // list for model-3 targets, which are not present in the qualified
+        // indexed list, so its mode packet cannot be selected here.
         if source_order.iter().any(|index| {
             entities
                 .get(usize::from(*index))
-                .is_some_and(|entity| matches!(entity.model, 2 | 3))
+                .is_some_and(|entity| entity.model == 3)
         }) {
             return false;
         }

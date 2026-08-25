@@ -1898,7 +1898,8 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
     let target = angle_rejected.session.state.live.economy.entities[70].clone();
     let pitch_before = angle_rejected.session.state.live.economy.entities[112].pitch;
     let live = &mut angle_rejected.session.state.live;
-    assert!(!live.nyphur_dispatcher.step_sub_14e10_family1(
+    assert!(!live.nyphur_dispatcher.step_sub_14e10_case0(
+        1,
         112,
         &target,
         &mut live.economy.entities,
@@ -1918,7 +1919,8 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
         .word_0x1a2 = -1;
     let target = counter_rejected.session.state.live.economy.entities[70].clone();
     let live = &mut counter_rejected.session.state.live;
-    assert!(!live.nyphur_dispatcher.step_sub_14e10_family1(
+    assert!(!live.nyphur_dispatcher.step_sub_14e10_case0(
+        1,
         112,
         &target,
         &mut live.economy.entities,
@@ -1940,7 +1942,8 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
         i32::from(target.position.z) - i32::from(source_before.position.z),
     );
     let live = &mut accepted.session.state.live;
-    assert!(live.nyphur_dispatcher.step_sub_14e10_family1(
+    assert!(live.nyphur_dispatcher.step_sub_14e10_case0(
+        1,
         112,
         &target,
         &mut live.economy.entities,
@@ -1964,7 +1967,8 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
         .word_0x1a2 = 7;
     let target = wrapped_counter.session.state.live.economy.entities[70].clone();
     let live = &mut wrapped_counter.session.state.live;
-    assert!(live.nyphur_dispatcher.step_sub_14e10_family1(
+    assert!(live.nyphur_dispatcher.step_sub_14e10_case0(
+        1,
         112,
         &target,
         &mut live.economy.entities,
@@ -2966,8 +2970,10 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
 
     // A common tail must not silently absorb a newly live selector. The
     // now-owned family-2 branch must produce its source axis before the
-    // remaining fail-closed gates are considered; the still-unowned
-    // model-2 branch remains a rejection here.
+    // remaining fail-closed gates are considered. A class-3 model-2 row is
+    // owned by `sub_13E40` above this gate, so it no longer rejects the
+    // tail; the still-unowned model-3 branch (`sub_14250`) remains a
+    // rejection here.
     let mut family_two_live = session.session.state.live.nyphur_dispatcher.clone();
     family_two_live.common_upkeep.spell_holder_indices[2] = 113;
     assert!(
@@ -2977,9 +2983,16 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     );
     let mut model_two_live_entities = session.session.state.live.economy.entities.clone();
     model_two_live_entities[111].model = 2;
-    assert!(!session.nyphur_dispatcher.owned_tail_fallthrough_is_safe(
+    assert!(session.nyphur_dispatcher.owned_tail_fallthrough_is_safe(
         &source,
         &model_two_live_entities,
+        &session.players
+    ));
+    let mut model_three_live_entities = session.session.state.live.economy.entities.clone();
+    model_three_live_entities[111].model = 3;
+    assert!(!session.nyphur_dispatcher.owned_tail_fallthrough_is_safe(
+        &source,
+        &model_three_live_entities,
         &session.players
     ));
 
@@ -3699,6 +3712,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
             112,
             &mut damaged.session.state.live.economy.entities,
             &damaged_players,
+            &damaged.session.definition.presentation,
         )
         .expect("pre-cadence damaged Castle branch");
     assert_eq!(damaged.nyphur_dispatcher.state_byte, 11);
@@ -3742,6 +3756,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
             112,
             &mut at_half.session.state.live.economy.entities,
             &at_half_players,
+            &at_half.session.definition.presentation,
         )
         .expect("cadence rejects full-health Castle branch");
     assert_eq!(at_half.nyphur_dispatcher.state_byte, 0);
@@ -3790,4 +3805,988 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     assert_ne!(session.campaign_state_hash(), baseline_hash);
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
+}
+
+/// The ordinary Level 2 route reaches the genuine family-0 Fireball
+/// producer with no selector, relation, position, or state coercion: the
+/// production tail selects class-5 row 70, natural pursuit crosses the
+/// 3,328 gate, and the pinned case-0 `sub_14E10` branch activates holder
+/// 113. The proof continues through the same-pass holder producer, the
+/// scheduled class-9 consumer and its epilogue, the following-visit mana
+/// charge, the `word_0x1A2` burst counter, the terminal callback, the
+/// following-pass reclaim, and reset/replay isolation.
+#[test]
+fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified ordinary Nyphur family-0 route");
+    let baseline_campaign_hash = session.campaign_state_hash();
+    let mut replay = session.clone();
+
+    let mut selection_turn = None;
+    let mut crossed_3328 = None;
+    let mut activation = None;
+    for turn in 1..=300_u16 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        replay.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.campaign_state_hash(),
+            replay.campaign_state_hash(),
+            "ordinary family-0 pursuit must replay identically at turn {turn}"
+        );
+        assert_eq!(session.dispatch_events(), replay.dispatch_events());
+        assert_eq!(
+            session.nyphur_dispatch_traces(),
+            replay.nyphur_dispatch_traces()
+        );
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+        let source = &session.economy.entities[112];
+        let target_slot = source.source_word_96();
+        if target_slot == 0 {
+            continue;
+        }
+        if selection_turn.is_none() {
+            assert_eq!(
+                target_slot, 70,
+                "the ordinary selector must choose the source-nearest class-5 row"
+            );
+            assert_eq!(session.nyphur_dispatch_state_byte(), 13);
+            selection_turn = Some(turn);
+        }
+        let target = &session.economy.entities[usize::from(target_slot)];
+        let distance = level2_wrapping_target_distance(source.position, target.position);
+        if distance <= 3_328 {
+            crossed_3328.get_or_insert(turn);
+        }
+        let common = session
+            .nyphur_common_upkeep()
+            .expect("ordinary Nyphur common carrier remains valid");
+        if common.spell_enabled[0] != 0 {
+            activation = Some((turn, distance));
+            break;
+        }
+    }
+    let selection_turn = selection_turn.expect("ordinary selector chooses row 70");
+    let crossed_3328 = crossed_3328.expect("state-13 pursuit naturally crosses 3328");
+    let (activation_turn, activation_distance) =
+        activation.expect("state-13 family-0 activation arms the source cooldown");
+    assert!(selection_turn < crossed_3328 && crossed_3328 <= activation_turn);
+    assert!(activation_distance <= 3_328);
+    assert!(
+        activation_distance > 2_048,
+        "the state-13 activation fires outside the mode-7 gate, so the two \
+         thresholds stay observably distinct"
+    );
+
+    // The activation trace is the ordinary state-13 wrapper; no mode-7 or
+    // test-only state write participates.
+    assert!(session.nyphur_dispatch_traces().iter().any(|trace| {
+        trace.source_slot == 112
+            && trace.state_byte == 13
+            && trace.calls.contains(&Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub13850,
+            ))
+    }));
+    assert!(
+        session
+            .nyphur_dispatch_traces()
+            .iter()
+            .all(|trace| trace.state_byte != 7)
+    );
+
+    let common = session
+        .nyphur_common_upkeep()
+        .expect("activation leaves the common carrier valid");
+    let tier = u8::try_from(common.spell_levels[0]).expect("authored family-0 tier");
+    let fireball_profile = level2_direct_starting_spell_profile(0, tier)
+        .expect("qualified Nyphur family-0 holder uses the authored source tier");
+    assert_eq!(
+        common.spell_enabled[0], LEVEL2_NYPHUR_SPELL_COOLDOWNS[0],
+        "sub_14E10 installs the exact family-0 cooldown"
+    );
+    assert_eq!(
+        common.word_0x1a2, 1,
+        "the case-0 branch advances the source burst counter exactly once"
+    );
+    let source = &session.economy.entities[112];
+    let target = &session.economy.entities[70];
+    let horizontal = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+        source.position,
+        target.position,
+    ));
+    let expected_pitch = crate::pitch_for_delta(
+        i32::try_from(horizontal).expect("family-0 XY distance fits signed 32 bits"),
+        i32::from(target.position.z) - i32::from(source.position.z),
+    );
+    assert_eq!(
+        source.pitch, expected_pitch,
+        "the case-0 branch aims the caster at the stored target"
+    );
+    assert_eq!(
+        session.economy.entities[113].active_value,
+        fireball_profile.word_0x30.cast_signed().wrapping_sub(1),
+        "the same-pass holder callback consumes exactly one activation tick"
+    );
+    assert_eq!(
+        session.economy.entities[112].mana_regen, -fireball_profile.max_mana,
+        "fresh sub_693F0/sub_68DE0 charges the exact family-0 mana cost"
+    );
+
+    let projectile = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .find(|projectile| projectile.holder_entity_index == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX)
+        .copied()
+        .expect("the genuine holder-113 callback creates the family-0 projectile");
+    let projectile_generation = session
+        .economy()
+        .slot_generation(projectile.source_entity_index);
+    assert!(projectile.active);
+    assert_eq!(
+        projectile.phase, 1,
+        "the scheduled class-9 consumer advances byte 0x3e once on its own pass"
+    );
+    assert_eq!(projectile.owner_entity_index, 112);
+    assert_eq!(
+        session
+            .shared_spells()
+            .activation_events()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                crate::FlightEvent::PrepareSound {
+                    entity_index,
+                    player_index: -1,
+                    sound_id: 9,
+                    ..
+                } if *entity_index == projectile.source_entity_index
+            ))
+            .count(),
+        1,
+        "the successful source allocation emits exactly one launch sound bound to the new row"
+    );
+    let schedule_receipts = session.cf10_production_schedule_receipts();
+    let callback_position = |slot| {
+        schedule_receipts.iter().position(|receipt| {
+            matches!(
+                receipt,
+                crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                    slot: callback_slot,
+                    ..
+                } if *callback_slot == slot
+            )
+        })
+    };
+    let nyphur_callback =
+        callback_position(112).expect("the activation pass dispatches the Nyphur first");
+    let holder_callback = callback_position(LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX)
+        .expect("the activation pass dispatches holder 113");
+    let projectile_callback = callback_position(projectile.source_entity_index)
+        .expect("the activation pass dispatches the higher-slot projectile");
+    assert!(nyphur_callback < holder_callback && holder_callback < projectile_callback);
+    assert!(
+        schedule_receipts.iter().any(|receipt| matches!(
+            receipt,
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. }
+                if *slot == projectile.source_entity_index
+        )),
+        "the new projectile callback must complete its source epilogue"
+    );
+
+    // The following ordinary visit consumes the deferred holder charge and
+    // continues the burst: eight case-0 casts advance `word_0x1A2` to the
+    // pinned reset value, after which the state-13 body is locked out until
+    // the common callback recovers the counter.
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    replay.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+    let following = session
+        .nyphur_common_upkeep()
+        .expect("following Nyphur common carrier remains valid");
+    assert_eq!(
+        following.mana,
+        1_000 - fireball_profile.max_mana,
+        "the deferred family-0 charge lands on the following Nyphur visit"
+    );
+    let mut lockout = None;
+    for _ in 0..200_u16 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        replay.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+        let common = session
+            .nyphur_common_upkeep()
+            .expect("burst Nyphur common carrier remains valid");
+        if common.word_0x1a2 < 0 {
+            lockout = Some(common.word_0x1a2);
+            break;
+        }
+    }
+    assert_eq!(
+        lockout,
+        Some(-28),
+        "eight case-0 casts reset word_0x1A2 to the pinned reflex expression"
+    );
+
+    // The tracked first projectile reaches its source terminal callback and
+    // the following scheduler prologue reclaims the generation.
+    let mut terminal = false;
+    for _ in 0..200_u16 {
+        let live = session
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .any(|candidate| {
+                candidate.source_entity_index == projectile.source_entity_index
+                    && session
+                        .economy()
+                        .slot_generation(candidate.source_entity_index)
+                        == projectile_generation
+                    && candidate.active
+            });
+        if !live {
+            terminal = true;
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        replay.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+    }
+    assert!(
+        terminal,
+        "the tracked family-0 flyer reaches its terminal callback"
+    );
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    replay.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+
+    session.reset();
+    replay.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+    assert_eq!(replay.campaign_state_hash(), baseline_campaign_hash);
+}
+
+/// Mode-7 body evidence on the production carriers. The target relation,
+/// pursuit movement, cadence, holder, projectile, and cleanup are all the
+/// ordinary machinery; only the dispatcher state byte is written, exactly
+/// like the dispatched mode-1/2 coverage above, because the pinned state-7
+/// selector `sub_13E40` requires an admitted enemy Castle that the
+/// qualified fresh package cannot supply (see the sub_13E40 test below).
+/// This is deliberately not an ordinary-selection claim for mode 7.
+#[test]
+fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 mode-7 session");
+    let baseline_campaign_hash = session.campaign_state_hash();
+
+    // Let the ordinary selector and pursuit establish the genuine target
+    // relation and bring the source into the (2048, 3584] band without any
+    // position write.
+    for _ in 0..230 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert_eq!(session.economy.entities[112].source_word_96(), 70);
+    let start_distance = level2_wrapping_target_distance(
+        session.economy.entities[112].position,
+        session.economy.entities[70].position,
+    );
+    assert!(start_distance > 2_048);
+    assert_eq!(
+        session
+            .nyphur_common_upkeep()
+            .expect("pre-mode-7 common carrier")
+            .spell_enabled[0],
+        0,
+        "no family-0 cast has happened before the mode-7 takeover"
+    );
+    let mut replay = session.clone();
+
+    let mut crossed_2048 = None;
+    let mut near_visits_without_cast = 0_u16;
+    let mut activation = None;
+    for turn in 1..=120_u16 {
+        session.session.state.live.nyphur_dispatcher.state_byte = 7;
+        replay.session.state.live.nyphur_dispatcher.state_byte = 7;
+        let phase_before = session.economy.entities[112].phase;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        replay.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
+        let trace = session
+            .nyphur_dispatch_traces()
+            .iter()
+            .rev()
+            .find(|trace| trace.source_slot == 112)
+            .cloned()
+            .expect("mode-7 source trace");
+        assert_eq!(trace.state_byte, 7);
+        assert!(trace.calls.contains(&Level2NyphurDispatchCall::Helper(
+            Level2NyphurDispatchHelper::Sub13710,
+        )));
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+        let source = &session.economy.entities[112];
+        let distance =
+            level2_wrapping_target_distance(source.position, session.economy.entities[70].position);
+        if distance <= 2_048 {
+            crossed_2048.get_or_insert(turn);
+        }
+        let common = session
+            .nyphur_common_upkeep()
+            .expect("mode-7 common carrier remains valid");
+        if common.spell_enabled[0] != 0 {
+            activation = Some((turn, distance, phase_before));
+            break;
+        }
+        if crossed_2048.is_some() {
+            // Every near visit before the reflex cadence tick refuses the
+            // cast; the state-13 body would already have cast here.
+            near_visits_without_cast += 1;
+            assert_eq!(common.speed, 0, "the near branch parks the source");
+            assert_eq!(common.word_0xe_14, 1);
+        }
+    }
+    let crossed_2048 = crossed_2048.expect("mode-7 pursuit crosses the 2048 gate");
+    let (activation_turn, activation_distance, activation_phase) =
+        activation.expect("the mode-7 cadence tick activates the family-0 holder");
+    assert!(crossed_2048 <= activation_turn);
+    assert!(activation_distance <= 2_048, "the pinned mode-7 receipt");
+    assert!(
+        near_visits_without_cast > 0,
+        "mode 7 must refuse the cast between cadence ticks"
+    );
+    let period = u16::from(activation_phase);
+    assert_eq!(
+        period % 55,
+        0,
+        "the cast lands exactly on the reflex cadence tick"
+    );
+
+    let common = session
+        .nyphur_common_upkeep()
+        .expect("post-cast common carrier");
+    let tier = u8::try_from(common.spell_levels[0]).expect("authored family-0 tier");
+    let fireball_profile = level2_direct_starting_spell_profile(0, tier)
+        .expect("qualified Nyphur family-0 tier profile");
+    assert_eq!(common.spell_enabled[0], LEVEL2_NYPHUR_SPELL_COOLDOWNS[0]);
+    assert_eq!(common.word_0x1a2, 1);
+    assert_eq!(
+        session.economy.entities[113].active_value,
+        fireball_profile.word_0x30.cast_signed().wrapping_sub(1)
+    );
+    let projectile = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .find(|projectile| projectile.holder_entity_index == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX)
+        .copied()
+        .expect("the mode-7 cast reaches the genuine holder-113 producer");
+    assert!(projectile.active);
+    assert_eq!(
+        projectile.phase, 1,
+        "the scheduled class-9 consumer runs on the same pass"
+    );
+    assert_eq!(
+        session
+            .shared_spells()
+            .activation_events()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                crate::FlightEvent::PrepareSound {
+                    entity_index,
+                    player_index: -1,
+                    sound_id: 9,
+                    ..
+                } if *entity_index == projectile.source_entity_index
+            ))
+            .count(),
+        1
+    );
+
+    session.reset();
+    replay.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+    assert_eq!(replay.campaign_state_hash(), baseline_campaign_hash);
+
+    // Direct body vectors discriminate the branches that the dispatched
+    // flow above cannot isolate. They reuse the ordinary 53-turn relation
+    // and rewrite only detached geometry/phase carriers.
+    let mut related = inspection
+        .level2_reset_session()
+        .expect("Level 2 mode-7 vector session");
+    for _ in 0..53 {
+        related.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert_eq!(related.economy.entities[112].source_word_96(), 70);
+    let source_position = Position {
+        x: 10_000,
+        y: 10_000,
+        z: 2_048,
+    };
+
+    // A cadence miss inside the near gate refuses the cast without the
+    // altitude write and without any spell-table draw.
+    let mut cadence_miss = related.clone();
+    cadence_miss.session.state.live.economy.entities[112].set_position(source_position);
+    cadence_miss.session.state.live.economy.entities[112].phase = 1;
+    cadence_miss.session.state.live.economy.entities[70].set_position(Position {
+        x: source_position.x + 2_048,
+        ..source_position
+    });
+    let cadence_terrain = cadence_miss.canonical_terrain().clone();
+    cadence_miss
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .step_sub_13710(
+            112,
+            &mut cadence_miss.session.state.live.economy.entities,
+            &cadence_terrain,
+            &cadence_miss.session.definition.presentation,
+        )
+        .expect("cadence-miss mode-7 visit");
+    assert_eq!(
+        cadence_miss.nyphur_dispatcher.common_upkeep.spell_enabled[0], 0,
+        "no cast off the reflex cadence"
+    );
+    assert_eq!(cadence_miss.nyphur_dispatcher.common_upkeep.speed, 0);
+    assert_eq!(cadence_miss.nyphur_dispatcher.common_upkeep.word_0xe_14, 1);
+    assert_eq!(
+        cadence_miss.economy.entities[112].position.z, source_position.z,
+        "no altitude write on a cadence miss"
+    );
+
+    // The inclusive 2048 cadence visit casts; the successful branch skips
+    // the altitude write entirely.
+    let mut inclusive_cast = related.clone();
+    let inclusive_target_position = Position {
+        x: source_position.x + 2_048,
+        ..source_position
+    };
+    inclusive_cast.session.state.live.economy.entities[112].set_position(source_position);
+    inclusive_cast.session.state.live.economy.entities[112].phase = 0;
+    inclusive_cast.session.state.live.economy.entities[112].set_yaw(
+        i16::try_from(crate::heading_for_positions(
+            source_position,
+            inclusive_target_position,
+        ))
+        .expect("mode-7 vector heading fits the signed angle carrier"),
+    );
+    inclusive_cast.session.state.live.economy.entities[70].set_position(inclusive_target_position);
+    let inclusive_terrain = inclusive_cast.canonical_terrain().clone();
+    inclusive_cast
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .step_sub_13710(
+            112,
+            &mut inclusive_cast.session.state.live.economy.entities,
+            &inclusive_terrain,
+            &inclusive_cast.session.definition.presentation,
+        )
+        .expect("inclusive mode-7 cadence cast");
+    assert_eq!(
+        inclusive_cast.nyphur_dispatcher.common_upkeep.spell_enabled[0],
+        LEVEL2_NYPHUR_SPELL_COOLDOWNS[0],
+        "the inclusive 2048 boundary reaches the family-0 activation"
+    );
+    assert_eq!(
+        inclusive_cast.economy.entities[112].position.z, source_position.z,
+        "a successful cast skips the altitude branch"
+    );
+    assert_eq!(inclusive_cast.nyphur_dispatcher.common_upkeep.word_0x1a2, 1);
+
+    // The exclusive 2049 cadence visit stays in the approach branch: no
+    // cast, minimum-speed pursuit.
+    let mut exclusive = related.clone();
+    exclusive.session.state.live.economy.entities[112].set_position(source_position);
+    exclusive.session.state.live.economy.entities[112].phase = 0;
+    exclusive.session.state.live.economy.entities[70].set_position(Position {
+        x: source_position.x + 2_049,
+        ..source_position
+    });
+    let exclusive_terrain = exclusive.canonical_terrain().clone();
+    exclusive
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .step_sub_13710(
+            112,
+            &mut exclusive.session.state.live.economy.entities,
+            &exclusive_terrain,
+            &exclusive.session.definition.presentation,
+        )
+        .expect("exclusive mode-7 approach");
+    assert_eq!(
+        exclusive.nyphur_dispatcher.common_upkeep.spell_enabled[0],
+        0
+    );
+    assert_eq!(
+        exclusive.nyphur_dispatcher.common_upkeep.speed,
+        exclusive.economy.entities[112].minimum_speed()
+    );
+
+    // A starved mana latch fails the sub_15910 offer on the cadence tick;
+    // the failed offer descends toward the target altitude by the
+    // parameter word-14 step with the requested speed zeroed.
+    let mut starved = related.clone();
+    starved.session.state.live.economy.entities[112].set_position(source_position);
+    starved.session.state.live.economy.entities[112].phase = 0;
+    starved.session.state.live.economy.entities[70].set_position(Position {
+        x: source_position.x + 2_048,
+        ..source_position
+    });
+    starved
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .word_0x1a4 = 1;
+    starved
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .mana = 0;
+    let parameter_index = starved.session.state.live.economy.entities[112]
+        .parameter_relation
+        .expect("Nyphur parameter relation");
+    let vertical_step = i16::from_le_bytes([
+        starved.session.definition.presentation.entity_parameters[usize::from(parameter_index)][14],
+        starved.session.definition.presentation.entity_parameters[usize::from(parameter_index)][15],
+    ]);
+    let starved_terrain = starved.canonical_terrain().clone();
+    starved
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .step_sub_13710(
+            112,
+            &mut starved.session.state.live.economy.entities,
+            &starved_terrain,
+            &starved.session.definition.presentation,
+        )
+        .expect("starved mode-7 altitude branch");
+    assert_eq!(starved.nyphur_dispatcher.common_upkeep.spell_enabled[0], 0);
+    assert_eq!(starved.nyphur_dispatcher.common_upkeep.speed, 0);
+    let expected_direction = i32::from(source_position.z)
+        .wrapping_sub(i32::from(source_position.z) + 512)
+        .signum() as i16;
+    assert_eq!(
+        starved.economy.entities[112].position.z,
+        source_position
+            .z
+            .wrapping_add(expected_direction.wrapping_mul(vertical_step)),
+        "the failed offer descends by the pinned parameter step"
+    );
+
+    // A stale stored identity is the source zero result: the roll is
+    // preserved and no gate or cast write happens.
+    let mut stale = related.clone();
+    stale.session.state.live.economy.entities[112].set_position(source_position);
+    stale.session.state.live.economy.entities[112].phase = 0;
+    stale.session.state.live.economy.entities[70].set_position(Position {
+        x: source_position.x + 2_048,
+        ..source_position
+    });
+    let preserved_roll = stale.session.state.live.economy.entities[112].source_roll();
+    let stale_identity =
+        level2_nyphur_source_identity(&stale.session.state.live.economy.entities[70])
+            .wrapping_add(1);
+    stale.session.state.live.economy.entities[112].record[156..158]
+        .copy_from_slice(&stale_identity.to_le_bytes());
+    let stale_terrain = stale.canonical_terrain().clone();
+    stale
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .step_sub_13710(
+            112,
+            &mut stale.session.state.live.economy.entities,
+            &stale_terrain,
+            &stale.session.definition.presentation,
+        )
+        .expect("stale identity is a source zero result");
+    assert_eq!(stale.economy.entities[112].source_roll(), preserved_roll);
+    assert_eq!(stale.nyphur_dispatcher.common_upkeep.spell_enabled[0], 0);
+}
+
+/// Pinned `sub_13E40` evidence around a genuinely built player Castle.
+/// The Castle arrives through the public spell route only; the ordinary
+/// sessions below never write a selector, relation, or state byte. The
+/// authored package cannot arm the owner-threat clause (the threshold word
+/// is capped at 0x601F while the clause needs more than
+/// `50000 - 243 * (1000 / 10) / 255 = 49905`), so the ordinary route must
+/// refuse mode 7 with zero drift, and the armed positive below plants only
+/// the two threshold/latch words that pinned `sub_159E0` itself writes.
+#[test]
+fn level_two_nyphur_sub_13e40_castle_selection_boundaries_are_exact() {
+    let gameplay_cache = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level2-day-owner-cache/components/gameplay");
+    let inspection =
+        NativeWorld::inspect_level2_with_owner_cache(level_two_fixture_path(), &gameplay_cache)
+            .expect("qualified Level 2 gameplay component");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 Castle selection session");
+    session.select_level2_campaign_entry_stage();
+    let baseline_campaign_hash = session.campaign_state_hash();
+
+    // Public castle build on the qualified route: position input plus the
+    // selected-hand Castle cast, then ordinary steps until the flyer roots.
+    let launch = Position {
+        x: 36_500,
+        y: 12_500,
+        z: session
+            .canonical_terrain()
+            .ground_height(Position {
+                x: 36_500,
+                y: 12_500,
+                z: 0,
+            })
+            .saturating_add(300),
+    };
+    session.state.position = launch;
+    session.state.yaw = 0;
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    session.state.entity_fov = 0;
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 2,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    let mut castle = None;
+    for _ in 0..48_u16 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        castle = session.economy().castle().filter(|castle| castle.active);
+        if castle.is_some() {
+            break;
+        }
+    }
+    let castle = castle.expect("the public spell route roots the Castle");
+    let castle_slot = castle.source_entity_index;
+    assert_eq!((castle.source_class, castle.source_model), (3, 2));
+    assert_eq!(castle.source_id_entity_index, 111);
+
+    // Ordinary refusal: with the live Castle projected into the class-3
+    // list, the production tail visits sub_13E40 on every cadence tick and
+    // declines it, because the authored threat words cannot cross the
+    // clause. The state-13 pursuit continues exactly as without a Castle.
+    let mut refusal = session.clone();
+    for _ in 0..200_u16 {
+        refusal.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(
+        refusal
+            .nyphur_dispatch_traces()
+            .iter()
+            .all(|trace| trace.state_byte != 7),
+        "the qualified package cannot select mode 7 ordinarily"
+    );
+    assert_ne!(
+        refusal.economy.entities[112].source_word_96(),
+        castle_slot,
+        "the ordinary selector never claims the Castle"
+    );
+    assert!(refusal.dispatch_events().iter().all(|event| !matches!(
+        event,
+        Level2DispatchEvent::Error {
+            source_slot: 112,
+            ..
+        }
+    )));
+    assert!(
+        !refusal.economy.entities[usize::from(castle_slot)].active,
+        "the Castle projection never leaks into the persistent entity arena"
+    );
+    let refusal_common = refusal
+        .nyphur_common_upkeep()
+        .expect("refusal common carrier");
+    assert_eq!(
+        refusal_common.array_0x1fc[4], 24_607,
+        "the owner threshold word stays at the pinned 0x601F cap"
+    );
+
+    // A live foreign row on the Castle slot is a projection collision and
+    // fails the dispatch closed instead of masking either authority.
+    let mut collided = session.clone();
+    collided.session.state.live.economy.entities[usize::from(castle_slot)].active = true;
+    collided.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(collided.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::Error {
+            source_slot: 112,
+            ..
+        }
+    )));
+
+    // Direct admission vectors over the projected view. These rewrite only
+    // detached view geometry/threshold carriers to discriminate each pinned
+    // clause; they make no ordinary-selection claim.
+    let players = session.players().to_vec();
+    let presentation = session.session.definition.presentation.clone();
+    let dispatcher = session.session.state.live.nyphur_dispatcher.clone();
+    let build_view = |owner_position: Position, nyphur_position: Position| {
+        let mut view = session.session.state.live.economy.entities.clone();
+        level2_nyphur_project_castle_root(&mut view[usize::from(castle_slot)], castle);
+        view[111].set_position(owner_position);
+        view[112].set_position(nyphur_position);
+        view
+    };
+    let far_owner = Position {
+        x: castle.position.x.wrapping_add(8_000),
+        y: castle.position.y,
+        z: castle.position.z,
+    };
+    let near_nyphur = Position {
+        x: castle.position.x.wrapping_add(4_000),
+        y: castle.position.y,
+        z: castle.position.z,
+    };
+    let threat_lhs = 50_000_i32 - 243 * (1_000 / 10) / 255;
+    assert_eq!(threat_lhs, 49_905);
+
+    // The threat clause is strict: the exact left-hand side refuses, one
+    // more admits (owner far, no overlap, inside perception).
+    let view = build_view(far_owner, near_nyphur);
+    let mut armed = dispatcher.clone();
+    armed.common_upkeep.array_0x1fc[4] = 49_905;
+    assert_eq!(
+        armed
+            .step_sub_13e40(112, &view, &players, &presentation)
+            .expect("threat-boundary selector"),
+        None
+    );
+    armed.common_upkeep.array_0x1fc[4] = 49_906;
+    assert_eq!(
+        armed
+            .step_sub_13e40(112, &view, &players, &presentation)
+            .expect("armed threat selector"),
+        Some(castle_slot)
+    );
+
+    // Entry gates: no offensive holder, and a family-2 holder while the AI
+    // still has no Castle of its own, both refuse before any scan.
+    let mut holderless = armed.clone();
+    holderless.common_upkeep.spell_holder_indices = [0; PLAYER_SPELL_COUNT];
+    assert_eq!(
+        holderless
+            .step_sub_13e40(112, &view, &players, &presentation)
+            .expect("holderless selector"),
+        None
+    );
+    let mut family_two = armed.clone();
+    family_two.common_upkeep.spell_holder_indices[2] = 113;
+    assert_eq!(
+        family_two
+            .step_sub_13e40(112, &view, &players, &presentation)
+            .expect("family-2 gated selector"),
+        None
+    );
+
+    // The owner-distance clause is strictly greater than 0x3840000.
+    let exact_owner = Position {
+        x: castle.position.x.wrapping_add(7_680),
+        y: castle.position.y,
+        z: castle.position.z,
+    };
+    let view_exact = build_view(exact_owner, near_nyphur);
+    assert_eq!(
+        armed
+            .step_sub_13e40(112, &view_exact, &players, &presentation)
+            .expect("owner-distance boundary selector"),
+        None
+    );
+    let past_owner = Position {
+        x: castle.position.x.wrapping_add(7_681),
+        y: castle.position.y,
+        z: castle.position.z,
+    };
+    let view_past = build_view(past_owner, near_nyphur);
+    assert_eq!(
+        armed
+            .step_sub_13e40(112, &view_past, &players, &presentation)
+            .expect("owner-distance admitted selector"),
+        Some(castle_slot)
+    );
+
+    // An owner standing inside the Castle footprint vetoes the threat
+    // clause through the pinned sub_106C0 overlap.
+    let view_overlap = build_view(castle.position, near_nyphur);
+    assert_eq!(
+        armed
+            .step_sub_13e40(112, &view_overlap, &players, &presentation)
+            .expect("owner-overlap selector"),
+        None
+    );
+
+    // The own-castle mana clause admits without any threat word: the AI
+    // Castle row must bank strictly more than 640 * (255 - 243) plus the
+    // target's mana.
+    let mut mana_clause = dispatcher.clone();
+    mana_clause.common_upkeep.castle_entity_index = 70;
+    let mut view_mana = build_view(castle.position, near_nyphur);
+    view_mana[70].mana = 7_680;
+    assert_eq!(
+        mana_clause
+            .step_sub_13e40(112, &view_mana, &players, &presentation)
+            .expect("own-castle mana boundary selector"),
+        None
+    );
+    view_mana[70].mana = 7_681;
+    assert_eq!(
+        mana_clause
+            .step_sub_13e40(112, &view_mana, &players, &presentation)
+            .expect("own-castle mana admitted selector"),
+        Some(castle_slot)
+    );
+
+    // The perception admission is squared parameter word 0x1C and rejects
+    // at equality.
+    let mut view_perception = build_view(far_owner, near_nyphur);
+    view_perception[112].set_position(Position {
+        x: castle.position.x.wrapping_add(8_192),
+        y: castle.position.y,
+        z: castle.position.z,
+    });
+    assert_eq!(
+        armed
+            .step_sub_13e40(112, &view_perception, &players, &presentation)
+            .expect("perception boundary selector"),
+        None
+    );
+    view_perception[112].set_position(Position {
+        x: castle.position.x.wrapping_add(8_191),
+        y: castle.position.y,
+        z: castle.position.z,
+    });
+    assert_eq!(
+        armed
+            .step_sub_13e40(112, &view_perception, &players, &presentation)
+            .expect("perception admitted selector"),
+        Some(castle_slot)
+    );
+
+    // Armed production flow: plant exactly the two words pinned sub_159E0
+    // writes (the color-0 threshold and its war latch), move the owner away
+    // through the public position input, and let the production tail latch
+    // mode 7 and pursue the Castle through the exact 2048 receipt. This is
+    // boundary evidence for the selector seam: the arming itself is not an
+    // ordinary route, and is labelled as such.
+    let mut armed_session = session.clone();
+    for _ in 0..208_u16 {
+        armed_session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let far_position = Position {
+        x: 36_500,
+        y: 25_000,
+        z: 1_000,
+    };
+    let local_player = armed_session.state.entity_index;
+    armed_session
+        .set_level2_entity_position(local_player, far_position)
+        .expect("public player input moves the owner away from the Castle");
+    armed_session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .array_0x1fc[4] = 55_000;
+    armed_session
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .common_upkeep
+        .array_0x1fc[5] = 1;
+    let mut selected_turn = None;
+    let mut activation = None;
+    for turn in 209..=320_u16 {
+        armed_session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = &armed_session.economy.entities[112];
+        if selected_turn.is_none() && source.source_word_96() == castle_slot {
+            assert_eq!(armed_session.nyphur_dispatch_state_byte(), 7);
+            assert_eq!(
+                source.source_word_98(),
+                level2_nyphur_source_identity_parts(111, 2, 3),
+                "sub_13E40 stores the sub_14C40 Castle identity"
+            );
+            selected_turn = Some(turn);
+        }
+        if selected_turn.is_some() {
+            let common = armed_session
+                .nyphur_common_upkeep()
+                .expect("armed common carrier");
+            let castle_row = armed_session
+                .economy()
+                .castle()
+                .expect("the pursued Castle stays live");
+            let distance = level2_wrapping_target_distance(
+                armed_session.economy.entities[112].position,
+                castle_row.position,
+            );
+            if common.spell_enabled[0] != 0 && distance <= 2_048 {
+                activation = Some((turn, distance));
+                break;
+            }
+        }
+    }
+    let selected_turn = selected_turn.expect("the armed threshold latches mode 7");
+    let (activation_turn, activation_distance) =
+        activation.expect("mode 7 pursues the Castle through the 2048 receipt");
+    assert!(selected_turn < activation_turn);
+    assert!(activation_distance <= 2_048);
+    assert!(armed_session.nyphur_dispatch_traces().iter().any(|trace| {
+        trace.source_slot == 112
+            && trace.state_byte == 7
+            && trace.calls.contains(&Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub13710,
+            ))
+    }));
+    assert!(
+        armed_session
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .any(|projectile| {
+                projectile.active
+                    && projectile.holder_entity_index == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+            }),
+        "the mode-7 Castle attack reaches the genuine holder-113 producer"
+    );
+
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+    let mut replay_refusal = refusal.clone();
+    replay_refusal.reset();
+    assert_eq!(replay_refusal.campaign_state_hash(), baseline_campaign_hash);
 }

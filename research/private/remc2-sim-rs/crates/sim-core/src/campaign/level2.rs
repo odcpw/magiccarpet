@@ -2595,6 +2595,16 @@ impl Level2ResetSession {
                 } else {
                     parent_mana_regen
                 };
+                // Pinned `sub_693F0` charges the parent through `sub_68DE0`
+                // into the one authoritative Type_str_164 carrier. Keep the
+                // common carrier and the fixed entity projection in lockstep
+                // exactly like the family-1 holder so the next Nyphur visit
+                // consumes this family-0 charge.
+                self.session
+                    .state
+                    .live
+                    .nyphur_dispatcher
+                    .apply_holder_mana_regen(mana_regen);
                 if let Some(parent) = self
                     .session
                     .state
@@ -9074,11 +9084,13 @@ impl Level2ResetSession {
                 let players = &self.session.state.live.core.players;
                 let source_arena = &mut self.session.state.live.economy;
                 let (entities, economy) = (&mut source_arena.entities, &mut source_arena.economy);
+                let castle = economy.castle();
                 match self.session.state.live.nyphur_dispatcher.step_dispatch(
                     pass,
                     source_slot,
                     entities,
                     economy.spheres_mut(),
+                    castle,
                     players,
                     terrain,
                     &self.session.definition.presentation,
