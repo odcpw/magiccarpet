@@ -70,6 +70,27 @@ pub struct GameSnapshot {
     pub action_sequence: u64,
 }
 
+/// Canonical bounded observation for descriptor-backed campaign execution.
+///
+/// Campaign preservation adapters bind exact retained production identities
+/// as content digests. Compatibility-only schedule keys, source slots, and
+/// class/model/action selectors never cross this projection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CampaignSnapshot {
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub tick: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub effect_head: u64,
+    #[serde(serialize_with = "serialize_u64_hex")]
+    pub state_hash: u64,
+    #[serde(serialize_with = "serialize_u64_hex")]
+    pub terrain_hash: u64,
+    /// SHA-256 receipt of the complete retained production-effect journal.
+    pub effect_journal_sha256: String,
+    pub player_pose: PlayerPose,
+    pub player_motion: PlayerMotion,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LongitudinalControl {

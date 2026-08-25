@@ -13,6 +13,7 @@ use crate::{
     native_world::{Level2DispatchEvent, NativeWorld, NativeWorldError, NativeWorldInspection},
 };
 
+pub mod backend;
 pub mod dispatch;
 pub mod journal;
 pub mod objectives;
