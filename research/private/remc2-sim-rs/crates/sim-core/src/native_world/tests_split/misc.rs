@@ -16,13 +16,9 @@ fn level_two_imported_model1_root_hides_after_inverse_overlap_success() {
         .find(|root| root.model == 0)
         .copied()
         .expect("fixture has an imported model-0 root switch");
-    session
-        .level2_imported_switch_roots
-        .iter_mut()
-        .find(|candidate| candidate.source_slot == root.source_slot)
-        .expect("imported root state")
-        .model = 1;
-    session.economy.entities[usize::from(root.source_slot)].model = 1;
+    let source = &mut session.economy.entities[usize::from(root.source_slot)];
+    source.model = 1;
+    source.set_source_action(1);
     session.state.position = Position {
         x: root.position.x.wrapping_add(4_096),
         y: root.position.y,
@@ -107,6 +103,17 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
             ..
         }
     )));
+    assert!(
+        !session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Economy {
+                source_slot: 25,
+                event: Level2EconomyEvent::PreparedSound { sound_id: 41, .. },
+                ..
+            }
+        )),
+        "source model-0 switches activate silently"
+    );
 
     session.reset();
     assert!(session.economy().authored_model76().is_empty());
@@ -279,50 +286,30 @@ fn level_two_model76_switch25_activates_row112_once_and_enters_cursor() {
 }
 
 #[test]
-fn level_two_model76_switch25_allocation_failure_is_transactional() {
+fn level_two_model76_switch25_allocation_failure_consumes_row_and_hides() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut baseline = inspection
-        .level2_reset_session()
-        .expect("Level 2 model-76 switch25 far-baseline session");
-    let baseline_switch = baseline
-        .level2_group10_switch25
-        .expect("live group-10 switch slot 25");
-    let activation_turns = level_two_model76_switch25_activation_turns(baseline_switch.phase);
     let mut session = inspection
         .level2_reset_session()
-        .expect("Level 2 model-76 switch25 rollback session");
+        .expect("Level 2 model-76 switch25 exhaustion session");
     let switch = session
         .level2_group10_switch25
         .expect("live group-10 switch slot 25");
+    let activation_turns = level_two_model76_switch25_activation_turns(switch.phase);
     let crafted_free_slots = vec![
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 0, 906, 905, 904, 903,
         902, 901,
     ];
-    baseline.economy_mut().free_slots = crafted_free_slots.clone();
     session.economy_mut().free_slots = crafted_free_slots.clone();
-    for candidate in [&mut baseline, &mut session] {
-        for entity in candidate.economy.entities.iter_mut().filter(|entity| {
-            entity.active
-                && entity.class == 11
-                && entity.model == 0
-                && matches!(entity.source_id, 12 | 14 | 16)
-        }) {
-            entity.disable_drawing();
-        }
+    for entity in session.economy.entities.iter_mut().filter(|entity| {
+        entity.active
+            && entity.class == 11
+            && entity.model == 0
+            && matches!(entity.source_id, 12 | 14 | 16)
+    }) {
+        entity.disable_drawing();
     }
-    baseline.state.position = Position {
-        x: baseline_switch.position.x.wrapping_add(4_096),
-        y: baseline_switch.position.y,
-        z: baseline_switch.position.z,
-    };
     session.state.position = switch.position;
-    for _ in 0..activation_turns {
-        baseline.step_outer_turn(PlayerCommand::default(), 0);
-    }
-    let baseline_free_slots = baseline.economy().free_slots.clone();
-    let baseline_live = baseline.economy().live_arena_slots();
-
     for _ in 0..activation_turns {
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
@@ -330,18 +317,57 @@ fn level_two_model76_switch25_allocation_failure_is_transactional() {
     assert!(session.economy().authored_model76().is_empty());
     assert!(session.economy().model76_children().is_empty());
     assert!(session.economy().model76_tail_spawns().is_empty());
-    assert_eq!(session.economy().free_slots, baseline_free_slots);
-    assert_eq!(session.economy().live_arena_slots(), baseline_live);
-    assert!(session.level2_group10_switch25.is_some());
-    let live_switch = session.economy.entities()
+    assert!(
+        session
+            .session
+            .state
+            .live
+            .authored_features_consumed
+            .contains(&112),
+        "sub_4A1E0 consumes row 112 even when its constructor cannot allocate"
+    );
+    assert!(session.level2_group10_switch25.is_none());
+    let hidden_switch = session.economy.entities()
         .iter()
         .find(|entity| entity.index == 25)
-        .expect("live switch slot 25");
-    assert!(!live_switch.drawing_disabled());
+        .expect("reserved switch slot 25");
+    assert!(hidden_switch.drawing_disabled());
+    assert!(hidden_switch.active);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Error { source_slot, .. } if *source_slot == 25
+        Level2DispatchEvent::AuthoredGroupActivated {
+            source_slot: 25,
+            group: 10,
+            authored_indices,
+            ..
+        } if authored_indices.as_ref() == [112]
     )));
+    assert!(!session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::Error { source_slot: 25, .. }
+    )));
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+
+    let reclaimed_switch = session.economy.entities()
+        .iter()
+        .find(|entity| entity.index == 25)
+        .expect("reclaimed switch row 25");
+    assert!(!reclaimed_switch.active);
+    assert_eq!(reclaimed_switch.class, 0);
+    assert!(session.economy().authored_model76().is_empty());
+    assert_eq!(
+        session
+            .dispatch_events()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+            ))
+            .count(),
+        0,
+        "consumed row 112 must not retry on a later pass"
+    );
 }
 
 #[test]
@@ -1274,6 +1300,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
         .set_level2_selected_objective_stage_state(2)
         .expect("source objective completion sentinel");
     let baseline_hash = session.shared_spells().reset_hash();
+    fire_level_two_model32_group(&mut session, 21);
     let acquire_shield = |session: &mut Level2ResetSession| {
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
@@ -1440,6 +1467,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     session
         .set_level2_selected_objective_stage_state(2)
         .expect("source objective completion sentinel after replay");
+    fire_level_two_model32_group(&mut session, 21);
     let outcome = acquire_shield(&mut session);
     let live_bee = session
         .economy()
@@ -2348,24 +2376,7 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
         .level2_reset_session()
         .expect("Level 2 Beyond Sight production session");
     let baseline_hash = session.shared_spells().reset_hash();
-    let pickup_position = session.shared_spells().pickups()[0].position;
-    session.shared_spells_mut().pickups[0].phase = 0;
-    session.shared_spells_mut().pickups[0].record[66] = 0;
-    session.state.position = pickup_position;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-
-    let outcome = session
-        .dispatch_events()
-        .iter()
-        .find_map(|event| match event {
-            Level2DispatchEvent::SpellAcquisition {
-                family: 12,
-                result: Some(outcome),
-                ..
-            } => Some(*outcome),
-            _ => None,
-        })
-        .expect("reset family-12 source acquisition");
+    let outcome = acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
     let cold = session
         .shared_spells()
         .beyond_sight_state()
@@ -2468,23 +2479,7 @@ fn level_two_beyond_sight_threshold_crossing_emits_improvement_after_award() {
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 Beyond Sight threshold session");
-    let pickup_position = session.shared_spells().pickups()[0].position;
-    session.shared_spells_mut().pickups[0].phase = 0;
-    session.shared_spells_mut().pickups[0].record[66] = 0;
-    session.state.position = pickup_position;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let outcome = session
-        .dispatch_events()
-        .iter()
-        .find_map(|event| match event {
-            Level2DispatchEvent::SpellAcquisition {
-                family: 12,
-                result: Some(outcome),
-                ..
-            } => Some(*outcome),
-            _ => None,
-        })
-        .expect("ordinary family-12 acquisition");
+    let outcome = acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
     let local_entity_index = session.state.entity_index;
     session
         .economy_mut()
@@ -2617,23 +2612,7 @@ fn level_two_beyond_sight_threshold_without_source_enabled_array_or_holder_is_si
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 Beyond Sight gate session");
-    let pickup_position = session.shared_spells().pickups()[0].position;
-    session.shared_spells_mut().pickups[0].phase = 0;
-    session.shared_spells_mut().pickups[0].record[66] = 0;
-    session.state.position = pickup_position;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let outcome = session
-        .dispatch_events()
-        .iter()
-        .find_map(|event| match event {
-            Level2DispatchEvent::SpellAcquisition {
-                family: 12,
-                result: Some(outcome),
-                ..
-            } => Some(*outcome),
-            _ => None,
-        })
-        .expect("ordinary family-12 acquisition");
+    let outcome = acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
     let local_entity_index = session.state.entity_index;
 
     {
@@ -2718,11 +2697,7 @@ fn level_two_beyond_sight_wrapping_level_drop_still_emits_source_improvement() {
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 Beyond Sight wrapping session");
-    let pickup_position = session.shared_spells().pickups()[0].position;
-    session.shared_spells_mut().pickups[0].phase = 0;
-    session.shared_spells_mut().pickups[0].record[66] = 0;
-    session.state.position = pickup_position;
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
     let local_entity_index = session.state.entity_index;
     {
         let mut shared = session.shared_spells_mut();
@@ -3079,53 +3054,60 @@ fn level_two_beyond_sight_expiry_replays_queued_setspell_word() {
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 Beyond Sight cleanup session");
-    let source_position = session.shared_spells().pickups()[0].position;
-    session.shared_spells_mut().pickups[0].phase = 0;
-    session.shared_spells_mut().pickups[0].record[66] = 0;
-    session.state.position = source_position;
-    let outcome = session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(
-        session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::SpellAcquisition {
-                family: 12,
-                result: Some(_),
-                ..
-            }
-        )),
-        "events: {outcome:?}"
-    );
-    let source_slot = session
-        .dispatch_events()
-        .iter()
-        .find_map(|event| match event {
-            Level2DispatchEvent::SpellAcquisition {
-                family: 12,
-                result: Some(outcome),
-                ..
-            } => Some(outcome.source_slot),
-            _ => None,
-        })
-        .expect("family-12 acquisition source slot");
+    let source_slot =
+        acquire_level_two_beyond_sight_from_ordinary_route(&mut session).source_slot;
     {
         let mut shared = session.shared_spells_mut();
+        shared.player_mana = 5_000;
+        shared.player_entity.mana = 5_000;
+        shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+        shared.player_entities[0].mana = 5_000;
+        shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
         shared
             .beyond_sight
             .as_mut()
             .expect("cold Beyond Sight state")
             .parent_mana = 5_000;
         assert!(shared.activate_beyond_sight(256, false));
-        shared
-            .beyond_sight
-            .as_mut()
-            .expect("active Beyond Sight state")
-            .active_value = 1;
-        shared
-            .pickup_mut(source_slot)
-            .expect("active Beyond Sight holder row")
-            .record[48..50]
-            .copy_from_slice(&2_u16.to_le_bytes());
     }
+    // While the holder is active, SetSpell queues the newly selected tier in
+    // word 0x2c. The earlier synthetic test wrote that projection directly and
+    // therefore bypassed the authoritative imported row.
+    for command in [
+        PlayerCommand {
+            opcode: 40,
+            argument_1: BEYOND_SIGHT_FAMILY.cast_signed(),
+            argument_2: 7,
+            ..PlayerCommand::default()
+        },
+        PlayerCommand {
+            opcode: 41,
+            argument_1: 1,
+            ..PlayerCommand::default()
+        },
+        PlayerCommand {
+            opcode: 31,
+            argument_1: BEYOND_SIGHT_FAMILY.cast_signed(),
+            argument_2: 1,
+            ..PlayerCommand::default()
+        },
+    ] {
+        session.step_outer_turn(command, 0);
+    }
+    assert_eq!(
+        session
+            .shared_spells()
+            .pickup(source_slot)
+            .expect("active Beyond Sight holder after SetSpell")
+            .record_bytes()[48..50],
+        2_u16.to_le_bytes()
+    );
+    session
+        .shared_spells_mut()
+        .beyond_sight
+        .as_mut()
+        .expect("active Beyond Sight state")
+        .active_value = 1;
     session.step_outer_turn(PlayerCommand::default(), 0);
     let holder = session
         .shared_spells()

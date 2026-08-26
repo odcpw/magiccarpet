@@ -21,7 +21,7 @@ use crate::{
     PlayerCommand, Position, SOURCE_SPELL_INDEX_MAP, SourceAudioCallTag, SpellFireContext,
     angle_distance,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
-    campaign::spec::CampaignDefinition as ValidatedCampaignDefinition,
+    campaign::spec::{CampaignDefinition as ValidatedCampaignDefinition, CampaignSelection},
     collision_mask::{
         CollisionMaskBank, CollisionMaskLookupError, LEVEL2_COLLISION_MASK_BANK_BYTES,
     },
@@ -43,7 +43,7 @@ use crate::{
     heading_for_positions,
     house::{
         HOUSE_CLASS, HOUSE_MODEL, HouseFamily, HouseParameter, HouseResidentEntry, HouseState,
-        HouseStepEvent,
+        HouseStepEvent, decode_campaign_house_parameters,
     },
     latch_command_with_context,
     legacy_terrain::{
@@ -54,18 +54,21 @@ use crate::{
         AuthoredFeature, CASTLE_SPELL_FAMILY, CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH,
         CASTLE_STAGE_ONE_LIFE, CASTLE_STAGE_ONE_MANA_CAPACITY, CastleBuildFootprint,
         CastleTerrainUpdate, DEATH_BURST_ACTION, DEATH_BURST_CLASS, DEATH_BURST_MODEL,
-        FIREBALL_BASE_TMAP, FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT,
-        FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LIFETIME_TICKS,
-        FIREBALL_LOGICAL_HEIGHT, FIREBALL_PROJECTILE_CLASS, FIREBALL_PROJECTILE_MODEL,
-        FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FIREBALL_SPEED, FIREBALL_SPELL_FAMILY,
-        FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE,
-        GROUND_FIRE_BASE_TMAP, GROUND_FIRE_FIRST_RENDER_INDEX, GROUND_FIRE_LOGICAL_HEIGHTS,
-        GROUND_FIRE_PRESENTATION_BYTE_11, GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE,
-        HouseResidentRequest, Level1AmbientEntity, Level1CastlePlacementBlocker,
-        Level1CollisionTarget, Level1MissionState, Level1MissionTemplate,
-        Level1ResetRawSourceState, Level1ResetSourceSlot, Level1SourceCollisionTarget,
-        Level1SourceEffect, Level1SourceEntityAuthority, Level1SourceEntityView,
-        MANA_CARRIER_ATTRACTION_RADIUS, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
+        FIREBALL_BASE_TMAP, FIREBALL_COLLISION_HALF_HEIGHT, FIREBALL_COLLISION_HALF_WIDTH,
+        FIREBALL_COLLISION_VERTICAL_OFFSET, FIREBALL_HOMING_PITCH_TURN_LIMIT,
+        FIREBALL_HOMING_YAW_TURN_LIMIT, FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT,
+        FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_INITIAL_YAW_TURN_LIMIT,
+        FIREBALL_LIFETIME_TICKS, FIREBALL_LOGICAL_HEIGHT, FIREBALL_PROJECTILE_CLASS,
+        FIREBALL_PROJECTILE_MODEL, FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FIREBALL_SPEED,
+        FIREBALL_SPELL_FAMILY, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
+        FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP, GROUND_FIRE_FIRST_RENDER_INDEX,
+        GROUND_FIRE_LOGICAL_HEIGHTS, GROUND_FIRE_PRESENTATION_BYTE_11,
+        GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE, HouseResidentRequest,
+        Level1AmbientEntity, Level1CastlePlacementBlocker, Level1CollisionTarget,
+        Level1MissionState, Level1MissionTemplate, Level1ResetRawSourceState,
+        Level1ResetSourceSlot, Level1SourceCollisionTarget, Level1SourceEffect,
+        Level1SourceEntityAuthority, Level1SourceEntityView, MANA_CARRIER_ATTRACTION_RADIUS,
+        MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
         MANA_CARRIER_COLLISION_HALF_WIDTH, MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
         MANA_CARRIER_DESCENT, MANA_CARRIER_GROUND_CLEARANCE, MANA_CARRIER_LOGICAL_HEIGHT,
         MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA, MANA_CARRIER_RENDER_INDEX,
@@ -175,8 +178,8 @@ const LEVEL2_CASTLE_DEFENDER_CAVE_FOV: i16 = 400;
 // `str_D7BD6[68].word_0xc` is the third argument to `sub_580E0`; the
 // fourth (`word_0xa`, 1536) is unused by that helper.  The resulting floor
 // clearance is therefore 512 source units.
-const LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE: i16 = 512;
-const LEVEL2_CASTLE_DEFENDER_CAVE_STEP: i16 = -16;
+const LEVEL2_CASTLE_DEFENDER_FLOOR_CLEARANCE: i16 = 512;
+const LEVEL2_CASTLE_DEFENDER_SETTLE_STEP: i16 = -16;
 const LEVEL2_CASTLE_DEFENDER_CAVE_BLOCKED_SPEED: i16 = 48;
 const LEVEL2_CASTLE_DEFENDER_CAVE_OPEN_SPEED: i16 = 96;
 const LEVEL2_CASTLE_DEFENDER_CAVE_SOUND: u16 = 22;
@@ -481,15 +484,20 @@ mod world_types;
 use world_types::Result;
 pub use world_types::*;
 
+mod ballistic_scenery;
 #[path = "campaign/level2.rs"]
 mod campaign;
+mod campaign_multipart;
+mod campaign_shared_families;
+mod countdown_switch;
 mod level2_nyphur;
+mod terrain_strip;
 pub(crate) use level2_nyphur::level2_nyphur_source_identity_parts;
 pub use level2_nyphur::{
     Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchCall, Level2NyphurDispatchHelper,
     Level2NyphurDispatchTrace, Level2NyphurParticipant, Level2NyphurVisibility,
 };
-use level2_nyphur::{Level2NyphurDispatcher, level2_nyphur_source_identity};
+use level2_nyphur::{Level2NyphurDispatcher, NyphurCapability, level2_nyphur_source_identity};
 
 /// One source-owned Day spell-hand row consumed by the HUD presenter.
 ///
@@ -921,6 +929,11 @@ pub struct Level2PossessionProjectile {
     /// Source control-byte bit 0x02. A failed initial acquisition is not
     /// retried on later callbacks.
     pub acquisition_attempted: bool,
+    /// Source control-byte-1 bit `0x20`, set by the pass-wide `sub_159E0`
+    /// threat accounting prepass after both the projectile owner and target
+    /// relation resolve. This is independent of the guidance acquisition bit
+    /// above and prevents a live projectile from contributing twice.
+    pub threat_accounted: bool,
     pub position: Position,
     /// Source `axis_0x9A`, projected 10,240 units from the raw parent
     /// position using the wrapping A4 yaw/pitch sums. CastPosses does not
@@ -1007,9 +1020,8 @@ pub struct Level2CastleProjectile {
 }
 
 /// The ordinary public family-0 Fireball flyer created by `sub_693F0` and
-/// `sub_6DCA0`.  It remains a distinct source row because its callback owns
-/// the one-shot collision gate, RNG/audio tail, and following-pass reclaim;
-/// the target Bee owns only the destination mailbox transition.
+/// `sub_6DCA0`. Its class-9 callback owns target acquisition, guidance,
+/// movement, and transactional construction of a distinct class-10 impact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2FireballProjectile {
     pub source_entity_index: u16,
@@ -1026,17 +1038,27 @@ pub struct Level2FireballProjectile {
     pub axis_position: Position,
     pub yaw: i16,
     pub pitch: i16,
+    /// Desired yaw installed by `sub_67CB0`/`sub_65610`.
+    pub roll: i16,
+    /// Desired pitch installed by `sub_67CB0`/`sub_65610`.
+    pub fov: i16,
     pub actual_speed: i16,
     pub minimum_speed: i16,
     pub life: i16,
     pub max_life: i16,
-    /// Source `dword_0x10`, copied from the parent A4 byte and consumed by
-    /// the delay prefix before movement/collision/RNG.
+    /// Source `dword_0x10`, copied from the parent A4 byte.
     pub dword_0x10: i32,
-    /// Source byte-0 bit 1: after the first callback the collision scan is
-    /// never repeated, including when no Bee was eligible.
+    /// Source `word_0x96` guidance relation.
+    pub target_source_entity_index: u16,
+    /// Source byte-0 bit 1: target acquisition is attempted once.
+    pub acquisition_attempted: bool,
+    /// Source byte-1 bit 0x20: `sub_159E0` accounts this relation once.
+    pub threat_accounted: bool,
+    /// Retained raw control carrier for source flags not yet promoted to a
+    /// semantic field.
     pub control_flags: u32,
-    /// Source word-0x2c random displacement after the collision scan.
+    /// Kept for lossless compatibility with the old typed carrier. The flyer
+    /// callback does not consume this class-10 impact field.
     pub source_word_2c: i16,
     pub phase: u8,
     pub active: bool,
@@ -1085,8 +1107,8 @@ pub struct Level2CastleChild {
     pub pending_attacker_entity_index: u16,
     pub damage_attacker_entity_index: u16,
     pub killer_entity_index: u16,
-    /// Source `byte_0x3E_62`, used by `sub_5FF50`'s modulo cadence gate.
-    /// This is explicitly injectable because it is not the Castle phase.
+    /// Source `byte_0x3E_62`, advanced by the common entity epilogue.
+    /// Castle defender retargeting is gated by the parent Castle's phase.
     pub source_byte_3e: u8,
     /// Source constructor cadence byte `byte_0x39_57`. A non-zero value gates
     /// the action-121 class-3 target scan.
@@ -2028,13 +2050,12 @@ pub struct Level2AuthoredModel17Source {
     pub active: bool,
 }
 
-/// A class-10/model-0 child emitted by Quickfair, action 58, or Meteor through
-/// the pinned `NewAdd0A00_4E320` constructor. The stored row is the
-/// post-spawn state after the producer applies its source-specific
-/// control/shift overrides; the action-0 terrain callback remains a separate
-/// follow-up. Reusing this existing child arena preserves source order,
-/// parent identity, map link, life sentinel, and reclaim behavior without a
-/// new Level 2 twin.
+/// A class-10/model-0 effect emitted through the pinned
+/// `NewAdd0A00_4E320` constructor by Fireball, Quickfair, action 58, or
+/// Meteor. The producer-specific parent and target relations stay on the row;
+/// every producer then shares the same action-0 impact callback and reclaim.
+/// The historical type name is retained until the broader source-family
+/// naming cleanup, but this is not a model-17-only carrier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2Model17SpawnedChild {
     pub source_entity_index: u16,
@@ -2052,6 +2073,12 @@ pub struct Level2Model17SpawnedChild {
     pub shift_rot_x: i16,
     pub shift_rot_y: i16,
     pub yaw: i16,
+    pub pitch: i16,
+    /// Source `word_0x2c` vertical displacement chosen on the first eligible
+    /// action-0 callback.
+    pub source_word_2c: i16,
+    /// Source `word_0x96`; Fireball copies its collision target here.
+    pub target_source_entity_index: u16,
     pub position: Position,
     pub phase: u8,
     pub active: bool,
@@ -3044,7 +3071,7 @@ pub struct Level2LiveState {
     pub(crate) ordinary: Level2OrdinaryResetSession,
     pub(crate) goats: GoatFamily,
     pub(crate) mission: MissionContentSession,
-    pub(crate) nyphur_dispatcher: Level2NyphurDispatcher,
+    pub(crate) nyphur_dispatcher: NyphurCapability,
     /// Source `sub_11900` player damage mailbox.  The Bee contact writes this
     /// during its source-slot callback; the local-player route consumes it on
     /// the next source-ordered visit.
@@ -3088,6 +3115,11 @@ pub struct Level2LiveState {
     pub(crate) level2_model53_activated: BTreeSet<u16>,
     pub(crate) level2_model1_activated: BTreeSet<u16>,
     pub(crate) level2_model17_activated: BTreeSet<u16>,
+    /// Source authored rows consumed by `sub_4A1E0(..., 1)`. The source
+    /// clears each matching row after its constructor attempt, including
+    /// failed allocations, so this ledger is distinct from every live
+    /// family-specific arena and from the legacy successful-activation sets.
+    pub(crate) authored_features_consumed: BTreeSet<u16>,
     pub(crate) level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     pub(crate) level2_group10_switch25: Option<Level2Group10Switch25State>,
     /// Authored class-14 subtype-3/5 rows already consumed by an active
@@ -3787,9 +3819,11 @@ fn level2_nyphur_participant(
         || entity.parameter_relation != Some(67)
         || entity.special_relation != EntitySpecialRelation::PlayerState(1)
         || entity.control_flags != 12
-        || entity.life != 3_085
+        || entity.life < -1
+        || entity.life > entity.max_life
         || entity.max_life != 3_085
-        || entity.mana != 1_000
+        || entity.mana < 0
+        || entity.mana > entity.max_mana
         || entity.max_mana != 1_000
         || !source_relation_is_valid
         || !level2_nyphur_entity_record_matches_census(entity, baseline_entity)
@@ -3902,11 +3936,13 @@ fn level2_nyphur_entity_record_matches_census(
     }
     let mut normalized = record.to_vec();
     // The ordinary Nyphur pass owns its entity RNG, yaw, pitch,
-    // target-heading roll, position, phase, actual speed, and word-0x96/0x98
-    // target relation. Common upkeep also rewrites mana regeneration from
-    // max mana. Keep reset bytes for the constructor hash while the caller
-    // separately validates any live relation and retains every unrelated
-    // census byte.
+    // target-heading roll, position, phase, actual speed, life, mana, and
+    // word-0x96/0x98 target relation. Common upkeep applies both regeneration
+    // carriers and clamps the live values to their source ranges. Keep reset
+    // bytes for the constructor hash while the caller separately validates
+    // the live ranges and target relation and retains every unrelated census
+    // byte.
+    normalized[12..16].copy_from_slice(&baseline_record[12..16]);
     normalized[24..26].copy_from_slice(&baseline_record[24..26]);
     normalized[32..34].copy_from_slice(&baseline_record[32..34]);
     normalized[34..36].copy_from_slice(&baseline_record[34..36]);
@@ -3914,6 +3950,7 @@ fn level2_nyphur_entity_record_matches_census(
     normalized[80..86].copy_from_slice(&baseline_record[80..86]);
     normalized[134..136].copy_from_slice(&baseline_record[134..136]);
     normalized[140..144].copy_from_slice(&baseline_record[140..144]);
+    normalized[148..152].copy_from_slice(&baseline_record[148..152]);
     normalized[154..158].copy_from_slice(&baseline_record[154..158]);
     normalized[66] = LEVEL2_NYPHUR_INITIAL_PHASE;
     let mut hasher = Sha256::new();
@@ -4054,20 +4091,20 @@ impl NativeWorld {
     /// the legacy owner-export manifest or chooses a friendly level profile.
     /// The descriptor has already established the exact member set, hashes,
     /// identity, source facts, operations, and compiled live-root capabilities.
-    pub(crate) fn inspect_campaign_level2(
+    pub(crate) fn inspect_campaign_definition(
         definition: &ValidatedCampaignDefinition,
     ) -> Result<NativeWorldInspection> {
-        Self::inspect_campaign_level2_internal(definition, None)
+        Self::inspect_campaign_definition_internal(definition, None)
     }
 
-    pub(crate) fn inspect_campaign_level2_with_owner_cache(
+    pub(crate) fn inspect_campaign_definition_with_owner_cache(
         definition: &ValidatedCampaignDefinition,
         owner_cache: &Path,
     ) -> Result<NativeWorldInspection> {
-        Self::inspect_campaign_level2_internal(definition, Some(owner_cache))
+        Self::inspect_campaign_definition_internal(definition, Some(owner_cache))
     }
 
-    fn inspect_campaign_level2_internal(
+    fn inspect_campaign_definition_internal(
         definition: &ValidatedCampaignDefinition,
         owner_cache: Option<&Path>,
     ) -> Result<NativeWorldInspection> {
@@ -4111,10 +4148,8 @@ impl NativeWorld {
             capture_frame: 0,
             vga_resolution_selector,
         };
-        validate_profile(&metadata, OwnerPackageProfile::Level2)?;
-
         let terrain_planes = parse_terrain(&terrain_bytes)?;
-        let terrain_rng = read_u16(&feature_end, 8, "Level 2 feature-end terrain RNG")?;
+        let terrain_rng = read_u16(&feature_end, 8, "campaign feature-end terrain RNG")?;
         let terrain = LegacyTerrain::new(
             terrain_planes.terrain_types.to_vec(),
             terrain_planes.ground_heights.to_vec(),
@@ -4125,25 +4160,31 @@ impl NativeWorld {
         let entities = parse_entities(&entities_bytes)?;
         let players = parse_players(
             &players_bytes,
-            OwnerPackageProfile::Level2,
+            OwnerPackageProfile::Campaign,
             OwnerPackageSchema::V5,
         )?;
         let runtime = parse_runtime(&runtime_bytes)?;
-        validate_level_two_runtime(&runtime, &players, &entities)?;
+        validate_campaign_runtime(&runtime, &players, &entities)?;
         let presentation = parse_presentation(&presentation_bytes)?;
-        let reset_state = Some(parse_level_two_reset_state(
+        let reset_state = Some(parse_campaign_reset_state(
             &entities_bytes,
             &players_bytes,
             &runtime_bytes,
         )?);
-        let collision_masks = Some(
-            CollisionMaskBank::parse_source_exact(&collision_mask_bytes).map_err(|error| {
+        // Campaign preflight has already bound this exact member to the
+        // selection's source-pinned byte length and SHA-256. Materialization
+        // now performs only the common structural decode; applying the
+        // historical Level-2 byte identity here would reject every later
+        // descriptor by construction.
+        let collision_masks = Some(CollisionMaskBank::parse(&collision_mask_bytes).map_err(
+            |error| {
                 NativeWorldError::new(format!(
-                    "qualified Level 2 collision-mask bank rejected: {error:?}"
+                    "qualified campaign collision-mask bank rejected: {error:?}"
                 ))
-            })?,
-        );
+            },
+        )?);
         let (level2_castle_stage_footprints, level2_house_build_footprints) = owner_cache
+            .filter(|_| definition.identity == CampaignSelection::LEVEL2)
             .map(|owner_cache| {
                 load_level2_castle_stage_footprints(owner_cache, &owner_export_package_sha256)
             })
@@ -4151,7 +4192,7 @@ impl NativeWorld {
             .unwrap_or_default();
 
         Ok(NativeWorldInspection {
-            profile: OwnerPackageProfile::Level2,
+            profile: OwnerPackageProfile::Campaign,
             schema: OwnerPackageSchema::V5,
             metadata,
             package_sha256: owner_export_package_sha256,
@@ -6310,6 +6351,11 @@ fn validate_manifest_counts(
     let expected_active = match profile {
         OwnerPackageProfile::Level1 => 177,
         OwnerPackageProfile::Level2 => 114,
+        OwnerPackageProfile::Campaign => {
+            return Err(NativeWorldError::new(
+                "descriptor-backed campaign counts are validated by campaign preflight",
+            ));
+        }
     };
     for (name, expected) in [
         ("authored_features", 1_200_u64),
@@ -6336,6 +6382,11 @@ fn validate_profile(metadata: &LevelMetadata, profile: OwnerPackageProfile) -> R
     let expected = match profile {
         OwnerPackageProfile::Level1 => (1, 0, MapType::Night),
         OwnerPackageProfile::Level2 => (2, 1, MapType::Day),
+        OwnerPackageProfile::Campaign => {
+            return Err(NativeWorldError::new(
+                "descriptor-backed campaign identity is validated by campaign preflight",
+            ));
+        }
     };
     if (
         metadata.external_level,
@@ -6375,6 +6426,41 @@ fn validate_level_two_runtime(
         {
             return Err(NativeWorldError::new(format!(
                 "Level 2 player {slot} must reference an active entity"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Recheck the descriptor-validated player/entity binding at materialization
+/// time without selecting a level profile. Campaign preflight owns the exact
+/// census and music facts; this seam only prevents a decoded live session
+/// from observing an out-of-range or inactive player relation.
+fn validate_campaign_runtime(
+    runtime: &RuntimeSnapshot,
+    players: &[PlayerSnapshot],
+    entities: &[EntitySnapshot],
+) -> Result<()> {
+    let player_count = usize::from(runtime.player_count);
+    let local_player_slot = usize::from(runtime.local_player_slot);
+    if player_count == 0
+        || player_count > players.len()
+        || local_player_slot >= player_count
+        || players
+            .get(local_player_slot)
+            .is_none_or(|player| player.is_ai)
+    {
+        return Err(NativeWorldError::new(
+            "campaign runtime has an invalid player count/local-player binding",
+        ));
+    }
+    for (slot, player) in players.iter().take(player_count).enumerate() {
+        if entities
+            .get(usize::from(player.entity_index))
+            .is_none_or(|entity| !entity.active || entity.class != 3)
+        {
+            return Err(NativeWorldError::new(format!(
+                "campaign player {slot} must reference an active class-3 entity"
             )));
         }
     }
@@ -6876,6 +6962,11 @@ fn parse_common_package(
             8,
             "Level 2 feature-end terrain RNG",
         )?,
+        OwnerPackageProfile::Campaign => {
+            return Err(NativeWorldError::new(
+                "descriptor campaign must use inspect_campaign_definition",
+            ));
+        }
     };
     let terrain = LegacyTerrain::new(
         terrain_planes.terrain_types.to_vec(),
@@ -6935,6 +7026,11 @@ fn parse_common_package(
         (OwnerPackageProfile::Level1, None) => {
             return Err(NativeWorldError::new(
                 "manifest is missing reset_projection",
+            ));
+        }
+        (OwnerPackageProfile::Campaign, _) => {
+            return Err(NativeWorldError::new(
+                "descriptor campaign must use inspect_campaign_definition",
             ));
         }
     };
@@ -7228,7 +7324,10 @@ fn parse_players(
                 true,
                 false,
             ),
-            (OwnerPackageProfile::Level2, OwnerPackageSchema::V5) => (
+            (
+                OwnerPackageProfile::Level2 | OwnerPackageProfile::Campaign,
+                OwnerPackageSchema::V5,
+            ) => (
                 4,
                 PLAYER_LEVEL2_RECORD_BYTES,
                 PLAYER_LEVEL2_RECORD_BYTES_U16,
@@ -7271,9 +7370,13 @@ fn parse_players(
         }
         let left = read_i16(record, 554, "left spell slot")?;
         let right = read_i16(record, 556, "right spell slot")?;
-        let level2_empty_hand = profile == OwnerPackageProfile::Level2 && left == -1 && right == -1;
-        if (!level2_empty_hand && !(0..PLAYER_SPELL_COUNT_I16).contains(&left))
-            || (!level2_empty_hand && !(0..PLAYER_SPELL_COUNT_I16).contains(&right))
+        let empty_hand = matches!(
+            profile,
+            OwnerPackageProfile::Level2 | OwnerPackageProfile::Campaign
+        ) && left == -1
+            && right == -1;
+        if (!empty_hand && !(0..PLAYER_SPELL_COUNT_I16).contains(&left))
+            || (!empty_hand && !(0..PLAYER_SPELL_COUNT_I16).contains(&right))
         {
             return Err(NativeWorldError::new(format!(
                 "player {slot} spell selection is out of bounds"
@@ -7308,6 +7411,8 @@ fn parse_players(
         learned_spell_flags.copy_from_slice(&record[424..450]);
         let mut spell_enabled_flags = [0_u8; PLAYER_SPELL_COUNT];
         spell_enabled_flags.copy_from_slice(&record[450..476]);
+        let mut acquired_spell_flags = [0_u8; PLAYER_SPELL_COUNT];
+        acquired_spell_flags.copy_from_slice(&record[476..502]);
         let mut family_selected_tiers = [0_i8; PLAYER_SPELL_COUNT];
         for (tier, value) in family_selected_tiers.iter_mut().zip(&record[528..554]) {
             *tier = value.cast_signed();
@@ -7368,6 +7473,7 @@ fn parse_players(
             spell_hand_eligibility,
             learned_spell_flags,
             spell_enabled_flags,
+            acquired_spell_flags,
             family_selected_tiers,
             persistent_spell_experience,
             runtime_spell_experience,
@@ -7644,25 +7750,66 @@ fn validate_manifest_relations(
     Ok(())
 }
 
-/// Decode the Level 2 frame-zero flight projection directly from the typed
-/// owner rows. The package's optional `reset_projection` is a copied Level 1
-/// seal, so it cannot identify the Level 2 player (slot 111).
+/// Decode the frame-zero flight projection from the descriptor-selected
+/// local-player relation. No source entity number or player count is a Rust
+/// profile constant.
+fn parse_campaign_reset_state(
+    entities: &[u8],
+    players: &[u8],
+    runtime: &[u8],
+) -> Result<FlightState> {
+    parse_reset_state_from_player_relation(
+        entities,
+        players,
+        runtime,
+        PLAYER_LEVEL2_RECORD_BYTES,
+        None,
+    )
+}
+
 fn parse_level_two_reset_state(
     entities: &[u8],
     players: &[u8],
     runtime: &[u8],
 ) -> Result<FlightState> {
-    let slot = read_i16(runtime, 16, "Level 2 local player slot")?;
-    if slot != 0 {
+    parse_reset_state_from_player_relation(
+        entities,
+        players,
+        runtime,
+        PLAYER_LEGACY_RECORD_BYTES,
+        Some(111),
+    )
+}
+
+fn parse_reset_state_from_player_relation(
+    entities: &[u8],
+    players: &[u8],
+    runtime: &[u8],
+    player_record_bytes: usize,
+    expected_entity_index: Option<u16>,
+) -> Result<FlightState> {
+    let slot = read_i16(runtime, 16, "campaign local player slot")?;
+    if slot < 0
+        || usize::try_from(slot)
+            .ok()
+            .is_none_or(|slot| slot >= PLAYER_COUNT)
+    {
         return Err(NativeWorldError::new(format!(
-            "Level 2 reset requires local player slot 0, got {slot}"
+            "campaign reset local player slot is out of bounds: {slot}"
         )));
     }
-    let player = record(players, 12, PLAYER_LEGACY_RECORD_BYTES, 0, "players.bin")?;
-    let entity_index = read_u16(player, 4, "Level 2 local player entity relation")?;
-    if entity_index != 111 {
+    let player = record(
+        players,
+        12,
+        player_record_bytes,
+        usize::try_from(slot).expect("validated campaign player slot"),
+        "players.bin",
+    )?;
+    let entity_index = read_u16(player, 4, "campaign local player entity relation")?;
+    if expected_entity_index.is_some_and(|expected| entity_index != expected) {
         return Err(NativeWorldError::new(format!(
-            "Level 2 reset requires local wizard entity 111, got {entity_index}"
+            "Level 2 reset requires local wizard entity {}, got {entity_index}",
+            expected_entity_index.expect("checked expected entity")
         )));
     }
     let entity = record(
@@ -7672,39 +7819,39 @@ fn parse_level_two_reset_state(
         usize::from(entity_index),
         "entities.bin",
     )?;
-    let active = read_u8(entity, 2, "Level 2 local wizard active flag")?;
+    let active = read_u8(entity, 2, "campaign local wizard active flag")?;
     if active != 1 {
         return Err(NativeWorldError::new(
-            "Level 2 local wizard reset entity is inactive",
+            "campaign local wizard reset entity is inactive",
         ));
     }
     let state = FlightState {
         entity_index,
         position: Position {
-            x: read_u16(entity, 80, "Level 2 position.x")?,
-            y: read_u16(entity, 82, "Level 2 position.y")?,
-            z: read_i16(entity, 84, "Level 2 position.z")?,
+            x: read_u16(entity, 80, "campaign position.x")?,
+            y: read_u16(entity, 82, "campaign position.y")?,
+            z: read_i16(entity, 84, "campaign position.z")?,
         },
-        yaw: read_i16(entity, 32, "Level 2 yaw")?,
-        display_pitch: read_i16(entity, 34, "Level 2 display pitch")?,
-        effective_pitch: read_i16(player, 38, "Level 2 effective pitch")?,
-        roll_accumulator: read_i16(player, 46, "Level 2 roll accumulator")?,
-        pitch_accumulator: read_i16(player, 48, "Level 2 pitch accumulator")?,
-        target_speed: read_i16(player, 20, "Level 2 target speed")?,
+        yaw: read_i16(entity, 32, "campaign yaw")?,
+        display_pitch: read_i16(entity, 34, "campaign display pitch")?,
+        effective_pitch: read_i16(player, 38, "campaign effective pitch")?,
+        roll_accumulator: read_i16(player, 46, "campaign roll accumulator")?,
+        pitch_accumulator: read_i16(player, 48, "campaign pitch accumulator")?,
+        target_speed: read_i16(player, 20, "campaign target speed")?,
         speed_changed_flag: 0,
-        actual_speed: read_i16(entity, 134, "Level 2 actual speed")?,
-        strafe_speed: read_i16(player, 22, "Level 2 strafe speed")?,
-        roll_delta: read_i16(player, 16, "Level 2 roll delta")?,
-        pitch_delta: read_i16(player, 18, "Level 2 pitch delta")?,
-        recoil_speed: read_i16(player, 32, "Level 2 recoil speed")?,
-        recoil_yaw: read_i16(player, 34, "Level 2 recoil yaw")?,
-        impulse_x: read_i16(player, 54, "Level 2 impulse x")?,
-        impulse_y: read_i16(player, 56, "Level 2 impulse y")?,
-        impulse_z: read_i16(player, 58, "Level 2 impulse z")?,
-        entity_fov: read_i16(entity, 38, "Level 2 entity fov")?,
+        actual_speed: read_i16(entity, 134, "campaign actual speed")?,
+        strafe_speed: read_i16(player, 22, "campaign strafe speed")?,
+        roll_delta: read_i16(player, 16, "campaign roll delta")?,
+        pitch_delta: read_i16(player, 18, "campaign pitch delta")?,
+        recoil_speed: read_i16(player, 32, "campaign recoil speed")?,
+        recoil_yaw: read_i16(player, 34, "campaign recoil yaw")?,
+        impulse_x: read_i16(player, 54, "campaign impulse x")?,
+        impulse_y: read_i16(player, 56, "campaign impulse y")?,
+        impulse_z: read_i16(player, 58, "campaign impulse z")?,
+        entity_fov: read_i16(entity, 38, "campaign entity fov")?,
         water_counter: 0,
-        speed_modifier: read_u8(player, 44, "Level 2 speed modifier")?,
-        speed_modifier_counter: read_i8(player, 45, "Level 2 speed modifier counter")?,
+        speed_modifier: read_u8(player, 44, "campaign speed modifier")?,
+        speed_modifier_counter: read_i8(player, 45, "campaign speed modifier counter")?,
         immobilize_counter: 0,
         immobilize_subcounter: 0,
         tether_prior_distance: 0,
@@ -7712,13 +7859,13 @@ fn parse_level_two_reset_state(
         tether_holder_index: 0,
         tether_tier: 0,
         speed_spell_holder_index: 0,
-        entity_phase: read_u8(entity, 66, "Level 2 entity phase")?,
-        ambient_loop_5_distance: read_i32(player, 565, "Level 2 ambient loop 5 distance")?,
-        ambient_loop_31_distance: read_i32(player, 569, "Level 2 ambient loop 31 distance")?,
-        player_color_index: read_u8(player, 40, "Level 2 player color")?,
+        entity_phase: read_u8(entity, 66, "campaign entity phase")?,
+        ambient_loop_5_distance: read_i32(player, 565, "campaign ambient loop 5 distance")?,
+        ambient_loop_31_distance: read_i32(player, 569, "campaign ambient loop 31 distance")?,
+        player_color_index: read_u8(player, 40, "campaign player color")?,
         music_countdown: 0,
         recovery_latch: false,
-        skip_flight_once: read_u8(entity, 17, "Level 2 entity control flags")? & 8 != 0,
+        skip_flight_once: read_u8(entity, 17, "campaign entity control flags")? & 8 != 0,
         tick: 0,
     };
     Ok(state)

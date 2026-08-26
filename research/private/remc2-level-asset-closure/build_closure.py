@@ -32,6 +32,41 @@ BASELINE_STATIC_CLOSURE_SHA256 = (
 )
 REMC2_SPEC_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 FINAL_TRACE_EVENT_COUNT = 76
+DAY_PRESENTATION_SELECTOR_IDENTITY = {
+    "map_type": "Day",
+    "vga_resolution_selector": 1,
+    "texture_size": 32,
+    "terrain_graphics_flags": 0,
+    "terrain_graphics_flag_2": False,
+    "terrain_bank": "TMAPS0-0",
+    "sprite_bank": "MSPRD0-0",
+    "web_bank": "MWEBD0-0",
+    "block_bank": "BL32N0-0",
+    "palette": "PALD-0",
+    "sky_bank": "SKYD0-0",
+    "sound_bank": 1,
+    "cursor": 9,
+}
+DAY_RESOLVED_OWNER_FILES = {
+    "level_records": "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT",
+    "terrain_bank": "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT",
+    "sprite_bank": "owner:CD_Files/DATA/MSPRD0-0.DAT",
+    "web_bank": "owner:CD_Files/DATA/MWEBD0-0.DAT",
+    "block_bank": "owner:CD_Files/DATA/BL32N0-0.DAT",
+    "palette": "owner:CD_Files/DATA/PALD-0.DAT",
+    "sky_bank": "owner:CD_Files/DATA/SKYD0-0.DAT",
+    "building_bank": "owner:CD_Files/DATA/BUILD0-0.DAT",
+    "spell_table": "owner:CD_Files/DATA/SPELLS.DAT",
+    "font_bank": "owner:CD_Files/DATA/FONT1.DAT",
+    "language": "owner:CD_Files/LANGUAGE/L1.TXT",
+}
+PRODUCTION_OWNER_MANIFEST_SCHEMA = "mc2-owner-level-export/v5"
+PRODUCTION_PLAYERS_COMPONENT = {
+    "magic": "MCP1",
+    "version": 4,
+    "record_bytes": 663,
+    "count": 8,
+}
 REALMS = {
     0: {"name": "day", "letter": "D", "tmaps": 0, "tables": "TABLESD"},
     1: {"name": "night", "letter": "N", "tmaps": 1, "tables": "TABLESN"},
@@ -56,6 +91,27 @@ LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS = {
     88: {"family": "multipart", "base_tmap": 30, "render_mode": 17},
     219: {"family": "trader", "base_tmap": 138, "render_mode": 20},
     220: {"family": "model9", "base_tmap": 158, "render_mode": 0},
+}
+ROOTED_CLASS5_PRESENTATION_BY_AUTHORED_SUBTYPE = {
+    0: {
+        **{
+            index: {"family": "dragon-child", "base_tmap": 56, "render_mode": 21}
+            for index in range(19, 35)
+        },
+        40: {"family": "dragon-root", "base_tmap": 22, "render_mode": 17},
+    },
+    1: {238: {"family": "goat", "base_tmap": 152, "render_mode": 20}},
+    2: {3: LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[3]},
+    3: {
+        88: LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[88],
+        **{
+            index: {"family": "multipart-child", "base_tmap": 66, "render_mode": 0}
+            for index in range(89, 105)
+        },
+    },
+    4: {0: {"family": "archer", "base_tmap": 8, "render_mode": 20}},
+    9: {220: LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[220]},
+    14: {219: LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[219]},
 }
 OBJECTIVE_INDEX_BASES = (
     0x30, 0x36, 0x3C, 0x42, 0x45, 0x48, 0x4D, 0x4F, 0x56, 0x5C,
@@ -878,85 +934,72 @@ def _level2_common_paths() -> list[str]:
     ]
 
 
-def _level2_expected_selectors(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Validate and return the Day selector tuple from the export identity."""
+def _expected_day_selectors(
+    manifest: dict[str, Any],
+    *,
+    external_level: int,
+    internal_level: int,
+    profile_label: str,
+) -> dict[str, Any]:
+    """Validate one package-bound Day selector tuple."""
     if manifest.get("schema") not in {
         "mc2-owner-level-export/v3",
         "mc2-owner-level-export/v4",
         "mc2-owner-level-export/v5",
     }:
-        raise ClosureError("Level 2 closure requires owner-level-export/v3, v4, or v5")
+        raise ClosureError(
+            f"{profile_label} closure requires owner-level-export/v3, v4, or v5"
+        )
     level = manifest.get("level", {})
     map_type = level.get("map_type", {})
     if (level.get("external"), level.get("internal"), map_type.get("id"), map_type.get("name")) != (
-        2,
-        1,
+        external_level,
+        internal_level,
         0,
         "Day",
     ):
-        raise ClosureError("Level 2 closure requires external=2/internal=1/Day identity")
+        raise ClosureError(
+            f"{profile_label} closure requires external={external_level}/"
+            f"internal={internal_level}/Day identity"
+        )
     if manifest.get("source", {}).get("upstream_commit") != REMC2_SPEC_COMMIT:
-        raise ClosureError("Level 2 export is bound to an unknown remc2 specification")
+        raise ClosureError(
+            f"{profile_label} export is bound to an unknown remc2 specification"
+        )
     selectors = manifest.get("presentation_dependencies")
-    expected = {
-        "map_type": "Day",
-        "vga_resolution_selector": 1,
-        "texture_size": 32,
-        "terrain_graphics_flags": 0,
-        "terrain_graphics_flag_2": False,
-        "terrain_bank": "TMAPS0-0",
-        "sprite_bank": "MSPRD0-0",
-        "web_bank": "MWEBD0-0",
-        "block_bank": "BL32N0-0",
-        "palette": "PALD-0",
-        "sky_bank": "SKYD0-0",
-        "sound_bank": 1,
-        "cursor": 9,
-    }
     if not isinstance(selectors, dict) or any(
-        selectors.get(field) != value for field, value in expected.items()
+        selectors.get(field) != value
+        for field, value in DAY_PRESENTATION_SELECTOR_IDENTITY.items()
     ):
-        raise ClosureError("Level 2 presentation selector identity is not the qualified Day tuple")
-    expected_paths = {
-        "level_records": "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT",
-        "terrain_bank": "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT",
-        "sprite_bank": "owner:CD_Files/DATA/MSPRD0-0.DAT",
-        "web_bank": "owner:CD_Files/DATA/MWEBD0-0.DAT",
-        "block_bank": "owner:CD_Files/DATA/BL32N0-0.DAT",
-        "palette": "owner:CD_Files/DATA/PALD-0.DAT",
-        "sky_bank": "owner:CD_Files/DATA/SKYD0-0.DAT",
-        "building_bank": "owner:CD_Files/DATA/BUILD0-0.DAT",
-        "spell_table": "owner:CD_Files/DATA/SPELLS.DAT",
-        "font_bank": "owner:CD_Files/DATA/FONT1.DAT",
-        "language": "owner:CD_Files/LANGUAGE/L1.TXT",
-    }
-    if selectors.get("resolved_files") != expected_paths:
-        raise ClosureError("Level 2 resolved owner-file selector map is not qualified")
+        raise ClosureError(
+            f"{profile_label} presentation selector identity is not the qualified Day tuple"
+        )
+    if selectors.get("resolved_files") != DAY_RESOLVED_OWNER_FILES:
+        raise ClosureError(
+            f"{profile_label} resolved owner-file selector map is not qualified"
+        )
     return selectors
 
 
-def _level2_production_owner_identity(
-    export_dir: Path, manifest: dict[str, Any]
+def _production_owner_identity(
+    export_dir: Path, manifest: dict[str, Any], *, profile_label: str
 ) -> dict[str, Any]:
-    """Return the v5 owner identity accepted by a new qualified Day closure.
+    """Return the owner identity accepted by a new qualified Day closure.
 
     Historic v3/v4 packages remain inspectable through their retained
     artifacts, but generating a new qualified Day closure from either would
     launder a carrierless package into the production route.
     """
-    expected_schema = "mc2-owner-level-export/v5"
+    expected_schema = PRODUCTION_OWNER_MANIFEST_SCHEMA
     if manifest.get("schema") != expected_schema:
-        raise ClosureError("qualified Level 2 closure requires owner-level-export/v5")
+        raise ClosureError(
+            f"qualified {profile_label} closure requires owner-level-export/v5"
+        )
     players = (export_dir / "players.bin").read_bytes()
     if len(players) < 12:
-        raise ClosureError("qualified Level 2 players.bin header is truncated")
+        raise ClosureError(f"qualified {profile_label} players.bin header is truncated")
     magic, version, record_bytes, count = struct.unpack_from("<4sHHI", players)
-    expected_component = {
-        "magic": "MCP1",
-        "version": 4,
-        "record_bytes": 663,
-        "count": 8,
-    }
+    expected_component = PRODUCTION_PLAYERS_COMPONENT
     if (
         magic != b"MCP1"
         or version != expected_component["version"]
@@ -964,28 +1007,69 @@ def _level2_production_owner_identity(
         or count != expected_component["count"]
         or len(players) != 12 + count * record_bytes
     ):
-        raise ClosureError("qualified Level 2 players.bin must be component v4/663")
+        raise ClosureError(
+            f"qualified {profile_label} players.bin must be component v4/663"
+        )
     return {
         "manifest_schema": expected_schema,
-        "players_component": expected_component,
+        "players_component": dict(expected_component),
     }
 
 
-def build_level2_closure(
-    export_dir: Path, catalog_path: Path, owner_root: Path
-) -> dict[str, Any]:
-    """Build the common Day closure without inventing an unobserved frame trace.
+def _level2_expected_selectors(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Retained Level 2 facade over the package-bound Day selector seam."""
+    return _expected_day_selectors(
+        manifest,
+        external_level=2,
+        internal_level=1,
+        profile_label="Level 2",
+    )
 
-    The Level 2 export is a validated package and its owner-file selector tuple
+
+def _level2_production_owner_identity(
+    export_dir: Path, manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """Retained Level 2 facade over the production owner carrier seam."""
+    return _production_owner_identity(
+        export_dir,
+        manifest,
+        profile_label="Level 2",
+    )
+
+
+def _build_day_closure(
+    export_dir: Path,
+    catalog_path: Path,
+    owner_root: Path,
+    *,
+    external_level: int,
+    internal_level: int,
+    profile_name: str,
+    profile_label: str,
+    edge_namespace: str,
+    folded_parameters: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    """Build one package-bound Day closure without inventing a frame trace.
+
+    The owner export is a validated package and its owner-file selector tuple
     is qualified, but no final-entry frame pair exists yet.  The resulting
     ``frame_used`` partition therefore stays explicitly unqualified instead of
     claiming zero unresolved observations.
     """
     export_manifest = read_json(export_dir / "manifest.json")
     catalog_data = read_json(catalog_path)
-    selectors = _level2_expected_selectors(export_manifest)
+    selectors = _expected_day_selectors(
+        export_manifest,
+        external_level=external_level,
+        internal_level=internal_level,
+        profile_label=profile_label,
+    )
     verify_export_identity(export_dir, export_manifest)
-    owner_identity = _level2_production_owner_identity(export_dir, export_manifest)
+    owner_identity = _production_owner_identity(
+        export_dir,
+        export_manifest,
+        profile_label=profile_label,
+    )
     if catalog_data.get("schema_version") is None:
         raise ClosureError("owner catalog has no schema_version")
     catalog = Catalog(catalog_data)
@@ -1003,7 +1087,7 @@ def build_level2_closure(
         asset = catalog.file_asset(path)
         edges.append(
             edge(
-                "level2.selected_realm",
+                f"{edge_namespace}.selected_realm",
                 asset["asset_id"],
                 "qualified Day realm/texture/resolution selector",
                 "manifest.presentation_dependencies",
@@ -1017,7 +1101,7 @@ def build_level2_closure(
                 "process.global_open",
                 catalog.file_asset(path)["asset_id"],
                 "common startup file-array or bank open",
-                "Level 2 manifest resolved_files + global loader root",
+                f"{profile_label} manifest resolved_files + global loader root",
                 "proven",
                 "Basic.cpp:253-273; EventsFunctions.cpp:42837-43265; Sound.cpp:2299-2356",
             )
@@ -1064,15 +1148,13 @@ def build_level2_closure(
                     "TMAP allocation group expansion",
                     f"presentation.bin.particles[{parameter_index}].word_0",
                     "proven",
-                    "TextureMaps.cpp:227-265; Level 2 entity/presentation relation",
+                    f"TextureMaps.cpp:227-265; {profile_label} entity/presentation relation",
                 )
             )
         if strategy not in {"base", "base_transparent"}:
             for choice in render_choice_candidates(base, mode, group_indices):
                 dynamic_assets.append(catalog.tmap_asset(catalog.tmaps[choice]))
-    for parameter_index, expected in sorted(
-        LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS.items()
-    ):
+    for parameter_index, expected in sorted(folded_parameters.items()):
         if parameter_index >= len(presentation["particles"]):
             raise ClosureError(
                 f"folded class-5 particle parameter is out of bounds: {parameter_index}"
@@ -1114,7 +1196,7 @@ def build_level2_closure(
         )
     runtime = (export_dir / "runtime.bin").read_bytes()
     runtime_layout = export_manifest["record_layouts"]["runtime"]["objectives"]
-    objective_selector = objective_language_selector(runtime, runtime_layout, 2)
+    objective_selector = objective_language_selector(runtime, runtime_layout, external_level)
     objective = parse_language_record(owner_root, objective_selector)
     language_root = catalog.file_asset("LANGUAGE/L1.TXT")
     scene_assets.append(objective)
@@ -1174,12 +1256,12 @@ def build_level2_closure(
         dynamic_assets.append(catalog.file_asset(path))
         edges.append(
             edge(
-                "level2.runtime",
+                f"{edge_namespace}.runtime",
                 catalog.file_asset(path)["asset_id"],
                 reason,
                 "runtime state and selected Day profile",
                 "dynamic",
-                "Level 2 closure does not claim an exact frame/audio observation",
+                f"{profile_label} closure does not claim an exact frame/audio observation",
             )
         )
     scene_assets = unique_assets(scene_assets)
@@ -1193,9 +1275,9 @@ def build_level2_closure(
         "schema": SCHEMA,
         "scope": "PRIVATE_TRACK_P_OWNER_DATA",
         "profile": {
-            "name": "level2-day",
-            "external_level": 2,
-            "internal_level": 1,
+            "name": profile_name,
+            "external_level": external_level,
+            "internal_level": internal_level,
             "map_type": {"id": 0, "name": "day"},
             "spec_commit": export_manifest["source"]["upstream_commit"],
             "owner_package": owner_identity,
@@ -1219,8 +1301,8 @@ def build_level2_closure(
             },
         },
         "selectors": {
-            "level_external": 2,
-            "level_internal": 1,
+            "level_external": external_level,
+            "level_internal": internal_level,
             "map_type": {"id": 0, "name": "day"},
             "vga_resolution_selector": resolution,
             "texture_size": texture_size,
@@ -1228,7 +1310,7 @@ def build_level2_closure(
             "objective_language_selector": objective_selector,
             "active_particle_parameters": entities["active_particle_parameters"],
             "folded_rooted_class5_particle_parameters": sorted(
-                LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS
+                folded_parameters
             ),
             "active_build_indices": entities["active_build_indices"],
             "audio": {"sound_bank": selectors["sound_bank"], "music_observation": "not_supplied"},
@@ -1243,15 +1325,17 @@ def build_level2_closure(
             },
             "scene_reachable": {"status": "qualified", "assets": scene_assets, "unresolved": []},
             "frame_used": {
-                "status": "not_qualified_no_level2_frame_pair",
+                "status": f"not_qualified_no_{edge_namespace}_frame_pair",
                 "assets": [],
-                "unresolved": ["Level 2 final-entry frame trace has not been supplied"],
+                "unresolved": [f"{profile_label} final-entry frame trace has not been supplied"],
                 "armed_empty_evidence": {"cursor": "not_observed", "sound": "not_observed", "music": "not_observed"},
             },
             "dynamic_dependencies": {
                 "status": "qualified_as_dynamic_not_exact",
                 "assets": dynamic_assets,
-                "unresolved": ["exact frame/audio selector use requires a qualified Level 2 trace"],
+                "unresolved": [
+                    f"exact frame/audio selector use requires a qualified {profile_label} trace"
+                ],
             },
         },
         "edges": edges,
@@ -1261,11 +1345,78 @@ def build_level2_closure(
             "dynamic_dependencies": "PASS_AS_EXPLICIT_DYNAMIC_SET",
             "frame_used": "NOT_YET_QUALIFIED",
             "zero_unresolved_frame_used_claimed": False,
-            "policy": "Common structure is qualified; exact frame-used claims remain fail-closed until a Level 2 trace pair exists.",
+            "policy": (
+                "Common structure is qualified; exact frame-used claims remain fail-closed "
+                f"until a {profile_label} trace pair exists."
+            ),
         },
     }
     document["closure_sha256"] = sha256_bytes(canonical_json(document).encode("utf-8"))
     return document
+
+
+def rooted_class5_presentation_parameters(
+    authored_path: Path,
+) -> dict[int, dict[str, Any]]:
+    """Derive constructor-only class-5 presentation roots from authored rows."""
+    authored = authored_path.read_bytes()
+    if len(authored) != 0x6604 or authored[6] != 0:
+        raise ClosureError("authored-level.bin identity/layout changed")
+    subtypes: set[int] = set()
+    for index in range(1200):
+        offset = 1091 + index * 20
+        class_id, subtype = struct.unpack_from("<Hh", authored, offset)
+        if class_id == 5 and subtype in ROOTED_CLASS5_PRESENTATION_BY_AUTHORED_SUBTYPE:
+            subtypes.add(subtype)
+    return {
+        parameter: dict(identity)
+        for subtype in sorted(subtypes)
+        for parameter, identity in ROOTED_CLASS5_PRESENTATION_BY_AUTHORED_SUBTYPE[
+            subtype
+        ].items()
+    }
+
+
+def build_level2_closure(
+    export_dir: Path, catalog_path: Path, owner_root: Path
+) -> dict[str, Any]:
+    """Retain the accepted Level 2 closure byte-for-byte."""
+    return _build_day_closure(
+        export_dir,
+        catalog_path,
+        owner_root,
+        external_level=2,
+        internal_level=1,
+        profile_name="level2-day",
+        profile_label="Level 2",
+        edge_namespace="level2",
+        folded_parameters=LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS,
+    )
+
+
+def build_campaign_day_material_closure(
+    export_dir: Path, catalog_path: Path, owner_root: Path
+) -> dict[str, Any]:
+    """Build the additive package-bound Day-material closure for a campaign."""
+    manifest = read_json(export_dir / "manifest.json")
+    level = manifest.get("level", {})
+    external_level = level.get("external")
+    internal_level = level.get("internal")
+    if not isinstance(external_level, int) or not isinstance(internal_level, int):
+        raise ClosureError("campaign Day closure level identity is malformed")
+    return _build_day_closure(
+        export_dir,
+        catalog_path,
+        owner_root,
+        external_level=external_level,
+        internal_level=internal_level,
+        profile_name="day-material",
+        profile_label=f"Level {external_level}",
+        edge_namespace="day_material",
+        folded_parameters=rooted_class5_presentation_parameters(
+            export_dir / "authored-level.bin"
+        ),
+    )
 
 
 def build_closure(
@@ -1280,6 +1431,8 @@ def build_closure(
     catalog_data = read_json(catalog_path)
     if profile == "level2":
         return build_level2_closure(export_dir, catalog_path, owner_root)
+    if profile == "day-material":
+        return build_campaign_day_material_closure(export_dir, catalog_path, owner_root)
     if profile != "level1":
         raise ClosureError(f"unsupported closure profile: {profile}")
     if export_manifest.get("schema") != "mc2-owner-level-export/v2":
@@ -1771,7 +1924,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--profile",
-        choices=("level1", "level2"),
+        choices=("level1", "level2", "day-material"),
         default="level1",
         help="validated realm/profile closure to derive",
     )
@@ -1817,11 +1970,12 @@ def main() -> int:
         "research/private/generated/level1-export-m"
     ):
         export_dir = Path("research/private/generated/l2-debug3.fJ3PaM/level2")
-    output = args.output or Path(
-        "research/private/generated/level2-asset-closure.json"
-        if args.profile == "level2"
-        else "research/private/generated/level1-asset-closure.json"
-    )
+    default_outputs = {
+        "level1": "research/private/generated/level1-asset-closure.json",
+        "level2": "research/private/generated/level2-asset-closure.json",
+        "day-material": "research/private/generated/day-material-asset-closure.json",
+    }
+    output = args.output or Path(default_outputs[args.profile])
     document = build_closure(
         export_dir,
         args.catalog,

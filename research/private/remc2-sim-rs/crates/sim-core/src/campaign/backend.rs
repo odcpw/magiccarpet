@@ -38,11 +38,6 @@ use crate::{
     native_world::{Level2DispatchEvent, Level2SharedSpellEvent},
 };
 
-/// Contract v1 admits exactly the qualified campaign profile; every other
-/// identity fails during descriptor preflight instead of selecting a
-/// fallback implementation. The selection never crosses the public seam.
-const ACCEPTED_CAMPAIGN_PROFILE: CampaignSelection = CampaignSelection::LEVEL2;
-
 /// The qualified campaign route runs the source single-pass schedule. Speed
 /// selection is not yet a discoverable descriptor, so the adapter pins the
 /// qualified value instead of exposing an unvalidated source knob.
@@ -130,18 +125,22 @@ pub fn load_mc2_campaign(
     catalog: &SemanticCatalog,
 ) -> crate::game_definition::Result<GameDefinition> {
     let package_root = package_root.as_ref();
-    let descriptor = CampaignDescriptor::preflight(
-        package_root,
-        ACCEPTED_CAMPAIGN_PROFILE,
-        &CAMPAIGN_BEHAVIOR_REGISTRY,
-    )
-    .map_err(|error| {
+    let selection = CampaignDescriptor::declared_selection(package_root).map_err(|error| {
         DefinitionError::new(
             DefinitionErrorCode::InvalidSchema,
             "mc2_campaign.package",
-            format!("campaign descriptor preflight failed: {error}"),
+            format!("cannot read campaign selection: {error}"),
         )
     })?;
+    let descriptor =
+        CampaignDescriptor::preflight(package_root, selection, &CAMPAIGN_BEHAVIOR_REGISTRY)
+            .map_err(|error| {
+                DefinitionError::new(
+                    DefinitionErrorCode::InvalidSchema,
+                    "mc2_campaign.package",
+                    format!("campaign descriptor preflight failed: {error}"),
+                )
+            })?;
     let export_sha256 = descriptor.owner_export_package_sha256().map_err(|error| {
         DefinitionError::new(
             DefinitionErrorCode::HashMismatch,
@@ -300,13 +299,13 @@ impl GameAdapter for Mc2CampaignAdapter {
     ) -> Result<Self::Backend, Self::Error> {
         let catalog = default_catalog().map_err(CampaignBackendError::Definition)?;
         require_catalog_defaults(definition, &catalog)?;
+        let selection = CampaignDescriptor::declared_selection(&input.package_root)
+            .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Preflight(error)))?;
         let mut campaign = match &input.owner_cache {
-            Some(owner_cache) => CampaignSession::open_with_owner_cache(
-                &input.package_root,
-                owner_cache,
-                ACCEPTED_CAMPAIGN_PROFILE,
-            ),
-            None => CampaignSession::open(&input.package_root, ACCEPTED_CAMPAIGN_PROFILE),
+            Some(owner_cache) => {
+                CampaignSession::open_with_owner_cache(&input.package_root, owner_cache, selection)
+            }
+            None => CampaignSession::open(&input.package_root, selection),
         }
         .map_err(CampaignBackendError::Open)?;
         // The neutral session is the campaign route: bind the authored
@@ -314,9 +313,11 @@ impl GameAdapter for Mc2CampaignAdapter {
         // the retained `mc_native_campaign_*` opens. The pristine
         // generation-0 state rebases, so reset restores the entry-staged
         // baseline instead of the raw package selector.
-        campaign
-            .level2_compatibility_mut()
-            .select_level2_campaign_entry_stage();
+        if selection == CampaignSelection::LEVEL2 {
+            campaign
+                .level2_compatibility_mut()
+                .select_level2_campaign_entry_stage();
+        }
         Ok(Mc2CampaignBackend {
             campaign,
             package_graph_hash: definition.package_graph_hash().to_owned(),
@@ -641,6 +642,16 @@ mod tests {
         )
     }
 
+    fn level_three_descriptor_fixture_path() -> PathBuf {
+        std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
+            },
+            PathBuf::from,
+        )
+    }
+
     fn guard(session: &GameSession<Mc2CampaignBackend>) -> SessionGuard {
         let identity = session.identity();
         SessionGuard {
@@ -773,6 +784,37 @@ mod tests {
         assert_matches_direct(&neutral, &direct);
         assert_eq!(replay.value, first.value);
         assert_eq!(replay.identity.generation, 2);
+    }
+
+    #[test]
+    fn cf14_neutral_backend_derives_level3_selection_from_package() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut neutral = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::clone(&definition),
+            14,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let mut direct = CampaignSession::open(&root, CampaignSelection::LEVEL3).unwrap();
+
+        assert_eq!(
+            neutral.backend().campaign.definition().identity,
+            CampaignSelection::LEVEL3
+        );
+        assert_matches_direct(&neutral, &direct);
+        let initial = neutral.snapshot();
+        let command = GameCommand::default();
+        let stepped = neutral.step(guard(&neutral), command).unwrap();
+        let _ = direct.step(campaign_player_command(command), 0);
+        assert_matches_direct(&neutral, &direct);
+        assert_ne!(stepped.value.state_hash, initial.value.state_hash);
+        let reset = neutral.reset(guard(&neutral)).unwrap();
+        direct.reset();
+        assert_matches_direct(&neutral, &direct);
+        assert_eq!(reset.value, initial.value);
     }
 
     #[test]

@@ -2060,6 +2060,20 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
         (-23_i16).wrapping_add(session.state.display_pitch),
         "sub_69AB0 wraps the parent A4 pitch word with the live display pitch"
     );
+    let mut expected_axis_position = session.state.position;
+    crate::move_entity(
+        &mut expected_axis_position,
+        17_i16.wrapping_add(session.state.yaw),
+        0,
+        4_096,
+    );
+    expected_axis_position.z = session
+        .canonical_terrain()
+        .ground_height(expected_axis_position);
+    assert_eq!(
+        flyer.axis_position, expected_axis_position,
+        "sub_69AB0 derives the Castle target from the undisplaced parent position"
+    );
     assert_eq!(flyer.source_subspell_index, 0);
     assert_eq!(flyer.source_mana, 9);
     assert_eq!(flyer.source_a4_byte_154, transferred_a4_byte);

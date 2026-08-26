@@ -29,6 +29,9 @@ TRACE_A = ROOT / "research/private/generated/level1-frame-trace-final-v2-a"
 TRACE_B = ROOT / "research/private/generated/level1-frame-trace-final-v2-b"
 LEVEL2_EXPORT = ROOT / "research/private/generated/l2-debug3.fJ3PaM/level2"
 LEVEL2_V4_EXPORT = ROOT / "research/private/generated/l2-debug3.fJ3PaM-v4/level2"
+LEVEL3_EXPORT = (
+    ROOT / "research/private/generated/mc-iol7n-campaign-census-run-a/level3"
+)
 
 
 class RealmMatrixTests(unittest.TestCase):
@@ -648,6 +651,81 @@ class Level2ClosureContractTests(unittest.TestCase):
                 closure.build_closure(
                     LEVEL2_EXPORT, catalog_path, OWNER, TRACE_A, TRACE_B, "level2"
                 )
+
+
+class CampaignDayMaterialClosureTests(unittest.TestCase):
+    def test_level3_day_material_closure_is_package_bound_and_repeatable(self) -> None:
+        first = closure.build_campaign_day_material_closure(
+            LEVEL3_EXPORT, CATALOG, OWNER
+        )
+        second = closure.build_campaign_day_material_closure(
+            LEVEL3_EXPORT, CATALOG, OWNER
+        )
+        self.assertEqual(closure.canonical_json(first), closure.canonical_json(second))
+        self.assertEqual(
+            first["closure_sha256"],
+            "67dea39e111fd8c6bdfb16867d0d5fcdb6424943bdaf6290e8247e59bd3c926d",
+        )
+        self.assertEqual(
+            first["profile"],
+            {
+                "name": "day-material",
+                "external_level": 3,
+                "internal_level": 2,
+                "map_type": {"id": 0, "name": "day"},
+                "spec_commit": closure.REMC2_SPEC_COMMIT,
+                "owner_package": {
+                    "manifest_schema": "mc2-owner-level-export/v5",
+                    "players_component": {
+                        "magic": "MCP1",
+                        "version": 4,
+                        "record_bytes": 663,
+                        "count": 8,
+                    },
+                },
+                "identity_status": "qualified",
+            },
+        )
+        self.assertEqual(
+            first["source"]["level_export"]["package_sha256"],
+            "0d10845690d7c9753246c633be771e54f3d6a481940af3f5fb33b909e0241a73",
+        )
+        self.assertEqual(
+            first["selectors"]["folded_rooted_class5_particle_parameters"],
+            [
+                0,
+                3,
+                *range(19, 35),
+                40,
+                88,
+                *range(89, 105),
+                220,
+                238,
+            ],
+        )
+        tmap_selectors = {
+            int(row["asset_id"].rsplit("#", 1)[1])
+            for partition in first["sets"].values()
+            for row in partition["assets"]
+            if row["asset_id"].startswith("owner_data:DATA/TMAPS0-0.DAT#")
+        }
+        self.assertEqual(len(tmap_selectors), 156)
+        self.assertTrue(set(range(14, 30)).issubset(tmap_selectors))
+        self.assertTrue({152, 153, 154}.issubset(tmap_selectors))
+        self.assertTrue({138, 139, 140}.isdisjoint(tmap_selectors))
+
+    def test_level3_day_material_closure_rejects_member_tamper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            export = Path(tmp) / "level3"
+            shutil.copytree(LEVEL3_EXPORT, export)
+            presentation = bytearray((export / "presentation.bin").read_bytes())
+            presentation[0] ^= 1
+            (export / "presentation.bin").write_bytes(presentation)
+            with self.assertRaisesRegex(
+                closure.ClosureError,
+                "level export member identity mismatch: presentation.bin",
+            ):
+                closure.build_campaign_day_material_closure(export, CATALOG, OWNER)
 
 
 if __name__ == "__main__":

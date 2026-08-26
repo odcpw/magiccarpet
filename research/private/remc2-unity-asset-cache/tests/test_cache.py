@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -1850,6 +1851,75 @@ class Level2DayMaterialTests(unittest.TestCase):
             cache.validate_day_material_cache(self.first)
         path.unlink()
         path.write_bytes(original)
+
+
+class CampaignDayMaterialTests(unittest.TestCase):
+    """Additive campaign-Day dialect without a Level-N runtime branch."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        package_value = os.environ.get("MC_CAMPAIGN_PACKAGE_LEVEL3_V1")
+        if not package_value:
+            raise unittest.SkipTest("MC_CAMPAIGN_PACKAGE_LEVEL3_V1 is not set")
+        cls.package = Path(package_value)
+        cls.temp_root = Path(
+            tempfile.mkdtemp(prefix="campaign-day-material-test.", dir=cache.GENERATED)
+        )
+        cls.first = cls.temp_root / "first"
+        cls.second = cls.temp_root / "second"
+        for output in (cls.first, cls.second):
+            cache.build_campaign_day_material_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT,
+                cls.package,
+                cache.DEFAULT_CAMPAIGN_DAY_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                output,
+            )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if hasattr(cls, "temp_root"):
+            shutil.rmtree(cls.temp_root)
+
+    def test_neutral_cache_is_repeatable_and_binds_both_packages(self) -> None:
+        self.assertEqual(tree_identity(self.first), tree_identity(self.second))
+        campaign = json.loads((self.package / "manifest.json").read_text())
+        owner = json.loads(
+            (cache.DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT / "manifest.json").read_text()
+        )
+        closure = json.loads(cache.DEFAULT_CAMPAIGN_DAY_CLOSURE.read_text())
+        manifest = cache.validate_campaign_day_material_cache(
+            self.first,
+            owner["package_sha256"],
+            campaign["package_sha256"],
+            closure["closure_sha256"],
+        )
+        self.assertEqual(manifest["schema"], cache.DAY_MATERIAL_SCHEMA)
+        self.assertEqual(manifest["profile"]["name"], "day-material")
+        self.assertEqual(len(manifest["outputs"]), 321)
+        descriptor = json.loads(
+            (self.first / "materials/descriptor.json").read_text()
+        )
+        self.assertEqual(descriptor["schema"], cache.DAY_MATERIAL_DESCRIPTOR_SCHEMA)
+        self.assertEqual(len(descriptor["tmaps0"]["selectors"]), 156)
+        self.assertTrue(set(range(14, 30)).issubset(descriptor["tmaps0"]["selectors"]))
+        self.assertTrue({152, 153, 154}.issubset(descriptor["tmaps0"]["selectors"]))
+        self.assertTrue(
+            {138, 139, 140}.isdisjoint(descriptor["tmaps0"]["selectors"])
+        )
+
+    def test_neutral_cache_rejects_cross_binding_and_tree_tamper(self) -> None:
+        with self.assertRaisesRegex(cache.CacheError, "campaign package binding mismatch"):
+            cache.validate_campaign_day_material_cache(
+                self.first,
+                expected_campaign_package="0" * 64,
+            )
+        extra = self.first / "unexpected.bin"
+        extra.write_bytes(b"not declared")
+        with self.assertRaisesRegex(cache.CacheError, "missing or extra files"):
+            cache.validate_campaign_day_material_cache(self.first)
+        extra.unlink()
 
 
 class Level2HistoricalV4InspectionTests(unittest.TestCase):

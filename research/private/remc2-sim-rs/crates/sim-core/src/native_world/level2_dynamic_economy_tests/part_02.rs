@@ -1190,7 +1190,7 @@
                 == false
         );
         assert!(session.economy().castle_children().is_empty());
-        for slot in &slots {
+        for slot in slots.iter().rev() {
             assert_eq!(session.economy_mut().allocate_slot(), Some(*slot));
         }
         assert_eq!(session.economy().free_slots.len(), free_before);

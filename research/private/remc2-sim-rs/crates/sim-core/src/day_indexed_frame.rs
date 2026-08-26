@@ -20,12 +20,14 @@ use crate::{
     classic_hd_raster::rasterize_classic_hd_terrain,
     classic_hd_terrain::{ClassicHdSkyBank, ClassicHdTerrainResources, build_classic_hd_terrain},
     mission_content::REMC2_SPEC_COMMIT,
-    native_world::{Level2ResetSession, MapType, NativeWorldInspection, OwnerPackageProfile},
+    native_world::{Level2ResetSession, MapType, NativeWorldInspection},
     terrain_frame::Level1TerrainFrameCamera,
 };
 
 const MATERIAL_SCHEMA: &str = "mc2-level2-day-material-cache/v1";
 const MATERIAL_DESCRIPTOR_SCHEMA: &str = "mc2-level2-day-materials/v1";
+const NEUTRAL_MATERIAL_SCHEMA: &str = "mc2-day-material-cache/v1";
+const NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA: &str = "mc2-day-materials/v1";
 const MATERIAL_GENERATOR: &str = "build_cache.py";
 const MATERIAL_PROFILE_NAME: &str = "level2-day";
 const MATERIAL_PACKAGE_LEVEL: u64 = 2;
@@ -119,6 +121,7 @@ struct OutputRecord {
 pub struct DayIndexedFrameAssets {
     profile: DayIndexedProfile,
     package_sha256: String,
+    campaign_package_sha256: Option<String>,
     cache_content_sha256: String,
     palette_rgb8: Box<[u8]>,
     tablesd: Box<[u8]>,
@@ -165,11 +168,16 @@ impl DayIndexedFrameAssets {
                 "Level 2 Day material manifest metadata hash mismatch",
             ));
         }
-        if string_field(manifest_object, "schema", "material manifest")? != MATERIAL_SCHEMA {
-            return Err(DayIndexedFrameError::new(
-                "unsupported Level 2 Day material cache schema",
-            ));
-        }
+        let schema = string_field(manifest_object, "schema", "material manifest")?;
+        let neutral_dialect = match schema {
+            MATERIAL_SCHEMA => false,
+            NEUTRAL_MATERIAL_SCHEMA => true,
+            _ => {
+                return Err(DayIndexedFrameError::new(
+                    "unsupported Day material cache schema",
+                ));
+            }
+        };
         let generator = object_field(manifest_object, "generator", "material manifest")?;
         if string_field(generator, "name", "material generator")? != MATERIAL_GENERATOR {
             return Err(DayIndexedFrameError::new(
@@ -180,15 +188,20 @@ impl DayIndexedFrameAssets {
         let profile_value = manifest_object
             .get("profile")
             .ok_or_else(|| DayIndexedFrameError::new("material manifest profile is missing"))?;
+        let profile_object = object(profile_value, "material profile")?;
         let expected_profile = qualified_profile_json();
         let historical_v4_profile = historical_v4_profile_json();
-        let qualified_v5 = profile_value == &expected_profile;
-        if !qualified_v5 && profile_value != &historical_v4_profile {
-            return Err(DayIndexedFrameError::new(
-                "Level 2 Day material profile identity mismatch",
-            ));
-        }
-        let profile_object = object(profile_value, "material profile")?;
+        let qualified_v5 = !neutral_dialect && profile_value == &expected_profile;
+        let profile = if neutral_dialect {
+            validate_neutral_profile(profile_object)?
+        } else {
+            if !qualified_v5 && profile_value != &historical_v4_profile {
+                return Err(DayIndexedFrameError::new(
+                    "Level 2 Day material profile identity mismatch",
+                ));
+            }
+            DayIndexedProfile::qualified()
+        };
         let package_sha256 =
             string_field(profile_object, "package_sha256", "material profile")?.to_owned();
         let closure_sha256 =
@@ -213,8 +226,24 @@ impl DayIndexedFrameAssets {
                 )));
             }
         }
-        if qualified_v5 {
+        let campaign_package_sha256 = if neutral_dialect {
+            let campaign_package = string_field(
+                profile_object,
+                "campaign_package_sha256",
+                "material profile",
+            )?;
+            if string_field(bindings, "campaign_package_sha256", "material bindings")?
+                != campaign_package
+            {
+                return Err(DayIndexedFrameError::new(
+                    "Day material campaign-package binding mismatch",
+                ));
+            }
             validate_v5_owner_identity(profile_object, bindings)?;
+            Some(campaign_package.to_owned())
+        } else if qualified_v5 {
+            validate_v5_owner_identity(profile_object, bindings)?;
+            None
         } else {
             // v4 remains a decode-only historical inspection artifact. A
             // hybrid artifact must not gain qualified status through an
@@ -232,7 +261,8 @@ impl DayIndexedFrameAssets {
                     )));
                 }
             }
-        }
+            None
+        };
 
         let output_values = manifest_object
             .get("outputs")
@@ -312,7 +342,19 @@ impl DayIndexedFrameAssets {
             "canonical_json_day_material_descriptor",
             // GOLDEN-CHANGE: the qualified v5 descriptor now carries 20
             // additional rooted class-5 TMAP rows; v4 remains historical.
-            if qualified_v5 { 74_421 } else { 64_695 },
+            if neutral_dialect {
+                outputs
+                    .iter()
+                    .find(|output| output.path == MATERIAL_DESCRIPTOR_PATH)
+                    .map(|output| output.bytes)
+                    .ok_or_else(|| {
+                        DayIndexedFrameError::new("Day material descriptor output is missing")
+                    })?
+            } else if qualified_v5 {
+                74_421
+            } else {
+                64_695
+            },
             &[
                 "owner_data:DATA/PALD-0.DAT",
                 "owner_data:DATA/TABLESD.DAT",
@@ -321,7 +363,15 @@ impl DayIndexedFrameAssets {
                 "owner_data:DATA/SKYD0-0.DAT",
             ],
         )?;
-        validate_descriptor(&descriptor_bytes, profile_value)?;
+        validate_descriptor(
+            &descriptor_bytes,
+            profile_value,
+            if neutral_dialect {
+                NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA
+            } else {
+                MATERIAL_DESCRIPTOR_SCHEMA
+            },
+        )?;
 
         let palette_rgb8 = read_output(
             cache_dir,
@@ -365,8 +415,9 @@ impl DayIndexedFrameAssets {
         )?;
 
         Ok(Self {
-            profile: DayIndexedProfile::qualified(),
+            profile,
             package_sha256,
+            campaign_package_sha256,
             cache_content_sha256: claimed_content_hash.to_owned(),
             palette_rgb8: palette_rgb8.into_boxed_slice(),
             tablesd: tablesd.into_boxed_slice(),
@@ -383,6 +434,11 @@ impl DayIndexedFrameAssets {
     #[must_use]
     pub fn package_sha256(&self) -> &str {
         &self.package_sha256
+    }
+
+    #[must_use]
+    pub fn campaign_package_sha256(&self) -> Option<&str> {
+        self.campaign_package_sha256.as_deref()
     }
 
     #[must_use]
@@ -539,7 +595,7 @@ pub fn render_level2_day_indexed_frame(
     assets: &DayIndexedFrameAssets,
     generation: u64,
 ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
-    validate_level2_route(inspection, session, assets)?;
+    validate_day_route(inspection, session, assets)?;
     let tick = session.state.tick;
     let camera = camera_from_state(&session.state)?;
     let profile = ClassicHdRenderProfile::compatibility_320x200();
@@ -618,23 +674,20 @@ pub fn render_level2_day_indexed_frame(
     })
 }
 
-fn validate_level2_route(
+fn validate_day_route(
     inspection: &NativeWorldInspection,
     session: &Level2ResetSession,
     assets: &DayIndexedFrameAssets,
 ) -> Result<(), DayIndexedFrameError> {
-    if inspection.profile() != OwnerPackageProfile::Level2 {
-        return Err(DayIndexedFrameError::new(
-            "Day indexed frame requires the Level 2 owner package",
-        ));
-    }
     let metadata = inspection.metadata();
-    if metadata.external_level != 2
-        || metadata.internal_level != 1
+    let material = assets.profile();
+    if metadata.external_level != material.external_level
+        || metadata.internal_level != material.internal_level
         || metadata.map_type != MapType::Day
+        || material.map_type_id != 0
     {
         return Err(DayIndexedFrameError::new(
-            "Day indexed frame metadata is not the qualified external-2/internal-1 Day profile",
+            "Day indexed frame metadata and material selection differ",
         ));
     }
     if assets.package_sha256() != inspection.package_sha256()
@@ -692,14 +745,18 @@ fn camera_from_state(
     })
 }
 
-fn validate_descriptor(bytes: &[u8], profile: &Value) -> Result<(), DayIndexedFrameError> {
+fn validate_descriptor(
+    bytes: &[u8],
+    profile: &Value,
+    descriptor_schema: &str,
+) -> Result<(), DayIndexedFrameError> {
     let descriptor: Value = serde_json::from_slice(bytes).map_err(|error| {
         DayIndexedFrameError::new(format!(
             "invalid Level 2 Day material descriptor JSON: {error}"
         ))
     })?;
     let object = object(&descriptor, "material descriptor")?;
-    if string_field(object, "schema", "material descriptor")? != MATERIAL_DESCRIPTOR_SCHEMA
+    if string_field(object, "schema", "material descriptor")? != descriptor_schema
         || object.get("profile") != Some(profile)
     {
         return Err(DayIndexedFrameError::new(
@@ -959,6 +1016,89 @@ fn historical_v4_profile_json() -> Value {
     })
 }
 
+fn validate_neutral_profile(
+    profile: &serde_json::Map<String, Value>,
+) -> Result<DayIndexedProfile, DayIndexedFrameError> {
+    if string_field(profile, "name", "material profile")? != "day-material"
+        || string_field(profile, "spec_commit", "material profile")? != REMC2_SPEC_COMMIT
+    {
+        return Err(DayIndexedFrameError::new(
+            "neutral Day material profile identity mismatch",
+        ));
+    }
+    let external = u16::try_from(
+        profile
+            .get("external_level")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| DayIndexedFrameError::new("Day external level is invalid"))?,
+    )
+    .map_err(|_| DayIndexedFrameError::new("Day external level exceeds u16"))?;
+    let internal = u16::try_from(
+        profile
+            .get("internal_level")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| DayIndexedFrameError::new("Day internal level is invalid"))?,
+    )
+    .map_err(|_| DayIndexedFrameError::new("Day internal level exceeds u16"))?;
+    if external != internal.saturating_add(1) {
+        return Err(DayIndexedFrameError::new(
+            "Day external/internal selection mismatch",
+        ));
+    }
+    let map_type = object_field(profile, "map_type", "material profile")?;
+    require_u64(
+        map_type,
+        "id",
+        MATERIAL_MAP_TYPE_ID,
+        "material profile map type",
+    )?;
+    if string_field(map_type, "name", "material profile map type")? != "Day" {
+        return Err(DayIndexedFrameError::new(
+            "neutral material profile is not Day",
+        ));
+    }
+    let selectors = object_field(profile, "selectors", "material profile")?;
+    let expected = qualified_profile_json();
+    if selectors
+        != object_field(
+            object(&expected, "qualified profile")?,
+            "selectors",
+            "qualified profile",
+        )?
+    {
+        return Err(DayIndexedFrameError::new(
+            "neutral Day material selector identity mismatch",
+        ));
+    }
+    let package = string_field(profile, "package_sha256", "material profile")?;
+    let owner_export = string_field(profile, "owner_export_package_sha256", "material profile")?;
+    if package != owner_export {
+        return Err(DayIndexedFrameError::new(
+            "neutral Day owner-export binding mismatch",
+        ));
+    }
+    for value in [
+        package,
+        string_field(profile, "campaign_package_sha256", "material profile")?,
+        string_field(profile, "closure_sha256", "material profile")?,
+        string_field(profile, "catalog_sha256", "material profile")?,
+        string_field(profile, "catalog_file_sha256", "material profile")?,
+    ] {
+        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(DayIndexedFrameError::new(
+                "neutral Day material identity is not a SHA-256 digest",
+            ));
+        }
+    }
+    Ok(DayIndexedProfile {
+        external_level: external,
+        internal_level: internal,
+        map_type_id: MATERIAL_MAP_TYPE_ID as u8,
+        vga_resolution_selector: MATERIAL_VGA_RESOLUTION_SELECTOR as u8,
+        texture_size: MATERIAL_TEXTURE_SIZE as u8,
+    })
+}
+
 fn validate_v5_owner_identity(
     profile: &serde_json::Map<String, Value>,
     bindings: &serde_json::Map<String, Value>,
@@ -1094,7 +1234,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_world::NativeWorld;
+    use crate::native_world::{NativeWorld, OwnerPackageProfile};
     use std::{
         fs,
         path::PathBuf,

@@ -2443,9 +2443,9 @@ const SPEED_JAR_FEATURE: u16 = 100;
 const PLAYER_COLLISION_HALF_WIDTH: i16 = 121;
 const PLAYER_COLLISION_VERTICAL_OFFSET: i16 = 100;
 const PLAYER_COLLISION_HALF_HEIGHT: i16 = 100;
-const FIREBALL_COLLISION_HALF_WIDTH: i16 = 48;
-const FIREBALL_COLLISION_VERTICAL_OFFSET: i16 = 50;
-const FIREBALL_COLLISION_HALF_HEIGHT: i16 = 50;
+pub(crate) const FIREBALL_COLLISION_HALF_WIDTH: i16 = 48;
+pub(crate) const FIREBALL_COLLISION_VERTICAL_OFFSET: i16 = 50;
+pub(crate) const FIREBALL_COLLISION_HALF_HEIGHT: i16 = 50;
 const ENTITY_POOL_SIZE: usize = 1_000;
 const LEVEL1_SYNTHETIC_RESET_OCCUPIED_SLOTS: [usize; 4] = [48, 112, 151, 152];
 const ARCHER_COLLISION_HALF_WIDTH: i16 = 128;
@@ -14124,10 +14124,10 @@ impl Level1MissionState {
             family,
             authored_index: collected_actor.authored_index,
         });
-        mark_source_audio_call(SourceAudioCallTag::SpeedPickup);
+        mark_source_audio_call(SourceAudioCallTag::SpellPickup);
         self.events.push(Level1MissionEvent::MissionSound {
             #[cfg(test)]
-            audio_site: crate::MissionAudioSite::SpeedPickup,
+            audio_site: crate::MissionAudioSite::SpellPickup,
             sound_id: SPEED_PICKUP_SOUND,
             source_entity_index: eligible_player.source_entity_index,
             position: eligible_player.position,

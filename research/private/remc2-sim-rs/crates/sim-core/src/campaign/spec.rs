@@ -69,62 +69,13 @@ impl CampaignSelection {
     };
 }
 
-/// Census-proven per-level member facts consumed by descriptor preflight.
-///
-/// Level 2 values are the qualified Day reset census; Level 3 values are the
-/// mc-iol7n byte-identical twin exports.  A selection without an entry fails
-/// closed at the outer manifest before any member is decoded, so an unknown
-/// level can never borrow a friendlier profile.  These facts select validation
-/// bounds only; every behavior algorithm stays compiled and source identities
-/// stay private.
-struct CampaignProfileFacts {
-    selection: CampaignSelection,
-    map_type_name: &'static str,
-    active_entity_count: usize,
-    /// Leading player slots that must reference an active reset entity.  This
-    /// equals the runtime player count captured at the frame-zero seam.
-    bound_player_slots: usize,
-    runtime_player_count: u16,
-    runtime_music_selector: u32,
-    /// Closed union of authored objective stage forms proven for this level.
-    objective_stage_forms: &'static [i8],
-    objective_count: usize,
-    /// Qualified collision-mask bank identity for this selection.
-    collision_bank_bytes: usize,
-    collision_bank_sha256: &'static str,
-}
-
-const CAMPAIGN_PROFILE_FACTS: [CampaignProfileFacts; 2] = [
-    CampaignProfileFacts {
-        selection: CampaignSelection::LEVEL2,
-        map_type_name: "Day",
-        active_entity_count: 114,
-        bound_player_slots: 2,
-        runtime_player_count: 2,
-        runtime_music_selector: 2,
-        objective_stage_forms: &[3, 5, 7, 9],
-        objective_count: 5,
-        collision_bank_bytes: 4_638,
-        collision_bank_sha256: "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432",
-    },
-    CampaignProfileFacts {
-        selection: CampaignSelection::LEVEL3,
-        map_type_name: "Day",
-        active_entity_count: 252,
-        bound_player_slots: 1,
-        runtime_player_count: 1,
-        runtime_music_selector: 2,
-        objective_stage_forms: &[0, 5, 7],
-        objective_count: 5,
-        collision_bank_bytes: 3_718,
-        collision_bank_sha256: "e1c2bd67c7ce43d0378d274431c252c9a427bf1a17bb638a344940433f06f5e6",
-    },
-];
-
-fn campaign_profile_facts(selection: CampaignSelection) -> Option<&'static CampaignProfileFacts> {
-    CAMPAIGN_PROFILE_FACTS
-        .iter()
-        .find(|facts| facts.selection == selection)
+fn campaign_map_type_name(map_type_id: u8) -> Option<&'static str> {
+    match map_type_id {
+        0 => Some("Day"),
+        1 => Some("Night"),
+        2 => Some("Cave"),
+        _ => None,
+    }
 }
 
 /// Monotone validation stages from the contract.  No session exists at any
@@ -350,6 +301,58 @@ pub struct CampaignDefinition {
 }
 
 impl CampaignDefinition {
+    /// Read the bounded selection declared by a campaign package. Full schema,
+    /// identity, member, and behavior validation still happens in
+    /// [`Self::preflight`]; this helper only lets neutral adapters avoid a
+    /// compiled per-level selection.
+    pub fn declared_selection(package_root: impl AsRef<Path>) -> Result<CampaignSelection> {
+        let manifest_path = package_root.as_ref().join("manifest.json");
+        let bytes = fs::read(&manifest_path).map_err(|error| CampaignPackageError {
+            stage: ValidationStage::OuterManifest,
+            message: format!("cannot read manifest.json: {error}"),
+        })?;
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|error| CampaignPackageError {
+                stage: ValidationStage::OuterManifest,
+                message: format!("cannot parse manifest.json: {error}"),
+            })?;
+        let manifest = value.as_object().ok_or_else(|| CampaignPackageError {
+            stage: ValidationStage::OuterManifest,
+            message: "manifest is not an object".to_owned(),
+        })?;
+        let level = manifest
+            .get("level")
+            .and_then(Value::as_object)
+            .ok_or_else(|| CampaignPackageError {
+                stage: ValidationStage::OuterManifest,
+                message: "manifest.level is not an object".to_owned(),
+            })?;
+        let map_type = level
+            .get("map_type")
+            .and_then(Value::as_object)
+            .ok_or_else(|| CampaignPackageError {
+                stage: ValidationStage::OuterManifest,
+                message: "manifest.level.map_type is not an object".to_owned(),
+            })?;
+        Ok(CampaignSelection {
+            external_level: bounded_u16(
+                level.get("external").unwrap_or(&Value::Null),
+                "manifest.level.external",
+                ValidationStage::OuterManifest,
+            )?,
+            internal_level: bounded_u16(
+                level.get("internal").unwrap_or(&Value::Null),
+                "manifest.level.internal",
+                ValidationStage::OuterManifest,
+            )?,
+            map_type_id: bounded_u8(
+                map_type.get("id").unwrap_or(&Value::Null),
+                "manifest.level.map_type.id",
+                ValidationStage::OuterManifest,
+            )?,
+        })
+    }
+
     /// Validate stages 1–9 in contract order without allocating a handle or
     /// touching session/global state.
     pub fn preflight(
@@ -417,11 +420,11 @@ impl CampaignDefinition {
                 ValidationStage::OuterManifest,
             )?,
         };
-        let Some(facts) = campaign_profile_facts(outer) else {
+        let Some(map_type_name) = campaign_map_type_name(outer.map_type_id) else {
             return fail(
                 ValidationStage::OuterManifest,
                 format!(
-                    "outer selection external {}/internal {}/map {} has no census-proven campaign profile",
+                    "outer selection external {}/internal {}/map {} uses an unsupported map type",
                     outer.external_level, outer.internal_level, outer.map_type_id
                 ),
             );
@@ -431,7 +434,7 @@ impl CampaignDefinition {
                 &map_type["name"],
                 "manifest.level.map_type.name",
                 ValidationStage::OuterManifest,
-            )? != facts.map_type_name
+            )? != map_type_name
         {
             return fail(
                 ValidationStage::OuterManifest,
@@ -707,9 +710,13 @@ impl CampaignDefinition {
                 "authored_behavior_rows differ from fresh authored/reset decode",
             );
         }
-        validate_entities(entities, facts)?;
-        validate_players(&members[&players_ref.member], entities, facts)?;
-        validate_runtime(&members["runtime.bin"], facts)?;
+        validate_entities(entities)?;
+        let runtime_player_count = validate_runtime(&members["runtime.bin"])?;
+        validate_players(
+            &members[&players_ref.member],
+            entities,
+            usize::from(runtime_player_count),
+        )?;
         validate_terrain(&members["terrain.bin"], "terrain.bin")?;
         let feature_boundary =
             validate_feature_boundary(&reset_sources["feature_boundary"], &files, &members)?;
@@ -740,8 +747,9 @@ impl CampaignDefinition {
                 files: &files,
                 members: &members,
                 authored_collision_provenance: &authored_collision_provenance,
-                collision_bank_bytes: facts.collision_bank_bytes,
-                collision_bank_sha256: facts.collision_bank_sha256,
+                collision_bank_bytes: usize::try_from(files["collision-masks.bin"].0)
+                    .expect("campaign member size fits usize"),
+                collision_bank_sha256: &files["collision-masks.bin"].1,
             },
         )
         .map_err(|message| CampaignPackageError {
@@ -751,7 +759,7 @@ impl CampaignDefinition {
 
         // Stage 7: closed census-proven operations and RNG source fields.
         let (initial_rng, objectives) =
-            validate_operations(spec_value, authored, &files, &members, facts)?;
+            validate_operations(spec_value, authored, &files, &members)?;
 
         // Stage 8: source-derived post-GenerateEvents runtime roots, exact
         // declaration, and compiled keys. Any later selector is independently
@@ -1295,7 +1303,7 @@ fn validate_entity_header(bytes: &[u8], magic: [u8; 4], label: &str) -> Result<(
     Ok(())
 }
 
-fn validate_entities(bytes: &[u8], facts: &CampaignProfileFacts) -> Result<()> {
+fn validate_entities(bytes: &[u8]) -> Result<()> {
     validate_entity_header(bytes, *b"MCE1", "entities.bin")?;
     let mut active_count = 0_usize;
     for index in 0..ENTITY_COUNT {
@@ -1365,19 +1373,16 @@ fn validate_entities(bytes: &[u8], facts: &CampaignProfileFacts) -> Result<()> {
             );
         }
     }
-    if active_count != facts.active_entity_count {
+    if active_count == 0 {
         return fail(
             ValidationStage::TypedMembers,
-            format!(
-                "campaign active entity count is {active_count}, census profile expects {}",
-                facts.active_entity_count
-            ),
+            "campaign reset contains no active entities",
         );
     }
     Ok(())
 }
 
-fn validate_players(bytes: &[u8], entities: &[u8], facts: &CampaignProfileFacts) -> Result<()> {
+fn validate_players(bytes: &[u8], entities: &[u8], bound_player_slots: usize) -> Result<()> {
     if bytes.len() != 12 + PLAYER_COUNT * PLAYER_RECORD_BYTES
         || bytes.get(..4) != Some(b"MCP1")
         || read_u16(bytes, 4, "players version", ValidationStage::TypedMembers)? != 4
@@ -1413,8 +1418,7 @@ fn validate_players(bytes: &[u8], entities: &[u8], facts: &CampaignProfileFacts)
             ValidationStage::TypedMembers,
         )?);
         if entity >= ENTITY_COUNT
-            || (slot < facts.bound_player_slots
-                && entities[12 + entity * ENTITY_RECORD_BYTES + 2] != 1)
+            || (slot < bound_player_slots && entities[12 + entity * ENTITY_RECORD_BYTES + 2] != 1)
         {
             return fail(
                 ValidationStage::TypedMembers,
@@ -1425,7 +1429,13 @@ fn validate_players(bytes: &[u8], entities: &[u8], facts: &CampaignProfileFacts)
     Ok(())
 }
 
-fn validate_runtime(bytes: &[u8], facts: &CampaignProfileFacts) -> Result<()> {
+fn validate_runtime(bytes: &[u8]) -> Result<u16> {
+    let player_count = read_u16(
+        bytes,
+        18,
+        "runtime player count",
+        ValidationStage::TypedMembers,
+    )?;
     if bytes.len() != 2_754
         || bytes.get(..4) != Some(b"MCR1")
         || read_u16(bytes, 4, "runtime version", ValidationStage::TypedMembers)? != 1
@@ -1436,18 +1446,8 @@ fn validate_runtime(bytes: &[u8], facts: &CampaignProfileFacts) -> Result<()> {
             "runtime local player",
             ValidationStage::TypedMembers,
         )? != 0
-        || read_u16(
-            bytes,
-            18,
-            "runtime player count",
-            ValidationStage::TypedMembers,
-        )? != facts.runtime_player_count
-        || read_u32(
-            bytes,
-            32,
-            "runtime music selector",
-            ValidationStage::TypedMembers,
-        )? != facts.runtime_music_selector
+        || player_count == 0
+        || usize::from(player_count) > PLAYER_COUNT
     {
         return fail(
             ValidationStage::TypedMembers,
@@ -1544,7 +1544,7 @@ fn validate_runtime(bytes: &[u8], facts: &CampaignProfileFacts) -> Result<()> {
             );
         }
     }
-    Ok(())
+    Ok(player_count)
 }
 
 fn validate_terrain(bytes: &[u8], label: &str) -> Result<()> {
@@ -1981,7 +1981,6 @@ fn validate_operations(
     authored: &[u8],
     files: &BTreeMap<String, (u64, String)>,
     members: &BTreeMap<String, Vec<u8>>,
-    facts: &CampaignProfileFacts,
 ) -> Result<(InitialRng, Vec<ObjectiveOperation>)> {
     let Some(initial_activation) = spec["initial_activation"].as_array() else {
         return fail(
@@ -2163,7 +2162,7 @@ fn validate_operations(
             }
             continue;
         }
-        if inactive_seen || !facts.objective_stage_forms.contains(&stage) {
+        if inactive_seen || !matches!(stage, 0 | 3 | 5 | 7 | 9) {
             return fail(
                 ValidationStage::TypedOperations,
                 format!("objective row {index} has an unproven form"),
@@ -2179,7 +2178,7 @@ fn validate_operations(
             axis_y,
         });
     }
-    if expected.len() != facts.objective_count || declared != expected {
+    if declared != expected {
         return fail(
             ValidationStage::TypedOperations,
             "objective operations differ from the authored census-profiled rows",

@@ -143,6 +143,13 @@ restarting them.
 
 ## Work selection and completion
 
+- After context compaction or session resume during level-content or engine-
+  architecture work, reread
+  `/home/oliver/.codex/skills/just-say-no-to-process-porn-and-ceremony/SKILL.md`.
+  Treat the owner package/campaign definition as the level capability census:
+  test only behavior families actually reachable from that package, plus the
+  shared engine invariants those families exercise; do not build speculative
+  per-level test matrices for absent content.
 - Direct Oliver requests govern. Otherwise use `br ready --json` only after the
   recovery graph is reconciled; the pre-recovery graph selects obsolete work.
 - A Bead is worker-ready only when inputs, owned surfaces, exact acceptance,

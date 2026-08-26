@@ -3140,15 +3140,39 @@ fn step_level2_campaign_public(
 
 fn campaign_day_hud_public(handle: u64, generation: u64, tick: u64) -> McCampaignDayHudSnapshotV2 {
     let mut hud = McCampaignDayHudSnapshotV2::default();
+    let status = mc_native_campaign_day_hud_state(
+        handle,
+        generation,
+        tick,
+        &raw mut hud,
+        struct_size::<McCampaignDayHudSnapshotV2>(),
+    );
+    let error = (status != MC_STATUS_OK).then(|| {
+        let mut error_length = 0;
+        assert_eq!(
+            mc_native_last_error_length(&raw mut error_length),
+            MC_STATUS_OK
+        );
+        let mut error =
+            vec![0_u8; usize::try_from(error_length).expect("error length fits usize") + 1];
+        assert_eq!(
+            mc_native_last_error_copy(
+                error.as_mut_ptr(),
+                u32::try_from(error.len()).expect("error buffer length fits u32"),
+                &raw mut error_length,
+            ),
+            MC_STATUS_OK
+        );
+        String::from_utf8_lossy(
+            &error[..usize::try_from(error_length).expect("error length fits usize")],
+        )
+        .into_owned()
+    });
     assert_eq!(
-        mc_native_campaign_day_hud_state(
-            handle,
-            generation,
-            tick,
-            &raw mut hud,
-            struct_size::<McCampaignDayHudSnapshotV2>(),
-        ),
-        MC_STATUS_OK
+        status,
+        MC_STATUS_OK,
+        "campaign Day HUD read failed: {}",
+        error.as_deref().unwrap_or("no ABI diagnostic")
     );
     hud
 }
@@ -3281,7 +3305,7 @@ struct Level2PublicPossessionClaimRoute {
 
 /// Shared public route used by the Possession predecessor proof and the
 /// Invisible consumer. It retains the predecessor's strict-flight and
-/// six-claim assertions so later capability tests never replace that
+/// package-specific overlap assertions so later capability tests never replace that
 /// evidence with a synthetic mana setup.
 fn drive_level2_public_group1_possession_claims(
     handle: u64,
@@ -3294,12 +3318,15 @@ fn drive_level2_public_group1_possession_claims(
         input,
         selected_target_sphere_id,
         group1_sphere_ids,
-        Some(6),
+        Some(4),
     )
 }
 
 /// Drive one ordinary public Possession request/effect window. The first
-/// predecessor proof starts quiescent and requires one exact six-claim
+/// predecessor proof starts quiescent and requires the exact four claims
+/// produced by the package-backed target-141 route after the source-correct
+/// lower-slot projectile deferral. The callback itself has no fixed claim
+/// count: it claims every sphere overlapping on its actual visit.
 /// chain. The Beyond Sight capacity proof intentionally permits earlier
 /// ordinary projectiles/effects to overlap later requests and validates
 /// only the resulting aggregate live ownership outside this helper.
@@ -3349,7 +3376,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
         };
 
     // Drive one ordinary public flight geometry. In the strict predecessor
-    // the model-12 callback fans its mailbox to six overlapping neutral
+    // the model-12 callback fans its mailbox to every overlapping neutral
     // model-39 spheres; the capacity route instead accumulates live public
     // ownership across overlapping ordinary effect windows.
     input.player_x = initial_target.x;
@@ -3605,10 +3632,33 @@ fn drive_level2_public_group1_possession_claims_with_expected(
         .iter()
         .filter(|event| event.kind == 8 && event.family == 39)
         .collect::<Vec<_>>();
+    let (possession_holder_slot, live_projectiles) = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "Possession proof requires a Level 2 campaign session",
+            ));
+        };
+        Ok((
+            reset.shared_spells().players()[0].enabled_spell_holders[1],
+            reset
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .filter(|projectile| projectile.active)
+                .map(|projectile| (projectile.source_entity_index, projectile.action))
+                .collect::<Vec<_>>(),
+        ))
+    })
+    .expect("read armed Possession projectiles");
+    let deferred_lower_slot = live_projectiles.len() == 1
+        && live_projectiles[0].0 < possession_holder_slot
+        && live_projectiles[0].1 == 1;
     if expected_claim_count.is_some() {
         assert!(
-            arm_projectile_events.len() <= 1 && (!arm_projectile_events.is_empty() || saw_effect),
-            "the quiescent selected request either publishes its one live guided flyer or its same-pass terminal effect"
+            arm_projectile_events.len() <= 1
+                && (!arm_projectile_events.is_empty() || saw_effect || deferred_lower_slot),
+            "the selected request must publish, terminate, or source-correctly defer one lower-slot flyer; holder {possession_holder_slot}, live {live_projectiles:?}"
         );
     }
     let armed_holder = possession_holder(campaign_day_hud_public(

@@ -142,9 +142,12 @@ namespace MagicCarpet.Native
             var overrideCachePath = !string.IsNullOrWhiteSpace(assetCachePath);
             int status;
             ulong handle;
+            var dayMusicAvailable = false;
             if (overrideCachePath)
             {
-                var cachePath = Encoding.UTF8.GetBytes(Path.GetFullPath(assetCachePath));
+                var fullCachePath = Path.GetFullPath(assetCachePath);
+                dayMusicAvailable = HasDayMusicAssets(fullCachePath);
+                var cachePath = Encoding.UTF8.GetBytes(fullCachePath);
                 status = NativeSim.mc_native_campaign_session_open_with_asset_cache(
                     package, checked((uint)package.Length), closure, 0,
                     cachePath, checked((uint)cachePath.Length), ref selection,
@@ -178,7 +181,7 @@ namespace MagicCarpet.Native
                 }
                 return new NativeCampaignSession(
                     handle,
-                    overrideCachePath,
+                    dayMusicAvailable,
                     identity,
                     worldInfo);
             }
@@ -252,6 +255,16 @@ namespace MagicCarpet.Native
             return BitConverter.ToString(sha256.ComputeHash(input))
                 .Replace("-", string.Empty)
                 .ToLowerInvariant();
+        }
+
+        private static bool HasDayMusicAssets(string assetCachePath)
+        {
+            return File.Exists(Path.Combine(
+                       assetCachePath,
+                       "components/audio/manifest.json")) ||
+                   File.Exists(Path.Combine(
+                       assetCachePath,
+                       "audio/descriptor.json"));
         }
 
         private static bool SameIdentity(

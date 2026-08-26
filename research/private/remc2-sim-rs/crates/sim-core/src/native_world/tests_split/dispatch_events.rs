@@ -370,156 +370,6 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
     );
     assert_eq!(class10_target.source_wind_spell_owner(), parent.entity_id);
 
-    // The remaining class-2 allowlist is just models 7/8 and shares the
-    // same non-v40 movement branch.
-    let class2_parent = session
-        .economy()
-        .authored_model22()
-        .iter()
-        .find(|source| source.source_entity_index == parent.source_entity_index)
-        .copied()
-        .expect("wind parent after class-10 callback");
-    let class2_position = Position {
-        x: class2_parent.position.x.wrapping_add(1_024),
-        y: class2_parent.position.y,
-        z: class2_parent.position.z,
-    };
-    {
-        let target = &mut session.economy.entities[usize::from(target_index)];
-        target.class = 2;
-        target.record[67] = 2;
-        target.model = 7;
-        target.record[68] = 7;
-        target.action = 0;
-        target.record[73] = 0;
-        target.set_actual_speed(31);
-        target.set_yaw(0);
-        target.set_control_flags(0);
-        target.set_position(class2_position);
-    }
-    session
-        .economy_mut()
-        .map_chains
-        .sync_entity(RenderableMapSeed {
-            entity_index: target_index,
-            active: true,
-            x: class2_position.x,
-            y: class2_position.y,
-        })
-        .expect("class-2 target map chain follows its source position");
-    let class2_snapshot = session.economy.entities[usize::from(target_index)].clone();
-    assert!(level2_wind_sub33810_accepts(
-        parent_source_id,
-        &class2_snapshot
-    ));
-    let mut rejected_class2 = class2_snapshot.clone();
-    rejected_class2.model = 6;
-    rejected_class2.record[68] = 6;
-    assert!(!level2_wind_sub33810_accepts(
-        parent_source_id,
-        &rejected_class2
-    ));
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let class2_target = &session.economy.entities[usize::from(target_index)];
-    assert_eq!(class2_target.actual_speed, 31);
-    assert_eq!(class2_target.yaw, 204);
-    assert_ne!(class2_target.control_flags & 0x0000_0800, 0);
-    assert_eq!(class2_target.source_wind_spell_owner(), parent.entity_id);
-
-    // Class 5 admits model 13 when its action is not one of the two
-    // source-excluded action values; action 180 must remain untouched.
-    let class5_parent = session
-        .economy()
-        .authored_model22()
-        .iter()
-        .find(|source| source.source_entity_index == parent.source_entity_index)
-        .copied()
-        .expect("wind parent after class-2 callback");
-    let class5_position = Position {
-        x: class5_parent.position.x.wrapping_add(1_024),
-        y: class5_parent.position.y,
-        z: class5_parent.position.z,
-    };
-    {
-        let target = &mut session.economy.entities[usize::from(target_index)];
-        target.class = 5;
-        target.record[67] = 5;
-        target.model = 13;
-        target.record[68] = 13;
-        target.action = 0;
-        target.record[73] = 0;
-        target.set_actual_speed(37);
-        target.set_yaw(0);
-        target.set_control_flags(0);
-        target.set_position(class5_position);
-    }
-    session
-        .economy_mut()
-        .map_chains
-        .sync_entity(RenderableMapSeed {
-            entity_index: target_index,
-            active: true,
-            x: class5_position.x,
-            y: class5_position.y,
-        })
-        .expect("class-5 target map chain follows its source position");
-    let class5_snapshot = session.economy.entities[usize::from(target_index)].clone();
-    assert!(level2_wind_sub33810_accepts(
-        parent_source_id,
-        &class5_snapshot
-    ));
-    let mut rejected_class5 = class5_snapshot.clone();
-    rejected_class5.action = 180;
-    rejected_class5.record[73] = 180;
-    assert!(!level2_wind_sub33810_accepts(
-        parent_source_id,
-        &rejected_class5
-    ));
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let class5_target = &session.economy.entities[usize::from(target_index)];
-    assert_eq!(class5_target.actual_speed, 37);
-    assert_eq!(class5_target.yaw, 204);
-    assert_ne!(class5_target.control_flags & 0x0000_0800, 0);
-    assert_eq!(class5_target.source_wind_spell_owner(), parent.entity_id);
-
-    // Exercise the negative through the real production turn as well:
-    // action 180 is rejected before any movement/mailbox mutation.
-    let rejected_parent = session
-        .economy()
-        .authored_model22()
-        .iter()
-        .find(|source| source.source_entity_index == parent.source_entity_index)
-        .copied()
-        .expect("wind parent after class-5 callback");
-    let rejected_position = Position {
-        x: rejected_parent.position.x.wrapping_add(1_024),
-        y: rejected_parent.position.y,
-        z: rejected_parent.position.z,
-    };
-    {
-        let target = &mut session.economy.entities[usize::from(target_index)];
-        target.action = 180;
-        target.record[73] = 180;
-        target.set_actual_speed(41);
-        target.set_yaw(0);
-        target.set_control_flags(0);
-        target.set_position(rejected_position);
-    }
-    session
-        .economy_mut()
-        .map_chains
-        .sync_entity(RenderableMapSeed {
-            entity_index: target_index,
-            active: true,
-            x: rejected_position.x,
-            y: rejected_position.y,
-        })
-        .expect("rejected class-5 target map chain follows its source position");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let rejected_target = &session.economy.entities[usize::from(target_index)];
-    assert_eq!(rejected_target.actual_speed, 41);
-    assert_eq!(rejected_target.yaw, 0);
-    assert_eq!(rejected_target.control_flags & 0x0000_0800, 0);
 }
 
 #[test]
@@ -529,7 +379,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 selector-2 Bee session");
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let source_slot = session
         .economy()
         .authored_bees()
@@ -766,7 +616,7 @@ fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callbac
 
     // The primary witness is still the ordinary row-228/group-21 route;
     // this test changes no action or StageVar field after construction.
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let source_slot = session
         .economy()
         .authored_bees()
@@ -1527,7 +1377,7 @@ fn level_two_authored_bee_action23_invalid_selector_is_production_noop() {
     // The real group-21 producer materializes action 23. The following
     // mutations select only an invalid StageVar2 selector; dispatch still
     // enters through the live dynamic cursor.
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let source_slot = session
         .economy()
         .authored_bees()
@@ -1589,7 +1439,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
 
     // Dead target: action 18 falls back immediately, without a callback
     // RNG draw, while retaining the source relation for action 17.
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
         .authored_bees()
@@ -1631,7 +1481,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
 
     // Draw-disabled target is the same source-invalid branch.
     session.reset();
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
         .authored_bees()
@@ -1686,7 +1536,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     // A live target beyond the 0x1400 3-D range is retained off cadence,
     // then lost on the exact source cadence.
     session.reset();
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
         .authored_bees()
@@ -1756,7 +1606,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
         .level2_reset_session()
         .expect("Level 2 Bee contact session");
 
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
         .authored_bees()
@@ -1829,7 +1679,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     );
 
     session.reset();
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let edge = configure(&mut session, 1024, 0);
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(session.player_pending_damage, 0);
@@ -1844,7 +1694,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     assert_eq!(after_edge.action, 18);
 
     session.reset();
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let off_cadence = configure(&mut session, 1023, 1);
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(session.player_pending_damage, 0);
@@ -1866,7 +1716,7 @@ fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_vis
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 Bee contact ordering session");
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
         .authored_bees()
@@ -2658,7 +2508,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
         .level2_reset_session()
         .expect("Level 2 Bee reacquisition session");
     let baseline_hash = session.campaign_state_hash();
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
         .authored_bees()
@@ -2777,7 +2627,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
         .level2_reset_session()
         .expect("Level 2 group-21 Bee session");
     let baseline_hash = session.campaign_state_hash();
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
         .authored_bees()
@@ -2921,7 +2771,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     assert_eq!(acquired.dword_0x10, 1);
 
     session.reset();
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot_after_reset = session
         .economy()
         .authored_bees()
@@ -3371,7 +3221,7 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
             400,
             8,
             7,
-            0x0003_0080,
+            0x0003_0082,
             512,
             512,
             meteor.yaw,
@@ -3390,7 +3240,9 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
         .copied()
         .expect("Meteor child remains live");
     assert_eq!(stepped_child.life, 6);
-    assert_eq!(stepped_child.phase, child.phase.wrapping_add(1));
+    // The callback is phase-free; only the production numeric scheduler owns
+    // the common byte-0x3E epilogue.
+    assert_eq!(stepped_child.phase, child.phase);
 
     // The source child callback decrements first and disables on the same
     // visit when the new life value is below -1.
@@ -3402,6 +3254,7 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
         .expect("Meteor child for negative-life sentinel")
         .life = -1;
     assert!(
+        !
         session
             .economy_mut()
             .step_model17_spawned_child_slot(child.source_entity_index)
@@ -4850,6 +4703,126 @@ fn dolmen_contact_selects_high_recharge_on_the_following_player_action() {
 }
 
 #[test]
+fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("qualified Level 2 session");
+    let baseline_hash = session.campaign_state_hash();
+
+    // The real package starts the local wizard at z=256 over type-0 ground.
+    // Ordinary pitch input reaches 250 after sixteen turns; the cast turn
+    // reaches 251 and the source-speed 384 flyer crosses ground on its first
+    // numeric callback. No target or entity position is manufactured here.
+    for _ in 0..16 {
+        session.step_outer_turn(
+            PlayerCommand {
+                pitch: 127,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+    }
+    assert_eq!(session.state.display_pitch, 250);
+    let events_before = session.shared_spells().activation_events().len();
+    let flyer_slots_before = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .map(|row| row.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    let impact_slots_before = session
+        .economy()
+        .model17_spawned_children()
+        .iter()
+        .map(|row| row.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    let splash_slots_before = session
+        .economy()
+        .authored_model5_water_splashes()
+        .iter()
+        .map(|row| row.source_entity_index)
+        .collect::<BTreeSet<_>>();
+
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 0,
+            pitch: 127,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    assert_eq!(session.state.display_pitch, 251);
+
+    let flyer = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .find(|row| !flyer_slots_before.contains(&row.source_entity_index))
+        .copied()
+        .expect("public family-0 holder creates a class-9 flyer");
+    assert_eq!(
+        (flyer.source_class, flyer.source_model, flyer.action),
+        (9, 0, 0)
+    );
+    assert!(!flyer.active && flyer.drawing_disabled);
+    assert!(session.economy().map_chains().is_linked(flyer.source_entity_index));
+    assert_eq!(
+        session.economy().source_rng[&flyer.source_entity_index],
+        flyer.entity_rng,
+        "the water branch never consumes an impact RNG tail"
+    );
+    assert!(session
+        .economy()
+        .model17_spawned_children()
+        .iter()
+        .all(|row| impact_slots_before.contains(&row.source_entity_index)));
+    let splash = session
+        .economy()
+        .authored_model5_water_splashes()
+        .iter()
+        .find(|row| !splash_slots_before.contains(&row.source_entity_index))
+        .copied()
+        .expect("qualified type-0 water constructs the model-5 splash");
+    assert_eq!(splash.entity_id, session.state.entity_index);
+
+    let cast_events = &session.shared_spells().activation_events()[events_before..];
+    assert!(cast_events.iter().any(|event| matches!(
+            event,
+            FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::FireballLaunch,
+                entity_index,
+                player_index: -1,
+                sound_id: 9,
+            } if *entity_index == flyer.source_entity_index
+        )));
+    assert!(cast_events.iter().all(|event| !matches!(
+            event,
+            FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::FireballImpact,
+                entity_index,
+                player_index: -1,
+                sound_id: 3,
+            } if *entity_index == flyer.source_entity_index
+        )));
+
+    // Water hides the flyer even if splash allocation fails; the normal next
+    // prepass owns its unlink and slot reclamation.
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .all(|row| row.source_entity_index != flyer.source_entity_index));
+    assert!(!session.economy().map_chains().is_linked(flyer.source_entity_index));
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_hash);
+}
+
+#[test]
 fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     let package = level_two_fixture_path();
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -4859,55 +4832,18 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     let mut session = inspection
         .level2_reset_session()
         .expect("qualified Level 2 session");
-    session.select_level2_campaign_entry_stage();
     let baseline_hash = session.campaign_state_hash();
-    let bee_slot = 119;
-
-    // Use the ordinary authored action-23 -> action-18 -> action-17
-    // transitions to qualify the real Day-Bee row. No Bee field is
-    // written by this setup; only the public local-player position is
-    // supplied to the source turn.
-    for _ in 0..100 {
-        let bee = session
-            .economy()
-            .authored_bees()
-            .iter()
-            .find(|bee| bee.source_entity_index == bee_slot)
-            .copied();
-        if let Some(bee) = bee {
-            if bee.action == 17 {
-                break;
-            }
-            let player_position = if bee.action == 23 {
-                let mut position = bee.position;
-                crate::move_entity(&mut position, bee.yaw, 0, 1_000);
-                position.z = bee.position.z;
-                position
-            } else {
-                Position { x: 0, y: 0, z: 0 }
-            };
-            session
-                .set_level2_entity_position(session.state.entity_index, player_position)
-                .expect("local player position remains map-linked");
-        }
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        if session
-            .economy()
-            .authored_bees()
-            .iter()
-            .find(|bee| bee.source_entity_index == bee_slot)
-            .is_some_and(|bee| bee.action == 17)
-        {
-            break;
-        }
-    }
-    let bee = session
+    // Fire the package's actual group-21 objective producer, then let the
+    // authored Bee's 23 -> 18 -> 17 callbacks run normally.
+    fire_level_two_model32_group(&mut session, 21);
+    let bee_slot = session
         .economy()
         .authored_bees()
         .iter()
-        .find(|bee| bee.source_entity_index == bee_slot)
-        .copied()
-        .expect("action-17 production Bee");
+        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .map(|bee| bee.source_entity_index)
+        .expect("ordinary group-21 route materializes the authored Bee");
+    let bee = drive_level_two_bee_to_action17_for_fireball(&mut session, bee_slot);
     assert_eq!(bee.action, 17);
 
     // The public Fireball is launched close enough for the source's
@@ -4916,12 +4852,8 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     // the following callback consumes the mailbox.
     let player_position = Position {
         x: bee.position.x.wrapping_add(256),
-        y: bee.position.y.wrapping_add(360),
-        z: bee
-            .position
-            .z
-            .wrapping_add(280)
-            .wrapping_sub(session.state.entity_fov),
+        y: bee.position.y.wrapping_add(384),
+        z: bee.position.z.wrapping_sub(session.state.entity_fov),
     };
     session
         .set_level2_entity_position(session.state.entity_index, player_position)
@@ -4931,6 +4863,20 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     session.state.effective_pitch = 0;
     session.state.actual_speed = 0;
     session.state.target_speed = 0;
+    let impact_slots_before = session
+        .economy()
+        .model17_spawned_children()
+        .iter()
+        .map(|row| row.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    let launch_auxiliary_byte = session
+        .shared_spells()
+        .players
+        .iter()
+        .find(|player| player.entity_index == session.state.entity_index)
+        .and_then(PlayerSnapshot::type_str_164_auxiliary)
+        .expect("local source A4 carrier")
+        .byte_0x154_340;
     let launch_event_start = session.shared_spells().activation_events().len();
     session.step_outer_turn(
         PlayerCommand {
@@ -4960,18 +4906,31 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     assert_eq!(projectile.holder_entity_index, 115);
     assert_eq!(projectile.source_subspell_index, 250);
     assert_eq!(projectile.source_mana, 20);
-    assert_eq!(projectile.phase, 1);
+    assert_eq!(projectile.phase, projectile.source_entity_index as u8);
     assert_eq!(projectile.life, projectile.max_life);
     assert_eq!(projectile.control_flags, 0);
-    assert_eq!(projectile.dword_0x10, 0);
-    assert!(session.dispatch_events().iter().any(|event| matches!(
+    assert_eq!(projectile.dword_0x10, i32::from(launch_auxiliary_byte));
+    assert_eq!(
+        session
+            .shared_spells()
+            .players
+            .iter()
+            .find(|player| player.entity_index == session.state.entity_index)
+            .and_then(PlayerSnapshot::type_str_164_auxiliary)
+            .expect("local source A4 carrier after launch")
+            .byte_0x154_340,
+        0,
+        "sub_693F0 copies then clears the source A4 byte"
+    );
+    assert!(projectile.source_entity_index < projectile.holder_entity_index);
+    assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
         Level2DispatchEvent::DynamicArena {
             source_slot,
             kind: Level2DynamicArenaKind::FireballProjectile,
             ..
         } if *source_slot == projectile.source_entity_index
-    )));
+    )), "a lower-slot flyer is first visible on the following numeric pass");
     let launch_events = &session.shared_spells().activation_events()[launch_event_start..];
     assert!(launch_events.iter().any(|event| matches!(
         event,
@@ -4984,23 +4943,44 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     )));
 
     let launch_rng = projectile.entity_rng;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let hit_projectile = session
+    let (hit_projectile, impact) = (0..16)
+        .find_map(|_| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let impact = session
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .find(|row| !impact_slots_before.contains(&row.source_entity_index))
+                .copied()?;
+            let flyer = session
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .find(|candidate| {
+                    candidate.source_entity_index == projectile.source_entity_index
+                })
+                .copied()?;
+            Some((flyer, impact))
+        })
+        .expect("ordinary flyer reaches the authored Bee and constructs its impact");
+    assert!(!hit_projectile.active && hit_projectile.drawing_disabled);
+    assert!(session
         .economy()
-        .fireball_projectiles()
-        .iter()
-        .find(|candidate| candidate.source_entity_index == projectile.source_entity_index)
-        .copied()
-        .expect("Fireball remains inspectable after its first collision callback");
-    assert_eq!(hit_projectile.control_flags & 0x2, 0x2);
+        .map_chains()
+        .is_linked(hit_projectile.source_entity_index));
     assert_eq!(
-        hit_projectile.entity_rng,
-        level2_next_rng16(launch_rng),
-        "the first non-delayed callback consumes exactly one source RNG draw"
+        hit_projectile.entity_rng, launch_rng,
+        "the class-9 flyer never consumes the class-10 impact RNG tail"
     );
+    assert_eq!((impact.source_class, impact.model, impact.action), (10, 0, 0));
     assert_eq!(
-        hit_projectile.source_word_2c,
-        i16::try_from(hit_projectile.entity_rng % 0x41).expect("Fireball RNG fits") - 32
+        (impact.parent_entity_index, impact.parent_entity_id),
+        (projectile.source_entity_index, session.state.entity_index)
+    );
+    assert_eq!(impact.control_flags & 0x2, 0x2);
+    assert_eq!(
+        impact.source_word_2c,
+        i16::try_from(impact.entity_rng % 0x41).expect("impact RNG fits") - 32
     );
     let pending = session
         .economy()
@@ -5028,7 +5008,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
                         entity_index,
                         player_index: -1,
                         sound_id: 3,
-                    } if *entity_index == projectile.source_entity_index
+                    } if *entity_index == impact.source_entity_index
                 )
             })
     );
@@ -5073,6 +5053,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
     assert!(session.economy().fireball_projectiles().is_empty());
+    assert!(session.economy().model17_spawned_children().is_empty());
 }
 
 fn drive_level_two_bee_to_action17_for_fireball(
@@ -5580,220 +5561,199 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
 }
 
 #[test]
-fn level_two_fireball_collision_rejects_invalid_targets_and_duplicate_mailbox() {
+fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
     let mut session = inspection
         .level2_reset_session()
         .expect("qualified Level 2 session");
     session.select_level2_campaign_entry_stage();
-    let bee_slot = 119;
-
-    // Produce the authored Bee through its ordinary source transition so
-    // every collision negative below still resolves against the live Day
-    // row and its reset map relation.
-    for _ in 0..100 {
-        let bee = session
-            .economy()
-            .authored_bees()
-            .iter()
-            .find(|bee| bee.source_entity_index == bee_slot)
-            .copied();
-        if let Some(bee) = bee {
-            if bee.action == 17 {
-                break;
-            }
-            let player_position = if bee.action == 23 {
-                let mut position = bee.position;
-                crate::move_entity(&mut position, bee.yaw, 0, 1_000);
-                position.z = bee.position.z;
-                position
-            } else {
-                Position { x: 0, y: 0, z: 0 }
-            };
-            session
-                .set_level2_entity_position(session.state.entity_index, player_position)
-                .expect("local player position remains map-linked");
-        }
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        if session
-            .economy()
-            .authored_bees()
-            .iter()
-            .find(|bee| bee.source_entity_index == bee_slot)
-            .is_some_and(|bee| bee.action == 17)
-        {
-            break;
-        }
-    }
-    let bee = session
-        .economy()
-        .authored_bees()
-        .iter()
-        .find(|bee| bee.source_entity_index == bee_slot)
-        .copied()
-        .expect("action-17 production Bee");
-    assert_eq!(bee.action, 17);
+    // This is the focused callback split check. The separate production test
+    // below owns the public holder -> flyer -> impact proof; here a real
+    // package-authored Bee constructor supplies the collision carrier.
+    let mut bee = session
+        .allocate_level2_authored_bee(210)
+        .expect("authored Day Bee row 210");
+    bee.action = 17;
+    assert!(session.economy_mut().replace_authored_bee_for_test(bee));
+    let bee_slot = bee.source_entity_index;
     let qualified_economy = session.economy().clone();
     let terrain = session.canonical_terrain().clone();
-    let edge_x = u16::try_from(
-        i32::from(LEVEL2_FIREBALL_COLLISION_HALF_WIDTH)
-            + i32::from(LEVEL2_BEE_COLLISION_HALF_EXTENT),
-    )
-    .expect("Fireball/Bee edge extent fits");
+    let mut economy = qualified_economy;
+    let source_slot = economy
+        .spawn_fireball_projectile_with_payload(
+            level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                position: bee.position,
+                yaw: 0,
+                pitch: 0,
+                axis_position: bee.position,
+                source_id_entity_index: session.state.entity_index,
+                holder_entity_index: 115,
+                source_subspell_index: 250,
+                source_mana: 20,
+                source_dword_0x10: 0,
+            },
+            0,
+        )
+        .expect("qualified Fireball has an arena slot");
+    let projectile_rng = economy.source_rng[&source_slot];
+    economy
+        .fireball_projectiles
+        .iter_mut()
+        .find(|projectile| projectile.source_entity_index == source_slot)
+        .expect("new Fireball row")
+        .actual_speed = 0;
 
-    let new_projectile = || {
-        let mut economy = qualified_economy.clone();
-        let source_slot = economy
-            .spawn_fireball_projectile_with_payload(
-                level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
-                    position: bee.position,
-                    yaw: 0,
-                    pitch: 0,
-                    axis_position: bee.position,
-                    source_id_entity_index: session.state.entity_index,
-                    holder_entity_index: 115,
-                    source_subspell_index: 250,
-                    source_mana: 20,
-                    source_dword_0x10: 0,
-                },
-                0,
-            )
-            .expect("qualified negative case has an arena slot");
-        let projectile = economy
-            .fireball_projectiles
-            .iter_mut()
-            .find(|projectile| projectile.source_entity_index == source_slot)
-            .expect("new Fireball row is stored in the shared arena");
-        projectile.actual_speed = 0;
-        (economy, source_slot)
-    };
-
-    // A zero/edge overlap, same owner, disabled/absent/stale target, and
-    // every wrong class/model/action are all closed without a mailbox.
-    for case in 0..9_u8 {
-        let (mut economy, source_slot) = new_projectile();
-        match case {
-            0 => {
-                economy
-                    .fireball_projectiles
-                    .iter_mut()
-                    .find(|projectile| projectile.source_entity_index == source_slot)
-                    .expect("Fireball row")
-                    .position
-                    .x = bee.position.x.wrapping_add(1_000);
-            }
-            1 => {
-                economy
-                    .fireball_projectiles
-                    .iter_mut()
-                    .find(|projectile| projectile.source_entity_index == source_slot)
-                    .expect("Fireball row")
-                    .position
-                    .x = bee.position.x.wrapping_add(edge_x);
-            }
-            2 => {
-                economy
-                    .fireball_projectiles
-                    .iter_mut()
-                    .find(|projectile| projectile.source_entity_index == source_slot)
-                    .expect("Fireball row")
-                    .owner_entity_index = bee.entity_id;
-            }
-            3 => {
-                economy
-                    .authored_bees
-                    .iter_mut()
-                    .find(|target| target.source_entity_index == bee_slot)
-                    .expect("target Bee")
-                    .drawing_enabled = false;
-            }
-            4 => economy
-                .authored_bees
-                .retain(|target| target.source_entity_index != bee_slot),
-            5 => economy.map_chains.set_map_entity_unlink(bee_slot),
-            6 => {
-                economy
-                    .authored_bees
-                    .iter_mut()
-                    .find(|target| target.source_entity_index == bee_slot)
-                    .expect("target Bee")
-                    .source_class = 4;
-            }
-            7 => {
-                economy
-                    .authored_bees
-                    .iter_mut()
-                    .find(|target| target.source_entity_index == bee_slot)
-                    .expect("target Bee")
-                    .model = 1;
-            }
-            8 => {
-                economy
-                    .authored_bees
-                    .iter_mut()
-                    .find(|target| target.source_entity_index == bee_slot)
-                    .expect("target Bee")
-                    .action = 18;
-            }
-            _ => unreachable!("bounded Fireball negative case"),
-        }
-        let before_rng = economy
-            .source_rng
-            .get(&source_slot)
-            .copied()
-            .expect("NewEvent source RNG");
-        let _ = economy.step_fireball_projectile_slot(source_slot, &terrain);
-        let pending_damage = economy
+    // `sub_65C20` hides the class-9 flyer only after the distinct class-10
+    // constructor succeeds. Exhaust the real shared arena at the collision
+    // boundary, then make one slot available and prove the same flyer retries.
+    let retry_slot = *economy
+        .free_slots
+        .last()
+        .expect("qualified economy retains a free retry slot");
+    let mut exhausted = economy.clone();
+    exhausted.free_slots.clear();
+    for row in &mut exhausted.castle_children {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.spheres {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.death_bursts {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.authored_model1 {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.model59_smoke_children {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.authored_model5_water_splashes {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.authored_model13 {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.authored_model6 {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.model13_spawned_children {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.model17_spawned_children {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    for row in &mut exhausted.model76_tail_spawns {
+        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+    }
+    let impacts_before_failure = exhausted.model17_spawned_children.len();
+    let failed = exhausted.step_fireball_projectile_slot(source_slot, &terrain, &[]);
+    assert!(failed.live && failed.impact_slot.is_none());
+    let retained = exhausted
+        .fireball_projectiles
+        .iter()
+        .find(|projectile| projectile.source_entity_index == source_slot)
+        .copied()
+        .expect("failed impact allocation retains the flyer");
+    assert!(retained.active && !retained.drawing_disabled);
+    assert_eq!(retained.entity_rng, projectile_rng);
+    assert!(exhausted.map_chains.is_linked(source_slot));
+    assert_eq!(
+        exhausted.model17_spawned_children.len(),
+        impacts_before_failure
+    );
+    assert_eq!(
+        exhausted
             .authored_bees
             .iter()
             .find(|target| target.source_entity_index == bee_slot)
-            .map_or(0, |target| target.pending_damage);
-        assert_eq!(pending_damage, 0, "negative Fireball case {case}");
-        assert_eq!(
-            economy.source_rng.get(&source_slot).copied(),
-            Some(before_rng.wrapping_mul(9_377).wrapping_add(9_439)),
-            "the source callback still consumes its pinned one-shot RNG tail for case {case}"
-        );
-    }
-
-    // A second callback cannot duplicate a previously occupied mailbox or
-    // consume another source RNG draw. Direct invalid mailbox arguments
-    // are rejected for the same reason as the source-shaped scan.
-    let (mut economy, source_slot) = new_projectile();
-    let first_rng = economy
-        .source_rng
-        .get(&source_slot)
-        .copied()
-        .expect("NewEvent source RNG");
-    let first_step = economy.step_fireball_projectile_slot(source_slot, &terrain);
-    assert!(first_step.impact_sound);
-    let pending_after_first = economy
-        .authored_bees
-        .iter()
-        .find(|target| target.source_entity_index == bee_slot)
-        .copied()
-        .expect("target Bee after first hit");
-    assert_eq!(pending_after_first.pending_damage, 250);
-    let hit_rng = economy
-        .source_rng
-        .get(&source_slot)
-        .copied()
-        .expect("Fireball RNG after first callback");
-    assert_eq!(hit_rng, first_rng.wrapping_mul(9_377).wrapping_add(9_439));
-    assert!(
-        !economy
-            .step_fireball_projectile_slot(source_slot, &terrain)
-            .impact_sound
+            .expect("target Bee after failed allocation")
+            .pending_damage,
+        0
     );
-    let pending_after_duplicate = economy
-        .authored_bees
+    exhausted.free_slots.push(retry_slot);
+    let retried = exhausted.step_fireball_projectile_slot(source_slot, &terrain, &[]);
+    assert!(!retried.live && retried.impact_slot.is_some());
+    let retained = exhausted
+        .fireball_projectiles
         .iter()
-        .find(|target| target.source_entity_index == bee_slot)
+        .find(|projectile| projectile.source_entity_index == source_slot)
+        .expect("successful retry remains reserved until cleanup");
+    assert!(!retained.active && retained.drawing_disabled);
+
+    let flyer_step = economy.step_fireball_projectile_slot(source_slot, &terrain, &[]);
+    let impact_slot = flyer_step
+        .impact_slot
+        .expect("Bee collision constructs a distinct class-10 impact");
+    let flyer = economy
+        .fireball_projectiles
+        .iter()
+        .find(|projectile| projectile.source_entity_index == source_slot)
+        .expect("hidden flyer remains reserved until source cleanup");
+    assert!(!flyer.active && flyer.drawing_disabled);
+    assert_eq!(flyer.entity_rng, projectile_rng);
+    assert_eq!(
+        economy
+            .authored_bees
+            .iter()
+            .find(|target| target.source_entity_index == bee_slot)
+            .expect("target Bee before impact callback")
+            .pending_damage,
+        0,
+        "the class-9 flyer never owns the damage mailbox"
+    );
+
+    let impact_before = economy
+        .model17_spawned_children
+        .iter()
+        .find(|impact| impact.source_entity_index == impact_slot)
         .copied()
-        .expect("target Bee after duplicate callback");
-    assert_eq!(pending_after_duplicate.pending_damage, 250);
-    assert_eq!(economy.source_rng.get(&source_slot).copied(), Some(hit_rng));
+        .expect("class-10/model-0 impact row");
+    assert_eq!(
+        (impact_before.source_class, impact_before.model, impact_before.action),
+        (10, 0, 0)
+    );
+    let impact_step = economy.step_model17_spawned_child_slot(impact_slot, &terrain);
+    assert!(impact_step.first_impact && impact_step.damage_pulse);
+    assert!(economy.submit_authored_bee_damage(
+        bee_slot,
+        i32::from(impact_step.payload),
+        impact_step.owner_entity_index,
+    ));
+    let impact_after = economy
+        .model17_spawned_children
+        .iter()
+        .find(|impact| impact.source_entity_index == impact_slot)
+        .copied()
+        .expect("impact remains for its short lifetime");
+    assert_ne!(
+        impact_after.entity_rng, impact_before.entity_rng,
+        "the distinct impact, never the flyer, owns the mandatory RNG tail"
+    );
+    assert_eq!(
+        impact_after.source_word_2c,
+        i16::try_from(impact_after.entity_rng % 65).expect("displacement fits") - 32
+    );
+    assert_eq!(
+        economy
+            .authored_bees
+            .iter()
+            .find(|target| target.source_entity_index == bee_slot)
+            .expect("target Bee after impact callback")
+            .pending_damage,
+        250
+    );
+    let duplicate = economy.step_model17_spawned_child_slot(impact_slot, &terrain);
+    assert!(!duplicate.first_impact && !duplicate.damage_pulse);
+    assert_eq!(
+        economy
+            .model17_spawned_children
+            .iter()
+            .find(|impact| impact.source_entity_index == impact_slot)
+            .expect("impact after duplicate callback")
+            .entity_rng,
+        impact_after.entity_rng
+    );
     assert!(!economy.submit_authored_bee_damage(bee_slot, 1, 0));
     assert!(!economy.submit_authored_bee_damage(999, 1, session.state.entity_index));
     assert!(!economy.submit_authored_bee_damage(bee_slot, 0, session.state.entity_index));

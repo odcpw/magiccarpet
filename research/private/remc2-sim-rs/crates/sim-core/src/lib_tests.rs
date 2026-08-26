@@ -39,6 +39,7 @@ fn mission_audio_census_is_unique_complete_and_compiler_bound() {
         include_str!("level1_mission.rs"),
         include_str!("spell_activation.rs"),
         include_str!("goat.rs"),
+        include_str!("campaign/level2.rs"),
     ];
     let metadata_only = concat!(
         "Self::FireballLaunch,\n",

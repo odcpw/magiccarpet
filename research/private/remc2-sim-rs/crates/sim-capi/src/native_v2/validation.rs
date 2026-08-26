@@ -2611,8 +2611,10 @@ pub(super) fn load_optional_terrain_frame_assets() -> AbiResult<Option<TerrainFr
     load_terrain_frame_assets(&PathBuf::from(root)).map(Some)
 }
 
-pub(super) fn load_optional_level2_day_frame_assets(
+pub(super) fn load_optional_day_frame_assets(
     explicit_root: Option<&str>,
+    inspection: &NativeWorldInspection,
+    campaign_package_sha256: Option<&str>,
 ) -> AbiResult<Option<DayIndexedFrameAssets>> {
     let root = explicit_root
         .map(PathBuf::from)
@@ -2620,19 +2622,46 @@ pub(super) fn load_optional_level2_day_frame_assets(
     let Some(root) = root else {
         return Ok(None);
     };
+    if !root.exists() {
+        return Err(AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            "configured Day material cache path does not exist",
+        ));
+    }
     let material_root = if root.join("components/material/manifest.json").is_file() {
         root.join("components/material")
-    } else {
+    } else if root.join("manifest.json").is_file() {
         root
+    } else {
+        return Ok(None);
     };
-    DayIndexedFrameAssets::load(material_root)
-        .map(Some)
-        .map_err(|error| {
-            AbiError::new(
-                MC_STATUS_VALIDATION_FAILED,
-                format!("cannot load qualified Level 2 Day indexed-frame cache: {error}"),
-            )
-        })
+    let assets = DayIndexedFrameAssets::load(material_root).map_err(|error| {
+        AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            format!("cannot load qualified Day indexed-frame cache: {error}"),
+        )
+    })?;
+    let profile = assets.profile();
+    let metadata = inspection.metadata();
+    if profile.external_level != metadata.external_level
+        || profile.internal_level != metadata.internal_level
+        || profile.map_type_id != metadata.map_type as u8
+        || assets.package_sha256() != inspection.package_sha256()
+    {
+        return Err(AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            "Day material cache does not match the opened campaign package",
+        ));
+    }
+    if let Some(bound_campaign) = assets.campaign_package_sha256()
+        && Some(bound_campaign) != campaign_package_sha256
+    {
+        return Err(AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            "Day material cache does not match the opened campaign envelope",
+        ));
+    }
+    Ok(Some(assets))
 }
 
 pub(super) fn load_optional_level2_day_music(
@@ -2644,10 +2673,13 @@ pub(super) fn load_optional_level2_day_music(
     let Some(root) = root else {
         return Ok(None);
     };
-    let audio_root = if root.join("components/audio/manifest.json").is_file() {
-        root.join("components/audio")
-    } else {
+    let component_root = root.join("components/audio");
+    let audio_root = if component_root.join("manifest.json").is_file() {
+        component_root
+    } else if root.join("audio/descriptor.json").is_file() {
         root
+    } else {
+        return Ok(None);
     };
     let _ = read_qualified_cache_file(
         &audio_root,

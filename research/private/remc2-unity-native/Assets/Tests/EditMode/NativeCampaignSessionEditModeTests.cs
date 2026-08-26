@@ -29,6 +29,10 @@ namespace MagicCarpet.Native.Tests
                 PrivateRoot,
                 "generated/mc-cf14-campaign-package-v1-a/qualified-level3");
 
+        private static string Level3DayCache =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_ASSET_CACHE_LEVEL3_V1") ??
+            Path.Combine(PrivateRoot, "generated/level3-day-material-cache");
+
         [Test]
         public void Level2ProductionStartupOpensCampaignSessionAndValidatesDayProfile()
         {
@@ -669,31 +673,185 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        public void Cf14GenericLevel3FailsClosedAtSharedBehaviorClosureWithoutLeaks()
+        public void Cf14GenericLevel3OpensStepsDrainsAndResetsWithoutLeaks()
         {
-            // mc-iol7n census delta: the live Level 3 selectors (2,21), (11,16)
-            // and (14,6) have no compiled shared-behavior leaves yet.  The
-            // generic managed consumer must admit the census-profiled Level 3
-            // identity through the one descriptor route and fail closed at the
-            // shared compiled-capability gate, without allocating a session.
-            var closure = Assert.Throws<InvalidOperationException>(
-                () => NativeCampaignSession.Open(
-                    Level3Package,
-                    NativeSim.CampaignSelection.Create(3, 2, 0)));
-            StringAssert.Contains(
-                "compiled registry is missing capability",
-                closure.Message);
-            StringAssert.DoesNotContain("caller/outer", closure.Message);
+            var selection = NativeSim.CampaignSelection.Create(3, 2, 0);
+            ulong firstStateHash;
+            ulong firstTerrainHash;
+            byte[] firstDispatchHash;
+            NativeSim.CampaignEvent[] firstEvents;
+            NativeSim.NativeEvent[] firstEffects;
+            byte[] initialIndices;
+            ulong initialFrameHash;
+            byte[] steppedIndices;
+            ulong steppedFrameHash;
+            using (var session = NativeCampaignSession.Open(
+                       Level3Package,
+                       selection,
+                       Level3DayCache))
+            {
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(1));
+                var identity = session.PackageIdentity;
+                Assert.That(identity.PackagePath, Is.EqualTo(Path.GetFullPath(Level3Package)));
+                Assert.That(identity.ManifestSha256.Length, Is.EqualTo(64));
+                Assert.That(identity.DefinitionSha256.Length, Is.EqualTo(64));
+                Assert.That(
+                    (identity.Selection.externalLevel,
+                     identity.Selection.internalLevel,
+                     identity.Selection.mapType),
+                    Is.EqualTo(((ushort)3, (ushort)2, (byte)0)));
+
+                var initial = session.InitialWorldInfo;
+                Assert.That(
+                    (initial.externalLevel,
+                     initial.internalLevel,
+                     initial.mapType,
+                     initial.entityCount,
+                     initial.activeEntityCount,
+                     initial.playerCount),
+                    Is.EqualTo(((ushort)3, (ushort)2, (byte)0, 1000u, 252u, 8u)));
+                Assert.That(initial.resetStateHash, Is.Not.Zero);
+                Assert.That(session.DrainEffects(), Is.Empty);
+                Assert.That(session.EffectCursor, Is.Zero);
+                Assert.That(
+                    File.Exists(Path.Combine(
+                        Level3DayCache,
+                        "components/audio/manifest.json")),
+                    Is.False,
+                    "the neutral Level 3 cache is an honest material-only component");
+                Assert.Throws<InvalidOperationException>(() => session.DayMusicState());
+
+                var initialFrame = session.CopyPresentationFrame(0);
+                initialIndices = session.CampaignFrameIndices.ToArray();
+                initialFrameHash = initialFrame.indexHash;
+                Assert.That(initialFrame.newlyCommitted, Is.EqualTo(1));
+                Assert.That(initialFrame.provenanceBytes, Is.Zero);
+                var repeatedFrame = session.CopyPresentationFrame(0);
+                Assert.That(repeatedFrame.newlyCommitted, Is.Zero);
+                Assert.That(repeatedFrame.indexHash, Is.EqualTo(initialFrameHash));
+                Assert.That(session.CampaignFrameIndices, Is.EqualTo(initialIndices));
+
+                var localPlayer = session.Players()
+                    .Single(player =>
+                        player.slot == 0 && player.active != 0 && player.isAi == 0);
+                var localEntity = session.Entities()
+                    .Single(entity => entity.entityIndex == localPlayer.entityIndex);
+                Assert.That(localEntity.active, Is.EqualTo(1));
+                var first = session.Step(localEntity.x, localEntity.y, localEntity.z);
+                firstStateHash = first.snapshot.stateHash;
+                firstTerrainHash = first.snapshot.terrainHash;
+                firstDispatchHash = first.snapshot.dispatchHash.ToArray();
+                firstEvents = first.events;
+                firstEffects = session.DrainEffects();
+
+                Assert.That(first.snapshot.revision, Is.EqualTo(1));
+                Assert.That(first.snapshot.stateHash, Is.Not.EqualTo(initial.resetStateHash));
+                Assert.That(first.events, Is.Not.Empty);
+                Assert.That(firstEffects, Is.Not.Empty);
+                Assert.That(
+                    firstEffects.Select(effect => effect.sequence),
+                    Is.EqualTo(Enumerable.Range(1, firstEffects.Length)
+                        .Select(index => (ulong)index)));
+                Assert.That(
+                    firstEffects.All(effect =>
+                        effect.generation == 0 &&
+                        effect.stateHash == first.snapshot.stateHash &&
+                        new[]
+                        {
+                            NativeSim.CampaignEffectDispatch,
+                            NativeSim.CampaignEffectSharedSpell,
+                            NativeSim.CampaignEffectFlight,
+                            NativeSim.CampaignEffectSceneChange
+                        }.Contains(effect.kind)),
+                    Is.True);
+                var firstCursor = session.EffectCursor;
+                Assert.That(firstCursor, Is.EqualTo((ulong)firstEffects.Length));
+                Assert.That(session.DrainEffects(), Is.Empty);
+                Assert.That(session.EffectCursor, Is.EqualTo(firstCursor));
+                var steppedFrame = session.CopyPresentationFrame(1);
+                steppedIndices = session.CampaignFrameIndices.ToArray();
+                steppedFrameHash = steppedFrame.indexHash;
+                Assert.That((steppedFrame.generation, steppedFrame.tick), Is.EqualTo((0ul, 1ul)));
+
+                session.Reset();
+                Assert.That((session.Generation, session.Tick), Is.EqualTo((1ul, 0ul)));
+                Assert.That(session.EffectCursor, Is.Zero);
+                Assert.That(session.DrainEffects(), Is.Empty);
+                Assert.That(
+                    session.WorldInfo().resetStateHash,
+                    Is.EqualTo(initial.resetStateHash));
+                var resetFrame = session.CopyPresentationFrame(0);
+                Assert.That((resetFrame.generation, resetFrame.tick), Is.EqualTo((1ul, 0ul)));
+                Assert.That(resetFrame.indexHash, Is.EqualTo(initialFrameHash));
+                Assert.That(session.CampaignFrameIndices, Is.EqualTo(initialIndices));
+
+                var resetPlayer = session.Players()
+                    .Single(player => player.slot == 0 && player.active != 0);
+                var resetEntity = session.Entities()
+                    .Single(entity => entity.entityIndex == resetPlayer.entityIndex);
+                var replay = session.Step(resetEntity.x, resetEntity.y, resetEntity.z);
+                var replayEffects = session.DrainEffects();
+                Assert.That(replay.snapshot.generation, Is.EqualTo(1));
+                Assert.That(replay.snapshot.stateHash, Is.EqualTo(firstStateHash));
+                Assert.That(replay.snapshot.terrainHash, Is.EqualTo(firstTerrainHash));
+                Assert.That(replay.snapshot.dispatchHash, Is.EqualTo(firstDispatchHash));
+                Assert.That(
+                    replay.events.Select(row =>
+                        (row.ordinal, row.pass, row.kind, row.family,
+                         row.flags, row.sourceSlot)),
+                    Is.EqualTo(firstEvents.Select(row =>
+                        (row.ordinal, row.pass, row.kind, row.family,
+                         row.flags, row.sourceSlot))));
+                Assert.That(replayEffects.All(row => row.generation == 1), Is.True);
+                Assert.That(
+                    replayEffects.Select(row =>
+                        (row.sequence, row.stateHash, row.kind, row.code,
+                         row.entityIndex, row.playerIndex, row.value0, row.value1)),
+                    Is.EqualTo(firstEffects.Select(row =>
+                        (row.sequence, row.stateHash, row.kind, row.code,
+                         row.entityIndex, row.playerIndex, row.value0, row.value1))));
+                var replayFrame = session.CopyPresentationFrame(1);
+                Assert.That((replayFrame.generation, replayFrame.tick), Is.EqualTo((1ul, 1ul)));
+                Assert.That(replayFrame.indexHash, Is.EqualTo(steppedFrameHash));
+                Assert.That(session.CampaignFrameIndices, Is.EqualTo(steppedIndices));
+            }
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
 
             // A mismatched caller triple against the same package fails at the
             // outer manifest stage before behavior closure.
-            var mismatch = Assert.Throws<InvalidOperationException>(
-                () => NativeCampaignSession.Open(
-                    Level3Package,
-                    NativeSim.CampaignSelection.Level2Day()));
-            StringAssert.Contains("campaign preflight stage 1", mismatch.Message);
-            StringAssert.Contains("caller/outer selection", mismatch.Message);
+            NativeCampaignSession unexpectedSession = null;
+            try
+            {
+                var mismatch = Assert.Throws<InvalidOperationException>(() =>
+                {
+                    unexpectedSession = NativeCampaignSession.Open(
+                        Level3Package,
+                        NativeSim.CampaignSelection.Level2Day());
+                });
+                StringAssert.Contains("campaign preflight stage 1", mismatch.Message);
+                StringAssert.Contains("caller/outer selection", mismatch.Message);
+            }
+            finally
+            {
+                unexpectedSession?.Dispose();
+            }
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+
+            NativeCampaignSession crossBoundSession = null;
+            try
+            {
+                Assert.Throws<InvalidOperationException>(() =>
+                {
+                    crossBoundSession = NativeCampaignSession.Open(
+                        Level3Package,
+                        selection,
+                        Level2DayCache);
+                });
+            }
+            finally
+            {
+                crossBoundSession?.Dispose();
+            }
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
         }
 

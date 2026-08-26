@@ -32,6 +32,9 @@ DEFAULT_OUTPUT = GENERATED / "level1-unity-asset-cache-plan29-final"
 DEFAULT_LEVEL2_PACKAGE = GENERATED / "l2-debug3.fJ3PaM/level2"
 DEFAULT_LEVEL2_CLOSURE = GENERATED / "level2-asset-closure.json"
 DEFAULT_LEVEL2_OUTPUT = GENERATED / "level2-day-material-cache"
+DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT = GENERATED / "mc-iol7n-campaign-census-run-a/level3"
+DEFAULT_CAMPAIGN_DAY_CLOSURE = GENERATED / "level3-day-material-asset-closure.json"
+DEFAULT_CAMPAIGN_DAY_OUTPUT = GENERATED / "level3-day-material-cache"
 DEFAULT_LEVEL2_GAMEPLAY_OUTPUT = GENERATED / "level2-day-gameplay-cache"
 DEFAULT_CONFORMANCE_CONTRACT = (
     PRIVATE / "remc2-sim-rs/level1-conformance/plan29-closure-contract.json"
@@ -41,6 +44,7 @@ CANONICAL_LEVEL1_MATRIX = (
 )
 PROVEN_DECODER = PRIVATE / "remc2-atlas/build_owner_asset_catalog.py"
 PROVEN_CLOSURE = PRIVATE / "remc2-level-asset-closure/build_closure.py"
+PROVEN_PACKAGE_VERIFIER = PRIVATE / "remc2-level-exporter/tests/verify_package.py"
 SPELL_TABLE = PRIVATE / "remc2-atlas/semantics/generated/spell-tiers.csv"
 SPELL_GENERATOR = PRIVATE / "remc2-atlas/build_semantic_backbone.py"
 RNC_HELPER = Path(__file__).with_name("rnc_decode.cpp")
@@ -69,6 +73,8 @@ GOAT_TMAP_GOLDEN = (
 
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
 LEVEL2_MATERIAL_SCHEMA = "mc2-level2-day-material-cache/v1"
+DAY_MATERIAL_SCHEMA = "mc2-day-material-cache/v1"
+DAY_MATERIAL_DESCRIPTOR_SCHEMA = "mc2-day-materials/v1"
 LEVEL2_GAMEPLAY_SCHEMA = "mc2-level2-day-gameplay-cache/v1"
 LEVEL2_DAY_HUD_SCHEMA = "mc2-level2-day-hud/v1"
 LEVEL2_AUDIO_SCHEMA = "mc2-level2-day-audio-cache/v1"
@@ -990,6 +996,17 @@ def load_proven_export_verifier():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.verify_export_identity
+
+
+def load_proven_campaign_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "owner_campaign_package_verifier", PROVEN_PACKAGE_VERIFIER
+    )
+    if spec is None or spec.loader is None:
+        raise CacheError("cannot load proven campaign package verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.verify_campaign_package
 
 
 def materialize_indexed_rle(
@@ -4602,7 +4619,35 @@ def _validate_level2_owner_identity(
 def _level2_profile(
     package_dir: Path, closure_path: Path, catalog_path: Path
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """Resolve the immutable external/internal Day material-cache profile.
+    """Resolve the retained Level 2 Day material-cache profile."""
+    return _day_material_profile(
+        package_dir,
+        closure_path,
+        catalog_path,
+        profile_label="Level 2",
+        profile_name="level2-day",
+        external_level=2,
+        internal_level=1,
+        expected_package=EXPECTED_LEVEL2_PACKAGE,
+        expected_closure=EXPECTED_LEVEL2_CLOSURE,
+        expected_owner_identity=LEVEL2_OWNER_PACKAGE_IDENTITY,
+    )
+
+
+def _day_material_profile(
+    package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    *,
+    profile_label: str,
+    profile_name: str,
+    external_level: int,
+    internal_level: int,
+    expected_package: str | None,
+    expected_closure: str | None,
+    expected_owner_identity: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Resolve one immutable package-bound Day material-cache profile.
 
     The package, closure, catalogue, and every selected owner file are checked
     before any output is staged.  This is deliberately separate from the
@@ -4615,24 +4660,29 @@ def _level2_profile(
     try:
         load_proven_export_verifier()(package_dir, package)
     except ValueError as error:
-        raise CacheError(f"Level 2 package identity verification failed: {error}") from error
+        raise CacheError(
+            f"{profile_label} package identity verification failed: {error}"
+        ) from error
     level = package.get("level", {})
     map_type = level.get("map_type", {})
     if (
-        package.get("schema") != LEVEL2_OWNER_PACKAGE_IDENTITY["manifest_schema"]
-        or level.get("external") != 2
-        or level.get("internal") != 1
+        package.get("schema") != expected_owner_identity["manifest_schema"]
+        or level.get("external") != external_level
+        or level.get("internal") != internal_level
         or map_type != {"id": 0, "name": "Day"}
     ):
-        raise CacheError("Level 2 material profile requires external=2/internal=1/Day")
+        raise CacheError(
+            f"{profile_label} material profile requires external={external_level}/"
+            f"internal={internal_level}/Day"
+        )
     if package.get("source", {}).get("upstream_commit") != PINNED_REMC2_COMMIT:
-        raise CacheError("Level 2 package remc2 specification pin mismatch")
+        raise CacheError(f"{profile_label} package remc2 specification pin mismatch")
     players_path = package_dir / "players.bin"
     players = players_path.read_bytes()
     if len(players) < 12:
-        raise CacheError("Level 2 players.bin header is truncated")
+        raise CacheError(f"{profile_label} players.bin header is truncated")
     magic, version, record_bytes, count = struct.unpack_from("<4sHHI", players)
-    expected_component = LEVEL2_OWNER_PACKAGE_IDENTITY["players_component"]
+    expected_component = expected_owner_identity["players_component"]
     if (
         magic != expected_component["magic"].encode("ascii")
         or version != expected_component["version"]
@@ -4640,7 +4690,9 @@ def _level2_profile(
         or count != expected_component["count"]
         or len(players) != 12 + count * record_bytes
     ):
-        raise CacheError("Level 2 material profile requires players component v4/663")
+        raise CacheError(
+            f"{profile_label} material profile requires players component v4/663"
+        )
     selectors = package.get("presentation_dependencies")
     expected = {
         "map_type": "Day",
@@ -4660,7 +4712,7 @@ def _level2_profile(
     if not isinstance(selectors, dict) or any(
         selectors.get(key) != value for key, value in expected.items()
     ):
-        raise CacheError("Level 2 material profile selector tuple changed")
+        raise CacheError(f"{profile_label} material profile selector tuple changed")
     expected_resolved_files = {
         "level_records": "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT",
         "terrain_bank": "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT",
@@ -4675,7 +4727,7 @@ def _level2_profile(
         "language": "owner:CD_Files/LANGUAGE/L1.TXT",
     }
     if selectors.get("resolved_files") != expected_resolved_files:
-        raise CacheError("Level 2 resolved owner-file selector map changed")
+        raise CacheError(f"{profile_label} resolved owner-file selector map changed")
     closure = load_json(closure_path)
     closure_claim = closure.get("closure_sha256")
     closure_payload = dict(closure)
@@ -4686,47 +4738,47 @@ def _level2_profile(
         )
     )
     if closure_claim != closure_actual:
-        raise CacheError("Level 2 closure canonical self-hash mismatch")
+        raise CacheError(f"{profile_label} closure canonical self-hash mismatch")
     closure_profile = closure.get("profile", {})
     if (
-        closure_profile.get("name") != "level2-day"
-        or closure_profile.get("external_level") != 2
-        or closure_profile.get("internal_level") != 1
+        closure_profile.get("name") != profile_name
+        or closure_profile.get("external_level") != external_level
+        or closure_profile.get("internal_level") != internal_level
         or closure_profile.get("map_type") != {"id": 0, "name": "day"}
         or closure_profile.get("spec_commit") != PINNED_REMC2_COMMIT
-        or closure_profile.get("owner_package") != LEVEL2_OWNER_PACKAGE_IDENTITY
+        or closure_profile.get("owner_package") != expected_owner_identity
     ):
-        raise CacheError("Level 2 closure profile selector tuple changed")
+        raise CacheError(f"{profile_label} closure profile selector tuple changed")
     package_hash = package.get("package_sha256")
-    if package_hash != EXPECTED_LEVEL2_PACKAGE:
-        raise CacheError("wrong qualified Level 2 package hash")
+    if expected_package is not None and package_hash != expected_package:
+        raise CacheError(f"wrong qualified {profile_label} package hash")
     if closure.get("source", {}).get("level_export", {}).get("package_sha256") != package_hash:
-        raise CacheError("Level 2 closure is bound to a different package")
+        raise CacheError(f"{profile_label} closure is bound to a different package")
     closure_owner_identity = closure.get("source", {}).get("level_export", {})
     if {
         "manifest_schema": closure_owner_identity.get("manifest_schema"),
         "players_component": closure_owner_identity.get("players_component"),
-    } != LEVEL2_OWNER_PACKAGE_IDENTITY:
-        raise CacheError("Level 2 closure owner component identity mismatch")
+    } != expected_owner_identity:
+        raise CacheError(f"{profile_label} closure owner component identity mismatch")
     catalog, catalog_file_sha256 = _level2_catalog_identity(catalog_path)
     closure_catalog = closure.get("source", {}).get("owner_catalog", {})
     if (
         closure_catalog.get("catalog_sha256") != catalog.get("catalog_sha256")
         or closure_catalog.get("file_sha256") != catalog_file_sha256
     ):
-        raise CacheError("Level 2 catalogue does not match closure binding")
-    if closure_claim != EXPECTED_LEVEL2_CLOSURE:
-        raise CacheError("wrong qualified Level 2 closure hash")
+        raise CacheError(f"{profile_label} catalogue does not match closure binding")
+    if expected_closure is not None and closure_claim != expected_closure:
+        raise CacheError(f"wrong qualified {profile_label} closure hash")
     files = {row.get("path"): row for row in catalog.get("files", [])}
     entries = {row.get("asset_id"): row for row in catalog.get("entries", [])}
     for relative in LEVEL2_DAY_SOURCE_PATHS:
         row = files.get(relative)
         if row is None:
-            raise CacheError(f"Level 2 owner catalogue has no file: {relative}")
+            raise CacheError(f"{profile_label} owner catalogue has no file: {relative}")
     profile = {
-        "name": "level2-day",
-        "external_level": 2,
-        "internal_level": 1,
+        "name": profile_name,
+        "external_level": external_level,
+        "internal_level": internal_level,
         "map_type": {"id": 0, "name": "Day"},
         "selectors": {
             key: selectors[key]
@@ -4748,9 +4800,128 @@ def _level2_profile(
         "catalog_sha256": catalog.get("catalog_sha256"),
         "catalog_file_sha256": catalog_file_sha256,
         "spec_commit": PINNED_REMC2_COMMIT,
-        "owner_package": LEVEL2_OWNER_PACKAGE_IDENTITY,
+        "owner_package": expected_owner_identity,
     }
     return profile, package, closure, {**files, **entries}
+
+
+def _campaign_day_material_profile(
+    owner_export_dir: Path,
+    campaign_package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    """Bind one neutral Day material profile to raw and runtime packages."""
+    owner_export_dir = owner_export_dir.expanduser().resolve()
+    owner_manifest = load_json(owner_export_dir / "manifest.json")
+    owner_level = owner_manifest.get("level", {})
+    external_level = owner_level.get("external")
+    internal_level = owner_level.get("internal")
+    if (
+        not isinstance(external_level, int)
+        or not isinstance(internal_level, int)
+        or external_level != internal_level + 1
+    ):
+        raise CacheError("campaign Day owner-export selection is invalid")
+    profile, owner_export, closure, catalog_rows = _day_material_profile(
+        owner_export_dir,
+        closure_path,
+        catalog_path,
+        profile_label="campaign Day",
+        profile_name="day-material",
+        external_level=external_level,
+        internal_level=internal_level,
+        expected_package=None,
+        expected_closure=None,
+        expected_owner_identity=LEVEL2_OWNER_PACKAGE_IDENTITY,
+    )
+    campaign_package_dir = campaign_package_dir.expanduser().resolve()
+    campaign = load_json(campaign_package_dir / "manifest.json")
+    try:
+        load_proven_campaign_verifier()(
+            campaign_package_dir,
+            campaign,
+            expected_selection=(
+                profile["external_level"],
+                profile["internal_level"],
+                profile["map_type"]["id"],
+            ),
+        )
+    except (AssertionError, ValueError) as error:
+        raise CacheError(
+            f"campaign Day package identity verification failed: {error}"
+        ) from error
+
+    shared_members = {
+        "authored-level.bin",
+        "entities.bin",
+        "players.bin",
+        "presentation.bin",
+        "runtime.bin",
+        "terrain.bin",
+        "feature-start.bin",
+        "feature-end.bin",
+        "feature-allocator.bin",
+        "feature-construction-inputs.bin",
+        "entities-post-features.bin",
+        "terrain-pre-features.bin",
+        "terrain-post-features.bin",
+        "collision-masks.bin",
+    }
+    owner_files = owner_export.get("files", {})
+    campaign_files = campaign.get("files", {})
+    if any(
+        owner_files.get(name) != campaign_files.get(name)
+        or (owner_export_dir / name).read_bytes()
+        != (campaign_package_dir / name).read_bytes()
+        for name in shared_members
+    ):
+        raise CacheError("campaign Day package differs from its proven owner export")
+
+    definition = load_json(campaign_package_dir / "campaign-definition.json")
+    recipe = definition.get("campaign_spec", {}).get("presentation_recipe")
+    owner_selectors = owner_export.get("presentation_dependencies")
+    if not isinstance(recipe, dict) or not isinstance(owner_selectors, dict):
+        raise CacheError("campaign Day presentation recipe is missing")
+    for key in (
+        "map_type",
+        "vga_resolution_selector",
+        "texture_size",
+        "terrain_graphics_flags",
+        "terrain_graphics_flag_2",
+        "terrain_bank",
+        "sprite_bank",
+        "web_bank",
+        "block_bank",
+        "palette",
+        "sky_bank",
+        "sound_bank",
+        "cursor",
+        "resolved_files",
+    ):
+        if recipe.get(key) != owner_selectors.get(key):
+            raise CacheError(f"campaign Day presentation recipe differs at {key}")
+    if recipe.get("member") != {
+        "member": "presentation.bin",
+        "schema": "mc2-presentation-snapshot/v1",
+        "sha256": campaign_files["presentation.bin"]["sha256"],
+    }:
+        raise CacheError("campaign Day presentation member binding changed")
+
+    owner_export_hash = profile["package_sha256"]
+    campaign_hash = campaign.get("package_sha256")
+    profile = {
+        **profile,
+        "owner_export_package_sha256": owner_export_hash,
+        "campaign_package_sha256": campaign_hash,
+    }
+    return profile, campaign, closure, catalog_rows, owner_export
 
 
 def _level2_owner_sources(
@@ -6766,14 +6937,150 @@ def validate_day_material_cache(
     return manifest
 
 
-def build_day_material_cache(
-    owner_root: Path,
-    package_dir: Path,
-    closure_path: Path,
-    catalog_path: Path,
-    output: Path,
+def validate_campaign_day_material_cache(
+    cache_dir: Path,
+    expected_owner_export: str | None = None,
+    expected_campaign_package: str | None = None,
+    expected_closure: str | None = None,
 ) -> dict[str, Any]:
-    """Materialize the qualified Level 2 Day base material profile.
+    """Validate the additive campaign-bound neutral Day material dialect."""
+    cache_dir = cache_dir.expanduser().resolve()
+    manifest = load_json(cache_dir / "manifest.json")
+    claim = manifest.get("manifest_payload_sha256")
+    unsigned = dict(manifest)
+    unsigned.pop("manifest_payload_sha256", None)
+    if sha256_bytes(canonical_json(unsigned)) != claim:
+        raise CacheError("Day material manifest metadata hash mismatch")
+    if manifest.get("schema") != DAY_MATERIAL_SCHEMA:
+        raise CacheError("unsupported Day material cache schema")
+    profile = manifest.get("profile", {})
+    external = profile.get("external_level")
+    internal = profile.get("internal_level")
+    if (
+        profile.get("name") != "day-material"
+        or not isinstance(external, int)
+        or not isinstance(internal, int)
+        or external != internal + 1
+        or profile.get("map_type") != {"id": 0, "name": "Day"}
+        or profile.get("spec_commit") != PINNED_REMC2_COMMIT
+        or profile.get("owner_package") != LEVEL2_OWNER_PACKAGE_IDENTITY
+        or profile.get("owner_export_package_sha256")
+        != profile.get("package_sha256")
+    ):
+        raise CacheError("Day material profile identity mismatch")
+    if profile.get("selectors") != {
+        "vga_resolution_selector": 1,
+        "texture_size": 32,
+        "terrain_graphics_flags": 0,
+        "terrain_graphics_flag_2": False,
+        "terrain_bank": "TMAPS0-0",
+        "sprite_bank": "MSPRD0-0",
+        "web_bank": "MWEBD0-0",
+        "block_bank": "BL32N0-0",
+        "palette": "PALD-0",
+        "sky_bank": "SKYD0-0",
+    }:
+        raise CacheError("Day material profile selector identity mismatch")
+    bindings = manifest.get("bindings")
+    if not isinstance(bindings, dict) or bindings != {
+        "level_export_package_sha256": profile.get("package_sha256"),
+        "campaign_package_sha256": profile.get("campaign_package_sha256"),
+        "level_asset_closure_sha256": profile.get("closure_sha256"),
+        "owner_catalog_sha256": profile.get("catalog_sha256"),
+        "owner_catalog_file_sha256": profile.get("catalog_file_sha256"),
+        "remc2_commit": PINNED_REMC2_COMMIT,
+        **_level2_owner_identity_bindings(profile),
+    }:
+        raise CacheError("Day material binding identity mismatch")
+    for actual, expected, label in (
+        (profile.get("package_sha256"), expected_owner_export, "owner export"),
+        (
+            profile.get("campaign_package_sha256"),
+            expected_campaign_package,
+            "campaign package",
+        ),
+        (profile.get("closure_sha256"), expected_closure, "closure"),
+    ):
+        if expected is not None and actual != expected:
+            raise CacheError(f"Day material {label} binding mismatch")
+
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        raise CacheError("Day material cache has no outputs")
+    seen: set[str] = set()
+    for row in outputs:
+        relative = row.get("path") if isinstance(row, dict) else None
+        if (
+            not isinstance(relative, str)
+            or relative in seen
+            or relative.startswith("/")
+            or ".." in Path(relative).parts
+        ):
+            raise CacheError("invalid or duplicate Day material output path")
+        seen.add(relative)
+        path = cache_dir / relative
+        if path.is_symlink():
+            raise CacheError(f"Day material cache contains symlink: {relative}")
+        if not path.is_file() or path.stat().st_size != row.get("bytes"):
+            raise CacheError(f"Day material output missing or truncated: {relative}")
+        if sha256_file(path) != row.get("sha256"):
+            raise CacheError(f"Day material output hash mismatch: {relative}")
+    if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
+        raise CacheError("Day material cache content identity mismatch")
+
+    descriptor = load_json(cache_dir / "materials/descriptor.json")
+    if (
+        descriptor.get("schema") != DAY_MATERIAL_DESCRIPTOR_SCHEMA
+        or descriptor.get("profile") != profile
+    ):
+        raise CacheError("Day material descriptor identity mismatch")
+    for key, expected in {
+        "palette": ("entries", 256),
+        "tablesd": ("bytes", 83456),
+        "clrd": ("entries", 4096),
+        "bl32n": ("tile_count", 152),
+        "skyd": ("width", 256),
+    }.items():
+        value = descriptor.get(key)
+        if not isinstance(value, dict) or value.get(expected[0]) != expected[1]:
+            raise CacheError(f"Day material descriptor bounds changed: {key}")
+    tmap = descriptor.get("tmaps0")
+    selectors = tmap.get("selectors") if isinstance(tmap, dict) else None
+    textures = tmap.get("textures") if isinstance(tmap, dict) else None
+    if (
+        not isinstance(selectors, list)
+        or not selectors
+        or selectors != sorted(set(selectors))
+        or any(not isinstance(index, int) or not 0 <= index < 504 for index in selectors)
+        or not isinstance(textures, list)
+        or sorted(row.get("index") for row in textures if isinstance(row, dict))
+        != selectors
+        or descriptor.get("gpu_ready", {}).get("indexed_format") != "R8_UNORM"
+    ):
+        raise CacheError("Day material TMAP or GPU descriptor changed")
+    actual_tree: set[str] = set()
+    for path in cache_dir.rglob("*"):
+        if path.is_symlink():
+            raise CacheError("Day material cache tree contains symlink")
+        if path.is_file():
+            actual_tree.add(path.relative_to(cache_dir).as_posix())
+    if actual_tree != {"manifest.json", *seen}:
+        raise CacheError("Day material cache tree has missing or extra files")
+    return manifest
+
+
+def _build_profiled_day_material_cache(
+    owner_root: Path,
+    output: Path,
+    *,
+    profile_bundle: tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]],
+    manifest_schema: str,
+    descriptor_schema: str,
+    stage_prefix: str,
+    manifest_bindings: dict[str, Any],
+    validator: Any,
+) -> dict[str, Any]:
+    """Materialize one already-validated Day base-material profile.
 
     This intentionally stops at indexed palette/table/tile/sky/TMAP material
     descriptors.  Sprites and web banks are bound as roots for the later
@@ -6781,17 +7088,13 @@ def build_day_material_cache(
     of this bead.
     """
     output = validate_output_path(output)
-    profile, _, closure, catalog_rows = _level2_profile(
-        package_dir, closure_path, catalog_path
-    )
+    profile, _, closure, catalog_rows = profile_bundle
     file_rows = {
         path: row for path, row in catalog_rows.items() if isinstance(row, dict) and "sha256" in row
     }
     source_bytes = _level2_owner_sources(owner_root, file_rows)
-    package_hash = profile["package_sha256"]
-    closure_hash = profile["closure_sha256"]
     selectors = _level2_tmap_selectors(closure)
-    stage = Path(tempfile.mkdtemp(prefix=".level2-day-material-", dir=output.parent))
+    stage = Path(tempfile.mkdtemp(prefix=stage_prefix, dir=output.parent))
     try:
         outputs: list[dict[str, Any]] = []
         palette = source_bytes["DATA/PALD-0.DAT"]
@@ -6908,7 +7211,7 @@ def build_day_material_cache(
         # unlisted cache output or alter the content-addressed tree.
         shutil.rmtree(decoder_dir)
         descriptor = {
-            "schema": "mc2-level2-day-materials/v1",
+            "schema": descriptor_schema,
             "profile": profile,
             "palette": {"path": palette_output["path"], "rgb8_path": rgb8_output["path"], "entries": 256, "channel_bits": 6, "conversion": "channel_u8 = channel_rgb6 * 4"},
             "tablesd": {"path": tables_output["path"], "shade_lut_path": shade_output["path"], "bytes": len(tablesd), "entries": 65536, "shade_lut_entries": 65536},
@@ -6922,10 +7225,10 @@ def build_day_material_cache(
         }
         descriptor_bytes = canonical_json(descriptor)
         write_output(stage, outputs, "materials/descriptor.json", descriptor_bytes, kind="canonical_json_day_material_descriptor", source_asset_ids=["owner_data:DATA/PALD-0.DAT", "owner_data:DATA/TABLESD.DAT", "owner_data:DATA/CLRD-0.DAT", "owner_data:DATA/BL32N0-0.DAT", "owner_data:DATA/SKYD0-0.DAT"])
-        manifest = {"schema": LEVEL2_MATERIAL_SCHEMA, "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION}, "profile": profile, "bindings": {"level_export_package_sha256": package_hash, "level_asset_closure_sha256": closure_hash, "owner_catalog_sha256": profile["catalog_sha256"], "owner_catalog_file_sha256": profile["catalog_file_sha256"], "remc2_commit": PINNED_REMC2_COMMIT, **_level2_owner_identity_bindings(profile)}, "outputs": outputs, "cache_content_sha256": _level2_cache_identity(outputs)}
+        manifest = {"schema": manifest_schema, "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION}, "profile": profile, "bindings": manifest_bindings, "outputs": outputs, "cache_content_sha256": _level2_cache_identity(outputs)}
         manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
         (stage / "manifest.json").write_bytes(canonical_json(manifest))
-        validate_day_material_cache(stage, package_hash, closure_hash)
+        validator(stage)
         fsync_tree(stage)
         commit_stage(output, stage)
         return manifest
@@ -6933,6 +7236,78 @@ def build_day_material_cache(
         if stage.exists():
             shutil.rmtree(stage)
         raise
+
+
+def build_day_material_cache(
+    owner_root: Path,
+    package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Retained byte-identical Level 2 Day material-cache facade."""
+    bundle = _level2_profile(package_dir, closure_path, catalog_path)
+    profile = bundle[0]
+    bindings = {
+        "level_export_package_sha256": profile["package_sha256"],
+        "level_asset_closure_sha256": profile["closure_sha256"],
+        "owner_catalog_sha256": profile["catalog_sha256"],
+        "owner_catalog_file_sha256": profile["catalog_file_sha256"],
+        "remc2_commit": PINNED_REMC2_COMMIT,
+        **_level2_owner_identity_bindings(profile),
+    }
+    return _build_profiled_day_material_cache(
+        owner_root,
+        output,
+        profile_bundle=bundle,
+        manifest_schema=LEVEL2_MATERIAL_SCHEMA,
+        descriptor_schema="mc2-level2-day-materials/v1",
+        stage_prefix=".level2-day-material-",
+        manifest_bindings=bindings,
+        validator=lambda stage: validate_day_material_cache(
+            stage, profile["package_sha256"], profile["closure_sha256"]
+        ),
+    )
+
+
+def build_campaign_day_material_cache(
+    owner_root: Path,
+    owner_export_dir: Path,
+    campaign_package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Build the additive neutral Day component for a campaign descriptor."""
+    resolved = _campaign_day_material_profile(
+        owner_export_dir, campaign_package_dir, closure_path, catalog_path
+    )
+    profile, campaign, closure, catalog_rows, _ = resolved
+    bundle = (profile, campaign, closure, catalog_rows)
+    bindings = {
+        "level_export_package_sha256": profile["package_sha256"],
+        "campaign_package_sha256": profile["campaign_package_sha256"],
+        "level_asset_closure_sha256": profile["closure_sha256"],
+        "owner_catalog_sha256": profile["catalog_sha256"],
+        "owner_catalog_file_sha256": profile["catalog_file_sha256"],
+        "remc2_commit": PINNED_REMC2_COMMIT,
+        **_level2_owner_identity_bindings(profile),
+    }
+    return _build_profiled_day_material_cache(
+        owner_root,
+        output,
+        profile_bundle=bundle,
+        manifest_schema=DAY_MATERIAL_SCHEMA,
+        descriptor_schema=DAY_MATERIAL_DESCRIPTOR_SCHEMA,
+        stage_prefix=".campaign-day-material-",
+        manifest_bindings=bindings,
+        validator=lambda stage: validate_campaign_day_material_cache(
+            stage,
+            profile["package_sha256"],
+            profile["campaign_package_sha256"],
+            profile["closure_sha256"],
+        ),
+    )
 
 
 def build_cache(
@@ -9724,6 +10099,13 @@ def parse_args() -> argparse.Namespace:
     build_day.add_argument("--closure", type=Path, default=DEFAULT_LEVEL2_CLOSURE)
     build_day.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     build_day.add_argument("--output", type=Path, default=DEFAULT_LEVEL2_OUTPUT)
+    build_campaign_day = subparsers.add_parser("build-campaign-day")
+    build_campaign_day.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    build_campaign_day.add_argument("--owner-export", type=Path, required=True)
+    build_campaign_day.add_argument("--campaign-package", type=Path, required=True)
+    build_campaign_day.add_argument("--closure", type=Path, required=True)
+    build_campaign_day.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    build_campaign_day.add_argument("--output", type=Path, required=True)
     build_gameplay = subparsers.add_parser("build-day-gameplay")
     build_gameplay.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
     build_gameplay.add_argument("--package", type=Path, default=DEFAULT_LEVEL2_PACKAGE)
@@ -9750,6 +10132,11 @@ def parse_args() -> argparse.Namespace:
     validate_day.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_OUTPUT)
     validate_day.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
     validate_day.add_argument("--closure-sha256", default=EXPECTED_LEVEL2_CLOSURE)
+    validate_campaign_day = subparsers.add_parser("validate-campaign-day")
+    validate_campaign_day.add_argument("--cache", type=Path, required=True)
+    validate_campaign_day.add_argument("--owner-export-sha256")
+    validate_campaign_day.add_argument("--campaign-package-sha256")
+    validate_campaign_day.add_argument("--closure-sha256")
     validate_gameplay = subparsers.add_parser("validate-day-gameplay")
     validate_gameplay.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_GAMEPLAY_OUTPUT)
     validate_gameplay.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
@@ -9800,6 +10187,19 @@ def main() -> int:
                 f"cache={args.output} outputs={len(manifest['outputs'])} "
                 f"content_sha256={manifest['cache_content_sha256']}"
             )
+        elif args.command == "build-campaign-day":
+            manifest = build_campaign_day_material_cache(
+                args.owner_root,
+                args.owner_export,
+                args.campaign_package,
+                args.closure,
+                args.catalog,
+                args.output,
+            )
+            print(
+                f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
         elif args.command == "build-day-gameplay":
             manifest = build_day_gameplay_cache(
                 args.owner_root,
@@ -9840,6 +10240,17 @@ def main() -> int:
             manifest = validate_day_material_cache(
                 args.cache,
                 args.package_sha256,
+                args.closure_sha256,
+            )
+            print(
+                f"valid schema={manifest['schema']} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "validate-campaign-day":
+            manifest = validate_campaign_day_material_cache(
+                args.cache,
+                args.owner_export_sha256,
+                args.campaign_package_sha256,
                 args.closure_sha256,
             )
             print(

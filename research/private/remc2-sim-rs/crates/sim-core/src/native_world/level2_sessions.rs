@@ -1,6 +1,163 @@
 use super::*;
 
 impl Level2SharedSpellResetSession {
+    /// Rehydrate the source class-15/player carriers selected by a campaign
+    /// descriptor. Missing holder relations remain source nulls (index zero);
+    /// no fixed Level-2 slot, allocator, presentation row or RNG draw is used.
+    pub(super) fn from_campaign_parts(
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+        runtime: &RuntimeSnapshot,
+    ) -> Result<Self> {
+        let local_player = players
+            .get(usize::from(runtime.local_player_slot))
+            .ok_or_else(|| NativeWorldError::new("campaign local player row is absent"))?
+            .clone();
+        let player_entity = entities
+            .get(usize::from(local_player.entity_index))
+            .filter(|row| row.active && row.class == 3)
+            .ok_or_else(|| NativeWorldError::new("campaign local player entity is absent"))?
+            .clone();
+        let player_entities = players
+            .iter()
+            .take(usize::from(runtime.player_count))
+            .map(|player| {
+                entities
+                    .get(usize::from(player.entity_index))
+                    .filter(|row| row.active)
+                    .cloned()
+                    .ok_or_else(|| {
+                        NativeWorldError::new(format!(
+                            "campaign player entity {} is absent",
+                            player.entity_index
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_boxed_slice();
+        let class15 = entities
+            .iter()
+            .filter(|row| row.active && row.class == 15)
+            .cloned()
+            .collect::<Vec<_>>();
+        let pickups = class15
+            .iter()
+            .filter(|row| matches!(row.action, 19 | 34 | 37))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let holders = class15
+            .iter()
+            .filter(|row| !matches!(row.action, 19 | 34 | 37))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let to_holder = |row: &EntitySnapshot| SpellActivationHolder {
+            entity_index: row.index,
+            model: row.model,
+            level_gate: row.level_gate,
+            active_value: row.active_value,
+            activation_value: row.activation_value,
+            mana_cost: row.mana_cost,
+            action_marker: row.action_marker,
+        };
+        let null_holder = |family: u8| SpellActivationHolder {
+            entity_index: local_player.enabled_spell_holders[usize::from(family)],
+            model: family,
+            level_gate: 0,
+            active_value: 0,
+            activation_value: 0,
+            mana_cost: 0,
+            action_marker: 0,
+        };
+        let family_holder = |family: u8| {
+            holders
+                .iter()
+                .find(|row| row.model == family)
+                .map_or_else(|| null_holder(family), to_holder)
+        };
+        let acquisitions = pickups
+            .iter()
+            .map(|source| {
+                let family = source.model;
+                let family_index = usize::from(family);
+                let mut state = SpellHolderAcquisitionState::new(
+                    family,
+                    source.index,
+                    player_entity.index,
+                    source.action,
+                    local_player.family_selected_tiers[family_index],
+                );
+                state.holder_relation = local_player.enabled_spell_holders[family_index];
+                state.eligibility = local_player.spell_hand_eligibility[family_index];
+                state.learned = local_player.acquired_spell_flags[family_index];
+                state.left_spell_slot = local_player.left_spell_slot_raw;
+                state.right_spell_slot = local_player.right_spell_slot_raw;
+                state.left_subspell_index = local_player.left_subspell_index;
+                state.right_subspell_index = local_player.right_subspell_index;
+                state.subspell_index = source.subspell_index;
+                state.word_0x30 = source.source_spell_word_30();
+                state.byte_0x3b = source.byte_3b;
+                state.byte_0x3c = source.byte_3c;
+                state.font_type_index = source.font_type_index;
+                state.mana_regen = source.mana_regen;
+                state.max_mana = source.max_mana;
+                state.mana = source.mana;
+                state.source_life = source.life;
+                state.source_draw_enabled = source.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
+                state.return_side = source.source_word_4a();
+                state
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let fireball = family_holder(FIREBALL_SPELL_FAMILY);
+        let possession = family_holder(POSSESSION_SPELL_FAMILY);
+        let speed = family_holder(SPEED_SPELL_FAMILY);
+        let caster = SpellCasterState {
+            entity_index: player_entity.index,
+            model: player_entity.model,
+            mana: player_entity.mana,
+            control_flags: player_entity.control_flags,
+            player_color_index: local_player.player_color_index(),
+            control_mode: 0,
+        };
+        Ok(Self {
+            pickups,
+            dynamic_pickups: Vec::new(),
+            authored_pickup_slots: BTreeMap::new(),
+            holders,
+            player_mana: player_entity.mana,
+            player_life_regen: 0,
+            player_entity: player_entity.clone(),
+            players: players.to_vec().into_boxed_slice(),
+            player_entities,
+            local_player: local_player.clone(),
+            speed_pickup_state: Level2SpeedPickupState::default(),
+            caster,
+            fireball,
+            possession,
+            speed,
+            shield: None,
+            invisible: None,
+            beyond_sight: None,
+            shield_damage_mailbox: None,
+            beyond_sight_auxiliary: Level2PlayerEventAuxiliary {
+                entity_index: player_entity.index,
+                ..Level2PlayerEventAuxiliary::default()
+            },
+            acquisitions,
+            free_spell_usage: false,
+            persistent_spell_experience: local_player.persistent_spell_experience,
+            spell_experience: local_player.runtime_spell_experience,
+            spell_levels: local_player.spell_unlocked_levels,
+            persistent_acquisitions: BTreeMap::new(),
+            player_entity_sha256: sha256_hex(player_entity.record_bytes()),
+            events: Vec::new(),
+            pickup_events: Vec::new(),
+            pending_effects: Vec::new(),
+        })
+    }
+
     pub(super) fn from_parts_with_starting_spells(
         _terrain: SessionTerrain,
         entities: &[EntitySnapshot],
@@ -145,7 +302,7 @@ impl Level2SharedSpellResetSession {
                 );
                 state.holder_relation = local_player.enabled_spell_holders[family_index];
                 state.eligibility = local_player.spell_hand_eligibility[family_index];
-                state.learned = local_player.learned_spell_flags[family_index];
+                state.learned = local_player.acquired_spell_flags[family_index];
                 state.left_spell_slot = local_player.left_spell_slot_raw;
                 state.right_spell_slot = local_player.right_spell_slot_raw;
                 state.left_subspell_index = local_player.left_subspell_index;
@@ -359,13 +516,13 @@ impl Level2SharedSpellResetSession {
         for (family, tier, holder) in &rows {
             let index = usize::from(*family);
             player.enabled_spell_holders[index] = holder.index;
-            player.learned_spell_flags[index] = 1;
+            player.acquired_spell_flags[index] = 1;
             player.family_selected_tiers[index] = tier.cast_signed();
             player.spell_unlocked_levels[index] =
                 player.spell_unlocked_levels[index].max(tier.cast_signed());
             player.record[268 + index * 2..270 + index * 2]
                 .copy_from_slice(&holder.index.to_le_bytes());
-            player.record[424 + index] = 1;
+            player.record[476 + index] = 1;
             player.record[528 + index] = *tier;
             player.record[502 + index] = player.spell_unlocked_levels[index].cast_unsigned();
             if left == -1 {
@@ -1400,6 +1557,30 @@ impl Level2SharedSpellResetSession {
         }
     }
 
+    /// Refresh the shared spell projection from the one source-arena row
+    /// before dispatch. The projection remains a typed convenience view; it
+    /// must never become a second independently mutable entity authority.
+    pub(super) fn sync_pickup_from_authority(&mut self, source: &EntitySnapshot) {
+        self.sync_released_holder(source);
+        for state in &mut self.acquisitions {
+            if state.source_slot != source.index {
+                continue;
+            }
+            state.source_action = source.action;
+            state.source_life = source.life;
+            state.source_draw_enabled = !source.drawing_disabled();
+            state.subspell_index = source.subspell_index;
+            state.word_0x30 = source.source_spell_word_30();
+            state.byte_0x3b = source.byte_3b;
+            state.byte_0x3c = source.byte_3c;
+            state.font_type_index = source.font_type_index;
+            state.mana_regen = source.mana_regen;
+            state.max_mana = source.max_mana;
+            state.mana = source.mana;
+            state.return_side = source.source_word_4a();
+        }
+    }
+
     pub(super) fn increment_player_kill_score(&mut self, entity_index: u16, color: usize) -> bool {
         let mut changed = false;
         for player in &mut self.players {
@@ -2050,14 +2231,10 @@ impl Level2SharedSpellResetSession {
         {
             let owner = &mut self.players[owner_index];
             owner.enabled_spell_holders[family_index] = outcome.source_slot;
-            owner.spell_hand_eligibility[family_index] = state.eligibility;
-            owner.learned_spell_flags[family_index] = state.learned;
-            owner.family_selected_tiers[family_index] = state.selected_tier;
+            owner.acquired_spell_flags[family_index] = state.learned;
             owner.record[268 + family_index * 2..270 + family_index * 2]
                 .copy_from_slice(&outcome.source_slot.to_le_bytes());
-            owner.record[398 + family_index] = state.eligibility;
-            owner.record[424 + family_index] = state.learned;
-            owner.record[528 + family_index] = state.selected_tier.to_le_bytes()[0];
+            owner.record[476 + family_index] = state.learned;
             match outcome.hand {
                 crate::spell_activation::SpellHand::Left => {
                     owner.left_spell_slot_raw = state.left_spell_slot;
@@ -2227,19 +2404,22 @@ impl Level2SharedSpellResetSession {
             self.beyond_sight = Some(beyond_sight);
             self.sync_beyond_sight_projection();
         }
+        // `sub_68FF0` prepares sound 18 before writing the holder/player
+        // transition. The state mutation is transactional here, but the
+        // externally observable journal must retain that source chronology.
+        mark_source_audio_call(SourceAudioCallTag::SpellPickup);
+        self.emit_flight_effect(FlightEvent::PrepareSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::SpellPickup,
+            entity_index: owner_entity_index,
+            player_index: -1,
+            sound_id: 18,
+        });
         self.emit_shared_spell_effect(Level2SharedSpellEvent::SpellAcquired {
             source_slot: outcome.source_slot,
             player_entity_index: owner_entity_index,
             family,
             holder_action: outcome.holder_action,
-        });
-        mark_source_audio_call(SourceAudioCallTag::SpeedPickup);
-        self.emit_flight_effect(FlightEvent::PrepareSound {
-            #[cfg(test)]
-            audio_site: crate::MissionAudioSite::SpeedPickup,
-            entity_index: owner_entity_index,
-            player_index: -1,
-            sound_id: 18,
         });
         Ok(outcome)
     }
@@ -2767,7 +2947,8 @@ impl Level2SharedSpellResetSession {
         self.local_player.enabled_spell_holders[family] = pickup.index;
         self.local_player.record[268 + family * 2..270 + family * 2]
             .copy_from_slice(&pickup.index.to_le_bytes());
-        self.local_player.record[424 + family] = 1;
+        self.local_player.acquired_spell_flags[family] = 1;
+        self.local_player.record[476 + family] = 1;
         self.local_player.family_selected_tiers[family] = 0;
         self.local_player.record[528 + family] = 0;
         if self.local_player.left_spell_slot_raw < 0 || self.local_player.right_spell_slot_raw != -1
@@ -2804,10 +2985,10 @@ impl Level2SharedSpellResetSession {
             player_entity_index,
             family: SPEED_SPELL_FAMILY,
         });
-        mark_source_audio_call(SourceAudioCallTag::SpeedPickup);
+        mark_source_audio_call(SourceAudioCallTag::SpellPickup);
         self.emit_flight_effect(FlightEvent::PrepareSound {
             #[cfg(test)]
-            audio_site: crate::MissionAudioSite::SpeedPickup,
+            audio_site: crate::MissionAudioSite::SpellPickup,
             entity_index: player_entity_index,
             player_index: 0,
             sound_id: 18,
@@ -3167,6 +3348,34 @@ impl Level2SharedSpellResetSession {
 }
 
 impl Level2OrdinaryResetSession {
+    pub(super) fn from_campaign_parts(
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+        runtime: &RuntimeSnapshot,
+        house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
+        house_parameters: &BTreeMap<u8, HouseParameter>,
+    ) -> Result<Self> {
+        let houses = HouseFamily::from_campaign_entities(entities, house_parameters)
+            .map_err(NativeWorldError::new)?;
+        let villagers = VillagerFamily::empty(VillagerBehaviorConfig::LEVEL_TWO);
+        let player_entities = players
+            .iter()
+            .take(usize::from(runtime.player_count))
+            .filter_map(|player| entities.get(usize::from(player.entity_index)))
+            .filter(|entity| entity.active)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Ok(Self {
+            house_build_footprints,
+            houses,
+            villagers,
+            dolmens: Box::new([]),
+            players: player_entities,
+            population_census: 0,
+        })
+    }
+
     pub(super) fn from_parts(
         terrain: SessionTerrain,
         entities: Box<[EntitySnapshot]>,

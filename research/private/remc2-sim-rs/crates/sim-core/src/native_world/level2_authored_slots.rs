@@ -460,9 +460,12 @@ impl Level2EconomyState {
         if let Some(entity_rng) = entity_rng {
             self.slot_rng.insert(slot, entity_rng);
         }
+        // `sub_57F20` appends reclaimed rows to the live LIFO stack. Do not
+        // rebuild/sort here: the highest numeric row reclaimed later in the
+        // ascending cleanup scan must be the next `NewEvent` allocation even
+        // when older reset-free rows remain below it. `rebuild_free_arena`
+        // owns the separate source-wide descending reconstruction.
         self.free_slots.push(slot);
-        self.free_slots
-            .sort_unstable_by(|left, right| right.cmp(left));
     }
 
     /// Rebuild the source free-arena sidecars using the validated reset pool
@@ -931,8 +934,9 @@ impl Level2EconomyState {
             subspell_index: 400,
             max_life: 1,
             life: 1,
-            // NewAdd0A01 clears bits 3/17, then sets byte 2 bit 1.
-            control_flags: 0x0002_0000,
+            // NewAdd0A01 clears bits 3/17, sets byte 2 bit 1, then
+            // AddEventToMap installs the low-byte map-linked bit.
+            control_flags: 0x0002_0004,
             particle_index: 41,
             last_sound_id: 0,
             position,
@@ -1528,10 +1532,11 @@ impl Level2EconomyState {
         Some(source)
     }
 
-    pub(super) fn allocate_model59_smoke_child(&mut self, position: Position) -> Option<u16> {
-        // `SetParticleSmoke3B_4E9E0` advances the process-global stream before
-        // `SetSmoke4_4EAA0` attempts NewEvent. The draw survives failure.
-        self.global_rng = level2_next_rng32(self.global_rng);
+    fn allocate_model13_smoke_child_after_global_draw(
+        &mut self,
+        position: Position,
+        max_life: i16,
+    ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
         let entity_rng = level2_next_rng16(initial_rng);
@@ -1557,8 +1562,8 @@ impl Level2EconomyState {
             source_class: 10,
             model: 13,
             action: 13,
-            max_life: 32,
-            life: 32,
+            max_life,
+            life: max_life,
             max_speed: 30,
             actual_speed,
             dword_0x10: 0,
@@ -1571,6 +1576,23 @@ impl Level2EconomyState {
             active: true,
         });
         Some(source_entity_index)
+    }
+
+    pub(super) fn allocate_model59_smoke_child(&mut self, position: Position) -> Option<u16> {
+        // `SetParticleSmoke3B_4E9E0` advances the process-global stream before
+        // `SetSmoke4_4EAA0` attempts NewEvent. The draw survives failure.
+        self.global_rng = level2_next_rng32(self.global_rng);
+        self.allocate_model13_smoke_child_after_global_draw(position, 32)
+    }
+
+    /// Construct the class-2 ballistic death smoke through the shared
+    /// `SetParticleSmoke3B -> SetSmoke4` path. The global draw occurs before
+    /// allocation and therefore remains observable when the arena is full.
+    pub(super) fn allocate_ballistic_death_smoke(&mut self, position: Position) -> Option<u16> {
+        self.global_rng = level2_next_rng32(self.global_rng);
+        let max_life = i16::try_from(self.global_rng % 0x17 + 17)
+            .expect("ballistic death-smoke life fits i16");
+        self.allocate_model13_smoke_child_after_global_draw(position, max_life)
     }
 
     /// Advance the authored action-64 checkpoint callback. The parent emits
@@ -1965,9 +1987,10 @@ impl Level2EconomyState {
         Some(sphere)
     }
 
-    /// Advance one live authored switch callback.  The caller supplies the
-    /// source `CompareAxisWithShift` result; this method owns the source
-    /// phase/cooldown writes and reports a fired target group.
+    /// Resolve one live authored action-0/action-1 switch callback. The caller
+    /// supplies the source `CompareAxisWithShift` result. Group consumption,
+    /// drawing disable, and the common phase epilogue remain separate because
+    /// remc2 rebuilds/consumes the authored group before hiding the producer.
     pub fn step_authored_switch_producer_slot(
         &mut self,
         source_slot: u16,
@@ -1975,27 +1998,22 @@ impl Level2EconomyState {
     ) -> Option<u16> {
         let source = self
             .authored_switch_producers
-            .iter_mut()
+            .iter()
             .find(|source| source.active && source.source_entity_index == source_slot)?;
-        let target_group = if source.cooldown == 0 && source.phase & 7 == 0 && overlap {
-            source.cooldown = 10;
-            source.fired = true;
-            // `AddSwitch0B_00_6F030`/`CheckpointArrived_6F070` hide
-            // model-0 sources after the stage-tag group scan succeeds.
-            // Model-1's `sub_6F0B0` reloads its cooldown but leaves the
-            // source visible. Keep the arena row active for source-order /
-            // replay identity in both cases.
-            if source.model == 0 {
-                source.drawing_enabled = false;
-            }
-            Some(source.stage_tag)
-        } else {
-            None
+        (source.phase & 7 == 0 && overlap).then_some(source.stage_tag)
+    }
+
+    /// Disable a one-shot authored switch after its group scan has returned.
+    pub fn complete_authored_switch_producer_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .authored_switch_producers
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
         };
-        if source.cooldown != 0 && target_group.is_none() && !overlap {
-            source.cooldown = source.cooldown.saturating_sub(1);
-        }
-        source.phase = source.phase.wrapping_add(1);
+        source.fired = true;
+        source.drawing_enabled = false;
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -2004,7 +2022,7 @@ impl Level2EconomyState {
                 y: source.position.y,
             })
             .ok();
-        target_group
+        true
     }
 
     /// Bounded projection of the generic `sub_1BD90`/`sub_1BF90` awareness
@@ -3263,6 +3281,37 @@ impl Level2EconomyState {
         shift_rot_x: i16,
         shift_rot_y: i16,
     ) -> Option<u16> {
+        self.allocate_class10_model0_effect(
+            parent_entity_index,
+            parent_entity_id,
+            parent_yaw,
+            0,
+            position,
+            400,
+            0,
+            control_flags,
+            shift_rot_x,
+            shift_rot_y,
+        )
+    }
+
+    /// Shared `NewAdd0A00_4E320` constructor carrier. Fireball and the
+    /// authored producers allocate the same live class/model/action identity;
+    /// only their copied parent, target, orientation, and payload differ.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn allocate_class10_model0_effect(
+        &mut self,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        parent_yaw: i16,
+        parent_pitch: i16,
+        position: Position,
+        subspell_index: u16,
+        target_source_entity_index: u16,
+        control_flags: u32,
+        shift_rot_x: i16,
+        shift_rot_y: i16,
+    ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
@@ -3288,7 +3337,7 @@ impl Level2EconomyState {
                 source_class: 10,
                 model: 0,
                 action: 0,
-                subspell_index: 400,
+                subspell_index,
                 max_life: 8,
                 life: 8,
                 dword_0x10: 0,
@@ -3296,6 +3345,9 @@ impl Level2EconomyState {
                 shift_rot_x,
                 shift_rot_y,
                 yaw: parent_yaw,
+                pitch: parent_pitch,
+                source_word_2c: 0,
+                target_source_entity_index,
                 position,
                 phase: source_entity_index as u8,
                 active: true,
@@ -3303,36 +3355,105 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
-    /// The bounded child seam preserves the post-spawn `NewAdd0A00` life
-    /// sentinel and map/reclaim order. Its terrain mutation/particle callback
-    /// (`sub_30D50`) remains a distinct follow-up, so this method does not
-    /// invent terrain edits while still making the generated row observable
-    /// and finite.
-    pub fn step_model17_spawned_child_slot(&mut self, source_slot: u16) -> bool {
+    /// Source `sub_30D50` for the shared class-10/model-0 impact row. The
+    /// callback owns its lifetime, one-shot damage/RNG/sound gate, vertical
+    /// terrain settling, and drawing disable. The numeric scheduler owns the
+    /// common phase increment; following-pass cleanup owns map unlink/free.
+    pub(super) fn step_model17_spawned_child_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> super::level2_dynamic_economy::Level2Class10Model0Step {
         let Some(child_index) = self
             .model17_spawned_children
             .iter()
             .position(|child| child.active && child.source_entity_index == source_slot)
         else {
-            return false;
+            return super::level2_dynamic_economy::Level2Class10Model0Step {
+                live: false,
+                first_impact: false,
+                damage_pulse: false,
+                owner_entity_index: 0,
+                payload: 0,
+                position: Position::default(),
+            };
         };
         let mut child = self.model17_spawned_children[child_index];
-        child.life = child.life.wrapping_sub(1);
-        if child.life < -1 {
-            child.active = false;
-            self.model17_spawned_children[child_index] = child;
-            return true;
+        let mut first_impact = false;
+        let mut damage_pulse = false;
+
+        if child.dword_0x10 & 3 != 0 {
+            child.dword_0x10 = child.dword_0x10.wrapping_sub(1);
+        } else {
+            child.life = child.life.wrapping_sub(1);
+            if child.life < -1 {
+                child.active = false;
+            } else {
+                child.control_flags &= !1;
+                let ground = terrain.ground_height(child.position);
+                if child.control_flags & 2 == 0 {
+                    first_impact = true;
+                    damage_pulse = child.control_flags & 0x0001_0000 == 0;
+
+                    let terrain_type = terrain.terrain_type(child.position);
+                    if terrain_type != 0
+                        && !matches!(terrain_type, 10 | 11 | 26)
+                        && (terrain_type < 6 || terrain_type > 0x22)
+                    {
+                        let tile = crate::Tile {
+                            x: child.position.x.to_be_bytes()[0],
+                            y: child.position.y.to_be_bytes()[0],
+                        };
+                        if terrain.angle_flags(tile) & 7 != 1
+                            && child.position.z.wrapping_sub(ground) <= 128
+                            && terrain.material_mask(child.position) & 1 == 0
+                        {
+                            // Source terrain debris consumes this draw before
+                            // the mandatory word-0x2c draw. The visual debris
+                            // is presentation-only in this authority layer.
+                            child.entity_rng = level2_next_rng16(child.entity_rng);
+                        }
+                    }
+
+                    child.control_flags |= 2;
+                    child.entity_rng = level2_next_rng16(child.entity_rng);
+                    child.source_word_2c = i16::try_from(child.entity_rng % 0x41)
+                        .expect("Fireball impact displacement fits i16")
+                        .wrapping_sub(32);
+                }
+
+                if child.position.z > ground {
+                    child.position.z = child.position.z.wrapping_add(child.source_word_2c);
+                }
+                if child.position.z <= ground {
+                    child.position.z = ground;
+                }
+                if let Some(ceiling) = terrain.ceiling_height(child.position) {
+                    let ceiling_limit = ceiling.wrapping_sub(child.shift_rot_y);
+                    if child.position.z > ceiling_limit {
+                        child.position.z = ceiling_limit;
+                    }
+                }
+            }
         }
-        child.phase = child.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, child.entity_rng);
         self.model17_spawned_children[child_index] = child;
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
+        if child.active {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
                 active: true,
                 x: child.position.x,
                 y: child.position.y,
-            })
-            .is_ok()
+            });
+        }
+        super::level2_dynamic_economy::Level2Class10Model0Step {
+            live: child.active,
+            first_impact,
+            damage_pulse,
+            owner_entity_index: child.parent_entity_id,
+            payload: child.subspell_index,
+            position: child.position,
+        }
     }
 
     /// Allocate the authored class-10/model-22 wind parent and its eleven
@@ -5542,11 +5663,11 @@ impl Level2EconomyState {
         let reclaimed_switch_producers = self
             .authored_switch_producers
             .iter()
-            .filter(|source| !source.active)
+            .filter(|source| !source.active || !source.drawing_enabled)
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
         self.authored_switch_producers
-            .retain(|source| source.active);
+            .retain(|source| source.active && source.drawing_enabled);
         for (slot, entity_rng) in reclaimed_switch_producers {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
@@ -6539,6 +6660,9 @@ impl Level2EconomyState {
             hasher.update(child.shift_rot_x.to_le_bytes());
             hasher.update(child.shift_rot_y.to_le_bytes());
             hasher.update(child.yaw.to_le_bytes());
+            hasher.update(child.pitch.to_le_bytes());
+            hasher.update(child.source_word_2c.to_le_bytes());
+            hasher.update(child.target_source_entity_index.to_le_bytes());
             hasher.update(child.phase.to_le_bytes());
             hasher.update(child.position.x.to_le_bytes());
             hasher.update(child.position.y.to_le_bytes());
@@ -6949,14 +7073,19 @@ impl Level2EconomyState {
             hasher.update(projectile.axis_position.z.to_le_bytes());
             hasher.update(projectile.yaw.to_le_bytes());
             hasher.update(projectile.pitch.to_le_bytes());
+            hasher.update(projectile.roll.to_le_bytes());
+            hasher.update(projectile.fov.to_le_bytes());
             hasher.update(projectile.actual_speed.to_le_bytes());
             hasher.update(projectile.minimum_speed.to_le_bytes());
             hasher.update(projectile.life.to_le_bytes());
             hasher.update(projectile.max_life.to_le_bytes());
             hasher.update(projectile.dword_0x10.to_le_bytes());
+            hasher.update(projectile.target_source_entity_index.to_le_bytes());
             hasher.update(projectile.control_flags.to_le_bytes());
             hasher.update(projectile.source_word_2c.to_le_bytes());
             hasher.update([
+                u8::from(projectile.acquisition_attempted),
+                u8::from(projectile.threat_accounted),
                 projectile.phase,
                 u8::from(projectile.active),
                 u8::from(projectile.drawing_disabled),
@@ -6979,6 +7108,11 @@ impl Level2EconomyState {
                 u8::from(projectile.acquisition_attempted),
                 u8::from(projectile.active),
             ]);
+            if projectile.threat_accounted {
+                // Preserve reset hashes for the source-zero state while
+                // making the one-shot prepass transition authoritative.
+                hasher.update(b"sub-159e0-threat-accounted");
+            }
             hasher.update(projectile.position.x.to_le_bytes());
             hasher.update(projectile.position.y.to_le_bytes());
             hasher.update(projectile.position.z.to_le_bytes());

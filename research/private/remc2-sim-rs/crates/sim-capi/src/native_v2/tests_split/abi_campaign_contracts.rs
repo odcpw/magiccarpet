@@ -2002,6 +2002,15 @@ fn campaign_day_indexed_frame_is_generation_bound_complete_and_fail_closed() {
         (status, opened_handle)
     };
 
+    let (material_only_status, material_only_handle) =
+        open_with_cache(&cache.join("components/material"), &selection);
+    assert_eq!(material_only_status, MC_STATUS_OK);
+    assert_ne!(material_only_handle, 0);
+    assert_eq!(
+        mc_native_campaign_session_destroy(material_only_handle),
+        MC_STATUS_OK
+    );
+
     let missing_cache =
         std::env::temp_dir().join(format!("mc-exzm3-missing-day-cache-{}", std::process::id()));
     if missing_cache.exists() {
@@ -2810,14 +2819,39 @@ fn cf14_level3_descriptor_package() -> PathBuf {
     )
 }
 
+fn cf14_campaign_day_material_cache() -> PathBuf {
+    std::env::var_os("MC_CAMPAIGN_ASSET_CACHE_LEVEL3_V1").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/level3-day-material-cache")
+        },
+        PathBuf::from,
+    )
+}
+
 #[test]
 fn cf14_level3_uses_generic_campaign_abi() {
-    // The census-profiled Level 3 selection travels the one generic campaign
-    // ABI route.  With the mc-iol7n census-delta shared-behavior leaves still
-    // uncompiled, open must fail closed at descriptor behavior closure -- not
-    // at any per-level selection whitelist -- and must allocate no handle.
+    const EVENT_CAPACITY: usize = 1_024;
+    const EFFECT_CAPACITY: usize = 16_384;
+    const INDEX_BYTES: usize = 320 * 200;
+
+    // The census-profiled Level 3 selection travels the same frozen campaign
+    // layouts and entry points as every descriptor-backed campaign.  No
+    // Level-3 handle kind, symbol, selector layout, or event layout exists.
     let package = cf14_level3_descriptor_package();
+    let direct = DescriptorCampaignSession::open(
+        &package,
+        CampaignSelection {
+            external_level: 3,
+            internal_level: 2,
+            map_type_id: 0,
+        },
+    )
+    .expect("open the same Level 3 descriptor authority directly");
+    let authored_reset_hash = direct.state_hash();
     let package = package.to_string_lossy();
+    let cache = cf14_campaign_day_material_cache();
+    let cache = cache.to_string_lossy();
     let selection = McCampaignSelectionV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McCampaignSelectionV2>(),
@@ -2828,35 +2862,400 @@ fn cf14_level3_uses_generic_campaign_abi() {
     };
     let mut handle = u64::MAX;
     assert_eq!(
-        mc_native_campaign_session_open(
+        mc_native_campaign_session_open_with_asset_cache(
             package.as_ptr(),
             package.len() as u32,
             std::ptr::null(),
             0,
+            cache.as_ptr(),
+            cache.len() as u32,
             &raw const selection,
             &raw mut handle,
         ),
-        MC_STATUS_VALIDATION_FAILED
+        MC_STATUS_OK,
+        "{}",
+        LAST_ERROR.with(|value| value.borrow().clone())
     );
-    assert_eq!(handle, 0, "failed Level 3 open must not allocate a handle");
-    let closure_error = LAST_ERROR.with(|value| value.borrow().clone());
-    assert!(
-        closure_error.contains("compiled registry is missing capability"),
-        "Level 3 must reach the shared compiled-capability gate: {closure_error}"
-    );
-    assert!(
-        closure_error.contains("class: 2") && closure_error.contains("action: 21"),
-        "closure failure must name the first census-delta capability: {closure_error}"
-    );
-    assert!(
-        !closure_error.contains("caller/outer"),
-        "Level 3 identity must be admitted by the generic route: {closure_error}"
+    assert_ne!(handle, 0);
+
+    let initial_world = cf12_world_info(handle);
+    assert_eq!(
+        (
+            initial_world.external_level,
+            initial_world.internal_level,
+            initial_world.map_type,
+            initial_world.active_entity_count,
+        ),
+        (3, 2, 0, 252)
     );
     assert_eq!(
-        mc_native_campaign_session_destroy(0),
-        MC_STATUS_UNKNOWN_HANDLE,
-        "no campaign session may exist after the fail-closed Level 3 open"
+        initial_world.reset_state_hash, authored_reset_hash,
+        "generic open must preserve the Level 3 package's authored reset state"
     );
+
+    let initial_query = McEventQueryV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McEventQueryV2>(),
+        generation: 0,
+        cursor: 0,
+        reserved: [0; 4],
+    };
+    let mut initial_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const initial_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut initial_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(
+        (
+            initial_batch.generation,
+            initial_batch.next_cursor,
+            initial_batch.event_head,
+            initial_batch.written,
+            initial_batch.has_more,
+        ),
+        (0, 0, 0, 0, 0)
+    );
+
+    let initial_frame_query = cf12_frame_query(0, 0);
+    let mut initial_indices = vec![0; INDEX_BYTES];
+    let mut initial_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const initial_frame_query,
+            initial_indices.as_mut_ptr(),
+            initial_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut initial_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK,
+        "{}",
+        LAST_ERROR.with(|value| value.borrow().clone())
+    );
+    assert_eq!(
+        (
+            initial_frame.generation,
+            initial_frame.tick,
+            initial_frame.width,
+            initial_frame.height,
+            initial_frame.index_bytes,
+            initial_frame.newly_committed,
+        ),
+        (0, 0, 320, 200, INDEX_BYTES as u32, 1)
+    );
+    assert_ne!(initial_frame.index_hash, 0);
+    assert_eq!(byte_hash(&initial_indices), initial_frame.index_hash);
+    assert_eq!(
+        initial_frame.flags
+            & (MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE
+                | MC_PRESENTATION_FRAME_HAS_PROVENANCE
+                | MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED
+                | MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE
+                | MC_PRESENTATION_FRAME_LIGHTING_COMPLETE),
+        0
+    );
+    let mut repeated_indices = vec![0; INDEX_BYTES];
+    let mut repeated_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const initial_frame_query,
+            repeated_indices.as_mut_ptr(),
+            repeated_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut repeated_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(repeated_indices, initial_indices);
+    assert_eq!(repeated_frame.index_hash, initial_frame.index_hash);
+    assert_eq!(repeated_frame.newly_committed, 0);
+
+    let mut players = [McCampaignPlayerSnapshotV2::default(); 8];
+    let mut player_count = 0;
+    assert_eq!(
+        mc_native_campaign_players_copy(
+            handle,
+            0,
+            players.as_mut_ptr(),
+            players.len() as u32,
+            struct_size::<McCampaignPlayerSnapshotV2>(),
+            &raw mut player_count,
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(player_count, 8);
+    let local = players[0];
+    assert_eq!((local.slot, local.active, local.is_ai), (0, 1, 0));
+
+    let mut local_entity = McCampaignEntitySnapshotV2::default();
+    let mut entity_count = 0;
+    assert_eq!(
+        mc_native_campaign_entities_copy(
+            handle,
+            u32::from(local.entity_index),
+            &raw mut local_entity,
+            1,
+            struct_size::<McCampaignEntitySnapshotV2>(),
+            &raw mut entity_count,
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(entity_count, 1);
+    assert_eq!(
+        (local_entity.entity_index, local_entity.active),
+        (local.entity_index, 1)
+    );
+
+    let step_input = McCampaignStepInputV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignStepInputV2>(),
+        generation: 0,
+        command: valid_command(),
+        player_slot: local.slot,
+        player_x: local_entity.x,
+        player_y: local_entity.y,
+        player_z: local_entity.z,
+        ..McCampaignStepInputV2::default()
+    };
+    let mut step = McCampaignStepSnapshotV2::default();
+    let mut events = vec![McCampaignEventV2::default(); EVENT_CAPACITY];
+    let mut event_count = 0;
+    assert_eq!(
+        mc_native_campaign_session_step(
+            handle,
+            &raw const step_input,
+            &raw mut step,
+            struct_size::<McCampaignStepSnapshotV2>(),
+            events.as_mut_ptr(),
+            events.len() as u32,
+            struct_size::<McCampaignEventV2>(),
+            &raw mut event_count,
+        ),
+        MC_STATUS_OK,
+        "{}",
+        LAST_ERROR.with(|value| value.borrow().clone())
+    );
+    assert_eq!((step.generation, step.revision), (0, 1));
+    assert_eq!(step.player_slot, local.slot);
+    assert_eq!(step.player_entity_index, local.entity_index);
+    assert_ne!(step.state_hash, initial_world.reset_state_hash);
+    assert_ne!(step.terrain_hash, 0);
+    assert!(event_count > 0);
+    assert_eq!(step.event_count, event_count);
+    let events = &events[..event_count as usize];
+    assert!(
+        events
+            .iter()
+            .enumerate()
+            .all(|(ordinal, event)| { event.generation == 0 && event.ordinal == ordinal as u32 })
+    );
+
+    let mut effects = vec![McEventV2::default(); EFFECT_CAPACITY];
+    let mut effect_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const initial_query,
+            effects.as_mut_ptr(),
+            effects.len() as u32,
+            struct_size::<McEventV2>(),
+            &raw mut effect_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert!(effect_batch.written > 0);
+    assert_eq!(effect_batch.next_cursor, effect_batch.event_head);
+    assert_eq!(effect_batch.has_more, 0);
+    let effects = &effects[..effect_batch.written as usize];
+    assert!(effects.iter().enumerate().all(|(ordinal, effect)| {
+        effect.generation == 0
+            && effect.sequence == ordinal as u64 + 1
+            && effect.state_hash == step.state_hash
+    }));
+
+    let stepped_frame_query = cf12_frame_query(0, 1);
+    let mut stepped_indices = vec![0; INDEX_BYTES];
+    let mut stepped_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const stepped_frame_query,
+            stepped_indices.as_mut_ptr(),
+            stepped_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut stepped_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!((stepped_frame.generation, stepped_frame.tick), (0, 1));
+    assert_eq!(byte_hash(&stepped_indices), stepped_frame.index_hash);
+
+    assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+    let mut stale_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const initial_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut stale_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_GENERATION_MISMATCH
+    );
+    let reset_query = McEventQueryV2 {
+        generation: 1,
+        ..initial_query
+    };
+    let mut reset_batch = McEventBatchV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const reset_query,
+            std::ptr::null_mut(),
+            0,
+            struct_size::<McEventV2>(),
+            &raw mut reset_batch,
+            struct_size::<McEventBatchV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(
+        (
+            reset_batch.generation,
+            reset_batch.next_cursor,
+            reset_batch.event_head,
+            reset_batch.written,
+        ),
+        (1, 0, 0, 0)
+    );
+    assert_eq!(
+        cf12_world_info(handle).reset_state_hash,
+        initial_world.reset_state_hash
+    );
+    let reset_frame_query = cf12_frame_query(1, 0);
+    let mut reset_indices = vec![0; INDEX_BYTES];
+    let mut reset_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const reset_frame_query,
+            reset_indices.as_mut_ptr(),
+            reset_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut reset_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(reset_indices, initial_indices);
+    assert_eq!(reset_frame.index_hash, initial_frame.index_hash);
+
+    let replay_input = McCampaignStepInputV2 {
+        generation: 1,
+        ..step_input
+    };
+    let mut replay = McCampaignStepSnapshotV2::default();
+    let mut replay_events = vec![McCampaignEventV2::default(); EVENT_CAPACITY];
+    let mut replay_event_count = 0;
+    assert_eq!(
+        mc_native_campaign_session_step(
+            handle,
+            &raw const replay_input,
+            &raw mut replay,
+            struct_size::<McCampaignStepSnapshotV2>(),
+            replay_events.as_mut_ptr(),
+            replay_events.len() as u32,
+            struct_size::<McCampaignEventV2>(),
+            &raw mut replay_event_count,
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(replay.generation, 1);
+    assert_eq!(
+        (
+            replay.revision,
+            replay.state_hash,
+            replay.terrain_hash,
+            replay.dispatch_hash,
+            replay.event_count,
+            replay.event_kind_mask,
+            replay.player_slot,
+            replay.player_entity_index,
+            replay.x,
+            replay.y,
+            replay.z,
+        ),
+        (
+            step.revision,
+            step.state_hash,
+            step.terrain_hash,
+            step.dispatch_hash,
+            step.event_count,
+            step.event_kind_mask,
+            step.player_slot,
+            step.player_entity_index,
+            step.x,
+            step.y,
+            step.z,
+        )
+    );
+    assert_eq!(replay_event_count, event_count);
+    let replay_events = &replay_events[..replay_event_count as usize];
+    assert!(events.iter().zip(replay_events).all(|(first, replay)| {
+        (
+            first.ordinal,
+            first.pass,
+            first.kind,
+            first.family,
+            first.flags,
+            first.source_slot,
+        ) == (
+            replay.ordinal,
+            replay.pass,
+            replay.kind,
+            replay.family,
+            replay.flags,
+            replay.source_slot,
+        )
+    }));
+    let replay_frame_query = cf12_frame_query(1, 1);
+    let mut replay_indices = vec![0; INDEX_BYTES];
+    let mut replay_frame = McPresentationFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_presentation_frame_copy(
+            handle,
+            &raw const replay_frame_query,
+            replay_indices.as_mut_ptr(),
+            replay_indices.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &raw mut replay_frame,
+            struct_size::<McPresentationFrameInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(replay_indices, stepped_indices);
+    assert_eq!(replay_frame.index_hash, stepped_frame.index_hash);
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
 
     // A mismatched caller triple against the same package fails at the outer
     // manifest stage, before behavior closure.
@@ -2886,6 +3285,27 @@ fn cf14_level3_uses_generic_campaign_abi() {
         mismatch_error.contains("campaign preflight stage 1"),
         "selection mismatch must fail at the outer manifest: {mismatch_error}"
     );
+
+    // A material cache is bound to the owner package it was derived from.
+    // Matching Day selectors are not enough to borrow Level 2 presentation
+    // bytes for this Level 3 campaign.
+    let level2_cache = qualified_level2_day_owner_cache();
+    let level2_cache = level2_cache.to_string_lossy();
+    let mut cross_bound_handle = u64::MAX;
+    assert_eq!(
+        mc_native_campaign_session_open_with_asset_cache(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            level2_cache.as_ptr(),
+            level2_cache.len() as u32,
+            &raw const selection,
+            &raw mut cross_bound_handle,
+        ),
+        MC_STATUS_VALIDATION_FAILED
+    );
+    assert_eq!(cross_bound_handle, 0);
 
     // An unprofiled selection can never borrow the generic route.
     let unprofiled = McCampaignSelectionV2 {

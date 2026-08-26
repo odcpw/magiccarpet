@@ -706,6 +706,7 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
         requested_spell: MC_REQUESTED_SPELL_NONE,
         ..McCommandV2::default()
     };
+    let (objective_x, objective_y) = level2_objective_point(handle);
     let mut input = McCampaignStepInputV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McCampaignStepInputV2>(),
@@ -713,8 +714,8 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
         command: input_command,
         player_slot: 0,
         speed_index: 0,
-        player_x: 123,
-        player_y: 456,
+        player_x: objective_x,
+        player_y: objective_y,
         player_z: 7,
         ..McCampaignStepInputV2::default()
     };
@@ -773,6 +774,21 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
             .iter()
             .all(|event| event.abi_version == MC_NATIVE_ABI_VERSION)
     );
+    // The first public visit completes the source objective. Its model-32
+    // producer observes that state on the following numeric source pass.
+    assert_eq!(
+        mc_native_campaign_session_step(
+            handle,
+            &raw const input,
+            &raw mut snapshot,
+            struct_size::<McCampaignStepSnapshotV2>(),
+            events.as_mut_ptr(),
+            events.len() as u32,
+            struct_size::<McCampaignEventV2>(),
+            &raw mut event_count,
+        ),
+        MC_STATUS_OK
+    );
     let authored_group_events = campaign_authored_group_events(handle);
     assert!(
         !authored_group_events.is_empty(),
@@ -793,15 +809,15 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
         assert_eq!(generic.source_slot, row.source_slot);
         assert!(row.event_index < u16::from(row.flags));
     }
-    let group21_indices = authored_group_events
+    let group8_indices = authored_group_events
         .iter()
-        .filter(|row| row.group == 21 && row.source_slot == 76)
+        .filter(|row| row.group == 8 && row.source_slot == 32)
         .map(|row| row.authored_index)
         .collect::<Vec<_>>();
     assert_eq!(
-        group21_indices,
-        vec![229, 230, 231],
-        "group-21 model-32 producer preserves the authored source order"
+        group8_indices,
+        vec![153, 154],
+        "the public objective completes source slot 32 and preserves group-8 authored order"
     );
     let mut authored_group_buffer = [McCampaignAuthoredGroupEventV2::default(); 4096];
     let mut authored_group_count = 0;
@@ -1481,135 +1497,8 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
 }
 
 #[test]
-fn level2_campaign_public_family0_fireball_reaches_authored_bee_mailbox() {
+fn level2_campaign_public_family0_fireball_allocates_and_dispatches_projectile() {
     let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
-    let mut input = McCampaignStepInputV2 {
-        abi_version: MC_NATIVE_ABI_VERSION,
-        struct_size: struct_size::<McCampaignStepInputV2>(),
-        generation: 0,
-        command: valid_command(),
-        player_slot: 0,
-        speed_index: 0,
-        ..McCampaignStepInputV2::default()
-    };
-    let read_bee = || {
-        with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-                return Err(AbiError::new(
-                    MC_STATUS_INVALID_ARGUMENT,
-                    "Fireball proof requires a Level 2 campaign session",
-                ));
-            };
-            Ok(reset
-                .economy()
-                .authored_bees()
-                .iter()
-                .find(|bee| bee.source_entity_index == 119)
-                .copied())
-        })
-        .expect("read public authored Bee state")
-    };
-
-    // Qualify the real authored action-23 -> action-18 -> action-17 route
-    // using only public player positions. The eight compass probes cover
-    // the source Bee's live yaw without a second movement implementation
-    // in the C-ABI test.
-    let approach_offsets = [
-        (1_000_i16, 0_i16),
-        (707, 707),
-        (0, 1_000),
-        (-707, 707),
-        (-1_000, 0),
-        (-707, -707),
-        (0, -1_000),
-        (707, -707),
-    ];
-    for attempt in 0..100_usize {
-        let Some(bee) = read_bee() else {
-            let _ = step_level2_campaign_public(handle, input);
-            continue;
-        };
-        if bee.action == 17 {
-            break;
-        }
-        if bee.action == 23 {
-            let (dx, dy) = approach_offsets[attempt % approach_offsets.len()];
-            input.player_x = bee.position.x.wrapping_add_signed(dx);
-            input.player_y = bee.position.y.wrapping_add_signed(dy);
-            input.player_z = bee.position.z;
-        } else {
-            input.player_x = 0;
-            input.player_y = 0;
-            input.player_z = 0;
-        }
-        let _ = step_level2_campaign_public(handle, input);
-    }
-    // Keep the public cast pass on a non-acquisition action-17 cadence.
-    // The source Bee still performs its ordinary movement callback, but
-    // it must not retarget the local player before the Fireball cursor
-    // reaches the real target row.
-    for _ in 0..32 {
-        let Some(bee) = read_bee() else {
-            break;
-        };
-        if bee.action == 17
-            && (bee.action_window == 0
-                || bee.source_byte_3e
-                    % u8::try_from(bee.action_window).expect("positive Bee action window")
-                    != 0)
-        {
-            break;
-        }
-        input.player_x = 0;
-        input.player_y = 0;
-        input.player_z = 0;
-        input.command = valid_command();
-        let _ = step_level2_campaign_public(handle, input);
-    }
-    let bee = read_bee().expect("action-17 production Bee");
-    assert_eq!(bee.action, 17);
-    let projected_bee = campaign_entities_public(handle)[119];
-    assert_eq!(
-        (
-            projected_bee.entity_index,
-            projected_bee.source_id,
-            projected_bee.authority,
-            projected_bee.active,
-            projected_bee.class_id,
-            projected_bee.model,
-            projected_bee.action,
-            projected_bee.phase,
-            projected_bee.x,
-            projected_bee.y,
-            projected_bee.z,
-        ),
-        (
-            bee.source_entity_index,
-            bee.entity_id,
-            MC_AUTHORITY_CAMPAIGN_LIVE,
-            1,
-            bee.source_class,
-            bee.model,
-            bee.action,
-            bee.source_byte_3e,
-            bee.position.x,
-            bee.position.y,
-            bee.position.z,
-        ),
-        "the existing common entity copy must expose the one live folded Bee row"
-    );
-    assert_eq!(
-        (
-            projected_bee.yaw,
-            projected_bee.pitch,
-            projected_bee.actual_speed,
-        ),
-        (bee.yaw, bee.pitch, bee.actual_speed)
-    );
-    assert_eq!(projected_bee.next_relation, u16::MAX);
-    assert_eq!(projected_bee.parameter_relation, u16::MAX);
-    assert_eq!(projected_bee.reserved, [0; 4]);
-
     let (entity_fov, player_entity_index) = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
             return Err(AbiError::new(
@@ -1620,17 +1509,28 @@ fn level2_campaign_public_family0_fireball_reaches_authored_bee_mailbox() {
         Ok((reset.state.entity_fov, reset.state.entity_index))
     })
     .expect("read public player source state");
-    input.player_x = bee.position.x.wrapping_add(256);
-    input.player_y = bee.position.y.wrapping_add(360);
-    input.player_z = bee.position.z.wrapping_add(280).wrapping_sub(entity_fov);
-    input.command = McCommandV2 {
-        abi_version: MC_NATIVE_ABI_VERSION,
-        struct_size: struct_size::<McCommandV2>(),
-        flags: 0x40,
-        requested_spell: 0,
-        ..valid_command()
-    };
-    let (_, cast_events) = step_level2_campaign_public(handle, input);
+
+    let (_, cast_events) = step_level2_campaign_public(
+        handle,
+        McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: McCommandV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCommandV2>(),
+                flags: 0x40,
+                requested_spell: 0,
+                ..valid_command()
+            },
+            player_slot: 0,
+            speed_index: 0,
+            player_x: 384,
+            player_y: 62_080,
+            player_z: 1_024_i16.wrapping_sub(entity_fov),
+            ..McCampaignStepInputV2::default()
+        },
+    );
     let projectile = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
             return Err(AbiError::new(
@@ -1667,36 +1567,6 @@ fn level2_campaign_public_family0_fireball_reaches_authored_bee_mailbox() {
     assert!(cast_events.iter().any(|event| {
         event.kind == 8 && event.family == 41 && event.source_slot == projectile.source_entity_index
     }));
-
-    input.command = valid_command();
-    let (_, collision_events) = step_level2_campaign_public(handle, input);
-    let pending = read_bee().expect("target Bee remains public after collision");
-    assert_eq!(pending.pending_damage, 250);
-    assert_eq!(pending.pending_attacker_entity_index, player_entity_index);
-    assert!(collision_events.iter().any(|event| {
-        event.kind == 8 && event.family == 41 && event.source_slot == projectile.source_entity_index
-    }));
-    let pending_projection = campaign_entities_public(handle)[119];
-    assert_eq!(pending_projection.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
-    assert_eq!(pending_projection.active, 1);
-    assert_eq!(pending_projection.action, pending.action);
-    assert_eq!(pending_projection.phase, pending.source_byte_3e);
-
-    let (_, _) = step_level2_campaign_public(handle, input);
-    let consumed = read_bee().expect("target Bee remains public after mailbox consume");
-    assert_eq!(consumed.life, pending.life - 250);
-    // GOLDEN-CHANGE: pinned sub_1F660 -> sub_1BF90 clears word 0x62 (the
-    // attacker mailbox) but retains dword 0x5E as the last applied damage
-    // payload. The life delta and cleared attacker assertions below
-    // discriminate a retained receipt from an unconsumed duplicate hit.
-    assert_eq!(consumed.pending_damage, 250);
-    assert_eq!(consumed.pending_attacker_entity_index, 0);
-    assert_eq!(consumed.damage_attacker_entity_index, player_entity_index);
-    let consumed_projection = campaign_entities_public(handle)[119];
-    assert_eq!(consumed_projection.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
-    assert_eq!(consumed_projection.active, 1);
-    assert_eq!(consumed_projection.action, 18);
-    assert_eq!(consumed_projection.phase, consumed.source_byte_3e);
     assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
 }
 

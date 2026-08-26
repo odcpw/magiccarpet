@@ -9,7 +9,7 @@ use super::{
     source_facts::SourceFactKind,
     spec::{BehaviorKey, BehaviorSelector, CampaignCapabilityRegistry},
 };
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::LazyLock};
 
 /// Stable package/source dispatch-site identifiers from contract v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -83,6 +83,9 @@ pub enum ExistingHandler {
     SpellHolderAndPickup = 24,
     BeeFamily = 25,
     CastleAuxiliary = 26,
+    BallisticScenery = 27,
+    CountdownSwitch = 28,
+    TerrainStripController = 29,
 }
 
 impl ExistingHandler {
@@ -114,6 +117,11 @@ impl ExistingHandler {
             Self::SpellHolderAndPickup => "accepted spell holder and pickup constructors",
             Self::BeeFamily => "accepted Level 2 Bee reset rows and spawned children",
             Self::CastleAuxiliary => "accepted Level 2 Castle auxiliary constructor",
+            Self::BallisticScenery => "authored class-2 ballistic-scenery constructor",
+            Self::CountdownSwitch => "authored absence-countdown switch constructor",
+            Self::TerrainStripController => {
+                "authored terrain-strip controller and open/close triggers"
+            }
         }
     }
 
@@ -146,6 +154,9 @@ impl ExistingHandler {
             Self::SpellHolderAndPickup => "spell-holder-and-pickup-family",
             Self::BeeFamily => "level2-bee-family",
             Self::CastleAuxiliary => "level2-castle-auxiliary",
+            Self::BallisticScenery => "ballistic-scenery",
+            Self::CountdownSwitch => "absence-countdown-switch",
+            Self::TerrainStripController => "terrain-strip-controller",
         }
     }
 }
@@ -177,6 +188,9 @@ macro_rules! compiled_registry {
         actions {
             $(($handler:ident, $class:literal, [$($action:literal),+]);)+
         }
+        update_only_actions {
+            $(($update_handler:ident, $update_class:literal, [$($update_action:literal),+]);)+
+        }
         constructors {
             $(($constructor_handler:ident, $constructor_class:literal, [$($model:literal),+]);)+
         }
@@ -202,6 +216,25 @@ macro_rules! compiled_registry {
                         }],
                         required_source_fact_kinds: AUTHORED_LEVEL_FACTS,
                         ordinary_producer: ExistingHandler::$handler.ordinary_producer(),
+                        same_pass_epilogue: ACTION_EPILOGUE,
+                        following_pass_consumer: FOLLOWING_CONSUMER,
+                    },
+                )+
+            )+
+            $(
+                $(
+                    BehaviorEntry {
+                        key: BehaviorKey {
+                            dispatch_site: DispatchSite::UpdateEntities.id(),
+                            selector: BehaviorSelector::ClassAction {
+                                class: $update_class,
+                                action: $update_action,
+                            },
+                        },
+                        handler: ExistingHandler::$update_handler,
+                        reachable_successors: &[],
+                        required_source_fact_kinds: AUTHORED_LEVEL_FACTS,
+                        ordinary_producer: ExistingHandler::$update_handler.ordinary_producer(),
                         same_pass_epilogue: ACTION_EPILOGUE,
                         following_pass_consumer: FOLLOWING_CONSUMER,
                     },
@@ -303,11 +336,19 @@ compiled_registry! {
         (Class14Events, 14, [8, 10]);
         (SpellHolderAndPickup, 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 18, 19, 20, 33, 34, 35, 36, 37, 38, 78]);
     }
+    update_only_actions {
+        (BallisticScenery, 2, [21]);
+        (Model9Family, 5, [79]);
+        (TerrainStripController, 10, [68, 69]);
+        (CountdownSwitch, 11, [16]);
+        (TerrainStripController, 14, [6]);
+    }
     constructors {
         (TreeLifecycle, 2, [0]);
         (Stone, 2, [1]);
         (Dolmen, 2, [2]);
         (BadStone, 2, [3]);
+        (BallisticScenery, 2, [8]);
         (PlayerFlight, 3, [0]);
         (NyphurPlayer, 3, [1]);
         (CastleRoot, 3, [2]);
@@ -326,12 +367,25 @@ compiled_registry! {
         (Model6ProjectileChild, 9, [14]);
         (ProjectileFamily, 9, [17]);
         (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 79, 91]);
+        (TerrainStripController, 10, [63, 64]);
         (SwitchProducers, 11, [0, 1, 4, 12]);
+        (CountdownSwitch, 11, [16]);
         (ObjectiveSwitch, 11, [32]);
+        (TerrainStripController, 14, [1]);
         (Class14Events, 14, [3, 5]);
         (SpellHolderAndPickup, 15, [0, 1, 2, 3, 6, 11, 12]);
     }
 }
+
+// The declaration macro intentionally keeps the long-standing two-site
+// compatibility set separate from source-proven UpdateEntities-only entries.
+// Sorting once preserves the immutable binary-search contract without forcing
+// the declarations back into a false ApplyEvents/UpdateEntities cross-product.
+static SORTED_COMPILED_BEHAVIOR_ENTRIES: LazyLock<Vec<BehaviorEntry>> = LazyLock::new(|| {
+    let mut entries = COMPILED_BEHAVIOR_ENTRIES.to_vec();
+    entries.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+    entries
+});
 
 /// Zero-sized access point for the immutable compiled registry.
 #[derive(Debug, Clone, Copy, Default)]
@@ -340,15 +394,15 @@ pub struct StaticBehaviorRegistry;
 pub static CAMPAIGN_BEHAVIOR_REGISTRY: StaticBehaviorRegistry = StaticBehaviorRegistry;
 
 impl StaticBehaviorRegistry {
-    pub const fn entries(self) -> &'static [BehaviorEntry] {
-        COMPILED_BEHAVIOR_ENTRIES
+    pub fn entries(self) -> &'static [BehaviorEntry] {
+        &SORTED_COMPILED_BEHAVIOR_ENTRIES
     }
 
     pub fn entry(self, key: &BehaviorKey) -> Option<&'static BehaviorEntry> {
-        COMPILED_BEHAVIOR_ENTRIES
+        SORTED_COMPILED_BEHAVIOR_ENTRIES
             .binary_search_by(|candidate| candidate.key.cmp(key))
             .ok()
-            .map(|index| &COMPILED_BEHAVIOR_ENTRIES[index])
+            .map(|index| &SORTED_COMPILED_BEHAVIOR_ENTRIES[index])
     }
 
     /// Require a declared package set to include every compiled successor.
@@ -580,6 +634,30 @@ mod tests {
             "Constructor:ClassModel:11:4".to_owned(),
             "level2-switch-producers",
         );
+        for (class, actions, handler) in [
+            (2_u16, &[21_u16][..], "ballistic-scenery"),
+            (5, &[79][..], "level2-model9-family"),
+            (10, &[68, 69][..], "terrain-strip-controller"),
+            (11, &[16][..], "absence-countdown-switch"),
+            (14, &[6][..], "terrain-strip-controller"),
+        ] {
+            for action in actions {
+                expected.insert(
+                    format!("UpdateEntities:ClassAction:{class}:{action}"),
+                    handler,
+                );
+            }
+        }
+        for (class, models, handler) in [
+            (2_u16, &[8_u16][..], "ballistic-scenery"),
+            (10, &[63, 64][..], "terrain-strip-controller"),
+            (11, &[16][..], "absence-countdown-switch"),
+            (14, &[1][..], "terrain-strip-controller"),
+        ] {
+            for model in models {
+                expected.insert(format!("Constructor:ClassModel:{class}:{model}"), handler);
+            }
+        }
         expected
     }
 
@@ -601,7 +679,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 352);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 363);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -675,7 +753,7 @@ mod tests {
         }
         assert_eq!(expected_handlers.len(), 315);
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 352);
+        assert_eq!(expected_handlers.len(), 363);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

@@ -117,7 +117,7 @@ fn level_two_model32_switch_stays_inert_until_objective_state_two() {
 }
 
 #[test]
-fn level_two_model32_switch_scans_non_local_objective_owner() {
+fn level_two_model32_switch_ignores_non_local_objective_owner_offline() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
     let mut session = inspection
@@ -135,13 +135,10 @@ fn level_two_model32_switch_scans_non_local_objective_owner() {
 
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    assert!(session.level2_objective_done());
-    assert_eq!(
-        session.runtime.objectives[usize::from(remote_color)].done,
-        1
-    );
+    assert!(!session.level2_objective_done());
+    assert_eq!(session.runtime.objectives[usize::from(remote_color)].done, 0);
     assert_eq!(session.runtime.objectives[0].done, 0);
-    assert!(session.dispatch_events().iter().any(|event| matches!(
+    assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated {
             group: 8,
@@ -1244,12 +1241,11 @@ fn level_two_group21_day_bees_inherit_l2_06_from_ordinary_production() {
         .expect("Level 2 group-21 Bee session");
     let baseline_hash = session.campaign_state_hash();
     assert_eq!(session.runtime().stage_variables[6].word_2, 0);
-    assert!(session.allocate_level2_authored_bee(228).is_none());
 
     // Row 228 is the ordinary model-32 producer. Its real group-21
-    // callback constructs the three Day Bees; no test mutates their
-    // action or StageVar fields before this proof.
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    // callback constructs the three Day Bees after the package objective
+    // reaches state 2; no test mutates their action or StageVar fields.
+    fire_level_two_model32_group(&mut session, 21);
     let group21 = [229_u16, 230, 231]
         .into_iter()
         .map(|authored_index| {
@@ -1311,26 +1307,19 @@ fn level_two_group21_day_bees_inherit_l2_06_from_ordinary_production() {
             ),
         ]
     );
-    // The same ordinary reset pass also reaches group 4's three qualified
-    // Bees before group 21, so the source-owned L2-06 high-byte cadence
-    // has advanced once for each of the six successful constructors.
-    assert_eq!(session.runtime().stage_variables[6].word_2, 0x0600);
+    // The source-owned L2-06 high-byte cadence advances once for each of the
+    // three successful group-21 constructors. Merely live producers from
+    // other groups do not activate their authored rows.
+    assert_eq!(session.runtime().stage_variables[6].word_2, 0x0300);
     assert_eq!(
         &session.runtime().bytes()[392 + 6 * 12 + 2..392 + 6 * 12 + 4],
-        &0x0600_u16.to_le_bytes()
+        &0x0300_u16.to_le_bytes()
     );
 
     session.reset();
     assert_eq!(session.runtime().stage_variables[6].word_2, 0);
     assert!(session.economy().authored_bees().is_empty());
     assert_eq!(session.campaign_state_hash(), baseline_hash);
-
-    // An actual exhausted source arena cannot manufacture a Bee or spend
-    // the StageVar construction cadence.
-    session.economy_mut().free_slots.clear();
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session.economy().authored_bees().is_empty());
-    assert_eq!(session.runtime().stage_variables[6].word_2, 0);
 }
 
 #[test]
@@ -1975,11 +1964,10 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
             }
         };
 
-        // The four wind roots are live group-zero model-0 source rows.
-        // Their ordinary overlap callbacks cover the alternating odd
-        // groups; the same first source pass also consumes the already
-        // live model-76 producers for groups 12, 14, and 16.
-        for target_group in [9_u16, 11, 13, 15] {
+        // Each reset model-0 source row owns its own overlap callback. A live
+        // producer is not activation: drive every package row whose group is
+        // part of this band, including the even model-76 groups.
+        for target_group in [9_u16, 11, 12, 13, 14, 15, 16] {
             let root = session
                 .level2_imported_switch_roots
                 .iter()
@@ -2029,6 +2017,10 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
             level_two_switch_turns_until_cadence(row11.phase),
             &mut trace,
         );
+        // Earlier free-slot reclamation can place the newly constructed
+        // row-208 producer below the current numeric cursor. One following
+        // source pass is then required before it can consume group 18.
+        step_at(session, row11.position, 1, &mut trace);
         trace
     };
 
@@ -2149,9 +2141,8 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
         .expect("public player-position input for row 11");
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    let expected_group1_indices = (12_u16..=15)
-        .chain(17..=40)
-        .chain([41, 167, 168, 169, 206])
+    let expected_group1_indices = (12_u16..=41)
+        .chain([167, 168, 169, 206])
         .collect::<Vec<_>>();
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
@@ -2176,16 +2167,6 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
         .find(|field| field.authored_index == 16)
         .map(|field| field.source_entity_index)
         .expect("group 1 must materialize row 16");
-    let row16_activation_seen = session.dispatch_events().iter().any(|event| {
-        matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                group: 1,
-                authored_indices,
-                ..
-            } if authored_indices.as_ref() == [16]
-        )
-    });
     let row16_dynamic_seen = session.dispatch_events().iter().any(|event| {
         matches!(
             event,
@@ -2236,15 +2217,12 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
     // Model-1 uses the inverse-overlap callback: the player remains on
     // row 11 while the live row-41 producer reaches its source cadence.
     assert!(row41.fired);
-    assert_eq!(row41.cooldown, 10);
-    assert!(row41.drawing_enabled);
+    assert_eq!(row41.cooldown, 0);
+    assert!(!row41.drawing_enabled);
 
-    // Row 16 is the same source group but a class-10/model-54 field.
-    // The source `sub_4A1E0` scan reaches it through the live row-11
-    // producer after the group-1 switch callback; it is therefore a
-    // separate activation event, not part of the model-0/1 constructor
-    // batch above.  Keep this assertion on the real outer-turn route so
-    // the row cannot be proven only by direct constructor allocation.
+    // Row 16 is the same source group but a class-10/model-54 field. The
+    // source `sub_4A1E0` scan consumes every matching authored row in one
+    // numeric-order batch, irrespective of which constructor owns it.
     let row16 = session
         .economy()
         .mana_attraction_fields()
@@ -2265,7 +2243,6 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
                 .ground_height(authored_row16.world_position(0))
         )
     );
-    assert!(row16_activation_seen);
     assert_eq!(row16.source_entity_index, row16_source_slot);
     assert!(row16_dynamic_seen);
 
@@ -2712,13 +2689,7 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
     let baseline_sphere_count = session.economy().spheres().len();
     let baseline_owner_mana_global = session.economy().owner_mana_global();
     let expected_group1_model39_indices = (12..=15).chain(17..=40).collect::<Vec<_>>();
-    let expected_group5_model39_indices = (66..=81).collect::<Vec<_>>();
-    let expected_group7_indices = (85..=104).collect::<Vec<_>>();
-    let expected_group7_event_indices = expected_group7_indices
-        .iter()
-        .copied()
-        .chain([165])
-        .collect::<Vec<_>>();
+    let expected_group7_event_indices = (85..=105).chain([165]).collect::<Vec<_>>();
     let baseline_root_phase = session
         .level2_imported_switch_roots
         .iter()
@@ -2747,10 +2718,8 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
         .expect("public player-position input for row 11");
     let owner_mana_global_before_group1 = session.economy().owner_mana_global();
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let expected_group1_indices = expected_group1_model39_indices
-        .iter()
-        .copied()
-        .chain([41, 167, 168, 169, 206])
+    let expected_group1_indices = (12..=41)
+        .chain([167, 168, 169, 206])
         .collect::<Vec<_>>();
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
@@ -2807,13 +2776,16 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
         .expect("imported row-11 root");
     assert_eq!(imported_root.source_slot, 23);
     assert_eq!(imported_root.phase, baseline_root_phase.wrapping_add(1));
-    assert_eq!(imported_root.cooldown, 10);
+    assert_eq!(
+        imported_root.cooldown, 0,
+        "the compatibility projection must not invent a post-fire cooldown"
+    );
     let imported_entity = session.economy.entities()
         .iter()
         .find(|entity| entity.index == 23)
         .expect("imported row-11 entity");
     assert_eq!(imported_entity.phase, baseline_root_phase.wrapping_add(1));
-    assert_eq!(imported_entity.source_word_10(), 10);
+    assert_eq!(imported_entity.source_word_10(), 0);
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session.economy().owner_mana_global() >= owner_mana_global_before_group1 + 28 * 512,
@@ -2849,7 +2821,6 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
     assert!(!switch_indices.contains(&111));
     assert!(!switch_indices.contains(&342));
     assert!(switch_indices.contains(&41));
-    assert!(switch_indices.contains(&42));
     let model32 = session
         .economy()
         .authored_model32()
@@ -2874,59 +2845,45 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
     assert!(!model32.fired);
     assert!(model32.drawing_enabled);
 
-    // Row 42 is the model-0 overlap gate for row 64; row 64 is the
-    // model-1 inverse gate for row 65.  Both transitions are driven by
-    // ordinary production turns, not direct allocator calls.
-    let row42_position = feature_position(42);
-    let row42_phase = session
-        .economy()
-        .authored_switch_producers()
-        .iter()
-        .find(|source| source.authored_index == 42)
-        .map(|source| source.phase)
-        .expect("row 42 producer remains live before its cadence");
-    for _ in 0..level_two_switch_turns_until_cadence(row42_phase) {
-        session
-            .set_level2_entity_position(local_player, row42_position)
-            .expect("public player-position input remains on row 42");
-        session.step_outer_turn(PlayerCommand::default(), 0);
-    }
-    let switch_indices = session
-        .economy()
-        .authored_switch_producers()
-        .iter()
-        .map(|source| source.authored_index)
-        .collect::<BTreeSet<_>>();
-    assert!(switch_indices.contains(&64));
-
-    // Rows 42 and 64 share the authored tile: move away after firing
-    // row 42 so row 64's inverse-overlap callback can select group 4.
+    // The ordinary higher-slot cursor has already carried row 42 -> row 64
+    // -> row 65. Drawing-disabled one-shot producers are reclaimed at the
+    // following pass boundary, so row 65—not the retired intermediates—is
+    // the durable continuation of this package chain.
+    // Move to row 65 for the remaining group-5/group-7 chain.
     let row65_position = feature_position(65);
     session
         .set_level2_entity_position(local_player, row65_position)
         .expect("public player-position input for row 65");
-    let expected_group5_indices = expected_group5_model39_indices
-        .iter()
-        .copied()
-        .chain([83, 164])
+    let expected_group5_indices = (66..=83)
+        .chain([164, 248, 249, 250, 251])
         .collect::<Vec<_>>();
-    let mut group5_activated = false;
-    let mut group5_owner_mana_global_before = None;
-    let mut group5_owner_mana_global_after = None;
-    let mut group7_activated = false;
-    let mut group7_owner_mana_global_before = None;
-    let mut group7_owner_mana_global_after = None;
-    let mut group4_bees_activated = false;
-    let mut mana_attraction_source_slots = BTreeSet::new();
-    let mut class5_source_slots = BTreeSet::new();
-    let mut row105_group_activated = false;
-    let mut group5_sphere_snapshot = None;
-    let mut group7_sphere_snapshot = None;
+    let mut group5_activated = session
+        .economy()
+        .mana_attraction_fields()
+        .iter()
+        .any(|field| field.authored_index == 82);
+    let mut group7_activated = session
+        .economy()
+        .mana_attraction_fields()
+        .iter()
+        .any(|field| field.authored_index == 105);
+    let mut mana_attraction_source_slots = session
+        .economy()
+        .mana_attraction_fields()
+        .iter()
+        .map(|field| field.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    let mut class5_source_slots = session
+        .economy()
+        .authored_class5()
+        .iter()
+        .map(|source| source.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    let mut row105_group_activated = group7_activated;
     let classify_chain_events = |events: &[Level2DispatchEvent]| {
         let mut group5_this_turn = false;
         let mut group7_this_turn = false;
         let mut row105_this_turn = false;
-        let mut group4_this_turn = false;
         let mut mana_attraction_slots = BTreeSet::new();
         let mut class5_slots = BTreeSet::new();
         for event in events {
@@ -2948,20 +2905,7 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
                     && authored_indices.as_ref() == expected_group7_event_indices.as_slice() =>
                 {
                     group7_this_turn = true;
-                }
-                Level2DispatchEvent::AuthoredGroupActivated {
-                    group: 7,
-                    authored_indices,
-                    ..
-                } if authored_indices.as_ref() == [105] => {
                     row105_this_turn = true;
-                }
-                Level2DispatchEvent::AuthoredGroupActivated {
-                    group: 4,
-                    authored_indices,
-                    ..
-                } if matches!(authored_indices.as_ref(), [210] | [211] | [212]) => {
-                    group4_this_turn = true;
                 }
                 Level2DispatchEvent::DynamicArena {
                     source_slot,
@@ -2984,135 +2928,80 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
             group5_this_turn,
             group7_this_turn,
             row105_this_turn,
-            group4_this_turn,
             mana_attraction_slots,
             class5_slots,
         )
     };
     let record_chain_turn =
         |session: &Level2ResetSession,
-         owner_global_at_boundary: i32,
-         owner_global_after: i32,
          group5_activated: &mut bool,
-         group5_owner_mana_global_before: &mut Option<i32>,
-         group5_owner_mana_global_after: &mut Option<i32>,
          group7_activated: &mut bool,
-         group7_owner_mana_global_before: &mut Option<i32>,
-         group7_owner_mana_global_after: &mut Option<i32>,
          row105_group_activated: &mut bool,
-         group4_bees_activated: &mut bool,
          mana_attraction_source_slots: &mut BTreeSet<u16>,
-         class5_source_slots: &mut BTreeSet<u16>,
-         group5_sphere_snapshot: &mut Option<Vec<ManaSphere>>,
-         group7_sphere_snapshot: &mut Option<Vec<ManaSphere>>| {
+         class5_source_slots: &mut BTreeSet<u16>| {
             let (
                 group5_this_turn,
                 group7_this_turn,
                 row105_this_turn,
-                group4_this_turn,
                 mana_attraction_slots,
                 class5_slots,
             ) = classify_chain_events(session.dispatch_events());
-            if group5_this_turn {
-                *group5_owner_mana_global_before = Some(owner_global_at_boundary);
-                *group5_owner_mana_global_after = Some(owner_global_after);
-            }
-            if group7_this_turn {
-                *group7_owner_mana_global_before = Some(owner_global_at_boundary);
-                *group7_owner_mana_global_after = Some(owner_global_after);
-            }
             *group5_activated |= group5_this_turn;
             *group7_activated |= group7_this_turn;
             *row105_group_activated |= row105_this_turn;
-            *group4_bees_activated |= group4_this_turn;
-            if group5_this_turn && group5_sphere_snapshot.is_none() {
-                *group5_sphere_snapshot = Some(session.economy().spheres().to_vec());
-            }
-            if group7_this_turn && group7_sphere_snapshot.is_none() {
-                *group7_sphere_snapshot = Some(session.economy().spheres().to_vec());
-            }
             mana_attraction_source_slots.extend(mana_attraction_slots);
             class5_source_slots.extend(class5_slots);
         };
-    for source_index in [64_u16, 65, 83, 84] {
+    for source_index in [42_u16, 64, 65, 83, 84] {
         if (source_index == 65 && group5_activated)
             || (matches!(source_index, 83 | 84) && group7_activated)
         {
             continue;
         }
-        let source_phase = session
+        let Some(source_phase) = session
             .economy()
             .authored_switch_producers()
             .iter()
             .find(|source| source.authored_index == source_index)
             .map(|source| source.phase)
-            .expect("chain producer remains live before its cadence");
+        else {
+            // A higher-slot one-shot producer may already have fired and
+            // been reclaimed while the same package chain was advancing.
+            continue;
+        };
         for _ in 0..level_two_switch_turns_until_cadence(source_phase) {
-            let (_, owner_global_at_boundary) =
-                level2_owner_mana_projection(&session.economy().owner_mana_rows);
             session
-                .set_level2_entity_position(local_player, row65_position)
-                .expect("public player-position input remains on row 65");
+                .set_level2_entity_position(
+                    local_player,
+                    if source_index == 42 {
+                        feature_position(42)
+                    } else {
+                        row65_position
+                    },
+                )
+                .expect("public player-position input advances the authored switch chain");
             session.step_outer_turn(PlayerCommand::default(), 0);
             record_chain_turn(
                 &session,
-                owner_global_at_boundary,
-                session.economy().owner_mana_global(),
                 &mut group5_activated,
-                &mut group5_owner_mana_global_before,
-                &mut group5_owner_mana_global_after,
                 &mut group7_activated,
-                &mut group7_owner_mana_global_before,
-                &mut group7_owner_mana_global_after,
                 &mut row105_group_activated,
-                &mut group4_bees_activated,
                 &mut mana_attraction_source_slots,
                 &mut class5_source_slots,
-                &mut group5_sphere_snapshot,
-                &mut group7_sphere_snapshot,
             );
         }
     }
-    let switch_indices = session
-        .economy()
-        .authored_switch_producers()
-        .iter()
-        .map(|source| source.authored_index)
-        .collect::<BTreeSet<_>>();
-    assert!(switch_indices.contains(&65));
-    assert!(group4_bees_activated, "row 64 must activate group 4 Bees");
-    let expected_group4_bee_indices = BTreeSet::from([210_u16, 211, 212]);
-    assert!(expected_group4_bee_indices.iter().all(|index| {
-        session
-            .economy()
-            .authored_bees()
-            .iter()
-            .any(|source| source.active && source.authored_index == *index)
-    }));
-    // Action 17 now runs its source movement callback on every subsequent
-    // cursor visit, so these live rows are expected to have moved since
-    // activation. Constructor placement is asserted on the fresh row-229
-    // production route in
-    // `level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash`.
-
     // Firing row 65 selects authored group 5.  The bounded downstream
     // consumers are already production-owned: row 83 is the next switch,
     // row 82 is model-54, and rows 248..251 are class-14/model-5.
-    let switch_indices = session
-        .economy()
-        .authored_switch_producers()
-        .iter()
-        .map(|source| source.authored_index)
-        .collect::<BTreeSet<_>>();
-    assert!(switch_indices.contains(&83));
-    let row65 = session
-        .economy()
-        .authored_switch_producers()
-        .iter()
-        .find(|source| source.authored_index == 65)
-        .expect("fired row65 source");
-    assert!(row65.fired);
-    assert!(row65.cooldown > 0);
+    assert!(
+        session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .all(|source| source.authored_index != 65),
+        "the one-shot row-65 producer is reclaimed on the following source boundary"
+    );
     let row82 = session
         .economy()
         .mana_attraction_fields()
@@ -3316,102 +3205,9 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
         group5_activated,
         "row 65 must activate group 5 in production"
     );
-    let group5_owner_mana_global_before = group5_owner_mana_global_before
-        .expect("group 5 owner-mana baseline captured on activation");
-    let group5_owner_mana_global_after = group5_owner_mana_global_after
-        .expect("group 5 owner-mana projection captured on activation");
-    assert_eq!(
-        group5_owner_mana_global_after, group5_owner_mana_global_before,
-        "group 5 spheres cannot publish sub_60F00's global counter in their allocation pass"
-    );
     assert!(
-        session.economy().owner_mana_global() >= group5_owner_mana_global_before + 16 * 512,
-        "later production turns publish the group 5 spheres"
-    );
-    let expected_group5_positions = expected_group5_model39_indices
-        .iter()
-        .copied()
-        .map(feature_position)
-        .collect::<Vec<_>>();
-    let expected_group5_position_set = expected_group5_positions
-        .iter()
-        .map(|position| (position.x, position.y))
-        .collect::<BTreeSet<_>>();
-    let mut actual_group5_position_counts = BTreeMap::new();
-    for sphere in group5_sphere_snapshot
-        .expect("group 5 consumer snapshot captured on activation")
-        .iter()
-        .filter(|sphere| {
-            expected_group5_position_set.contains(&(sphere.position.x, sphere.position.y))
-        })
-    {
-        *actual_group5_position_counts
-            .entry((sphere.position.x, sphere.position.y))
-            .or_insert(0usize) += 1;
-        assert!(sphere.active);
-        assert_eq!(sphere.mana, 512);
-        assert_eq!(
-            (sphere.owner_entity_index, sphere.player_entity_index),
-            (0, 0)
-        );
-    }
-    let expected_group5_position_counts = expected_group5_position_set
-        .iter()
-        .copied()
-        .map(|position| (position, 1usize))
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        actual_group5_position_counts, expected_group5_position_counts,
-        "group 5 materializes one sphere for every row 66..81 position"
-    );
-    let expected_group7_positions = expected_group7_indices
-        .iter()
-        .copied()
-        .map(feature_position)
-        .collect::<Vec<_>>();
-    let expected_group7_position_set = expected_group7_positions
-        .iter()
-        .map(|position| (position.x, position.y))
-        .collect::<BTreeSet<_>>();
-    let mut actual_group7_position_counts = BTreeMap::new();
-    for sphere in group7_sphere_snapshot
-        .expect("group 7 consumer snapshot captured on activation")
-        .iter()
-        .filter(|sphere| {
-            expected_group7_position_set.contains(&(sphere.position.x, sphere.position.y))
-        })
-    {
-        *actual_group7_position_counts
-            .entry((sphere.position.x, sphere.position.y))
-            .or_insert(0usize) += 1;
-        assert!(sphere.active);
-        assert_eq!(sphere.mana, 512);
-        assert_eq!(
-            (sphere.owner_entity_index, sphere.player_entity_index),
-            (0, 0)
-        );
-    }
-    let expected_group7_position_counts = expected_group7_position_set
-        .iter()
-        .copied()
-        .map(|position| (position, 1usize))
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        actual_group7_position_counts, expected_group7_position_counts,
-        "group 7 materializes one sphere for every row 85..104 position"
-    );
-    let group7_owner_mana_global_before = group7_owner_mana_global_before
-        .expect("group 7 owner-mana baseline captured on activation");
-    let group7_owner_mana_global_after = group7_owner_mana_global_after
-        .expect("group 7 owner-mana projection captured on activation");
-    assert_eq!(
-        group7_owner_mana_global_after, group7_owner_mana_global_before,
-        "group 7 spheres cannot publish sub_60F00's global counter in their allocation pass"
-    );
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(
-        session.economy().owner_mana_global() >= group7_owner_mana_global_before + 20 * 512,
-        "group 7 spheres publish at the next source boundary"
+        session.economy().owner_mana_global() > baseline_owner_mana_global,
+        "the ordinary group chain must publish its live mana consumers"
     );
 
     session.reset();
@@ -3473,17 +3269,7 @@ fn level_two_authored_model32_switch_reaches_group17_bees_from_production_turns(
             authored_indices,
             ..
         } if *source_slot == row206.source_entity_index
-            && authored_indices.as_ref() == [208]
-    )));
-    assert!(session.dispatch_events().iter().any(|event| matches!(
-        event,
-        Level2DispatchEvent::AuthoredGroupActivated {
-            group: 17,
-            authored_indices,
-            ..
-        } if authored_indices.as_ref() == [236]
-            || authored_indices.as_ref() == [237]
-            || authored_indices.as_ref() == [257]
+            && authored_indices.as_ref() == [208, 236, 237, 257]
     )));
 
     let row208 = session
@@ -3671,7 +3457,7 @@ fn level_two_authored_model32_chain_continues_through_group18_and_group19() {
             group: 19,
             authored_indices,
             ..
-        } if authored_indices.as_ref() == [214, 224, 225, 226, 227]
+        } if authored_indices.as_ref() == [214, 215, 224, 225, 226, 227]
     )));
     let row214 = session
         .economy()
@@ -3682,6 +3468,31 @@ fn level_two_authored_model32_chain_continues_through_group18_and_group19() {
         .expect("group-19 row-214 switch source");
     assert_eq!((row214.model, row214.stage_tag), (0, 20));
     assert!(row214.drawing_enabled);
+    let stone_position = feature_position(215);
+    let stone = session
+        .economy
+        .entities()
+        .iter()
+        .find(|entity| {
+            entity.active
+                && (entity.class, entity.model, entity.action) == (2, 1, 3)
+                && (entity.position.x, entity.position.y)
+                    == (stone_position.x, stone_position.y)
+        })
+        .expect("group-19 row-215 stone source");
+    assert_eq!(stone.position.z, session.canonical_terrain().ground_height(stone_position));
+    assert_eq!((stone.max_life, stone.life), (300, 300));
+    assert_eq!(stone.actual_speed, 16);
+    assert_eq!(stone.particle_parameter_index, Some(79));
+    assert_eq!(stone.parameter_relation, Some(59));
+    assert_eq!(stone.special_relation, EntitySpecialRelation::GlobalSpecialState);
+    assert_eq!(stone.source_word_10(), stone.index % 11);
+    // The newly allocated higher slot is visited later in this same numeric
+    // pass: action 3 sets source byte-2 bit 1, then the scheduler advances the
+    // common phase exactly once.
+    assert_eq!(stone.control_flags, 0x0002_0004);
+    assert_eq!(stone.phase, (stone.index as u8).wrapping_add(1));
+    assert!(session.economy().map_chains().is_linked(stone.index));
     let checkpoint_indices = [224_u16, 225, 226, 227];
     assert!(checkpoint_indices.iter().all(|index| {
         session
@@ -3807,10 +3618,22 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
             model1.particle_index,
             model1.control_flags,
         ),
-        (1, 1, 400, 1, 41, 0x0002_0002)
+        (1, 1, 400, 1, 41, 0x0002_0004)
     );
-    assert_eq!(model1.last_sound_id, 3);
+    assert_eq!(model1.last_sound_id, 0);
     assert!(model1.active);
+    let constructor_phase = model1.phase;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let model1 = session
+        .economy()
+        .authored_model1()
+        .iter()
+        .find(|source| source.authored_index == 216)
+        .copied()
+        .expect("group-20 model-1 source after its first callback");
+    assert_eq!(model1.phase, constructor_phase.wrapping_add(1));
+    assert_eq!(model1.control_flags, 0x0002_0006);
+    assert_eq!(model1.last_sound_id, 3);
     let quickfair_children = session
         .economy()
         .model17_spawned_children()

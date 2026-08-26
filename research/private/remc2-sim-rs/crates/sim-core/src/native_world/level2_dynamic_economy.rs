@@ -286,6 +286,7 @@ fn level2_castle_auxiliary_roam(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2CastleProjectileLaunchPayload {
     pub position: Position,
+    pub axis_position: Position,
     pub yaw: i16,
     pub pitch: i16,
     pub source_id_entity_index: u16,
@@ -310,10 +311,41 @@ pub struct Level2FireballProjectileLaunchPayload {
     pub source_dword_0x10: i32,
 }
 
+/// One live source-list row eligible for Fireball target acquisition. The
+/// caller supplies rows in remc2 list order: class 3 first, then class-5
+/// model buckets 0..28 excluding model 22.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Level2FireballGuidanceTarget {
+    pub source_slot: u16,
+    pub source_id: u16,
+    pub top_position: Position,
+}
+
+/// One map-linked collision row read by `sub_10780` after flyer movement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Level2FireballCollisionTarget {
+    pub source_slot: u16,
+    pub source_id: u16,
+    pub position: Position,
+    pub half_width: i16,
+    pub vertical_offset: i16,
+    pub half_height: i16,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Level2FireballStep {
     pub live: bool,
-    pub impact_sound: bool,
+    pub impact_slot: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Level2Class10Model0Step {
+    pub live: bool,
+    pub first_impact: bool,
+    pub damage_pulse: bool,
+    pub owner_entity_index: u16,
+    pub payload: u16,
+    pub position: Position,
 }
 
 impl Level2EconomyState {
@@ -395,6 +427,7 @@ impl Level2EconomyState {
             output_model: possession_source_byte_0x44(physical_tier),
             target_source_entity_index: 0,
             acquisition_attempted: false,
+            threat_accounted: false,
             position: launch_position,
             axis_position,
             yaw: yaw & 0x07ff,
@@ -452,6 +485,8 @@ impl Level2EconomyState {
             axis_position: payload.axis_position,
             yaw: payload.yaw & 0x07ff,
             pitch: payload.pitch & 0x07ff,
+            roll: payload.yaw & 0x07ff,
+            fov: payload.pitch & 0x07ff,
             actual_speed: FIREBALL_SPEED
                 .wrapping_add(player_speed)
                 .clamp(FIREBALL_SPEED, 0x2000),
@@ -459,9 +494,12 @@ impl Level2EconomyState {
             life: FIREBALL_LIFETIME_TICKS,
             max_life: FIREBALL_LIFETIME_TICKS,
             dword_0x10: payload.source_dword_0x10,
+            target_source_entity_index: 0,
+            acquisition_attempted: false,
+            threat_accounted: false,
             control_flags: 0,
             source_word_2c: 0,
-            phase: 0,
+            phase: source_entity_index as u8,
             active: true,
             drawing_disabled: false,
         };
@@ -517,116 +555,359 @@ impl Level2EconomyState {
         true
     }
 
-    /// Source `sub_30D50` callback. Collision is attempted once on the first
-    /// non-delayed callback, before the callback RNG/audio tail; the hidden row
-    /// remains map-linked until the following source boundary reclaims it.
+    /// Source `CastPlayerFire_65B30 -> sub_65C20` callback for the live
+    /// class-9/model-0 flyer. Guidance and collision happen here; RNG, damage,
+    /// sound, and the short lifetime belong to the distinct class-10 impact.
+    /// A failed impact allocation leaves the flyer live at the terminal
+    /// position so the next scheduled callback retries the constructor.
     pub(super) fn step_fireball_projectile_slot(
         &mut self,
         source_slot: u16,
         terrain: &SessionTerrain,
+        imported_entities: &[EntitySnapshot],
     ) -> Level2FireballStep {
+        let guidance_targets = self.fireball_guidance_targets(imported_entities);
+        let collision_targets = self.fireball_collision_targets(imported_entities);
         let Some(projectile_index) = self.fireball_projectiles.iter().position(|projectile| {
             projectile.active && projectile.source_entity_index == source_slot
         }) else {
             return Level2FireballStep {
                 live: false,
-                impact_sound: false,
+                impact_slot: None,
             };
         };
         let mut projectile = self.fireball_projectiles[projectile_index];
-        projectile.phase = projectile.phase.wrapping_add(1);
-        let first_callback = projectile.control_flags & 0x2 == 0;
-        if projectile.dword_0x10 & 3 != 0 {
-            projectile.dword_0x10 = projectile.dword_0x10.wrapping_sub(1);
-        } else {
-            projectile.life = projectile.life.wrapping_sub(1);
-            if projectile.life < -1 {
-                projectile.active = false;
-                projectile.drawing_disabled = true;
-            } else {
-                crate::move_entity(
-                    &mut projectile.position,
-                    projectile.yaw,
-                    projectile.pitch,
-                    projectile.actual_speed,
-                );
-                if projectile.control_flags & 0x2 == 0 {
-                    // The source's byte-2 bit 0 suppresses the damage scan
-                    // while still allowing the one-shot callback tail below.
-                    // The typed row keeps that source byte in the high byte
-                    // of the existing control word; ordinary Fireball rows
-                    // are constructed with it clear.
-                    if projectile.control_flags & 0x0001_0000 == 0 {
-                        let target = self
-                            .authored_bees
-                            .iter()
-                            .filter(|bee| {
-                                bee.active
-                                    && bee.drawing_enabled
-                                    && bee.life >= 0
-                                    && bee.source_class == 5
-                                    && bee.model == 2
-                                    && bee.action == 17
-                                    && bee.source_entity_index != projectile.owner_entity_index
-                                    && bee.entity_id != projectile.owner_entity_index
-                                    && bee.pending_attacker_entity_index == 0
-                                    && self.map_chains.is_linked(bee.source_entity_index)
-                                    && crate::level1_mission::source_entities_overlap(
-                                        projectile.position,
-                                        LEVEL2_FIREBALL_COLLISION_HALF_WIDTH,
-                                        LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET,
-                                        LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT,
-                                        bee.position,
-                                        LEVEL2_BEE_COLLISION_HALF_EXTENT,
-                                        LEVEL2_BEE_GROUND_CLEARANCE,
-                                        LEVEL2_BEE_COLLISION_HALF_EXTENT,
-                                    )
-                            })
-                            .min_by_key(|bee| bee.source_entity_index)
-                            .map(|bee| bee.source_entity_index);
-                        if let Some(target_slot) = target {
-                            let _ = self.submit_authored_bee_damage(
-                                target_slot,
-                                projectile.payload,
-                                projectile.owner_entity_index,
-                            );
-                        }
+
+        if projectile.target_source_entity_index == 0 {
+            if !projectile.acquisition_attempted {
+                projectile.acquisition_attempted = true;
+                let mut best = None;
+                let mut best_score = u32::MAX;
+                for target in guidance_targets
+                    .iter()
+                    .copied()
+                    .filter(|target| target.source_id != projectile.owner_entity_index)
+                {
+                    let Some(score) = projectile_target_score(
+                        projectile.position,
+                        projectile.yaw,
+                        projectile.pitch,
+                        target.top_position,
+                    ) else {
+                        continue;
+                    };
+                    if score < best_score {
+                        best = Some(target);
+                        best_score = score;
                     }
-                    projectile.control_flags |= 0x2;
-                    projectile.entity_rng = level2_next_rng16(projectile.entity_rng);
-                    projectile.source_word_2c = i16::try_from(projectile.entity_rng % 0x41)
-                        .expect("Fireball RNG fits")
-                        - 32;
                 }
-                // `sub_580E0(position, ground, 0, 0, word_0x2c)` runs on
-                // every non-delayed live callback, including callbacks after
-                // the one-shot collision/audio gate has closed.
-                let ground = terrain.ground_height(projectile.position);
-                if projectile.position.z > ground {
-                    projectile.position.z = projectile
-                        .position
-                        .z
-                        .wrapping_add(projectile.source_word_2c);
+                if let Some(target) = best {
+                    projectile.target_source_entity_index = target.source_slot;
+                    (projectile.roll, projectile.fov) =
+                        projectile_guidance_angles(projectile.position, target.top_position);
+                    projectile.yaw = projectile.yaw.wrapping_add(turn_toward(
+                        projectile.yaw,
+                        projectile.roll,
+                        FIREBALL_INITIAL_YAW_TURN_LIMIT,
+                    )) & 0x07ff;
+                    projectile.pitch = projectile.fov;
+                } else {
+                    projectile.roll = projectile.yaw;
+                    projectile.fov = projectile.pitch;
                 }
-                if projectile.position.z <= ground {
-                    projectile.position.z = ground;
+            }
+        } else if let Some(target) = guidance_targets
+            .iter()
+            .find(|target| target.source_slot == projectile.target_source_entity_index)
+        {
+            (projectile.roll, projectile.fov) =
+                projectile_guidance_angles(projectile.position, target.top_position);
+            projectile.yaw = projectile.yaw.wrapping_add(turn_toward(
+                projectile.yaw,
+                projectile.roll,
+                FIREBALL_HOMING_YAW_TURN_LIMIT,
+            )) & 0x07ff;
+            projectile.pitch = projectile.pitch.wrapping_add(turn_toward(
+                projectile.pitch,
+                projectile.fov,
+                FIREBALL_HOMING_PITCH_TURN_LIMIT,
+            )) & 0x07ff;
+        }
+
+        let previous = projectile.position;
+        crate::move_entity(
+            &mut projectile.position,
+            projectile.yaw,
+            projectile.pitch,
+            projectile.actual_speed,
+        );
+
+        let collision_slot = source_map_search_slots(
+            &self.map_chains,
+            projectile.position,
+            &source_search_offsets(1),
+        )
+        .into_iter()
+        .find(|candidate_slot| {
+            collision_targets.iter().any(|candidate| {
+                candidate.source_slot == *candidate_slot
+                    && candidate.source_id != projectile.owner_entity_index
+                    && crate::level1_mission::source_entities_overlap(
+                        projectile.position,
+                        FIREBALL_COLLISION_HALF_WIDTH,
+                        FIREBALL_COLLISION_VERTICAL_OFFSET,
+                        FIREBALL_COLLISION_HALF_HEIGHT,
+                        candidate.position,
+                        candidate.half_width,
+                        candidate.vertical_offset,
+                        candidate.half_height,
+                    )
+            })
+        });
+
+        let mut terminal = collision_slot.is_some();
+        if let Some(target_slot) = collision_slot
+            && let Some(target) = collision_targets
+                .iter()
+                .find(|target| target.source_slot == target_slot)
+        {
+            projectile.position = target.position;
+        } else {
+            let ground = terrain.ground_height(projectile.position);
+            let cave_limit = terrain
+                .ceiling_height(projectile.position)
+                .map(|ceiling| ceiling.wrapping_sub(FIREBALL_COLLISION_HALF_HEIGHT));
+            if ground > projectile.position.z
+                || cave_limit.is_some_and(|limit| projectile.position.z > limit)
+            {
+                projectile.position = previous;
+                projectile.position.z = cave_limit.unwrap_or(ground);
+                if terrain.material_mask(projectile.position) == 1 {
+                    if let Some(splash) =
+                        self.allocate_authored_model5_water_splash(projectile.position, terrain)
+                    {
+                        if let Some(row) = self
+                            .authored_model5_water_splashes
+                            .iter_mut()
+                            .find(|row| row.source_entity_index == splash.source_entity_index)
+                        {
+                            row.entity_id = projectile.owner_entity_index;
+                        }
+                        self.source_owner
+                            .insert(splash.source_entity_index, projectile.owner_entity_index);
+                    }
+                    projectile.active = false;
+                    projectile.drawing_disabled = true;
+                    self.fireball_projectiles[projectile_index] = projectile;
+                    return Level2FireballStep {
+                        live: false,
+                        impact_slot: None,
+                    };
                 }
-                let _ = self.map_chains.sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: true,
-                    x: projectile.position.x,
-                    y: projectile.position.y,
-                });
+                terminal = true;
+            } else {
+                projectile.life = projectile.life.wrapping_sub(1);
+                terminal = projectile.life < 0;
             }
         }
-        self.source_rng.insert(source_slot, projectile.entity_rng);
+
         self.fireball_projectiles[projectile_index] = projectile;
-        Level2FireballStep {
-            live: projectile.active,
-            impact_sound: projectile.active
-                && first_callback
-                && projectile.control_flags & 0x2 != 0,
+        let _ = self.map_chains.sync_entity(RenderableMapSeed {
+            entity_index: source_slot,
+            active: true,
+            x: projectile.position.x,
+            y: projectile.position.y,
+        });
+        if !terminal {
+            return Level2FireballStep {
+                live: true,
+                impact_slot: None,
+            };
         }
+
+        let impact_slot = self.allocate_class10_model0_effect(
+            projectile.source_entity_index,
+            projectile.owner_entity_index,
+            projectile.yaw,
+            projectile.pitch,
+            projectile.position,
+            projectile.source_subspell_index,
+            0,
+            0x0002_0000,
+            128,
+            128,
+        );
+        if impact_slot.is_some() {
+            let projectile = &mut self.fireball_projectiles[projectile_index];
+            projectile.active = false;
+            projectile.drawing_disabled = true;
+        }
+        Level2FireballStep {
+            live: impact_slot.is_none(),
+            impact_slot,
+        }
+    }
+
+    /// Rebuild the source target-list view consumed by `sub_67CB0`: live
+    /// class-3 rows first, followed by class-5 model buckets in numeric model
+    /// order.  The imported rows retain their package link order; typed Bee
+    /// rows join their model-2 bucket by fixed source slot.
+    fn fireball_guidance_targets(
+        &self,
+        imported_entities: &[EntitySnapshot],
+    ) -> Vec<Level2FireballGuidanceTarget> {
+        let class3_slots = imported_entities
+            .iter()
+            .filter(|entity| {
+                entity.index != 0
+                    && entity.active
+                    && entity.life >= 0
+                    && entity.class == 3
+                    && entity.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+            })
+            .map(|entity| entity.index)
+            .collect::<BTreeSet<_>>();
+        let linked = class3_slots
+            .iter()
+            .filter_map(|slot| imported_entities.get(usize::from(*slot))?.next_relation)
+            .collect::<BTreeSet<_>>();
+        let mut targets = Vec::new();
+        if let Some(mut current) = class3_slots
+            .iter()
+            .copied()
+            .find(|slot| !linked.contains(slot))
+        {
+            let mut visited = BTreeSet::new();
+            while current != 0 && visited.insert(current) {
+                let Some(entity) = imported_entities.get(usize::from(current)) else {
+                    break;
+                };
+                if class3_slots.contains(&current) {
+                    let collision = entity.collision_target();
+                    targets.push(Level2FireballGuidanceTarget {
+                        source_slot: current,
+                        source_id: entity.source_id,
+                        top_position: Position {
+                            z: entity
+                                .position
+                                .z
+                                .wrapping_add(collision.collision_vertical_offset),
+                            ..entity.position
+                        },
+                    });
+                }
+                current = entity.next_relation.unwrap_or(0);
+            }
+        }
+
+        for model in 0..=28 {
+            if model == 22 {
+                continue;
+            }
+            let mut bucket = imported_entities
+                .iter()
+                .filter(|entity| {
+                    entity.index != 0
+                        && entity.active
+                        && entity.life >= 0
+                        && entity.class == 5
+                        && entity.model == model
+                        && entity.record_bytes().get(61).copied().unwrap_or_default() != 0
+                        && entity.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                })
+                .map(|entity| {
+                    let collision = entity.collision_target();
+                    Level2FireballGuidanceTarget {
+                        source_slot: entity.index,
+                        source_id: entity.source_id,
+                        top_position: Position {
+                            z: entity
+                                .position
+                                .z
+                                .wrapping_add(collision.collision_vertical_offset),
+                            ..entity.position
+                        },
+                    }
+                })
+                .collect::<Vec<_>>();
+            if model == 2 {
+                bucket.extend(self.authored_bees.iter().filter_map(|bee| {
+                    (bee.active && bee.drawing_enabled && bee.life >= 0 && bee.source_byte_39 != 0)
+                        .then_some(Level2FireballGuidanceTarget {
+                            source_slot: bee.source_entity_index,
+                            source_id: bee.entity_id,
+                            top_position: bee.position,
+                        })
+                }));
+            }
+            bucket.sort_unstable_by_key(|target| target.source_slot);
+            targets.extend(bucket);
+        }
+        targets
+    }
+
+    /// Project the map-linked rows needed by `sub_10780`. The qualified
+    /// Level-2 route exercises imported class-3 rows, typed Bee rows, and the
+    /// typed Castle root; all retain the source low-byte collision flag and
+    /// fixed slot identity used by the map chain.
+    fn fireball_collision_targets(
+        &self,
+        imported_entities: &[EntitySnapshot],
+    ) -> Vec<Level2FireballCollisionTarget> {
+        let mut targets = imported_entities
+            .iter()
+            .filter(|entity| {
+                entity.index != 0
+                    && entity.active
+                    && entity.life >= 0
+                    && entity.control_flags & 8 != 0
+                    && entity.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                    && self.map_chains.is_linked(entity.index)
+            })
+            .map(|entity| {
+                let collision = entity.collision_target();
+                Level2FireballCollisionTarget {
+                    source_slot: entity.index,
+                    source_id: entity.source_id,
+                    position: entity.position,
+                    half_width: collision.collision_half_width,
+                    vertical_offset: collision.collision_vertical_offset,
+                    half_height: collision.collision_half_height,
+                }
+            })
+            .collect::<Vec<_>>();
+        targets.extend(self.authored_bees.iter().filter_map(|bee| {
+            (bee.active
+                && bee.drawing_enabled
+                && bee.life >= 0
+                && bee.control_flags & 8 != 0
+                && self.map_chains.is_linked(bee.source_entity_index))
+            .then_some(Level2FireballCollisionTarget {
+                source_slot: bee.source_entity_index,
+                source_id: bee.entity_id,
+                position: bee.position,
+                half_width: LEVEL2_BEE_COLLISION_HALF_EXTENT,
+                vertical_offset: 0,
+                half_height: LEVEL2_BEE_COLLISION_HALF_EXTENT,
+            })
+        }));
+        if let Some(castle) = self.castle.filter(|castle| {
+            castle.active
+                && castle.life >= 0
+                && castle.control_flags & 8 != 0
+                && castle.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                && self.map_chains.is_linked(castle.source_entity_index)
+        }) {
+            targets.push(Level2FireballCollisionTarget {
+                source_slot: castle.source_entity_index,
+                source_id: castle.source_id_entity_index,
+                position: castle.position,
+                half_width: castle.shift_pitch,
+                vertical_offset: castle.shift_yaw,
+                half_height: castle.shift_fov,
+            });
+        }
+        targets
     }
 
     /// Source `NewAdd0A0C_4E8C0` product for a successful possession flyer
@@ -2494,7 +2775,7 @@ impl Level2EconomyState {
                 sphere.incoming_owner_entity_index = 0;
                 sphere.incoming_possession_payload = 0;
                 let protected = sphere.control_flags & 0x0020_0000 != 0;
-                if sphere.owner_entity_index != pending_owner && (payload != 0 || !protected) {
+                if sphere.player_entity_index != pending_owner && (payload != 0 || !protected) {
                     sphere.owner_entity_index = pending_owner;
                     sphere.player_entity_index = pending_owner;
                     sphere.control_flags &= !0x40;
@@ -2913,12 +3194,12 @@ impl Level2EconomyState {
             // argument and uses a signed 16-bit comparison for the settle
             // branch, so the resulting floor is ground + 512.
             if predicted.z > ground {
-                predicted.z = predicted.z.wrapping_add(LEVEL2_CASTLE_DEFENDER_CAVE_STEP);
+                predicted.z = predicted.z.wrapping_add(LEVEL2_CASTLE_DEFENDER_SETTLE_STEP);
             }
             if i32::from(predicted.z)
-                <= i32::from(ground) + i32::from(LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE)
+                <= i32::from(ground) + i32::from(LEVEL2_CASTLE_DEFENDER_FLOOR_CLEARANCE)
             {
-                predicted.z = ground.saturating_add(LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE);
+                predicted.z = ground.saturating_add(LEVEL2_CASTLE_DEFENDER_FLOOR_CLEARANCE);
             }
             if !blocked {
                 if let Some(ceiling) = terrain.ceiling_height(predicted) {
@@ -2929,13 +3210,16 @@ impl Level2EconomyState {
                 }
             }
         } else {
-            // `AddBallon_60AB0` uses the common non-Cave profile with the
-            // default str_160 words (c=0, a=0, e=-4) after targeting.
+            // `sub_4ABA0` binds every Castle defender to descriptor 68.
+            // `AddBallon_60AB0` forwards that descriptor's c=512 and e=-16
+            // words to `sub_580E0` on non-Cave maps.
             if predicted.z > ground {
-                predicted.z = predicted.z.wrapping_sub(4);
+                predicted.z = predicted.z.wrapping_add(LEVEL2_CASTLE_DEFENDER_SETTLE_STEP);
             }
-            if predicted.z <= ground {
-                predicted.z = ground;
+            if i32::from(predicted.z)
+                <= i32::from(ground) + i32::from(LEVEL2_CASTLE_DEFENDER_FLOOR_CLEARANCE)
+            {
+                predicted.z = ground.saturating_add(LEVEL2_CASTLE_DEFENDER_FLOOR_CLEARANCE);
             }
         }
         if let Some(mana) = transfer_mana {
@@ -3417,26 +3701,22 @@ impl Level2EconomyState {
         terrain: &SessionTerrain,
     ) -> Option<u16> {
         let footprint = self.castle_stage_footprints.get(&1)?.clone();
-        let (target_position, target_anchor) =
-            level2_castle_root_positions(terrain, &footprint, payload.position);
         let target_castle_slot = self
             .castle
             .filter(|castle| {
                 castle.active && self.player_castle_entity_index == castle.source_entity_index
             })
             .map_or(0, |castle| castle.source_entity_index);
-        let mut axis_position = if target_castle_slot == 0 {
-            payload.position
+        let axis_position = if target_castle_slot == 0 {
+            payload.axis_position
         } else {
             self.castle
                 .filter(|castle| castle.source_entity_index == target_castle_slot)
                 .map_or(payload.position, |castle| castle.position)
         };
+        let (target_position, target_anchor) =
+            level2_castle_root_positions(terrain, &footprint, axis_position);
         let initial_yaw = payload.yaw;
-        if target_castle_slot == 0 {
-            crate::move_entity(&mut axis_position, initial_yaw, 0, 4_096);
-            axis_position.z = terrain.ground_height(axis_position);
-        }
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let projectile = Level2CastleProjectile {
@@ -3511,6 +3791,17 @@ impl Level2EconomyState {
         self.spawn_castle_projectile_with_payload(
             Level2CastleProjectileLaunchPayload {
                 position: projectile_position,
+                axis_position: {
+                    let mut target = projectile_position;
+                    crate::move_entity(
+                        &mut target,
+                        player_next_entity.wrapping_add(player_yaw),
+                        0,
+                        4_096,
+                    );
+                    target.z = terrain.ground_height(target);
+                    target
+                },
                 yaw: player_next_entity.wrapping_add(player_yaw),
                 pitch: 0,
                 source_id_entity_index: owner_entity_index,
@@ -4816,9 +5107,9 @@ impl Level2EconomyState {
         let mut defender_total_mana = 0_i32;
         let mut defender_total_max_mana = 0_i32;
         // `sub_60400` supplies fixed v21 for this source visit. Do not
-        // compress the loop after a dead indexed holder is cleared: with
-        // v21=2, a live source slot 1 still tests byte_0x3E % 2 and uses
-        // source index 1 for the modulo-3 exclusion relations.
+        // compress the loop after a dead indexed holder is cleared: v21 also
+        // gates every holder with the parent Castle phase, while the fixed
+        // source index still owns the modulo-3 exclusion relations.
         let defender_target_count = target.min(defender_slots.len());
         for index in 0..defender_target_count {
             let slot = defender_slots[index];
@@ -4846,8 +5137,7 @@ impl Level2EconomyState {
                 >= snapshot.mana_capacity
             {
                 target_slot = castle_slot;
-            } else if child.source_byte_3e % u8::try_from(defender_target_count.max(1)).unwrap_or(1)
-                == 0
+            } else if snapshot.phase % u8::try_from(defender_target_count.max(1)).unwrap_or(1) == 0
                 && child.action == 9
             {
                 // Source installs the Castle relation before calling

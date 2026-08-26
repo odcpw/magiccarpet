@@ -701,7 +701,7 @@ pub enum MissionAudioSite {
     ExitSequenceSwitch,
     ExitAccelerationPhase6,
     ExitAccelerationPhase8,
-    SpeedPickup,
+    SpellPickup,
     ExperienceScroll,
     AbilityImproved,
     ObjectiveAnnouncement,
@@ -716,6 +716,7 @@ pub enum MissionAudioSite {
     WaterSplashFirstUpdate,
     ExitOverlap,
     CountdownSwitch,
+    TerrainStrip,
     CastleDefenseFirstShot,
     Count,
 }
@@ -752,7 +753,9 @@ pub enum SourceAudioCallTag {
     ExitOverlapSwitch,
     CountdownSwitchModel16,
     CountdownSwitchModel17,
-    SpeedPickup,
+    TerrainStripOpening,
+    TerrainStripClosing,
+    SpellPickup,
     PossessionLaunchTiered,
     PossessionLaunchBasic,
     InitialCastleLaunch,
@@ -775,7 +778,7 @@ pub enum SourceAudioCallTag {
 
 /// Compiler-checked binding from every reachable source occurrence identity
 /// to the production tag used at its Rust call path.
-pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 46] = [
+pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 48] = [
     (
         SourceAudioCallTag::VolumePreviewAdjustVolume,
         "286982557778df1130f462a82b40225bf7e9cff0ef1a128b9d00f0a7a0d6ea2a",
@@ -885,7 +888,15 @@ pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 46] = [
         "cf09989e4b8bbf4bf23e5f267f7a53203cf7bfba48e31a1afc2effdb0c11ae85",
     ),
     (
-        SourceAudioCallTag::SpeedPickup,
+        SourceAudioCallTag::TerrainStripOpening,
+        "4832eea61c718bc09ea84e21ed2496c81c45a716e1070847c4c5fb825d7e6985",
+    ),
+    (
+        SourceAudioCallTag::TerrainStripClosing,
+        "ad0cb20ea6469d838fed921f5a0b67e9390c091bb9c605f164f92d504150753c",
+    ),
+    (
+        SourceAudioCallTag::SpellPickup,
         "35a9f61e359f3b2c1eaa79c5cef0ccfa51c892800e2452cbdbbc16aaca45afc7",
     ),
     (
@@ -967,7 +978,7 @@ pub fn mark_source_audio_call(_tag: SourceAudioCallTag) {}
 
 #[cfg(test)]
 impl SourceAudioCallTag {
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 48] = [
         Self::VolumePreviewAdjustVolume,
         Self::GoatAction08Bleat,
         Self::GoatAction09Bleat,
@@ -995,7 +1006,9 @@ impl SourceAudioCallTag {
         Self::ExitOverlapSwitch,
         Self::CountdownSwitchModel16,
         Self::CountdownSwitchModel17,
-        Self::SpeedPickup,
+        Self::TerrainStripOpening,
+        Self::TerrainStripClosing,
+        Self::SpellPickup,
         Self::PossessionLaunchTiered,
         Self::PossessionLaunchBasic,
         Self::InitialCastleLaunch,
@@ -1057,7 +1070,7 @@ impl MissionAudioSite {
         Self::ExitSequenceSwitch,
         Self::ExitAccelerationPhase6,
         Self::ExitAccelerationPhase8,
-        Self::SpeedPickup,
+        Self::SpellPickup,
         Self::ExperienceScroll,
         Self::AbilityImproved,
         Self::ObjectiveAnnouncement,
@@ -1072,6 +1085,7 @@ impl MissionAudioSite {
         Self::WaterSplashFirstUpdate,
         Self::ExitOverlap,
         Self::CountdownSwitch,
+        Self::TerrainStrip,
         Self::CastleDefenseFirstShot,
     ];
 
@@ -1278,7 +1292,7 @@ impl MissionAudioSite {
                 "EventsFunctions.cpp:60570-60593",
                 true,
             ),
-            Self::SpeedPickup => (
+            Self::SpellPickup => (
                 "18",
                 "matched local player",
                 "1",
@@ -1396,6 +1410,14 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp:54497-54539",
+                true,
+            ),
+            Self::TerrainStrip => (
+                "47",
+                "terrain-strip controller",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:41802,42135,42145",
                 true,
             ),
             Self::CastleDefenseFirstShot => (

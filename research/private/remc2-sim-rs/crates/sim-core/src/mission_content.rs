@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     FlightWorld,
-    campaign::spec::{CampaignDefinition, CampaignSelection},
+    campaign::spec::{BehaviorSelector, CampaignDefinition},
     level1_mission::{
         AUTHORED_FEATURE_BYTES, AUTHORED_FEATURE_COUNT, AuthoredFeature, Level1MissionTemplate,
         Level1ResetSourceSlot, parse_authored_features,
@@ -28,6 +28,10 @@ pub const REMC2_SPEC_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 pub enum CampaignLevel {
     Level1,
     Level2,
+    /// Descriptor-selected campaign content. The external/internal identity
+    /// remains data on [`MissionContentProfile`]; adding another owner level
+    /// never adds another Rust enum variant or dispatcher.
+    Descriptor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +44,7 @@ pub enum MissionMap {
 pub enum ResetConstructor {
     Level1FrameZero,
     Level2QualifiedPackage,
+    DescriptorPackage,
 }
 
 /// Level-specific wizard/player settings that are part of the reset contract,
@@ -380,7 +385,10 @@ pub struct MissionContentProfile {
     pub authored_record_count: usize,
     pub authored_record_bytes: usize,
     pub reset_constructor: ResetConstructor,
-    pub wizard: MissionWizardSettings,
+    /// Legacy compatibility metadata. Descriptor-backed sessions derive the
+    /// authoritative player count, local slot, life, mana and music directly
+    /// from the validated runtime/player/entity members instead.
+    pub wizard: Option<MissionWizardSettings>,
     pub mappings: MissionMappings,
 }
 
@@ -398,14 +406,14 @@ impl MissionContentProfile {
         authored_record_count: AUTHORED_FEATURE_COUNT,
         authored_record_bytes: AUTHORED_FEATURE_BYTES,
         reset_constructor: ResetConstructor::Level1FrameZero,
-        wizard: MissionWizardSettings {
+        wizard: Some(MissionWizardSettings {
             player_count: 1,
             local_player_slot: 0,
             ai_player_slot: None,
             map_music: 1,
             initial_life: 1000,
             initial_mana: 1000,
-        },
+        }),
         mappings: MissionMappings {
             initial_activation_group: 0,
             player_marker_index: 1,
@@ -423,14 +431,14 @@ impl MissionContentProfile {
         authored_record_count: AUTHORED_FEATURE_COUNT,
         authored_record_bytes: AUTHORED_FEATURE_BYTES,
         reset_constructor: ResetConstructor::Level2QualifiedPackage,
-        wizard: MissionWizardSettings {
+        wizard: Some(MissionWizardSettings {
             player_count: 2,
             local_player_slot: 0,
             ai_player_slot: Some(1),
             map_music: 2,
             initial_life: 1000,
             initial_mana: 1000,
-        },
+        }),
         mappings: MissionMappings {
             initial_activation_group: 0,
             player_marker_index: 1,
@@ -458,33 +466,54 @@ impl MissionContentProfile {
         Ok(profile)
     }
 
-    /// Select the compiled decoder from a fully validated campaign
-    /// definition. This is the production Level 2 selector; metadata-only
-    /// selection remains solely for the sealed Level 1 and legacy Level 2
-    /// compatibility adapters.
+    /// Select the shared authored/reset decoder from a fully validated
+    /// campaign definition. External/internal level numbers remain data; the
+    /// decoder is selected by the member schema and compiled behavior
+    /// closure, never by adding a friendly Level-N implementation branch.
     pub fn from_campaign_definition(
         definition: &CampaignDefinition,
     ) -> Result<Self, MissionContentError> {
-        if definition.identity != CampaignSelection::LEVEL2 {
-            return Err(MissionContentError::InvalidProfile(format!(
-                "unsupported campaign definition external={} internal={} map_type_id={}",
-                definition.identity.external_level,
-                definition.identity.internal_level,
-                definition.identity.map_type_id
-            )));
-        }
         let authored = &definition.campaign_spec.authored_records;
         if authored.count != Some(AUTHORED_FEATURE_COUNT as u64)
             || authored.record_bytes != Some(AUTHORED_FEATURE_BYTES as u64)
-            || definition.campaign_spec.presentation_recipe.map_type != "Day"
             || !definition.campaign_spec.initial_activation.is_empty()
         {
             return Err(MissionContentError::InvalidProfile(
-                "campaign definition is not compatible with the compiled Level 2 decoder"
+                "campaign definition is not compatible with the shared authored/reset decoder"
                     .to_owned(),
             ));
         }
-        Ok(Self::LEVEL2)
+        let map = match definition
+            .campaign_spec
+            .presentation_recipe
+            .map_type
+            .as_str()
+        {
+            "Day" => MissionMap::Day,
+            "Night" => MissionMap::Night,
+            other => {
+                return Err(MissionContentError::InvalidProfile(format!(
+                    "campaign definition has unsupported map type {other}"
+                )));
+            }
+        };
+        Ok(Self {
+            spec_commit: REMC2_SPEC_COMMIT,
+            level: CampaignLevel::Descriptor,
+            external_level: definition.identity.external_level,
+            internal_level: definition.identity.internal_level,
+            map,
+            map_type_id: definition.identity.map_type_id,
+            authored_record_count: AUTHORED_FEATURE_COUNT,
+            authored_record_bytes: AUTHORED_FEATURE_BYTES,
+            reset_constructor: ResetConstructor::DescriptorPackage,
+            wizard: None,
+            mappings: MissionMappings {
+                initial_activation_group: 0,
+                player_marker_index: 1,
+                objective_selectors: LEVEL2_OBJECTIVE_SELECTORS,
+            },
+        })
     }
 
     #[must_use]
@@ -566,7 +595,40 @@ impl MissionContentTemplate {
         initial_global_rng: u32,
     ) -> Result<Self, MissionContentError> {
         let profile = MissionContentProfile::from_campaign_definition(definition)?;
-        Self::decode(profile, authored, reset_source_slots, initial_global_rng)
+        let mut template = Self::decode(profile, authored, reset_source_slots, initial_global_rng)?;
+
+        // Stage variables are part of the shared authored map layout, not a
+        // friendly Level-2 runtime profile. Descriptor campaigns retain them
+        // so only source-reachable families consult them.
+        template.level2_authored_stage_variables =
+            parse_level2_authored_stage_variables(authored, &template.authored_features)
+                .map_err(MissionContentError::Decode)?
+                .into_boxed_slice();
+
+        // Nyphur's wizard settings and the retained Level-2 activation plan
+        // are package capabilities. Their presence is selected by the live
+        // reset selector declared in required_behaviors, never by checking an
+        // external level number.
+        let requires_nyphur_settings = definition.required_behavior_keys().any(|key| {
+            key.dispatch_site == 2
+                && matches!(
+                    key.selector,
+                    BehaviorSelector::ClassAction {
+                        class: 3,
+                        action: 1
+                    }
+                )
+        });
+        if requires_nyphur_settings {
+            template.wizard_map_settings = parse_level2_wizard_map_settings(authored)
+                .map_err(MissionContentError::Decode)?
+                .into_boxed_slice();
+            template.level2_activation_plan = Some(
+                checked_in_level2_activation_plan(&template.authored_features)
+                    .map_err(MissionContentError::InvalidReset)?,
+            );
+        }
+        Ok(template)
     }
 
     pub fn decode(

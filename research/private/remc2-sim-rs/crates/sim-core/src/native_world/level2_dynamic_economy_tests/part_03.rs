@@ -1,5 +1,5 @@
     #[test]
-    fn level_two_castle_defender_cadence_keeps_fixed_source_v21_after_dead_slot() {
+    fn level_two_castle_defender_cadence_uses_root_phase_with_fixed_source_v21() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
@@ -24,7 +24,6 @@
         };
         assert_ne!(dead_slot, 0);
         assert_ne!(live_slot, 0);
-        let sentinel_target = 0xdead;
         {
             let mut economy = session.economy_mut();
             economy
@@ -39,12 +38,12 @@
                 .find(|child| child.source_entity_index == live_slot)
                 .expect("slot-1 defender");
             live.source_byte_3e = 1;
-            live.target_sphere_slot = sentinel_target;
+            live.target_sphere_slot = 0xdead;
         }
 
-        // The dead source slot is cleared first, but v21 remains two. A
-        // compact defenders.len()==1 loop would turn byte_0x3E==1 into a
-        // modulo-one hit and overwrite the live slot's sentinel target.
+        // The dead source slot is cleared first, but v21 remains two. Source
+        // gates every defender with the Castle root's phase, not the child
+        // phase, so root phase zero retargets this odd-phase live defender.
         session.economy_mut().maintain_castle_defenders(castle_slot);
         let live = session
             .economy()
@@ -54,7 +53,7 @@
             .copied()
             .expect("live slot-1 defender remains indexed");
         assert_eq!(live.source_byte_3e, 1);
-        assert_eq!(live.target_sphere_slot, sentinel_target);
+        assert_eq!(live.target_sphere_slot, castle_slot);
         let castle = session.economy().castle().expect("Castle");
         assert_eq!(castle.defender_slots, [0, live_slot, 0]);
         assert_eq!(castle.defender_count, 1);
@@ -666,8 +665,8 @@
             castle_position
         );
 
-        // At the same XY threshold, a holder above the source's +512 terrain
-        // allowance fails the exact altitude gate and does not transfer.
+        // The model-3 constructor binds descriptor 68. On Day terrain its
+        // -16 settle step clamps a holder at ground + 513 to ground + 512.
         let (
             mut session,
             _baseline_hash,
@@ -704,7 +703,7 @@
         assert_eq!(child.mana, 7);
         assert_eq!(child.life, 1);
         assert_eq!(child.position.x, holder_position.x);
-        assert_eq!(child.position.z, holder_ground.saturating_add(509));
+        assert_eq!(child.position.z, holder_ground.saturating_add(512));
     }
 
     #[test]
@@ -1165,7 +1164,7 @@
         assert_eq!(child.speed, LEVEL2_CASTLE_DEFENDER_CAVE_BLOCKED_SPEED);
         assert_eq!(
             child.position.z,
-            ground + LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE
+            ground + LEVEL2_CASTLE_DEFENDER_FLOOR_CLEARANCE
         );
         assert_eq!(
             child.cave_collision_cooldown,
@@ -2035,6 +2034,11 @@
                 y: 8_448,
                 z: 256,
             },
+            axis_position: Position {
+                x: 6_144,
+                y: 11_520,
+                z: 320,
+            },
             yaw: 1_792,
             pitch: -321,
             source_id_entity_index: 111,
@@ -2054,6 +2058,7 @@
             .copied()
             .expect("source-payload Castle carrier");
         assert_eq!(flyer.position, payload.position);
+        assert_eq!(flyer.axis_position, payload.axis_position);
         assert_eq!(flyer.yaw, payload.yaw);
         assert_eq!(flyer.pitch, payload.pitch);
         assert_eq!(flyer.owner_entity_index, payload.source_id_entity_index);
@@ -2604,119 +2609,4 @@
             )
         }));
 
-        // AUD-L2-080: InitSwitchChainZaxisAndSound resolves the first
-        // overlapping model-0 owner (the local player here), then emits
-        // before the group-10 model-76 allocation is announced.
-        session.reset();
-        let switch = session
-            .level2_group10_switch25
-            .expect("qualified imported model-0 switch 25");
-        session.state.position = switch.position;
-        session
-            .level2_group10_switch25
-            .as_mut()
-            .expect("switch 25 remains live")
-            .phase = 0;
-        let owner = session.state.entity_index;
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        let sound_index = session
-            .dispatch_events()
-            .iter()
-            .position(|event| {
-                matches!(
-                    event,
-                    Level2DispatchEvent::Economy {
-                        pass: 0,
-                        source_slot,
-                        event: Level2EconomyEvent::PreparedSound {
-                            source_entity_index,
-                            entity_index,
-                            player_index: -1,
-                            sound_id: 41,
-                        },
-                        ..
-                    } if *source_slot == switch.source_slot
-                        && *source_entity_index == switch.source_slot
-                        && *entity_index == owner
-                )
-            })
-            .expect("source pass emits switch sound 41");
-        let group_index = session
-            .dispatch_events()
-            .iter()
-            .position(|event| {
-                matches!(
-                    event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
-                        source_slot,
-                        group: 10,
-                        ..
-                    } if *source_slot == switch.source_slot
-                )
-            })
-            .expect("source pass announces switch group 10");
-        assert!(sound_index < group_index, "sound precedes group activation");
-        assert!(session.dispatch_events().iter().any(|event| {
-            matches!(
-                event,
-                Level2DispatchEvent::AuthoredGroupActivated {
-                    source_slot,
-                    group: 10,
-                    ..
-                } if *source_slot == switch.source_slot
-            )
-        }));
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        assert!(!session.dispatch_events().iter().any(|event| {
-            matches!(
-                event,
-                Level2DispatchEvent::Economy {
-                    source_slot,
-                    event: Level2EconomyEvent::PreparedSound { sound_id: 41, .. },
-                    ..
-                } if *source_slot == switch.source_slot
-            )
-        }));
-
-        // Wrong overlap and source-arena exhaustion consume no forbidden
-        // sound receipt and leave the switch available for a later source
-        // turn.
-        session.reset();
-        let switch = session
-            .level2_group10_switch25
-            .expect("switch 25 after reset");
-        session.state.position = Position {
-            x: switch.position.x.wrapping_add(0x4000),
-            ..switch.position
-        };
-        session
-            .level2_group10_switch25
-            .as_mut()
-            .expect("switch 25 non-overlap state")
-            .phase = 0;
-        session.step_level2_group10_switch25(0);
-        assert!(session.dispatch_events().is_empty());
-        assert!(session.level2_group10_switch25.is_some());
-
-        session.reset();
-        let switch = session
-            .level2_group10_switch25
-            .expect("switch 25 exhaustion state");
-        session.state.position = switch.position;
-        session
-            .level2_group10_switch25
-            .as_mut()
-            .expect("switch 25 exhaustion phase")
-            .phase = 0;
-        session.economy_mut().free_slots.clear();
-        session.step_level2_group10_switch25(0);
-        assert!(!session.dispatch_events().iter().any(|event| {
-            matches!(
-                event,
-                Level2DispatchEvent::Economy {
-                    event: Level2EconomyEvent::PreparedSound { sound_id: 41, .. },
-                    ..
-                }
-            )
-        }));
     }

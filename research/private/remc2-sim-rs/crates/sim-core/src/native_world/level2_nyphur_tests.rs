@@ -1,5 +1,9 @@
 use super::super::tests::level_two_fixture_path;
 use super::*;
+use crate::native_world::{
+    LEVEL2_NYPHUR_ENTITY_INDEX, POSSESSION_PROJECTILE_MODEL, level2_possession_guidance_target_top,
+    projectile_guidance_angles,
+};
 
 #[test]
 fn level_two_nyphur_participant_chain_is_source_bound_and_reset_isolated() {
@@ -97,6 +101,325 @@ fn level_two_nyphur_participant_chain_is_source_bound_and_reset_isolated() {
     holder_owner_tampered.players[1].enabled_spell_holders[0] = 114;
     holder_owner_tampered.players[1].record[268..270].copy_from_slice(&114_u16.to_le_bytes());
     assert!(holder_owner_tampered.nyphur_participant().is_err());
+}
+
+#[test]
+fn level_two_sub_159e0_accounts_an_ordinary_possession_relation_once() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 projectile-threat session");
+    session.select_level2_campaign_entry_stage();
+    let baseline_hash = session.campaign_state_hash();
+
+    let row11_position = session
+        .mission()
+        .authored_features()
+        .iter()
+        .copied()
+        .find(|feature| feature.index == 11)
+        .expect("qualified group-1 producer row")
+        .world_position(0);
+    session
+        .set_level2_entity_position(session.state.entity_index, row11_position)
+        .expect("public player input reaches the group-1 producer");
+    session.step_outer_turn(PlayerCommand::default(), 0);
+
+    let aim_reference_slot = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.active && !sphere.pending_delete)
+        .map(|sphere| sphere.source_entity_index)
+        .expect("entry-stage package materializes model-39 mana");
+    let target_position = {
+        let mut economy = session.economy_mut();
+        let target = economy
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == aim_reference_slot)
+            .expect("selected package sphere remains live");
+        level2_possession_guidance_target_top(target)
+    };
+    let mut player_position = target_position;
+    // `sub_68490` rejects guidance candidates beyond 5,120 source units.
+    // Stay comfortably inside that cone while remaining well outside the
+    // contact footprint, so acquisition and impact are separate visits.
+    player_position.x = player_position.x.wrapping_sub(4_096);
+    player_position.z = session.canonical_terrain().ground_height(player_position);
+    session.state.position = player_position;
+    session
+        .set_level2_entity_position(session.state.entity_index, player_position)
+        .expect("local player input position remains map-linked");
+    let mut launch_position = player_position;
+    crate::move_entity(
+        &mut launch_position,
+        session.state.yaw.wrapping_sub(512),
+        0,
+        256,
+    );
+    if session.canonical_terrain().ground_height(launch_position) > launch_position.z {
+        launch_position = player_position;
+    }
+    launch_position.z = launch_position.z.wrapping_add(session.state.entity_fov);
+    let (launch_yaw, launch_pitch) = projectile_guidance_angles(launch_position, target_position);
+
+    // The qualified local player owns family-1 Possession. Its ordinary
+    // player -> holder -> class-9/model-1 path acquires a real model-39 row
+    // during the same numeric source scan.
+    let request = PlayerCommand {
+        opcode: 6,
+        argument_1: 1,
+        flags: 0x40,
+        argument_6: launch_yaw.wrapping_sub(session.state.yaw).cast_unsigned(),
+        argument_8: launch_pitch
+            .wrapping_sub(session.state.display_pitch)
+            .cast_unsigned(),
+        ..PlayerCommand::default()
+    };
+    session.step_outer_turn(request, 0);
+    let mut projectile = session
+        .economy()
+        .possession_projectiles()
+        .iter()
+        .find(|projectile| {
+            projectile.active
+                && projectile.source_id_entity_index == session.state.entity_index
+                && projectile.source_model == POSSESSION_PROJECTILE_MODEL
+        })
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "ordinary Possession flyer did not acquire a package target: {:?}",
+                session.economy().possession_projectiles()
+            )
+        });
+    if projectile.target_source_entity_index == 0 {
+        assert!(
+            projectile.source_entity_index < 116,
+            "an earlier-slot birth is intentionally invisible until the next source scan"
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        projectile = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == projectile.source_entity_index)
+            .copied()
+            .expect("following scan visits the earlier-slot Possession flyer");
+    }
+    assert_ne!(
+        projectile.target_source_entity_index, 0,
+        "ordinary guidance must install a real model-39 relation: {projectile:?}"
+    );
+    assert!(
+        session.economy().spheres().iter().any(|sphere| {
+            sphere.active && sphere.source_entity_index == projectile.target_source_entity_index
+        }),
+        "the installed relation must name a live package sphere"
+    );
+    assert!(!projectile.threat_accounted);
+
+    // The existing long authored-route test proves Nyphur can establish this
+    // sphere ownership ordinarily; this focused test isolates the new prepass
+    // rather than repeating that multi-minute pursuit.
+    let mut economy = session.economy_mut();
+    let target = economy
+        .spheres
+        .iter_mut()
+        .find(|sphere| sphere.source_entity_index == projectile.target_source_entity_index)
+        .expect("acquired target remains a live mana sphere");
+    target.owner_entity_index = LEVEL2_NYPHUR_ENTITY_INDEX;
+    target.player_entity_index = LEVEL2_NYPHUR_ENTITY_INDEX;
+    target.mana = 2_048;
+
+    let attacker_color = session
+        .session
+        .state
+        .live
+        .core
+        .players
+        .iter()
+        .find(|player| player.entity_index == session.state.entity_index)
+        .expect("local player source row")
+        .player_color_index();
+    let threshold_index = 4 * usize::from(attacker_color) + 4;
+    let before_upkeep = session
+        .nyphur_common_upkeep()
+        .expect("Nyphur common carrier");
+    let before = before_upkeep.array_0x1fc[threshold_index];
+    assert_eq!(before, 0x601f);
+    let decay = (256_i32 - i32::from(before_upkeep.word_0x242)) as u16;
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let accounted = session
+        .economy()
+        .possession_projectiles()
+        .iter()
+        .find(|candidate| candidate.source_entity_index == projectile.source_entity_index)
+        .copied()
+        .expect("accounted projectile remains in its source generation");
+    assert!(accounted.active);
+    assert!(accounted.threat_accounted);
+    let after_accounting = session
+        .nyphur_common_upkeep()
+        .expect("post-accounting Nyphur common carrier");
+    assert_eq!(
+        after_accounting.array_0x1fc[threshold_index],
+        before.wrapping_add(512).wrapping_sub(decay),
+        "mana/4 is applied before the source-shaped same-pass common decay"
+    );
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == projectile.source_entity_index)
+            .is_none_or(|candidate| candidate.threat_accounted)
+    );
+    let following = session
+        .nyphur_common_upkeep()
+        .expect("following Nyphur common carrier");
+    let following_decay = (256_i32 - i32::from(after_accounting.word_0x242)) as u16;
+    assert_eq!(
+        following.array_0x1fc[threshold_index],
+        after_accounting.array_0x1fc[threshold_index].wrapping_sub(following_decay),
+        "the live projectile cannot add its threat a second time"
+    );
+
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_hash);
+}
+
+#[test]
+fn level_two_sub_159e0_accounts_an_ordinary_fireball_class3_relation_once() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 projectile-threat session");
+    session.select_level2_campaign_entry_stage();
+    let baseline_hash = session.campaign_state_hash();
+
+    let nyphur = session
+        .entities()
+        .iter()
+        .find(|entity| {
+            entity.active
+                && entity.index == LEVEL2_NYPHUR_ENTITY_INDEX
+                && entity.class == 3
+                && entity.model == 1
+        })
+        .cloned()
+        .expect("qualified Nyphur source row");
+    let collision = nyphur.collision_target();
+    let target_position = Position {
+        z: nyphur
+            .position
+            .z
+            .wrapping_add(collision.collision_vertical_offset),
+        ..nyphur.position
+    };
+    let mut player_position = target_position;
+    player_position.x = player_position.x.wrapping_sub(4_096);
+    player_position.z = session.canonical_terrain().ground_height(player_position);
+    session
+        .set_level2_entity_position(session.state.entity_index, player_position)
+        .expect("local player input position remains map-linked");
+
+    let mut launch_position = player_position;
+    let direction_bits = session.shared_spells().player_entity.control_flags & 0x0300;
+    let hand_yaw = if direction_bits & 0x0100 != 0 {
+        Some(session.state.yaw.wrapping_sub(512))
+    } else if direction_bits & 0x0200 != 0 {
+        Some(session.state.yaw.wrapping_add(512))
+    } else {
+        None
+    };
+    if let Some(hand_yaw) = hand_yaw {
+        crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+        if session.canonical_terrain().ground_height(launch_position) > launch_position.z {
+            launch_position = player_position;
+        }
+    }
+    launch_position.z = launch_position.z.wrapping_add(session.state.entity_fov);
+    let (launch_yaw, launch_pitch) = projectile_guidance_angles(launch_position, target_position);
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 0,
+            flags: 0x40,
+            argument_6: launch_yaw.wrapping_sub(session.state.yaw).cast_unsigned(),
+            argument_8: launch_pitch
+                .wrapping_sub(session.state.display_pitch)
+                .cast_unsigned(),
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    let mut projectile = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .find(|projectile| {
+            projectile.active
+                && projectile.owner_entity_index == session.state.entity_index
+                && projectile.source_model == crate::level1_mission::FIREBALL_PROJECTILE_MODEL
+        })
+        .copied()
+        .expect("ordinary family-0 holder creates a Fireball flyer");
+    if projectile.target_source_entity_index == 0 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        projectile = session
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == projectile.source_entity_index)
+            .copied()
+            .expect("following numeric pass visits the earlier-slot Fireball");
+    }
+    assert_eq!(
+        projectile.target_source_entity_index,
+        LEVEL2_NYPHUR_ENTITY_INDEX
+    );
+    assert!(!projectile.threat_accounted);
+
+    let attacker_color = session
+        .players()
+        .iter()
+        .find(|player| player.entity_index == session.state.entity_index)
+        .expect("local player source row")
+        .player_color_index();
+    let threshold_index = 4 * usize::from(attacker_color) + 4;
+    let before_upkeep = session
+        .nyphur_common_upkeep()
+        .expect("Nyphur common carrier");
+    let before = before_upkeep.array_0x1fc[threshold_index];
+    let decay = (256_i32 - i32::from(before_upkeep.word_0x242)) as u16;
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let accounted = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .find(|candidate| candidate.source_entity_index == projectile.source_entity_index)
+        .copied()
+        .expect("accounted Fireball remains reserved for its source generation");
+    assert!(accounted.threat_accounted);
+    let after = session
+        .nyphur_common_upkeep()
+        .expect("post-accounting Nyphur common carrier");
+    assert_eq!(
+        after.array_0x1fc[threshold_index],
+        before.wrapping_add(500).wrapping_sub(decay),
+        "model-0 class-3 pressure is applied once before Nyphur common decay"
+    );
+
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
 
 #[test]
@@ -2310,7 +2633,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     assert_eq!(
         production_states,
         BTreeSet::from([0_i8, 13_i8]),
-        "the qualified cursor currently reaches only default and the earlier state-13 selector"
+        "the qualified cursor reaches the package-backed default and state-13 selector"
     );
 
     // sub_13B00 is a production selector, not a test-only state setter.
@@ -2968,12 +3291,126 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     assert_eq!(failed_flags, 0x320);
     assert_eq!(failed_holder.active_value, 0);
 
-    // A common tail must not silently absorb a newly live selector. The
-    // now-owned family-2 branch must produce its source axis before the
-    // remaining fail-closed gates are considered. A class-3 model-2 row is
-    // owned by `sub_13E40` above this gate, so it no longer rejects the
-    // tail; the still-unowned model-3 branch (`sub_14250`) remains a
-    // rejection here.
+    // The owned player selector must execute before the still-unowned
+    // model-3 selector. The qualified reset threshold declines the local
+    // player, while the exact color latch admits it immediately.
+    assert_eq!(
+        session
+            .nyphur_dispatcher
+            .step_sub_14030(
+                112,
+                &session.economy.entities,
+                &session.players,
+                &session.session.definition.presentation,
+            )
+            .expect("qualified sub_14030 selector"),
+        None
+    );
+    let mut player_latched = session.nyphur_dispatcher.clone();
+    player_latched.common_upkeep.set_auxiliary_word(5, 1);
+    assert_eq!(
+        player_latched
+            .step_sub_14030(
+                112,
+                &session.economy.entities,
+                &session.players,
+                &session.session.definition.presentation,
+            )
+            .expect("color-latched sub_14030 selector"),
+        Some(111)
+    );
+
+    // The source's mana-advantage alternative is available only while the
+    // candidate player's Type-164 carrier has no Castle relation. The live
+    // dispatch view represents that Castle as class 3/model 2; treating it as
+    // a class-2 scenery row would admit the player despite an owned Castle.
+    let mut mana_advantage_entities = session.session.state.live.economy.entities.clone();
+    mana_advantage_entities[112].mana = 10_000;
+    mana_advantage_entities[111].mana = 0;
+    mana_advantage_entities[111].position = mana_advantage_entities[112].position;
+    let mut mana_advantage_players = session.players.clone();
+    mana_advantage_players
+        .iter_mut()
+        .find(|player| player.entity_index == 111)
+        .expect("qualified local player")
+        .enabled_spell_holders[2] = 113;
+    let candidate_source_id = mana_advantage_entities[111].source_id;
+    assert!(
+        mana_advantage_entities[113].index == 113
+            && mana_advantage_entities[113].active
+            && mana_advantage_entities[113].life >= 0,
+        "family-2 holder setup must resolve through sub_146C0"
+    );
+    assert!(session.nyphur_dispatcher.common_upkeep.sub_15e60());
+    assert!(
+        session
+            .nyphur_dispatcher
+            .common_upkeep
+            .sub_146c0(2, &mana_advantage_entities)
+            .is_none(),
+        "Nyphur's own family-2 holder would short-circuit sub_14030"
+    );
+    assert!(
+        Level2NyphurCommonUpkeep::sub_146c0_slot(
+            mana_advantage_players
+                .iter()
+                .find(|player| player.entity_index == 111)
+                .expect("qualified local player")
+                .enabled_spell_holders[2],
+            &mana_advantage_entities,
+        )
+        .is_some(),
+        "candidate family-2 holder must be live"
+    );
+    assert!(
+        mana_advantage_entities[111].mana
+            + 32 * (255 - i32::from(session.nyphur_dispatcher.common_upkeep.word_0x242,))
+            < mana_advantage_entities[112].mana,
+        "fixture must enter the mana-advantage alternative"
+    );
+    assert!(mana_advantage_entities.iter().all(|entity| {
+        !(entity.active
+            && entity.class == 3
+            && entity.model == 2
+            && entity.source_id == candidate_source_id)
+    }));
+    assert_eq!(
+        session
+            .nyphur_dispatcher
+            .step_sub_14030(
+                112,
+                &mana_advantage_entities,
+                &mana_advantage_players,
+                &session.session.definition.presentation,
+            )
+            .expect("castle-free mana-advantage selector"),
+        Some(111)
+    );
+    let mut castle_owned_entities = mana_advantage_entities.clone();
+    let castle_slot = castle_owned_entities
+        .iter()
+        .position(|entity| entity.index != 0 && !entity.active)
+        .expect("inactive source row for Castle projection");
+    castle_owned_entities[castle_slot] = castle_owned_entities[111].clone();
+    castle_owned_entities[castle_slot].index =
+        u16::try_from(castle_slot).expect("Castle projection slot fits source index");
+    castle_owned_entities[castle_slot].class = 3;
+    castle_owned_entities[castle_slot].model = 2;
+    assert_eq!(
+        session
+            .nyphur_dispatcher
+            .step_sub_14030(
+                112,
+                &castle_owned_entities,
+                &mana_advantage_players,
+                &session.session.definition.presentation,
+            )
+            .expect("Castle-owned mana-advantage selector"),
+        None
+    );
+
+    // The owned family-2 branch must produce its source axis before later
+    // class-3 selectors are considered.
     let mut family_two_live = session.session.state.live.nyphur_dispatcher.clone();
     family_two_live.common_upkeep.spell_holder_indices[2] = 113;
     assert!(
@@ -2981,20 +3418,6 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
             .sub_13b00_axis(&source, &session.economy.entities)
             .is_some()
     );
-    let mut model_two_live_entities = session.session.state.live.economy.entities.clone();
-    model_two_live_entities[111].model = 2;
-    assert!(session.nyphur_dispatcher.owned_tail_fallthrough_is_safe(
-        &source,
-        &model_two_live_entities,
-        &session.players
-    ));
-    let mut model_three_live_entities = session.session.state.live.economy.entities.clone();
-    model_three_live_entities[111].model = 3;
-    assert!(!session.nyphur_dispatcher.owned_tail_fallthrough_is_safe(
-        &source,
-        &model_three_live_entities,
-        &session.players
-    ));
 
     // Baseline captures include the AI record, arena/economy stream,
     // runtime bytes, terrain digest, typed event order, and hashes. The
@@ -3196,6 +3619,133 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
         stepped_dispatch_events.as_slice()
     );
     assert_eq!(session.nyphur_dispatch_traces(), stepped_traces.as_slice());
+}
+
+#[test]
+fn level_two_nyphur_sub_14250_uses_live_castle_defender_projection() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 Castle-defender selector session");
+    let owner_position = session.session.state.live.economy.entities[111].position;
+    let source_position = session.session.state.live.economy.entities[112].position;
+    let castle_slot = session
+        .economy_mut()
+        .build_castle(owner_position, 111)
+        .expect("source-backed Castle root");
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle.as_mut().expect("Castle root");
+        castle.level = 1;
+        castle.phase = 0;
+        castle.mana = 0;
+    }
+    session.economy_mut().maintain_castle_defenders(castle_slot);
+    let defender_slot = session
+        .economy()
+        .castle()
+        .expect("Castle root")
+        .defender_slots[0];
+    assert_ne!(defender_slot, 0);
+    {
+        let mut economy = session.economy_mut();
+        let defender = economy
+            .castle_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("live Castle defender");
+        defender.position = source_position;
+        defender.mana = 10_000;
+    }
+
+    let castle = session.economy().castle();
+    let castle_children = session.economy().castle_children().to_vec();
+    let mut spheres = session.economy().spheres().to_vec();
+    let mut entities = session.session.state.live.economy.entities.clone();
+    entities[112].phase = 0;
+    entities[112].record[66] = 0;
+    entities[114].active_value = 1;
+    let mut players = session.session.state.live.core.players.clone();
+    let owner = players
+        .iter_mut()
+        .find(|player| player.entity_index == 111)
+        .expect("Castle owner player");
+    owner.enabled_spell_holders[11] = 114;
+    let threshold_index = 4 * usize::from(owner.player_color_index()) + 4;
+    let terrain = session.session.state.live.terrain.clone();
+    let presentation = session.session.definition.presentation.clone();
+    let active_level_color_index = session
+        .session
+        .state
+        .live
+        .shared_spells
+        .local_player
+        .player_color_index();
+    let mut dispatcher = session.session.state.live.nyphur_dispatcher.clone();
+    dispatcher.state_byte = 0;
+    dispatcher
+        .common_upkeep
+        .set_auxiliary_word(threshold_index, u16::MAX);
+
+    dispatcher
+        .step_dispatch(
+            0,
+            112,
+            &mut entities,
+            &mut spheres,
+            castle,
+            &castle_children,
+            &players,
+            &terrain,
+            &presentation,
+            0,
+            active_level_color_index,
+        )
+        .expect("eligible Castle defender dispatch");
+    assert_eq!(dispatcher.state_byte, 9);
+    assert_eq!(entities[112].source_word_96(), defender_slot);
+    assert_eq!(
+        entities[112].source_word_98(),
+        level2_nyphur_source_identity_parts(111, 3, 3)
+    );
+
+    // The same source row is ineligible while it overlaps its owner's Castle;
+    // its mere presence must neither select state 9 nor raise the old
+    // unowned-selector error.
+    let mut overlapping_children = castle_children;
+    overlapping_children
+        .iter_mut()
+        .find(|child| child.source_entity_index == defender_slot)
+        .expect("overlapping Castle defender")
+        .position = owner_position;
+    let mut overlapping_entities = session.session.state.live.economy.entities.clone();
+    overlapping_entities[112].phase = 0;
+    overlapping_entities[112].record[66] = 0;
+    overlapping_entities[114].active_value = 1;
+    let mut overlapping_spheres = session.economy().spheres().to_vec();
+    let mut overlapping_dispatcher = session.session.state.live.nyphur_dispatcher.clone();
+    overlapping_dispatcher.state_byte = 0;
+    overlapping_dispatcher
+        .common_upkeep
+        .set_auxiliary_word(threshold_index, u16::MAX);
+    overlapping_dispatcher
+        .step_dispatch(
+            0,
+            112,
+            &mut overlapping_entities,
+            &mut overlapping_spheres,
+            castle,
+            &overlapping_children,
+            &players,
+            &terrain,
+            &presentation,
+            0,
+            active_level_color_index,
+        )
+        .expect("overlapping Castle defender falls through");
+    assert_ne!(overlapping_dispatcher.state_byte, 9);
+    assert_ne!(overlapping_entities[112].source_word_96(), defender_slot);
 }
 
 #[test]

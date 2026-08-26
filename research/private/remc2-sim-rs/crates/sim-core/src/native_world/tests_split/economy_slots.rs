@@ -650,12 +650,19 @@ fn level_two_setspell_projection_and_nonlocal_acquisition_are_isolated() {
     assert_eq!(pickup.record_bytes()[65], 0);
     assert_eq!(pickup.record_bytes()[74], 1);
     assert_eq!(
+        session.shared_spells().players[0].record_bytes()[476 + 12],
+        1,
+        "sub_68FF0 marks the source array_0x403 collected byte"
+    );
+    assert_eq!(
         session.shared_spells().players[0].record_bytes()[398 + 12],
-        1
+        0,
+        "acquisition must not rewrite the array_0x3B5 hand-side cache"
     );
     assert_eq!(
         session.shared_spells().players[0].record_bytes()[424 + 12],
-        1
+        0,
+        "acquisition must not rewrite the array_0x3CF blocked-spell byte"
     );
     assert_eq!(pickup.record_bytes()[140..144], 10_000_i32.to_le_bytes());
     assert_eq!(pickup.record_bytes()[144..148], 2_400_i32.to_le_bytes());

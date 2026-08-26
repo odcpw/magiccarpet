@@ -118,8 +118,8 @@ pub struct SpellHolderAcquisitionState {
     pub holder_relation: u16,
     /// Player `array_0x3B5` hand-side byte (1 = left, 2 = right).
     pub eligibility: u8,
-    /// Player `array_0x403` learned/acquired byte, kept separate from hand
-    /// eligibility as in the source player record.
+    /// Player `array_0x403` learned/acquired byte at compact record 476+family,
+    /// kept separate from the `array_0x3B5` hand-side projection.
     pub learned: u8,
     pub left_spell_slot: i16,
     pub right_spell_slot: i16,

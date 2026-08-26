@@ -212,6 +212,12 @@ pub struct VillagerFamily {
 }
 
 impl VillagerFamily {
+    pub(crate) fn empty(config: VillagerBehaviorConfig) -> Self {
+        Self {
+            villagers: Box::new([]),
+            config,
+        }
+    }
     pub fn from_entities(
         entities: &[EntitySnapshot],
         config: VillagerBehaviorConfig,

@@ -631,13 +631,27 @@ pub(super) fn open_campaign_session(
             None => DescriptorCampaignSession::open(package_root, campaign_selection),
         }
         .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-        campaign
-            .level2_compatibility_mut()
-            .select_level2_campaign_entry_stage();
+        // The retained Level 2 C-ABI route historically selects its authored
+        // entry objective before exposing generation zero.  That adjustment
+        // is not part of the neutral descriptor lifecycle: applying it to a
+        // different profiled campaign would overwrite the package's reset
+        // objective selector with a Level-2 constant.  Keep the compatibility
+        // write at its existing Level 2 boundary and leave every other
+        // descriptor-backed reset byte-exact.
+        if campaign.definition().identity == CampaignSelection::LEVEL2 {
+            campaign
+                .level2_compatibility_mut()
+                .select_level2_campaign_entry_stage();
+        }
         let generation = campaign.generation();
+        let campaign_package_sha256 = campaign.definition().package_sha256.clone();
         let inspection = Arc::new(campaign.inspection().clone());
-        let day_frame_assets =
-            load_optional_level2_day_frame_assets(asset_cache_path.as_deref())?.map(Arc::new);
+        let day_frame_assets = load_optional_day_frame_assets(
+            asset_cache_path.as_deref(),
+            inspection.as_ref(),
+            Some(&campaign_package_sha256),
+        )?
+        .map(Arc::new);
         let day_music = load_optional_level2_day_music(asset_cache_path.as_deref())?;
         CampaignSessionRecord {
             kind: CampaignSessionKind::Level2 {
@@ -678,7 +692,8 @@ pub(super) fn open_campaign_session(
                 .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
             reset.select_level2_campaign_entry_stage();
             let day_frame_assets =
-                load_optional_level2_day_frame_assets(asset_cache_path.as_deref())?.map(Arc::new);
+                load_optional_day_frame_assets(asset_cache_path.as_deref(), &inspection, None)?
+                    .map(Arc::new);
             let day_music = load_optional_level2_day_music(asset_cache_path.as_deref())?;
             CampaignSessionRecord {
                 kind: CampaignSessionKind::Level2 {

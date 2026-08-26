@@ -27,6 +27,10 @@ pub(super) type Result<T> = std::result::Result<T, NativeWorldError>;
 pub enum OwnerPackageProfile {
     Level1,
     Level2,
+    /// A validated campaign-v1 descriptor selects the exact member schema and
+    /// identity. This is intentionally not a Level-N variant: additional
+    /// campaigns reuse the same decoder/materializer.
+    Campaign,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -267,6 +271,13 @@ impl EntitySnapshot {
     pub(super) fn set_life(&mut self, life: i32) {
         self.life = life;
         self.record[12..16].copy_from_slice(&life.to_le_bytes());
+    }
+
+    /// Keep source `subSpellIndex_0x2A_42` in lockstep with a callback-owned
+    /// controller clock.
+    pub(super) fn set_subspell_index(&mut self, subspell_index: u16) {
+        self.subspell_index = subspell_index;
+        self.record[46..48].copy_from_slice(&subspell_index.to_le_bytes());
     }
 
     /// Keep the source mana field in lockstep with a common AI upkeep write.
@@ -1596,13 +1607,16 @@ pub struct PlayerSnapshot {
     pub selected_subspell_index: i8,
     pub enabled_spell_holders: [u16; PLAYER_SPELL_COUNT],
     pub spell_hand_eligibility: [u8; PLAYER_SPELL_COUNT],
-    /// Source `array_0x403` learned/acquired flags (record 424..450), kept
+    /// Source `array_0x3CF` spell-blocking flags (record 424..450), kept
     /// distinct from the hand-side bytes at record 398..424.
     pub learned_spell_flags: [u8; PLAYER_SPELL_COUNT],
-    /// Source `array_0x3E9`/`SpellsEnabled` projection (record 450..476).
+    /// Source `array_0x3E9` ownership projection (record 450..476).
     /// This is distinct from the hand-side eligibility bytes at record
     /// 398..424 and the holder relations above.
     pub spell_enabled_flags: [u8; PLAYER_SPELL_COUNT],
+    /// Source `array_0x403` learned/acquired flags (record 476..502).
+    /// `sub_68FF0` sets this byte only after binding the live holder relation.
+    pub acquired_spell_flags: [u8; PLAYER_SPELL_COUNT],
     pub family_selected_tiers: [i8; PLAYER_SPELL_COUNT],
     /// Source `SpellExperience_0x263_611x`, stored after the 60-byte player
     /// prefix. This persistent row is distinct from the runtime family-12
@@ -1642,6 +1656,32 @@ impl PlayerSnapshot {
         self.type_str_164_auxiliary.as_ref()
     }
 
+    /// Read one source `Type_str_164::array_0x1FC` word without exposing the
+    /// exporter-specific compact-record offset to campaign behavior code.
+    #[must_use]
+    pub(crate) fn type_str_164_array_word(&self, index: usize) -> Option<u16> {
+        self.type_str_164_auxiliary
+            .as_ref()?
+            .array_0x1FC_508
+            .get(index)
+            .copied()
+    }
+
+    /// Keep the typed and compact-record projections of one
+    /// `Type_str_164::array_0x1FC` word in lockstep.
+    pub(crate) fn set_type_str_164_array_word(&mut self, index: usize, value: u16) -> bool {
+        let Some(auxiliary) = self.type_str_164_auxiliary.as_mut() else {
+            return false;
+        };
+        let Some(word) = auxiliary.array_0x1FC_508.get_mut(index) else {
+            return false;
+        };
+        *word = value;
+        let offset = PLAYER_LEGACY_RECORD_BYTES + 23 + index * 2;
+        self.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        true
+    }
+
     /// Source `playerColorIndex_0x38_56` from the linked player-state record.
     /// `sub_68FF0` reads this dword_0xA4 field while walking model-0 entities;
     /// it is not the entity's unrelated byte at record offset 60.
@@ -1668,6 +1708,27 @@ impl PlayerSnapshot {
     /// `sub_33340` writes.
     pub(super) fn set_roll_0x155(&mut self, value: i16) {
         self.record[46..48].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// Commit only the player fields owned by `sub_68FF0` spell acquisition.
+    ///
+    /// The shared spell view is a callback projection, not a second complete
+    /// player authority. Copying the entire projection back would overwrite
+    /// unrelated movement, objective, score, and camera fields that earlier
+    /// source slots changed in the same pass.
+    pub(crate) fn sync_spell_acquisition_from(&mut self, source: &Self) {
+        debug_assert_eq!(self.entity_index, source.entity_index);
+        self.enabled_spell_holders = source.enabled_spell_holders;
+        self.acquired_spell_flags = source.acquired_spell_flags;
+        self.left_spell_slot = source.left_spell_slot;
+        self.right_spell_slot = source.right_spell_slot;
+        self.left_spell_slot_raw = source.left_spell_slot_raw;
+        self.right_spell_slot_raw = source.right_spell_slot_raw;
+        self.left_subspell_index = source.left_subspell_index;
+        self.right_subspell_index = source.right_subspell_index;
+        self.record[268..320].copy_from_slice(&source.record[268..320]);
+        self.record[476..502].copy_from_slice(&source.record[476..502]);
+        self.record[554..560].copy_from_slice(&source.record[554..560]);
     }
 
     /// Apply the linked player-state writes made by the human banished
@@ -3190,6 +3251,26 @@ impl RuntimeSnapshot {
         true
     }
 
+    /// Apply remc2 `sub_122C0(group)` to the live StageVar table before an
+    /// authored group is scanned. Kind-7 rows store the group selector in the
+    /// low signed word of their axis relation; matching rows publish bits
+    /// `0x18` in the source flags byte even when the group has no remaining
+    /// authored rows.
+    pub(super) fn broadcast_authored_group(&mut self, group: i16) {
+        for (index, stage_var) in self.stage_variables.iter_mut().enumerate().skip(1) {
+            let RuntimeRelation::AxisScalar(value) = stage_var.relation else {
+                continue;
+            };
+            if stage_var.kind != 7 || (value as u16) as i16 != group {
+                continue;
+            }
+            stage_var.flags = (stage_var.flags as u8 | 0x18) as i8;
+            if let Some(raw_flags) = self.bytes.get_mut(392 + index * 12 + 1) {
+                *raw_flags = stage_var.flags as u8;
+            }
+        }
+    }
+
     pub(super) fn set_level2_objective_stage_selector_for(
         &mut self,
         objective_index: usize,
@@ -3570,17 +3651,132 @@ impl NativeWorldInspection {
         &self,
         definition: &ValidatedCampaignDefinition,
     ) -> Result<Level2ResetSession> {
+        if definition.identity != CampaignSelection::LEVEL2 {
+            return Err(NativeWorldError::new(
+                "Level 2 compatibility session requested for a different campaign identity",
+            ));
+        }
+        self.campaign_reset_session_from_definition(definition)
+    }
+
+    /// Construct the one descriptor-backed campaign authority. Optional
+    /// behavior families are selected from observed reset carriers, never
+    /// from an external/internal level-number branch.
+    pub(crate) fn campaign_reset_session_from_definition(
+        &self,
+        definition: &ValidatedCampaignDefinition,
+    ) -> Result<Level2ResetSession> {
         let mission = self
             .mission_content_template_from_definition(definition)?
             .session();
-        self.build_level2_reset_session(mission)
+        self.build_campaign_reset_session(definition, mission)
+    }
+
+    fn build_campaign_reset_session(
+        &self,
+        definition: &ValidatedCampaignDefinition,
+        mission: MissionContentSession,
+    ) -> Result<Level2ResetSession> {
+        if self.has_qualified_level2_capability_bundle() {
+            return self.build_level2_reset_session(mission);
+        }
+        self.build_descriptor_reset_session(definition, mission)
+    }
+
+    fn has_qualified_level2_capability_bundle(&self) -> bool {
+        self.runtime.player_count == 2
+            && self.players.get(1).is_some_and(|player| player.is_ai)
+            && self
+                .entities
+                .get(111)
+                .is_some_and(|entity| entity.active && entity.class == 3 && entity.model == 0)
+            && LEVEL2_SHARED_SPELL_PICKUP_SLOTS
+                .into_iter()
+                .chain(LEVEL2_SHARED_SPELL_HOLDER_SLOTS)
+                .all(|slot| {
+                    self.entities
+                        .get(usize::from(slot))
+                        .is_some_and(|row| row.active)
+                })
+    }
+
+    fn build_descriptor_reset_session(
+        &self,
+        definition: &ValidatedCampaignDefinition,
+        mission: MissionContentSession,
+    ) -> Result<Level2ResetSession> {
+        let state = self
+            .reset_state
+            .ok_or_else(|| NativeWorldError::new("validated campaign has no reset state"))?;
+        let local_player = self
+            .players
+            .get(usize::from(self.runtime.local_player_slot))
+            .ok_or_else(|| NativeWorldError::new("campaign local player row is absent"))?;
+        let player_entity = self
+            .entities
+            .get(usize::from(local_player.entity_index))
+            .filter(|row| row.active && row.class == 3)
+            .ok_or_else(|| NativeWorldError::new("campaign local player entity is absent"))?;
+        let economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
+            SessionTerrain::from_inspection(self),
+            &self.entities,
+            player_entity.mana,
+            player_entity.model,
+            0,
+            local_player.enabled_spell_holders[2],
+            self.runtime.random_state,
+            self.level2_castle_stage_footprints.clone(),
+        )?;
+        let shared_spells = Level2SharedSpellResetSession::from_campaign_parts(
+            &self.entities,
+            &self.players,
+            &self.runtime,
+        )?;
+        let construction_inputs = definition
+            .read_member("feature-construction-inputs.bin")
+            .map_err(|error| NativeWorldError::new(error.to_string()))?;
+        let house_parameters = decode_campaign_house_parameters(&construction_inputs)
+            .map_err(NativeWorldError::new)?;
+        let ordinary = Level2OrdinaryResetSession::from_campaign_parts(
+            &self.entities,
+            &self.players,
+            &self.runtime,
+            self.level2_house_build_footprints.clone(),
+            &house_parameters,
+        )?;
+        let goats = GoatFamily::empty(
+            &self.entities,
+            GOAT_STAGE_POINT,
+            GoatBehaviorConfig::LEVEL_TWO,
+        );
+        Ok(Level2ResetSession::new(
+            self.metadata.map_type.profile(),
+            self.package_sha256.clone(),
+            state,
+            SessionTerrain::from_inspection(self),
+            self.entities.clone(),
+            self.players.clone(),
+            self.runtime.clone(),
+            self.presentation.clone(),
+            Box::new([]),
+            shared_spells,
+            economy,
+            ordinary,
+            goats,
+            mission,
+            NyphurCapability::absent(),
+            self.collision_masks.clone(),
+        ))
     }
 
     fn build_level2_reset_session(
         &self,
         mission: MissionContentSession,
     ) -> Result<Level2ResetSession> {
-        if self.profile != OwnerPackageProfile::Level2 {
+        if !matches!(
+            self.profile,
+            OwnerPackageProfile::Level2 | OwnerPackageProfile::Campaign
+        ) {
             return Err(NativeWorldError::new(
                 "Level 2 reset session requested for a non-Level 2 package",
             ));
@@ -3680,7 +3876,7 @@ impl NativeWorldInspection {
             ordinary,
             goats,
             mission,
-            nyphur_dispatcher,
+            NyphurCapability::present(nyphur_dispatcher),
             self.collision_masks.clone(),
         ))
     }

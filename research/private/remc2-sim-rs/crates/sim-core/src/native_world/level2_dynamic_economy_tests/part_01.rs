@@ -228,6 +228,66 @@
     }
 
     #[test]
+    fn level_two_mana_sphere_claim_compares_the_raw_player_relation() {
+        let mut session = level_two_possession_lifecycle_session();
+        let player = session.state.entity_index;
+        session.activate_level2_authored_switch_group(0, 23, 1);
+        let target_slot = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.active && !sphere.pending_delete)
+            .expect("authored group supplies a mana sphere")
+            .source_entity_index;
+        let ground = {
+            let sphere = session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .expect("selected mana sphere remains live");
+            session.canonical_terrain().ground_height(sphere.position)
+        };
+        let baseline_events = session.economy().events().len();
+        {
+            let mut economy = session.economy_mut();
+            let sphere = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .expect("selected mana sphere remains mutable");
+            sphere.owner_entity_index = player;
+            sphere.player_entity_index = 112;
+            sphere.incoming_owner_entity_index = player;
+            sphere.incoming_possession_payload = 0;
+            sphere.control_flags &= !0x0020_0000;
+            sphere.position.z = ground.saturating_add(1_024);
+        }
+
+        assert!(
+            session.economy_mut().step_mana_sphere_slot(target_slot),
+            "the selected source row executes"
+        );
+        let sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .expect("airborne claimed sphere remains live");
+        assert_eq!(sphere.owner_entity_index, player);
+        assert_eq!(sphere.player_entity_index, player);
+        assert_eq!(sphere.incoming_owner_entity_index, 0);
+        assert_eq!(session.economy().events().len(), baseline_events + 1);
+        assert_eq!(
+            session.economy().events().last(),
+            Some(&Level2EconomyEvent::ManaSphereClaimed {
+                sphere_id: sphere.id,
+                owner_entity_index: player,
+            })
+        );
+    }
+
+    #[test]
     fn level_two_possession_expiry_retries_model12_allocation() {
         let mut session = level_two_possession_lifecycle_session();
         let source_id_entity_index = session.state.entity_index;
@@ -1171,6 +1231,7 @@
                         output_model: POSSESSION_IMPACT_MODEL,
                         target_source_entity_index: 0,
                         acquisition_attempted: false,
+                        threat_accounted: false,
                         position,
                         axis_position: position,
                         yaw: 0,

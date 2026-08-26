@@ -26,6 +26,86 @@ pub(super) fn level_two_fixture_path() -> PathBuf {
     )
 }
 
+/// Fire one real reset-imported model-32 producer through its source
+/// objective relation. Tests that need an authored group must advance the
+/// package's producer; a live class-11 row alone is not an activation event.
+fn fire_level_two_model32_group(session: &mut Level2ResetSession, group: u16) -> u16 {
+    let (source_slot, stage_index) = session
+        .economy
+        .entities()
+        .iter()
+        .find(|entity| {
+            entity.active
+                && entity.class == 11
+                && entity.model == 32
+                && entity.action == 32
+                && entity.source_id == group
+                && !entity.drawing_disabled()
+        })
+        .map(|entity| {
+            (
+                entity.index,
+                usize::try_from(entity.level_gate).expect("model-32 objective stage index"),
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!("qualified package has no live model-32 producer for group {group}")
+        });
+    for objective_index in 0..session.runtime.objectives.len() {
+        session
+            .runtime
+            .set_level2_objective_stage_selector_for(objective_index, stage_index, 2);
+    }
+    let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(
+        evidence.len(),
+        1,
+        "group {group} producer failed: {:?}",
+        session.dispatch_events()
+    );
+    assert!(
+        session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: event_source_slot,
+                group: event_group,
+                ..
+            } if *event_source_slot == source_slot && *event_group == group
+        )),
+        "group {group} source {source_slot} stage {stage_index} did not fire (stage_count {}, players {:?}, objective states {:?}, source_after {:?}, bees {}, activated {:?}): {:?}",
+        session.runtime.stage_index,
+        session
+            .players()
+            .iter()
+            .map(|player| (player.active_player_index, player.player_color_index()))
+            .collect::<Vec<_>>(),
+        session
+            .runtime
+            .objectives
+            .iter()
+            .map(|objective| objective.stage_selectors[stage_index])
+            .collect::<Vec<_>>(),
+        session
+            .economy
+            .entities()
+            .get(usize::from(source_slot))
+            .map(|source| (
+                source.active,
+                source.class,
+                source.model,
+                source.action,
+                source.level_gate,
+                source.source_id,
+                source.phase,
+                source.drawing_disabled()
+            )),
+        session.economy.authored_bees().len(),
+        session.level2_bees_activated,
+        session.dispatch_events()
+    );
+    source_slot
+}
+
 fn level_two_v3_fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc2-l2-native2.Ibpz9b/out")
 }
@@ -157,31 +237,43 @@ fn level_two_model76_switch25_activation_turns(phase: u8) -> usize {
     1 + usize::from((8_u8.wrapping_sub(phase & 7)) & 7)
 }
 
+fn acquire_level_two_beyond_sight_from_ordinary_route(
+    session: &mut Level2ResetSession,
+) -> SpellHolderAcquisitionOutcome {
+    let source_position = session.shared_spells().pickups()[0].position;
+    session
+        .set_level2_entity_position(session.state.entity_index, source_position)
+        .expect("public player-position input for family-12 source");
+    for _ in 0..2 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        if let Some(outcome) = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    family: 12,
+                    result: Some(outcome),
+                    ..
+                } => Some(*outcome),
+                _ => None,
+            })
+        {
+            return outcome;
+        }
+    }
+    panic!(
+        "ordinary family-12 source did not acquire after its source cadence: {:?}",
+        session.dispatch_events()
+    );
+}
+
 fn level_two_acquired_family12_menu_session() -> (Level2ResetSession, u16) {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 core menu session");
-    let source_position = session.shared_spells().pickups()[0].position;
-    session
-        .set_level2_entity_position(session.state.entity_index, source_position)
-        .expect("public player-position input for family-12 source");
-    session.shared_spells_mut().pickups[0].phase = 0;
-    session.shared_spells_mut().pickups[0].record[66] = 0;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source_slot = session
-        .dispatch_events()
-        .iter()
-        .find_map(|event| match event {
-            Level2DispatchEvent::SpellAcquisition {
-                family: 12,
-                result: Some(outcome),
-                ..
-            } => Some(outcome.source_slot),
-            _ => None,
-        })
-        .expect("ordinary family-12 acquisition");
+    let source_slot = acquire_level_two_beyond_sight_from_ordinary_route(&mut session).source_slot;
     assert_eq!(
         session.shared_spells().local_player.enabled_spell_holders[12],
         source_slot

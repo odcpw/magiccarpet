@@ -6,6 +6,8 @@
 //! emitted as events so arena allocation and terrain mutation stay owned by
 //! the native session and Level 1 mission.
 
+use std::collections::BTreeMap;
+
 use crate::{FlightWorld, Position, native_world::EntitySnapshot};
 
 pub const LEVEL_ONE_HOUSE_INDICES: std::ops::RangeInclusive<u16> = 1..=47;
@@ -28,6 +30,19 @@ pub struct HouseParameter {
 }
 
 impl HouseParameter {
+    #[must_use]
+    pub const fn from_source_record(
+        life_mana_scalar: u16,
+        flags: u8,
+        destruction_successor: u8,
+    ) -> Self {
+        Self {
+            life_mana_scalar,
+            flags,
+            destruction_successor,
+        }
+    }
+
     #[must_use]
     pub const fn level_one(building_index: u8) -> Option<Self> {
         let (life_mana_scalar, flags, destruction_successor) = match building_index {
@@ -96,6 +111,62 @@ impl HouseParameter {
     pub const fn possession_blocked(self) -> bool {
         self.flags & 8 != 0
     }
+}
+
+/// Decode the source BLDGPRM rows embedded beside their BUILD footprints in
+/// `feature-construction-inputs.bin`. The exporter stores only selectors used
+/// by the package, so a missing row remains a materialization error instead of
+/// borrowing a parameter from another campaign.
+pub(crate) fn decode_campaign_house_parameters(
+    bytes: &[u8],
+) -> Result<BTreeMap<u8, HouseParameter>, String> {
+    if bytes.len() < 16
+        || bytes.get(..4) != Some(b"MCI3")
+        || u16::from_le_bytes([bytes[4], bytes[5]]) != 1
+        || u16::from_le_bytes([bytes[6], bytes[7]]) != 16
+        || u16::from_le_bytes([bytes[10], bytes[11]]) != 1
+        || bytes[12..16] != [0, 0, 0, 0]
+    {
+        return Err("feature construction input header changed".to_owned());
+    }
+    let count = usize::from(u16::from_le_bytes([bytes[8], bytes[9]]));
+    let mut result = BTreeMap::new();
+    let mut cursor = 16_usize;
+    for _ in 0..count {
+        let header = bytes
+            .get(cursor..cursor + 12)
+            .ok_or_else(|| "feature construction input row is truncated".to_owned())?;
+        let selector = u16::from_le_bytes([header[0], header[1]]);
+        let selector = u8::try_from(selector)
+            .map_err(|_| "BLDGPRM selector exceeds the source byte carrier".to_owned())?;
+        let parameter = HouseParameter::from_source_record(
+            u16::from_le_bytes([header[2], header[3]]),
+            header[4],
+            header[5],
+        );
+        let width = usize::from(header[6]);
+        let height = usize::from(header[7]);
+        let extent = usize::try_from(u32::from_le_bytes([
+            header[8], header[9], header[10], header[11],
+        ]))
+        .expect("u32 fits usize");
+        if width == 0 || height == 0 || extent != width * height * 2 {
+            return Err("feature construction BUILD extent changed".to_owned());
+        }
+        if result.insert(selector, parameter).is_some() {
+            return Err("feature construction BLDGPRM selector is duplicated".to_owned());
+        }
+        cursor = cursor
+            .checked_add(12 + extent)
+            .ok_or_else(|| "feature construction input extent overflow".to_owned())?;
+        if cursor > bytes.len() {
+            return Err("feature construction BUILD payload is truncated".to_owned());
+        }
+    }
+    if cursor != bytes.len() {
+        return Err("feature construction input has trailing bytes".to_owned());
+    }
+    Ok(result)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -199,36 +270,71 @@ impl HouseState {
     /// the package-selected BLDGPRM row.  The common state layout and all
     /// action-51/52/53 behavior remain the shared source implementation.
     pub fn from_level_two_snapshot(snapshot: &EntitySnapshot) -> Result<Self, String> {
-        if !(1..=22).contains(&snapshot.index)
-            || snapshot.class != HOUSE_CLASS
-            || snapshot.model != HOUSE_MODEL
-        {
+        if !(1..=22).contains(&snapshot.index) {
             return Err(format!(
-                "entity {} is {}/{}, not a Level 2 ordinary house",
+                "entity {} is outside the qualified Level 2 house pool",
+                snapshot.index
+            ));
+        }
+        let building_index = snapshot
+            .record_bytes()
+            .get(74)
+            .copied()
+            .ok_or_else(|| format!("house entity {} record is truncated", snapshot.index))?;
+        let parameter = HouseParameter::level_two(building_index).ok_or_else(|| {
+            format!(
+                "house entity {} uses unsupported Level 2 BLDGPRM row {building_index}",
+                snapshot.index
+            )
+        })?;
+        Self::from_source_snapshot(snapshot, parameter)
+    }
+
+    /// Decode one source class-10/model-45 live house without imposing a
+    /// level-specific slot range. The record itself remains the authority.
+    pub(crate) fn from_campaign_snapshot(
+        snapshot: &EntitySnapshot,
+        parameters: &BTreeMap<u8, HouseParameter>,
+    ) -> Result<Self, String> {
+        let building_index = snapshot
+            .record_bytes()
+            .get(74)
+            .copied()
+            .ok_or_else(|| format!("house entity {} record is truncated", snapshot.index))?;
+        let parameter = parameters.get(&building_index).copied().ok_or_else(|| {
+            format!(
+                "house entity {} uses unsupported BLDGPRM row {building_index}",
+                snapshot.index
+            )
+        })?;
+        Self::from_source_snapshot(snapshot, parameter)
+    }
+
+    fn from_source_snapshot(
+        snapshot: &EntitySnapshot,
+        parameter: HouseParameter,
+    ) -> Result<Self, String> {
+        if snapshot.class != HOUSE_CLASS || snapshot.model != HOUSE_MODEL {
+            return Err(format!(
+                "entity {} is {}/{}, not a source house",
                 snapshot.index, snapshot.class, snapshot.model
             ));
         }
         if snapshot.action != HOUSE_LIVE_ACTION {
             return Err(format!(
-                "Level 2 house entity {} reset action is {}, expected {HOUSE_LIVE_ACTION}",
+                "house entity {} reset action is {}, expected {HOUSE_LIVE_ACTION}",
                 snapshot.index, snapshot.action
             ));
         }
         let bytes = snapshot.record_bytes();
         if bytes.len() != 176 {
             return Err(format!(
-                "Level 2 house entity {} must contain 176 bytes, got {}",
+                "house entity {} must contain 176 bytes, got {}",
                 snapshot.index,
                 bytes.len()
             ));
         }
         let building_index = bytes[74];
-        let parameter = HouseParameter::level_two(building_index).ok_or_else(|| {
-            format!(
-                "Level 2 house entity {} uses unqualified BLDGPRM row {building_index}",
-                snapshot.index
-            )
-        })?;
         Ok(Self {
             entity_index: snapshot.index,
             source_id: snapshot.source_id,
@@ -452,6 +558,22 @@ impl HouseFamily {
             }
             houses.push(HouseState::from_level_two_snapshot(snapshot)?);
         }
+        Ok(Self {
+            houses: houses.into_boxed_slice(),
+        })
+    }
+
+    /// Rehydrate every live source house in numeric slot order. This performs
+    /// no allocation or RNG draw and is shared by descriptor-backed campaigns.
+    pub(crate) fn from_campaign_entities(
+        entities: &[EntitySnapshot],
+        parameters: &BTreeMap<u8, HouseParameter>,
+    ) -> Result<Self, String> {
+        let houses = entities
+            .iter()
+            .filter(|row| row.active && row.class == HOUSE_CLASS && row.model == HOUSE_MODEL)
+            .map(|row| HouseState::from_campaign_snapshot(row, parameters))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             houses: houses.into_boxed_slice(),
         })

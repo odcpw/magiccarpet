@@ -689,6 +689,7 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
         &state.level2_tree_activated,
         &state.level2_class5_activated,
         &state.level2_model45_activated,
+        &state.authored_features_consumed,
     ] {
         append_len(hasher, set.len());
         for value in set {

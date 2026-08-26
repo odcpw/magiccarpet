@@ -428,6 +428,20 @@ pub struct GoatFamily {
 }
 
 impl GoatFamily {
+    pub(crate) fn empty(
+        entities: &[EntitySnapshot],
+        stage_point: Position,
+        config: GoatBehaviorConfig,
+    ) -> Self {
+        Self {
+            goats: Box::new([]),
+            child_links: Box::new([]),
+            source_entities: source_entity_states(entities),
+            stage_point,
+            config,
+            outer_tick: 0,
+        }
+    }
     /// Construct the complete 33-member family in ascending pool order.
     ///
     /// # Errors

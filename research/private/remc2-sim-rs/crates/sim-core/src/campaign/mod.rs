@@ -51,8 +51,9 @@ impl fmt::Display for CampaignOpenError {
 impl std::error::Error for CampaignOpenError {}
 
 /// Neutral owner for a validated campaign definition and its one live Rust
-/// authority. The concrete Level 2 adapter stays private to this fold leaf;
-/// CF-12 projects the common operations without adding a per-level ABI.
+/// authority. The retained `Level2ResetSession` name is a private compatibility
+/// detail around the shared descriptor-backed engine; CF-12 projects the
+/// common operations without adding a per-level ABI.
 #[derive(Clone, Debug)]
 pub struct CampaignSession {
     definition: Arc<CampaignDefinition>,
@@ -64,18 +65,17 @@ impl CampaignSession {
     /// Validate and open a campaign package. Contract v1 admits the
     /// census-profiled selections (qualified Level 2 and Level 3); unsupported
     /// identities fail during descriptor preflight rather than selecting a
-    /// fallback implementation.  A profiled selection whose census-delta
-    /// shared-behavior leaves are not yet compiled (Level 3: ClassAction 2/21,
-    /// 11/16, 14/6 per mc-iol7n) fails closed at behavior closure before this
-    /// materializer runs, so the folded shared authority below stays the one
-    /// live engine and no per-level route exists.
+    /// fallback implementation. Behavior closure validates every live selector
+    /// against the shared compiled registry before this materializer runs, so
+    /// the folded authority below stays the one live engine and no per-level
+    /// route exists.
     pub fn open(
         package_root: impl AsRef<Path>,
         selection: CampaignSelection,
     ) -> Result<Self, CampaignOpenError> {
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
-            let inspection = NativeWorld::inspect_campaign_level2(definition)?;
-            let level2 = inspection.level2_reset_session_from_definition(definition)?;
+            let inspection = NativeWorld::inspect_campaign_definition(definition)?;
+            let level2 = inspection.campaign_reset_session_from_definition(definition)?;
             Ok((inspection, level2))
         })
     }
@@ -90,8 +90,8 @@ impl CampaignSession {
         let owner_cache = owner_cache.as_ref();
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
             let inspection =
-                NativeWorld::inspect_campaign_level2_with_owner_cache(definition, owner_cache)?;
-            let level2 = inspection.level2_reset_session_from_definition(definition)?;
+                NativeWorld::inspect_campaign_definition_with_owner_cache(definition, owner_cache)?;
+            let level2 = inspection.campaign_reset_session_from_definition(definition)?;
             Ok((inspection, level2))
         })
     }
@@ -207,11 +207,13 @@ mod tests {
         PlayerCommand,
         campaign::{
             dispatch::CAMPAIGN_BEHAVIOR_REGISTRY,
+            schedule::{ScheduleReceipt, SourcePass, VisitKind},
             spec::{BehaviorSelector, CampaignDefinition, ValidationStage},
         },
         native_world::{Level2NyphurDispatchCall, NativeWorld},
     };
     use std::{
+        collections::BTreeMap,
         path::PathBuf,
         sync::atomic::{AtomicBool, Ordering},
     };
@@ -347,11 +349,6 @@ mod tests {
         (15, 34),
     ];
 
-    /// mc-iol7n census delta: live Level 3 selectors whose shared-behavior
-    /// leaves have not landed.  Each is a separate blocking leaf; CF-14 owns
-    /// only the descriptor/composition route and must fail closed on them.
-    const CF14_LEVEL3_MISSING_PAIRS: [(u8, u8); 3] = [(2, 21), (11, 16), (14, 6)];
-
     #[test]
     fn cf14_level3_descriptor_uses_shared_engine() {
         let package = level_three_descriptor_fixture_path();
@@ -405,44 +402,247 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             missing,
-            CF14_LEVEL3_MISSING_PAIRS.to_vec(),
-            "exactly the census-delta shared-behavior leaves stay uncompiled"
+            Vec::<(u8, u8)>::new(),
+            "every census-proven live root must have a compiled capability"
         );
 
-        // The production route consumes the same compiled registry and must
-        // fail closed at behavior closure, before any materialization, session
-        // state, or handle exists.
-        static MATERIALIZER_CALLED: AtomicBool = AtomicBool::new(false);
-        MATERIALIZER_CALLED.store(false, Ordering::SeqCst);
-        let result =
-            CampaignSession::open_with_materializer(&package, CampaignSelection::LEVEL3, |_| {
-                MATERIALIZER_CALLED.store(true, Ordering::SeqCst);
-                panic!("materializer must not run while census-delta leaves are uncompiled")
-            });
-        let CampaignOpenError::Preflight(error) =
-            result.expect_err("Level 3 open fails while census-delta leaves are uncompiled")
-        else {
-            panic!("Level 3 open escaped descriptor preflight");
-        };
-        assert_eq!(error.stage, ValidationStage::BehaviorClosure);
-        assert!(
-            error
-                .message
-                .contains("compiled registry is missing capability"),
-            "closure failure must name the compiled-capability gate: {}",
-            error.message
+        // The production route consumes the same descriptor and registry,
+        // derives the local wizard from runtime -> player -> entity relations,
+        // and creates one resettable Rust authority without a Level-3 branch.
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("public Level 3 descriptor opens through the shared materializer");
+        assert_eq!(
+            campaign
+                .inspection()
+                .entities()
+                .iter()
+                .filter(|row| row.active)
+                .count(),
+            252
+        );
+        assert_eq!(campaign.level2_compatibility().state.entity_index, 252);
+        let controller = &campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[94];
+        assert_eq!(
+            (
+                controller.class,
+                controller.model,
+                controller.action,
+                controller.life,
+                controller.subspell_index,
+                i32::from_le_bytes(controller.record_bytes()[20..24].try_into().unwrap()),
+                controller.phase,
+            ),
+            (14, 1, 6, 3, 48, 14, 95),
+            "the real Level 3 terrain-strip row must be rehydrated losslessly"
+        );
+        let reset_state_hash = campaign.state_hash();
+        let reset_terrain_hash = campaign.terrain_hash();
+        let reset_rows = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| row.active)
+            .map(|row| (row.index, (row.class, row.action)))
+            .collect::<BTreeMap<_, _>>();
+        let imported_family_before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| {
+                row.active
+                    && matches!(
+                        (row.class, row.model, row.action),
+                        (2, 0, 0) | (2, 1, 3) | (5, 9, 72)
+                    )
+            })
+            .map(|row| {
+                (
+                    row.index,
+                    row.class,
+                    row.model,
+                    row.phase,
+                    i32::from_le_bytes(row.record_bytes()[20..24].try_into().unwrap()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            imported_family_before
+                .iter()
+                .filter(|(_, class, model, _, _)| (*class, *model) == (2, 0))
+                .count(),
+            37,
+            "the production proof must cover every imported Level 3 tree"
+        );
+        assert_eq!(
+            imported_family_before
+                .iter()
+                .filter(|(_, class, model, _, _)| (*class, *model) == (2, 1))
+                .count(),
+            12,
+            "the production proof must cover every imported Level 3 stone"
+        );
+        assert_eq!(
+            imported_family_before
+                .iter()
+                .filter(|(_, class, model, _, _)| (*class, *model) == (5, 9))
+                .count(),
+            11,
+            "the production proof must cover every imported Level 3 model-9 row"
+        );
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        let resolved = receipts
+            .iter()
+            .filter_map(|receipt| match receipt {
+                ScheduleReceipt::SlotResolved {
+                    pass: SourcePass::UpdateEntities,
+                    scan: 0,
+                    slot,
+                    selector,
+                    kind,
+                } => Some((*slot, selector, *kind)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let unexpected_resolved = resolved
+            .iter()
+            .filter(|(slot, _, _)| !reset_rows.contains_key(slot))
+            .map(|(slot, selector, kind)| (*slot, selector.registry_key(), *kind))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|(slot, _, _)| *slot)
+                .collect::<Vec<_>>(),
+            reset_rows.keys().copied().collect::<Vec<_>>(),
+            "the first descriptor pass must visit exactly the 252 reset rows in numeric source order; unexpected visits: {unexpected_resolved:?}"
         );
         assert!(
-            error.message.contains("class: 2") && error.message.contains("action: 21"),
-            "closure failure must name the first census-delta capability: {}",
-            error.message
+            resolved
+                .iter()
+                .all(|(_, _, kind)| *kind == VisitKind::Callback),
+            "all fifteen census selector families are real callbacks"
         );
-        assert!(!MATERIALIZER_CALLED.load(Ordering::SeqCst));
-
-        // The public route fails with the identical fail-closed receipt.
-        let public_error = CampaignSession::open(&package, CampaignSelection::LEVEL3)
-            .expect_err("public Level 3 open fails identically");
-        assert_eq!(public_error, CampaignOpenError::Preflight(error));
+        for (slot, selector, _) in &resolved {
+            let (expected_class, expected_action) = reset_rows[slot];
+            assert_eq!(
+                selector.registry_key().selector,
+                BehaviorSelector::ClassAction {
+                    class: expected_class,
+                    action: expected_action,
+                },
+                "slot {slot} must be resolved from its lossless reset selector"
+            );
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    scan: 0,
+                    slot: completed_slot,
+                    selector: completed,
+                } if completed_slot == slot && completed == *selector
+            )));
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::EpilogueCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    scan: 0,
+                    slot: completed_slot,
+                    original,
+                    ..
+                } if completed_slot == slot && original == *selector
+            )));
+        }
+        assert!(receipts.iter().all(|receipt| !matches!(
+            receipt,
+            ScheduleReceipt::CleanupCompleted {
+                pass: SourcePass::UpdateEntities,
+                scan: 0,
+                ..
+            }
+        )));
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            ScheduleReceipt::ScanFinished {
+                pass: SourcePass::UpdateEntities,
+                scan: 0,
+                eligible_visits: 252,
+            }
+        )));
+        assert_eq!(
+            receipts.len(),
+            763,
+            "five phases + scan bounds + 252 resolve/callback/epilogue triples"
+        );
+        let controller = &campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[94];
+        assert_eq!(
+            (
+                controller.life,
+                controller.subspell_index,
+                i32::from_le_bytes(controller.record_bytes()[20..24].try_into().unwrap()),
+                controller.phase,
+            ),
+            (3, 48, 14, 96),
+            "the inert controller callback still receives exactly one UpdateEntities epilogue"
+        );
+        for (slot, class, model, phase_before, countdown_before) in imported_family_before {
+            let row = &campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .entities[usize::from(slot)];
+            assert_eq!(
+                row.phase,
+                phase_before.wrapping_add(1),
+                "imported {class}/{model} slot {slot} must receive one scheduler epilogue"
+            );
+            match (class, model) {
+                (2, 0 | 1) => {
+                    assert_ne!(
+                        row.control_flags & 0x0002_0000,
+                        0,
+                        "class-2 callback must set the source byte-2 lifecycle bit at slot {slot}"
+                    );
+                }
+                (5, 9) => assert_eq!(
+                    i32::from_le_bytes(row.record_bytes()[20..24].try_into().unwrap()),
+                    countdown_before.wrapping_sub(1),
+                    "model-9 action72 must pre-decrement its countdown at slot {slot}"
+                ),
+                _ => unreachable!(),
+            }
+        }
+        assert!(campaign.events().iter().all(|event| !matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::Error { .. }
+        )));
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_state_hash);
+        assert_eq!(campaign.terrain_hash(), reset_terrain_hash);
 
         // Selection mismatch fails at the outer manifest before member decode.
         let mismatch = CampaignDefinition::preflight(&package, CampaignSelection::LEVEL2, &accept)
@@ -480,6 +680,229 @@ mod tests {
                 .expect_err("a mutated member must fail the hash stage");
         assert_eq!(tampered.stage, ValidationStage::MemberHashes);
         std::fs::remove_dir_all(&tampered_root).expect("remove tamper scratch");
+    }
+
+    #[test]
+    fn cf14_level3_model9_countdown_uses_package_pose_and_stage_handoff() {
+        let mut campaign = CampaignSession::open(
+            level_three_descriptor_fixture_path(),
+            CampaignSelection::LEVEL3,
+        )
+        .expect("qualified Level 3 descriptor opens");
+        let before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[93]
+            .clone();
+        let countdown = i32::from_le_bytes(before.record_bytes()[20..24].try_into().unwrap());
+        assert_eq!(
+            countdown, 15,
+            "the qualified descriptor preserves the captured source pre-decrement clock"
+        );
+        let stage_before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .runtime
+            .stage_variables[2];
+        assert_eq!(
+            (stage_before.kind, stage_before.flags, stage_before.word_2),
+            (1, 1, 0)
+        );
+
+        for _ in 0..=countdown {
+            let _ = campaign.step(PlayerCommand::default(), 0);
+        }
+
+        let after = &campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[93];
+        assert_eq!(
+            after.action, 79,
+            "sub_12330 must replace intermediate action 73"
+        );
+        assert_eq!(
+            i32::from_le_bytes(after.record_bytes()[20..24].try_into().unwrap()),
+            400
+        );
+        assert_eq!(after.actual_speed, 20);
+        assert_eq!(after.particle_parameter_index, Some(201));
+        assert_eq!((after.record_bytes()[96], after.record_bytes()[97]), (0, 1));
+        assert_eq!(
+            (
+                i16::from_le_bytes(after.record_bytes()[86..88].try_into().unwrap()),
+                i16::from_le_bytes(after.record_bytes()[88..90].try_into().unwrap()),
+                i16::from_le_bytes(after.record_bytes()[90..92].try_into().unwrap()),
+                i16::from_le_bytes(after.record_bytes()[92..94].try_into().unwrap()),
+            ),
+            (128, 74, 74, 128),
+            "SetEntityIndexAndRot must use package particle 201 plus remc2's render-mode table"
+        );
+        assert_eq!(&after.record_bytes()[76..80], &[2, 1, 0, 0]);
+        assert_eq!(after.position, before.position);
+        assert_eq!(after.entity_rng, before.entity_rng);
+        assert_eq!(after.phase, before.phase.wrapping_add(countdown as u8 + 1));
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .stage_variables[2]
+                .word_2,
+            0x0b00,
+            "all eleven source-ordered model-9 rows advance the shared StageVar once"
+        );
+        assert!(campaign.events().iter().all(|event| !matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::Error { .. }
+        )));
+
+        let before_action79 = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| row.active && row.class == 5 && row.model == 9)
+            .map(|row| (row.index, row.phase, row.entity_rng, row.position))
+            .collect::<Vec<_>>();
+        assert_eq!(before_action79.len(), 11);
+        assert_eq!(
+            before_action79
+                .iter()
+                .filter(|(_, phase, _, _)| phase & 7 == 0)
+                .map(|(slot, _, _, _)| *slot)
+                .collect::<Vec<_>>(),
+            vec![248],
+            "the captured phases make slot 248 the only first-pass steering row"
+        );
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let action79_rows = &campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities;
+        for (slot, phase, entity_rng, _) in &before_action79 {
+            let row = &action79_rows[usize::from(*slot)];
+            assert_eq!(row.action, 79);
+            assert_eq!(row.phase, phase.wrapping_add(1));
+            assert_eq!(row.entity_rng, *entity_rng);
+        }
+        let packed_target = match campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .runtime
+            .stage_variables[2]
+            .relation
+        {
+            crate::native_world::RuntimeRelation::AxisScalar(value) => value,
+            relation => panic!("model-9 StageVar target is not an axis: {relation:?}"),
+        };
+        let target = crate::Position {
+            x: packed_target as u16,
+            y: (packed_target >> 16) as u16,
+            z: 0,
+        };
+        assert_eq!(
+            i16::from_le_bytes(
+                action79_rows[248].record_bytes()[36..38]
+                    .try_into()
+                    .unwrap()
+            ),
+            crate::heading_for_positions(action79_rows[248].position, target) as i16
+        );
+        assert!(campaign.events().iter().all(|event| !matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::Error { .. }
+        )));
+    }
+
+    #[test]
+    fn cf14_level3_multipart_shares_stage_target_on_eight_phase_cadence() {
+        let mut campaign = CampaignSession::open(
+            level_three_descriptor_fixture_path(),
+            CampaignSelection::LEVEL3,
+        )
+        .expect("qualified Level 3 descriptor opens");
+        let entities = &campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities;
+        assert_eq!(entities[201].phase, 5);
+        assert_eq!(&entities[201].record_bytes()[78..80], &[0, 0]);
+        assert_eq!(
+            u16::from_le_bytes(entities[133].record_bytes()[78..80].try_into().unwrap()),
+            93,
+            "the first source-ordered root carries the shared target"
+        );
+
+        for _ in 0..3 {
+            let _ = campaign.step(PlayerCommand::default(), 0);
+        }
+        let before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[201]
+            .clone();
+        let target_position = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[93]
+            .position;
+        assert_eq!(before.phase, 8);
+        assert_eq!(&before.record_bytes()[78..80], &[0, 0]);
+
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let after = &campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[201];
+        assert_eq!(after.phase, 9);
+        assert_eq!(
+            u16::from_le_bytes(after.record_bytes()[78..80].try_into().unwrap()),
+            93
+        );
+        assert_ne!(after.position, before.position);
+        assert_eq!(after.entity_rng, before.entity_rng);
+        assert_eq!(
+            i16::from_le_bytes(after.record_bytes()[36..38].try_into().unwrap()),
+            crate::heading_for_positions(after.position, target_position) as i16
+        );
+        assert!(campaign.events().iter().all(|event| !matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::Error { .. }
+        )));
     }
 
     #[test]

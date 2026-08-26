@@ -1,0 +1,1090 @@
+//! Source-shaped callbacks shared by descriptor-backed campaign packages.
+//!
+//! These helpers operate on the lossless imported entity row. They deliberately
+//! stop at the two engine-owned boundaries which cannot be row-local:
+//! allocation is supplied by the caller and player/stage side effects are
+//! returned as typed outcomes. The ordinary numeric-slot scheduler remains
+//! responsible for the same-pass phase epilogue and following-pass reclaim.
+
+use super::*;
+
+const TREE_CLASS: u8 = 2;
+const TREE_MODEL: u8 = 0;
+const TREE_ACTION: u8 = 0;
+const STONE_CLASS: u8 = 2;
+const STONE_MODEL: u8 = 1;
+const STONE_ACTION: u8 = 3;
+const STONE_PARTICLE: u16 = 79;
+const MODEL9_CLASS: u8 = 5;
+const MODEL9_MODEL: u8 = 9;
+const MODEL9_ACTION_COUNTDOWN: u8 = 72;
+const MODEL9_ACTION_MOVEMENT: u8 = 73;
+const MODEL9_ACTION_RAW_MOVEMENT: u8 = 79;
+const MODEL9_MOVEMENT_COUNTDOWN: i32 = 400;
+const MODEL9_MOVEMENT_PARTICLE: u16 = 201;
+// Pinned remc2 `str_D7BD6[80]`, installed by `sub_4BBB0`.
+const MODEL9_TURN_LIMIT: i16 = 0x16;
+const MODEL9_SLOPE_LIMIT: i32 = 0x14;
+const MODEL9_MATERIAL_MASK: u32 = 0xfff0_80fe;
+const MODEL9_BLOCKED_BIT: u32 = 0x0004_0000;
+const MODEL9_SKIP_MOVEMENT_BIT: u32 = 0x0000_0800;
+const PICKUP_CLASS: u8 = 15;
+
+// Pinned remc2 `x_BYTE_D8A2E`. `SetEntityIndexAndRot_49CD0` indexes this
+// table with the package-derived particle render mode.
+const PARTICLE_ANIMATION_LIMITS: [u8; 38] = [
+    1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1, 1, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8,
+    9, 10, 11, 12, 13, 14, 15, 16, 0,
+];
+
+pub(super) fn particle_animation_limit(render_mode: u8) -> Option<u8> {
+    PARTICLE_ANIMATION_LIMITS
+        .get(usize::from(render_mode))
+        .copied()
+}
+
+const CONTROL_MAP_LINKED_BIT: u32 = 0x0000_0004;
+const CONTROL_TREE_CALLBACK_BIT: u32 = 0x0002_0000;
+const CONTROL_PICKUP_OWNED_BIT: u32 = 0x0000_0001;
+const CONTROL_PICKUP_BYTE3_BIT1: u32 = 0x0200_0000;
+
+/// Construct the lossless source row produced by remc2 `AddStone_4AD70`.
+///
+/// `NewEvent_4A050` supplies the common row defaults. The stone constructor
+/// clears the initial low-byte bit 3, binds the slot-modulo-eleven word,
+/// inserts the row into the map chain, copies max life to life, and installs
+/// particle 79. The numeric scheduler owns the later action-3 callback and
+/// common phase epilogue.
+pub(super) fn construct_stone_source(
+    source_slot: u16,
+    entity_rng: u16,
+    position: Position,
+    map_links: (u16, u16),
+    particle_pose: ParticlePose,
+) -> EntitySnapshot {
+    let mut record = vec![0_u8; 176].into_boxed_slice();
+    record[0..2].copy_from_slice(&source_slot.to_le_bytes());
+    record[2] = 1;
+    record[8..12].copy_from_slice(&300_i32.to_le_bytes());
+    record[12..16].copy_from_slice(&300_i32.to_le_bytes());
+    record[16..20].copy_from_slice(&CONTROL_MAP_LINKED_BIT.to_le_bytes());
+    record[20..24].copy_from_slice(&i32::from(source_slot % 11).to_le_bytes());
+    record[24..26].copy_from_slice(&entity_rng.to_le_bytes());
+    record[26..28].copy_from_slice(&map_links.0.to_le_bytes());
+    record[28..30].copy_from_slice(&map_links.1.to_le_bytes());
+    record[30..32].copy_from_slice(&source_slot.to_le_bytes());
+    record[46..48].copy_from_slice(&100_u16.to_le_bytes());
+    record[61] = (-6_i8).to_ne_bytes()[0];
+    record[66] = source_slot as u8;
+    record[67] = STONE_CLASS;
+    record[68] = STONE_MODEL;
+    record[69] = (-1_i8).to_ne_bytes()[0];
+    record[70] = (-1_i8).to_ne_bytes()[0];
+    record[71] = 10;
+    record[73] = STONE_ACTION;
+    record[80..82].copy_from_slice(&position.x.to_le_bytes());
+    record[82..84].copy_from_slice(&position.y.to_le_bytes());
+    record[84..86].copy_from_slice(&position.z.to_le_bytes());
+    record[86..88].copy_from_slice(&particle_pose.array_yaw.to_le_bytes());
+    record[88..90].copy_from_slice(&particle_pose.array_pitch.to_le_bytes());
+    record[90..92].copy_from_slice(&particle_pose.array_roll.to_le_bytes());
+    record[92..94].copy_from_slice(&particle_pose.array_fov.to_le_bytes());
+    record[94..96].copy_from_slice(&STONE_PARTICLE.to_le_bytes());
+    record[97] = particle_pose.animation_limit;
+    record[134..136].copy_from_slice(&16_i16.to_le_bytes());
+    // NewEvent binds source parameter row 59 and the global special-state
+    // carrier. The pointer-free export stores both as one-based relations.
+    record[164..168].copy_from_slice(&60_u32.to_le_bytes());
+    record[168] = 2;
+    record[172..176].copy_from_slice(&1_u32.to_le_bytes());
+
+    EntitySnapshot {
+        index: source_slot,
+        source_id: source_slot,
+        authority: EntityAuthority::FrozenObserved,
+        active: true,
+        max_life: 300,
+        life: 300,
+        next_relation: None,
+        class: STONE_CLASS,
+        model: STONE_MODEL,
+        control_flags: CONTROL_MAP_LINKED_BIT,
+        entity_rng,
+        action: STONE_ACTION,
+        action_marker: 0,
+        level_gate: 0,
+        position,
+        yaw: 0,
+        pitch: 0,
+        fov: 0,
+        phase: source_slot as u8,
+        subspell_index: 100,
+        byte_3b: 0,
+        byte_3c: 0,
+        font_type_index: 0,
+        active_value: 0,
+        activation_value: 0,
+        mana_regen: 0,
+        actual_speed: 16,
+        max_mana: 0,
+        mana_cost: 0,
+        mana: 0,
+        particle_parameter_index: Some(STONE_PARTICLE),
+        parameter_relation: Some(59),
+        special_relation: EntitySpecialRelation::GlobalSpecialState,
+        record,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CampaignSharedFamilyError {
+    pub source_slot: u16,
+    pub expected: (u8, u8, u8),
+    pub actual: (u8, u8, u8),
+}
+
+impl fmt::Display for CampaignSharedFamilyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "campaign source slot {} expected class/model/action {}/{}/{}, found {}/{}/{}",
+            self.source_slot,
+            self.expected.0,
+            self.expected.1,
+            self.expected.2,
+            self.actual.0,
+            self.actual.1,
+            self.actual.2
+        )
+    }
+}
+
+impl std::error::Error for CampaignSharedFamilyError {}
+
+fn require_selector(
+    entity: &EntitySnapshot,
+    expected: (u8, u8, u8),
+) -> std::result::Result<(), CampaignSharedFamilyError> {
+    let actual = (entity.class, entity.model, entity.action);
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(CampaignSharedFamilyError {
+            source_slot: entity.index,
+            expected,
+            actual,
+        })
+    }
+}
+
+fn next_source_rng16(seed: u16) -> u16 {
+    seed.wrapping_mul(9_377).wrapping_add(9_439)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScenerySpawnKind {
+    /// `IfSubtypeCallCreatingManaSphere_4A190(position, 10, 6)`.
+    TreeDeathSphere,
+    /// `IfSubtypeCallCreatingManaSphere_4A190(position, 10, 5)`.
+    WaterSplash,
+}
+
+/// Complete post-constructor writes required by a scenery callback.
+///
+/// `inherit_source_id_from` is a live entity slot whose source id must be
+/// copied onto the allocated row. A value of `None` means the scenery row's
+/// own source id is used. The allocator returns the allocated source slot;
+/// `None` is the source's ordinary exhausted-arena result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ScenerySpawnRequest {
+    pub kind: ScenerySpawnKind,
+    pub source_position: Position,
+    pub inherit_source_id_from: Option<u16>,
+    pub fallback_source_id: u16,
+    pub word_0x2c: i16,
+    pub position_z: i16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct TreeAction0Outcome {
+    pub damage_applied: i32,
+    pub death_sphere_slot: Option<u16>,
+    pub water_splash_slot: Option<u16>,
+    pub rng_draws: u8,
+    pub drawing_disabled: bool,
+}
+
+/// Port remc2 `AddTree02_00_64E20` against an imported class-2 tree row.
+///
+/// The allocation callback is intentionally invoked in source order. A failed
+/// death-sphere allocation clears the damage owner mailbox but consumes no RNG
+/// and leaves the negative life/action untouched. Water always hides the tree,
+/// even when its splash allocation fails.
+pub(super) fn step_tree_action0<F>(
+    entity: &mut EntitySnapshot,
+    ground_height: i16,
+    is_water: bool,
+    mut allocate: F,
+) -> std::result::Result<TreeAction0Outcome, CampaignSharedFamilyError>
+where
+    F: FnMut(ScenerySpawnRequest) -> Option<u16>,
+{
+    require_selector(entity, (TREE_CLASS, TREE_MODEL, TREE_ACTION))?;
+    let mut outcome = TreeAction0Outcome::default();
+    entity.set_control_flags(entity.control_flags | CONTROL_TREE_CALLBACK_BIT);
+
+    let damage_owner = entity.source_upkeep_word_62();
+    if damage_owner != 0 {
+        let damage = entity.source_upkeep_payload();
+        outcome.damage_applied = damage;
+        entity.set_life(entity.life.wrapping_sub(damage));
+        if entity.life < 0 {
+            let word_0x2c = ((i32::from(entity.fov) * 3) >> 2) as i16;
+            let position_z = if entity.position.z <= 128 {
+                0
+            } else {
+                entity.position.z.wrapping_sub(128)
+            };
+            let request = ScenerySpawnRequest {
+                kind: ScenerySpawnKind::TreeDeathSphere,
+                source_position: entity.position,
+                inherit_source_id_from: Some(damage_owner),
+                fallback_source_id: entity.source_id,
+                word_0x2c,
+                position_z,
+            };
+            if let Some(source_slot) = allocate(request) {
+                outcome.death_sphere_slot = Some(source_slot);
+                let rng = next_source_rng16(entity.entity_rng);
+                entity.set_entity_rng(rng);
+                entity.set_life(i32::from(rng % 0x3c) + 130);
+                entity.set_control_flags(
+                    (entity.control_flags & !0x0002_0008) | CONTROL_TREE_CALLBACK_BIT,
+                );
+                entity.set_source_action(1);
+                outcome.rng_draws = 1;
+            }
+        }
+        entity.clear_source_upkeep_owner();
+    }
+
+    let mut position = entity.position;
+    position.z = ground_height;
+    entity.set_position(position);
+    if is_water {
+        outcome.water_splash_slot = allocate(ScenerySpawnRequest {
+            kind: ScenerySpawnKind::WaterSplash,
+            source_position: position,
+            inherit_source_id_from: None,
+            fallback_source_id: entity.source_id,
+            word_0x2c: 0,
+            position_z: position.z,
+        });
+        entity.disable_drawing();
+        outcome.drawing_disabled = true;
+    }
+    Ok(outcome)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct StoneAction3Outcome {
+    pub previous_position: Position,
+    pub position: Position,
+    pub previous_control_flags: u32,
+    pub control_flags: u32,
+}
+
+/// Port remc2 `AddStatue02_01_65040` for class-2/model-1/action-3.
+///
+/// Despite the constructor name, dispatch is selected by action: this callback
+/// only sets source control byte 2 bit 1 and snaps Z. It performs no water
+/// query, allocation, RNG draw, or draw-disable transition.
+pub(super) fn step_stone_action3(
+    entity: &mut EntitySnapshot,
+    ground_height: i16,
+) -> std::result::Result<StoneAction3Outcome, CampaignSharedFamilyError> {
+    require_selector(entity, (STONE_CLASS, STONE_MODEL, STONE_ACTION))?;
+    let previous_position = entity.position;
+    let previous_control_flags = entity.control_flags;
+    entity.set_control_flags(entity.control_flags | CONTROL_TREE_CALLBACK_BIT);
+    let mut position = entity.position;
+    position.z = ground_height;
+    entity.set_position(position);
+    Ok(StoneAction3Outcome {
+        previous_position,
+        position,
+        previous_control_flags,
+        control_flags: entity.control_flags,
+    })
+}
+
+/// Package-derived particle row needed by `SetEntityIndexAndRot_49CD0`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ParticlePose {
+    pub animation_limit: u8,
+    pub array_yaw: i16,
+    pub array_pitch: i16,
+    pub array_roll: i16,
+    pub array_fov: i16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Model9Action72Outcome {
+    pub transitioned: bool,
+    pub animation_advanced: bool,
+    /// `sub_122A0` advances this source StageVars2 relation after transition.
+    pub stage_relation_to_advance: Option<u16>,
+}
+
+/// Port remc2 `sub_20370`, including its pre-decrement zero test.
+pub(super) fn step_model9_action72(
+    entity: &mut EntitySnapshot,
+    movement_pose: ParticlePose,
+) -> std::result::Result<Model9Action72Outcome, CampaignSharedFamilyError> {
+    require_selector(
+        entity,
+        (MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_COUNTDOWN),
+    )?;
+    let previous_countdown = entity.source_dword_10();
+    let next_countdown = previous_countdown.wrapping_sub(1);
+    entity.set_source_dword_10(next_countdown);
+    let mut outcome = Model9Action72Outcome::default();
+
+    if previous_countdown != 0 {
+        if next_countdown < 16 && next_countdown % 2 == 0 && entity.record[96] < entity.record[97] {
+            entity.record[96] = entity.record[96].wrapping_add(1);
+            outcome.animation_advanced = true;
+        }
+        return Ok(outcome);
+    }
+
+    entity.set_actual_speed(entity.minimum_speed());
+    entity.particle_parameter_index = Some(MODEL9_MOVEMENT_PARTICLE);
+    entity.record[94..96].copy_from_slice(&MODEL9_MOVEMENT_PARTICLE.to_le_bytes());
+    entity.record[96] = 0;
+    entity.record[97] = movement_pose.animation_limit;
+    entity.record[86..88].copy_from_slice(&movement_pose.array_yaw.to_le_bytes());
+    entity.record[88..90].copy_from_slice(&movement_pose.array_pitch.to_le_bytes());
+    entity.record[90..92].copy_from_slice(&movement_pose.array_roll.to_le_bytes());
+    entity.record[92..94].copy_from_slice(&movement_pose.array_fov.to_le_bytes());
+    entity.record[69] = 3;
+    entity.record[70] = (-1_i8).to_ne_bytes()[0];
+    entity.set_source_action(MODEL9_ACTION_MOVEMENT);
+    entity.set_source_dword_10(MODEL9_MOVEMENT_COUNTDOWN);
+    entity.level_gate = 0;
+    entity.record[74] = 0;
+    outcome.transitioned = true;
+    let stage_relation = u16::from_le_bytes([entity.record[78], entity.record[79]]);
+    outcome.stage_relation_to_advance = (stage_relation != 0).then_some(stage_relation);
+    Ok(outcome)
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Model9Action79Outcome {
+    pub moved: bool,
+    pub movement_attempts: u8,
+    pub steered: bool,
+    pub rng_draws: u8,
+    pub peer_avoidance_slot: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Model9Action79Error {
+    Selector(CampaignSharedFamilyError),
+    InvalidChildChain { source_slot: u16, child_slot: u16 },
+    UnsupportedLiveDamageReaction { source_slot: u16, damage_owner: u16 },
+    UnsupportedDeathTransition { source_slot: u16, damage_owner: u16 },
+    UnsupportedAllCandidatesBlocked { source_slot: u16 },
+}
+
+impl fmt::Display for Model9Action79Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Selector(error) => error.fmt(formatter),
+            Self::InvalidChildChain {
+                source_slot,
+                child_slot,
+            } => write!(
+                formatter,
+                "model-9 source slot {source_slot} has invalid child-chain slot {child_slot}"
+            ),
+            Self::UnsupportedLiveDamageReaction {
+                source_slot,
+                damage_owner,
+            } => write!(
+                formatter,
+                "model-9 source slot {source_slot} received live damage from {damage_owner}; remc2 sub_1EEE0 is not admitted"
+            ),
+            Self::UnsupportedDeathTransition {
+                source_slot,
+                damage_owner,
+            } => write!(
+                formatter,
+                "model-9 source slot {source_slot} would enter action 76 after damage from {damage_owner}"
+            ),
+            Self::UnsupportedAllCandidatesBlocked { source_slot } => write!(
+                formatter,
+                "model-9 source slot {source_slot} exhausted all remc2 movement candidates; the global live-count write is not admitted"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Model9Action79Error {}
+
+impl From<CampaignSharedFamilyError> for Model9Action79Error {
+    fn from(value: CampaignSharedFamilyError) -> Self {
+        Self::Selector(value)
+    }
+}
+
+fn model9_retry_headings(yaw: i16) -> [i16; 4] {
+    let yaw = i32::from(yaw);
+    let third = ((yaw.wrapping_sub(85) as u16 & 0x00ff)
+        | ((((yaw.wrapping_sub(341) as u16) >> 8) & 7) << 8))
+        & 0x07ff;
+    let fourth = ((((yaw + 0x400) as u16) & 0x0700) | (yaw as u8 as u16)) & 0x07ff;
+    [
+        i16::try_from(yaw & 0x07ff).expect("11-bit model-9 heading"),
+        i16::try_from((yaw + 341) & 0x07ff).expect("11-bit model-9 heading"),
+        i16::try_from(third).expect("11-bit model-9 heading"),
+        i16::try_from(fourth).expect("11-bit model-9 heading"),
+    ]
+}
+
+fn model9_slope_measure<W: FlightWorld>(position: Position, world: &W) -> i32 {
+    let tile_x = position.x.to_be_bytes()[0];
+    let tile_y = position.y.to_be_bytes()[0];
+    let height = |x: u8, y: u8| {
+        i32::from(world.ground_height(Position {
+            x: u16::from(x) << 8,
+            y: u16::from(y) << 8,
+            z: 0,
+        })) >> 5
+    };
+    let point_1 = height(tile_x, tile_y);
+    let point_2 = height(tile_x.wrapping_add(1), tile_y);
+    let point_3 = height(tile_x.wrapping_add(1), tile_y.wrapping_add(1));
+    let point_4 = height(tile_x, tile_y.wrapping_add(1));
+    (point_1 + point_4 - point_2 - point_3)
+        .abs()
+        .max((point_1 + point_2 - point_4 - point_3).abs())
+}
+
+fn model9_candidate_blocked<W: FlightWorld>(
+    entity: &EntitySnapshot,
+    candidate: Position,
+    world: &W,
+) -> bool {
+    let material_blocked = world.material_mask(candidate) & !MODEL9_MATERIAL_MASK != 0;
+    let cave_ceiling_blocked = world.ceiling_height(candidate).is_some_and(|ceiling| {
+        i32::from(world.ground_height(candidate)) + i32::from(entity.array_fov())
+            > i32::from(ceiling)
+    });
+    material_blocked
+        || world.cave_collision_blocked(candidate)
+        || cave_ceiling_blocked
+        || model9_slope_measure(candidate, world) >= MODEL9_SLOPE_LIMIT
+}
+
+fn step_model9_source_movement<W: FlightWorld>(
+    entity: &mut EntitySnapshot,
+    world: &W,
+) -> std::result::Result<(bool, u8), Model9Action79Error> {
+    if entity.control_flags & MODEL9_SKIP_MOVEMENT_BIT != 0 {
+        entity.set_control_flags(entity.control_flags & !MODEL9_SKIP_MOVEMENT_BIT);
+        return Ok((false, 0));
+    }
+
+    let before = entity.position;
+    let headings = model9_retry_headings(entity.yaw);
+    for (attempt, heading) in headings.into_iter().enumerate() {
+        entity.set_yaw(heading);
+        let mut candidate = before;
+        let ground_height = world.ground_height(candidate);
+        if candidate.z > ground_height {
+            candidate.z = candidate.z.wrapping_sub(128);
+        }
+        if candidate.z <= ground_height {
+            candidate.z = ground_height;
+        }
+        crate::move_entity(&mut candidate, heading, 0, entity.actual_speed);
+        let crossed_tile = before.x >> 8 != candidate.x >> 8 || before.y >> 8 != candidate.y >> 8;
+        if !crossed_tile || !model9_candidate_blocked(entity, candidate, world) {
+            entity.set_position(candidate);
+            let yaw = (i32::from(heading)
+                + i32::from(crate::turn_toward(
+                    heading,
+                    entity.source_roll(),
+                    MODEL9_TURN_LIMIT,
+                )))
+                & 0x07ff;
+            entity.set_yaw(i16::try_from(yaw).expect("11-bit model-9 heading"));
+            if attempt == 0 {
+                entity.set_control_flags(entity.control_flags & !MODEL9_BLOCKED_BIT);
+            }
+            return Ok((
+                true,
+                u8::try_from(attempt + 1).expect("four movement attempts"),
+            ));
+        }
+        if attempt == 0 {
+            entity.set_control_flags(entity.control_flags | MODEL9_BLOCKED_BIT);
+        }
+    }
+
+    entity.set_life(-1);
+    Err(Model9Action79Error::UnsupportedAllCandidatesBlocked {
+        source_slot: entity.index,
+    })
+}
+
+/// Port the ordinary StageVar-kind-1 path of remc2
+/// `sub_20FC0 -> sub_1D5D0(a2 = 72) -> sub_1DDA0`.
+///
+/// `entities` is the immutable callback-start snapshot. It supplies the
+/// source child chain and the ascending model list used by the peer-avoidance
+/// overwrite. The numeric scheduler still owns the phase epilogue. Live
+/// damage and all-candidates-blocked paths fail after their source prelude
+/// because their downstream `sub_1EEE0`/global bookkeeping is not admitted.
+pub(super) fn step_model9_action79<W: FlightWorld>(
+    entity: &mut EntitySnapshot,
+    world: &W,
+    stage_target: Position,
+    entities: &[EntitySnapshot],
+) -> std::result::Result<Model9Action79Outcome, Model9Action79Error> {
+    require_selector(
+        entity,
+        (MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_RAW_MOVEMENT),
+    )?;
+
+    let mut damage_owner = entity.source_upkeep_word_62();
+    let mut damage_seen = damage_owner != 0;
+    if damage_seen {
+        entity.set_life(entity.life.wrapping_sub(entity.source_upkeep_payload()));
+        entity.clear_source_upkeep_owner();
+    } else {
+        damage_owner = 0;
+    }
+    entity.record[42..44].copy_from_slice(&damage_owner.to_le_bytes());
+
+    let mut child_slot = entity.word_34();
+    let mut visited = 0_usize;
+    while child_slot != 0 {
+        let child = entities
+            .get(usize::from(child_slot))
+            .filter(|child| child.active && child.index == child_slot)
+            .ok_or(Model9Action79Error::InvalidChildChain {
+                source_slot: entity.index,
+                child_slot,
+            })?;
+        if child.life < entity.life {
+            entity.set_life(child.life);
+            damage_owner = child.word_26();
+            entity.record[42..44].copy_from_slice(&damage_owner.to_le_bytes());
+            damage_seen = true;
+            break;
+        }
+        child_slot = child.word_34();
+        visited += 1;
+        if visited >= entities.len() {
+            return Err(Model9Action79Error::InvalidChildChain {
+                source_slot: entity.index,
+                child_slot,
+            });
+        }
+    }
+
+    if entity.life < 0 {
+        entity.record[40..42].copy_from_slice(&damage_owner.to_le_bytes());
+        return Err(Model9Action79Error::UnsupportedDeathTransition {
+            source_slot: entity.index,
+            damage_owner,
+        });
+    }
+    if damage_seen {
+        return Err(Model9Action79Error::UnsupportedLiveDamageReaction {
+            source_slot: entity.index,
+            damage_owner,
+        });
+    }
+
+    let (moved, movement_attempts) = step_model9_source_movement(entity, world)?;
+    let mut outcome = Model9Action79Outcome {
+        moved,
+        movement_attempts,
+        ..Model9Action79Outcome::default()
+    };
+    if entity.phase & 7 != 0 {
+        return Ok(outcome);
+    }
+
+    if entity.control_flags & MODEL9_BLOCKED_BIT == 0 {
+        let mut roll = i16::try_from(crate::heading_for_positions(entity.position, stage_target))
+            .expect("11-bit model-9 target heading");
+        entity.set_source_roll(roll);
+        outcome.steered = true;
+        if entity.phase & 0x3f == 0 {
+            let first = next_source_rng16(entity.entity_rng);
+            let second = next_source_rng16(first);
+            entity.set_entity_rng(second);
+            let sign = 2 * (i32::from(first % 0x9d) / 79) - 1;
+            roll =
+                i16::try_from((i32::from(roll) + sign * (i32::from(second & 0xff) + 85)) & 0x07ff)
+                    .expect("11-bit model-9 jitter heading");
+            entity.set_source_roll(roll);
+            outcome.rng_draws = 2;
+        }
+    }
+
+    let peer_radius = i32::from(entity.array_pitch());
+    for (peer_slot, peer) in entities.iter().enumerate().skip(1) {
+        if !peer.active
+            || usize::from(peer.index) != peer_slot
+            || peer.class != MODEL9_CLASS
+            || peer.model != MODEL9_MODEL
+        {
+            continue;
+        }
+        if peer.source_id == entity.source_id {
+            continue;
+        }
+        let delta_x = (i32::from(entity.position.x.cast_signed())
+            - i32::from(peer.position.x.cast_signed()))
+        .abs();
+        let delta_y = (i32::from(entity.position.y.cast_signed())
+            - i32::from(peer.position.y.cast_signed()))
+        .abs();
+        if delta_x < peer_radius && delta_y < peer_radius {
+            let roll = i16::try_from(crate::heading_for_positions(peer.position, entity.position))
+                .expect("11-bit model-9 peer heading");
+            entity.set_source_roll(roll);
+            outcome.peer_avoidance_slot = Some(peer.index);
+            break;
+        }
+    }
+    Ok(outcome)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PickupPlayerCandidate {
+    pub entity_index: u16,
+    pub model: u8,
+    pub life: i32,
+    pub player_color_index: u8,
+    pub overlaps: bool,
+    pub holder_entity_index: u16,
+    pub subspell_tier: u8,
+    pub left_hand_family: i16,
+    pub right_hand_family: i16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PickupHand {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PickupAcquisition {
+    pub source_slot: u16,
+    pub player_entity_index: u16,
+    pub family: u8,
+    pub holder_action: u8,
+    pub subspell_tier: u8,
+    pub hand: PickupHand,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct PickupActionOutcome {
+    pub acquisition: Option<PickupAcquisition>,
+    pub drawing_disabled: bool,
+    pub internal_owner_flag_set: bool,
+}
+
+/// Row-local portion of `sub_692A0 -> sub_68FF0`, shared by every ordinary
+/// spell-pickup action (`3 * family + 1`).
+///
+/// The returned acquisition is the caller's instruction to update the player
+/// holder/hand arrays, apply the already validated `SetSpell_6D5E0` profile,
+/// and emit sound 18. Candidate order must be the rebuilt source player-list
+/// order. The scheduler advances `phase` after this function returns.
+pub(super) fn step_ordinary_pickup(
+    entity: &mut EntitySnapshot,
+    ground_height: i16,
+    internal_level_color: u8,
+    candidates: &[PickupPlayerCandidate],
+) -> std::result::Result<PickupActionOutcome, CampaignSharedFamilyError> {
+    let family = entity.model;
+    let expected_action = family.wrapping_mul(3).wrapping_add(1);
+    require_selector(entity, (PICKUP_CLASS, family, expected_action))?;
+    let mut outcome = PickupActionOutcome::default();
+
+    if entity.life != 0 {
+        let previous_life = entity.life;
+        entity.set_life(previous_life.wrapping_sub(1));
+        if previous_life == 1 {
+            entity.disable_drawing();
+            outcome.drawing_disabled = true;
+        }
+        return Ok(outcome);
+    }
+
+    let mut position = entity.position;
+    if position.z > ground_height {
+        position.z = position.z.wrapping_sub(128);
+    }
+    if position.z <= ground_height {
+        position.z = ground_height;
+    }
+    entity.set_position(position);
+    if entity.phase & 3 != 0 {
+        return Ok(outcome);
+    }
+
+    for candidate in candidates {
+        if candidate.model != 0 || candidate.life < 0 {
+            continue;
+        }
+        if candidate.player_color_index == internal_level_color
+            && entity.control_flags & CONTROL_PICKUP_OWNED_BIT == 0
+            && candidate.holder_entity_index != 0
+        {
+            entity.set_control_flags(entity.control_flags | CONTROL_PICKUP_OWNED_BIT);
+            outcome.internal_owner_flag_set = true;
+        }
+        if !candidate.overlaps || candidate.holder_entity_index != 0 {
+            continue;
+        }
+
+        entity.set_control_flags(
+            (entity.control_flags | CONTROL_PICKUP_OWNED_BIT) & !CONTROL_PICKUP_BYTE3_BIT1,
+        );
+        entity.record[44..46].copy_from_slice(&candidate.entity_index.to_le_bytes());
+        let holder_action = expected_action.wrapping_sub(1);
+        entity.set_source_action(holder_action);
+        entity.record[58..60].copy_from_slice(&64_u16.to_le_bytes());
+        let explicit_hand = u16::from_le_bytes([entity.record[78], entity.record[79]]);
+        let hand = if explicit_hand != 0 {
+            entity.record[78..80].fill(0);
+            if explicit_hand == 2 {
+                PickupHand::Left
+            } else {
+                PickupHand::Right
+            }
+        } else if candidate.left_hand_family == -1 || candidate.right_hand_family != -1 {
+            PickupHand::Left
+        } else {
+            PickupHand::Right
+        };
+        outcome.acquisition = Some(PickupAcquisition {
+            source_slot: entity.index,
+            player_entity_index: candidate.entity_index,
+            family,
+            holder_action,
+            subspell_tier: candidate.subspell_tier,
+            hand,
+        });
+        break;
+    }
+    Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Tile;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct Model9World;
+
+    impl FlightWorld for Model9World {
+        fn ground_height(&self, _position: Position) -> i16 {
+            256
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            0
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
+        }
+    }
+
+    fn entity(class: u8, model: u8, action: u8) -> EntitySnapshot {
+        let mut record = vec![0_u8; 176].into_boxed_slice();
+        record[2] = 1;
+        record[8..12].copy_from_slice(&300_i32.to_le_bytes());
+        record[12..16].copy_from_slice(&300_i32.to_le_bytes());
+        record[16..20].copy_from_slice(&CONTROL_MAP_LINKED_BIT.to_le_bytes());
+        record[24..26].copy_from_slice(&0x1234_u16.to_le_bytes());
+        record[30..32].copy_from_slice(&77_u16.to_le_bytes());
+        record[38..40].copy_from_slice(&400_i16.to_le_bytes());
+        record[66] = 4;
+        record[67] = class;
+        record[68] = model;
+        record[73] = action;
+        record[80..82].copy_from_slice(&0x1200_u16.to_le_bytes());
+        record[82..84].copy_from_slice(&0x3400_u16.to_le_bytes());
+        record[84..86].copy_from_slice(&512_i16.to_le_bytes());
+        record[136..138].copy_from_slice(&20_i16.to_le_bytes());
+        EntitySnapshot {
+            index: 93,
+            source_id: 77,
+            authority: EntityAuthority::FrozenObserved,
+            active: true,
+            max_life: 300,
+            life: 300,
+            next_relation: None,
+            class,
+            model,
+            control_flags: CONTROL_MAP_LINKED_BIT,
+            entity_rng: 0x1234,
+            action,
+            action_marker: 0,
+            level_gate: 0,
+            position: Position {
+                x: 0x1200,
+                y: 0x3400,
+                z: 512,
+            },
+            yaw: 0,
+            pitch: 0,
+            fov: 400,
+            phase: 4,
+            subspell_index: 0,
+            byte_3b: 0,
+            byte_3c: 0,
+            font_type_index: 0,
+            active_value: 0,
+            activation_value: 0,
+            mana_regen: 0,
+            actual_speed: 0,
+            max_mana: 0,
+            mana_cost: 0,
+            mana: 0,
+            particle_parameter_index: None,
+            parameter_relation: None,
+            special_relation: EntitySpecialRelation::None,
+            record,
+        }
+    }
+
+    #[test]
+    fn tree_allocation_success_is_the_only_death_rng_path() {
+        let mut failed = entity(TREE_CLASS, TREE_MODEL, TREE_ACTION);
+        failed.record[98..102].copy_from_slice(&301_i32.to_le_bytes());
+        failed.record[102..104].copy_from_slice(&12_u16.to_le_bytes());
+        let failed_before_rng = failed.entity_rng;
+        let outcome = step_tree_action0(&mut failed, 64, false, |_| None).unwrap();
+        assert_eq!(outcome.rng_draws, 0);
+        assert_eq!(failed.entity_rng, failed_before_rng);
+        assert_eq!(failed.life, -1);
+        assert_eq!(failed.action, TREE_ACTION);
+        assert_eq!(failed.source_upkeep_word_62(), 0);
+
+        let mut succeeded = entity(TREE_CLASS, TREE_MODEL, TREE_ACTION);
+        succeeded.record[98..102].copy_from_slice(&301_i32.to_le_bytes());
+        succeeded.record[102..104].copy_from_slice(&12_u16.to_le_bytes());
+        let expected_rng = next_source_rng16(succeeded.entity_rng);
+        let mut request = None;
+        let outcome = step_tree_action0(&mut succeeded, 64, false, |value| {
+            request = Some(value);
+            Some(700)
+        })
+        .unwrap();
+        assert_eq!(outcome.death_sphere_slot, Some(700));
+        assert_eq!(outcome.rng_draws, 1);
+        assert_eq!(succeeded.entity_rng, expected_rng);
+        assert_eq!(succeeded.life, i32::from(expected_rng % 60) + 130);
+        assert_eq!(succeeded.action, 1);
+        assert_eq!(request.unwrap().word_0x2c, 300);
+    }
+
+    #[test]
+    fn stone_action3_sets_callback_bit_and_snaps_without_hiding() {
+        let mut stone = entity(STONE_CLASS, STONE_MODEL, STONE_ACTION);
+        let outcome = step_stone_action3(&mut stone, 96).unwrap();
+        assert_eq!(stone.position.z, 96);
+        assert_eq!(outcome.previous_position.z, 512);
+        assert_eq!(outcome.position.z, 96);
+        assert_eq!(outcome.previous_control_flags, CONTROL_MAP_LINKED_BIT);
+        assert_eq!(
+            outcome.control_flags,
+            CONTROL_MAP_LINKED_BIT | CONTROL_TREE_CALLBACK_BIT
+        );
+        assert!(!stone.drawing_disabled());
+    }
+
+    #[test]
+    fn model9_uses_predecrement_transition_and_even_animation_cadence() {
+        let pose = ParticlePose {
+            animation_limit: 9,
+            array_yaw: 101,
+            array_pitch: 102,
+            array_roll: 103,
+            array_fov: 104,
+        };
+        let mut countdown = entity(MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_COUNTDOWN);
+        countdown.set_source_dword_10(15);
+        countdown.record[96] = 2;
+        countdown.record[97] = 9;
+        let outcome = step_model9_action72(&mut countdown, pose).unwrap();
+        assert!(outcome.animation_advanced);
+        assert_eq!(countdown.record[96], 3);
+        assert_eq!(countdown.source_dword_10(), 14);
+        assert_eq!(countdown.action, MODEL9_ACTION_COUNTDOWN);
+
+        countdown.set_source_dword_10(0);
+        countdown.record[78..80].copy_from_slice(&6_u16.to_le_bytes());
+        let outcome = step_model9_action72(&mut countdown, pose).unwrap();
+        assert!(outcome.transitioned);
+        assert_eq!(outcome.stage_relation_to_advance, Some(6));
+        assert_eq!(countdown.action, MODEL9_ACTION_MOVEMENT);
+        assert_eq!(countdown.source_dword_10(), MODEL9_MOVEMENT_COUNTDOWN);
+        assert_eq!(countdown.actual_speed, 20);
+        assert_eq!(countdown.particle_parameter_index, Some(201));
+        assert_eq!(countdown.record[69..71], [3, 0xff]);
+        assert_eq!(particle_animation_limit(20), Some(1));
+        assert_eq!(particle_animation_limit(37), Some(0));
+        assert_eq!(particle_animation_limit(38), None);
+    }
+
+    #[test]
+    fn model9_action79_moves_then_peer_overwrites_jitter_without_phase_or_global_rng() {
+        let mut source = entity(MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_RAW_MOVEMENT);
+        source.set_phase(0);
+        source.set_actual_speed(source.minimum_speed());
+        source.record[88..92].copy_from_slice(&74_i16.to_le_bytes().repeat(2));
+        source.set_source_roll(0);
+        let before = source.position;
+        let before_phase = source.phase;
+        let first_rng = next_source_rng16(source.entity_rng);
+        let second_rng = next_source_rng16(first_rng);
+        let mut moved = before;
+        moved.z = moved.z.wrapping_sub(128);
+        crate::move_entity(&mut moved, source.yaw, 0, source.actual_speed);
+
+        let mut peer = entity(MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_RAW_MOVEMENT);
+        peer.index = 94;
+        peer.source_id = 78;
+        peer.set_position(Position {
+            x: moved.x.wrapping_add(1),
+            y: moved.y.wrapping_add(1),
+            z: moved.z,
+        });
+        let peer_index = peer.index;
+        let expected_peer_roll = i16::try_from(crate::heading_for_positions(peer.position, moved))
+            .expect("11-bit peer heading");
+        let mut entities = vec![entity(0, 0, 0); 95];
+        entities[usize::from(source.index)] = source.clone();
+        entities[usize::from(peer_index)] = peer;
+
+        let outcome = step_model9_action79(
+            &mut source,
+            &Model9World,
+            Position {
+                x: moved.x.wrapping_add(1_000),
+                y: moved.y,
+                z: moved.z,
+            },
+            &entities,
+        )
+        .unwrap();
+        assert_eq!(source.position, moved);
+        assert_eq!(source.phase, before_phase);
+        assert_eq!(source.entity_rng, second_rng);
+        assert_eq!(source.source_roll(), expected_peer_roll);
+        assert_eq!(
+            outcome,
+            Model9Action79Outcome {
+                moved: true,
+                movement_attempts: 1,
+                steered: true,
+                rng_draws: 2,
+                peer_avoidance_slot: Some(94),
+            }
+        );
+
+        let mut damaged = entities[usize::from(source.index)].clone();
+        damaged.record[98..102].copy_from_slice(&7_i32.to_le_bytes());
+        damaged.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
+        let error = step_model9_action79(
+            &mut damaged,
+            &Model9World,
+            Position { x: 0, y: 0, z: 0 },
+            &entities,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            Model9Action79Error::UnsupportedLiveDamageReaction {
+                source_slot: 93,
+                damage_owner: 44,
+            }
+        );
+        assert_eq!(damaged.life, 293);
+        assert_eq!(damaged.source_upkeep_word_62(), 0);
+        assert_eq!(damaged.word_26(), 44);
+    }
+
+    #[test]
+    fn ordinary_pickup_carries_source_order_owner_and_hand_rules() {
+        let mut pickup = entity(PICKUP_CLASS, 6, 19);
+        pickup.set_life(0);
+        pickup.record[78..80].copy_from_slice(&2_u16.to_le_bytes());
+        let candidates = [
+            PickupPlayerCandidate {
+                entity_index: 10,
+                model: 0,
+                life: 100,
+                player_color_index: 3,
+                overlaps: false,
+                holder_entity_index: 88,
+                subspell_tier: 1,
+                left_hand_family: -1,
+                right_hand_family: -1,
+            },
+            PickupPlayerCandidate {
+                entity_index: 11,
+                model: 0,
+                life: 100,
+                player_color_index: 1,
+                overlaps: true,
+                holder_entity_index: 0,
+                subspell_tier: 2,
+                left_hand_family: 4,
+                right_hand_family: -1,
+            },
+        ];
+        let outcome = step_ordinary_pickup(&mut pickup, 128, 3, &candidates).unwrap();
+        assert!(outcome.internal_owner_flag_set);
+        assert_eq!(pickup.position.z, 384);
+        assert_eq!(pickup.action, 18);
+        assert_eq!(
+            u16::from_le_bytes([pickup.record[44], pickup.record[45]]),
+            11
+        );
+        assert_eq!(
+            u16::from_le_bytes([pickup.record[58], pickup.record[59]]),
+            64
+        );
+        assert_eq!(
+            u16::from_le_bytes([pickup.record[78], pickup.record[79]]),
+            0
+        );
+        assert_eq!(outcome.acquisition.unwrap().hand, PickupHand::Left);
+
+        let mut expiring = entity(PICKUP_CLASS, 11, 34);
+        expiring.set_life(1);
+        let outcome = step_ordinary_pickup(&mut expiring, 0, 0, &[]).unwrap();
+        assert!(outcome.drawing_disabled);
+        assert_eq!(expiring.life, 0);
+        assert_eq!(expiring.position.z, 512);
+    }
+}
