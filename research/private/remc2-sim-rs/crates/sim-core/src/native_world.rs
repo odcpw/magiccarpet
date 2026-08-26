@@ -3004,6 +3004,34 @@ pub(crate) struct Level2ImportedSwitchRootState {
     pub(crate) active: bool,
 }
 
+/// Canonical state established when a package exit trigger captures its
+/// portal. The player transition, sequence body, and presentation phases
+/// extend this same carrier; there is no level-specific exit session or
+/// parallel entity arena.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LevelExitSequence {
+    pub active: bool,
+    pub complete: bool,
+    pub phase: u8,
+    pub timer: i16,
+    pub trigger_entity_index: u16,
+    pub portal_entity_index: u16,
+}
+
+impl LevelExitSequence {
+    pub(crate) fn start(&mut self, trigger_entity_index: u16, portal_entity_index: u16) -> bool {
+        if self.active || self.complete {
+            return false;
+        }
+        self.active = true;
+        self.phase = 0;
+        self.timer = 0;
+        self.trigger_entity_index = trigger_entity_index;
+        self.portal_entity_index = portal_entity_index;
+        true
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2LiveState {
     pub(crate) core: crate::campaign::state::CanonicalRuntimeState,
@@ -3025,6 +3053,7 @@ pub struct Level2LiveState {
     /// holder's `spell_menu_stage` byte.
     pub(crate) player_menu_state: u8,
     pub(crate) player_death_notification: Option<Level2PlayerDeathNotification>,
+    pub(crate) level_exit: LevelExitSequence,
     pub(crate) level2_group8_activated: bool,
     /// Mutable selected-objective stage state consumed by class-11/model-32
     /// switches.  The qualified reset starts at one; objective progression
@@ -3168,6 +3197,11 @@ pub enum Level2DispatchEvent {
         group: u16,
         authored_indices: Box<[u16]>,
     },
+    LevelExitSequenceStarted {
+        pass: u8,
+        trigger_entity_index: u16,
+        portal_entity_index: u16,
+    },
     BadStone {
         pass: u8,
         step: Level2BadStoneStep,
@@ -3298,6 +3332,17 @@ impl Level2DispatchEvent {
                 u8::try_from(*group).unwrap_or(u8::MAX),
                 u8::try_from(authored_indices.len()).unwrap_or(u8::MAX),
                 *source_slot,
+            ),
+            Self::LevelExitSequenceStarted {
+                pass,
+                trigger_entity_index,
+                portal_entity_index,
+            } => (
+                *pass,
+                12,
+                u8::from(*portal_entity_index != 0),
+                1,
+                *trigger_entity_index,
             ),
             Self::BadStone { pass, step } => (
                 *pass,

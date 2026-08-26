@@ -165,7 +165,8 @@ fn validate_semantic_scenery_dispatch(
 ) -> std::result::Result<(), String> {
     match (scenery_kind, handler) {
         (Some(SceneryKind::Tree), ExistingHandler::TreeLifecycle)
-        | (Some(SceneryKind::Stone), ExistingHandler::Stone) => Ok(()),
+        | (Some(SceneryKind::Stone), ExistingHandler::Stone)
+        | (Some(SceneryKind::ExitPortal), ExistingHandler::Class14Events) => Ok(()),
         (Some(kind), actual) => Err(format!(
             "scenery source slot {source_slot} is semantic {}, but the MC2 selector resolved {actual:?}",
             kind.as_str()
@@ -208,6 +209,7 @@ fn validate_semantic_switch_dispatch(
         (Some(SwitchKind::AreaEntryTrigger), 0, 0, ExistingHandler::SwitchProducers)
         | (Some(SwitchKind::AreaExitTrigger), 1, 1, ExistingHandler::SwitchProducers)
         | (Some(SwitchKind::LevelExitGate), 4, 4, ExistingHandler::SwitchProducers)
+        | (Some(SwitchKind::ExitSequenceTrigger), 12, 12, ExistingHandler::SwitchProducers)
         | (Some(SwitchKind::ObjectiveGate), 32, 32, ExistingHandler::ObjectiveSwitch) => Ok(()),
         (Some(kind), _, _, actual) => Err(format!(
             "switch source slot {source_slot} is semantic {}, but the MC2 selector resolved model {raw_model} action {raw_action} through {actual:?}",
@@ -216,7 +218,7 @@ fn validate_semantic_switch_dispatch(
         (None, 32, 32, ExistingHandler::ObjectiveSwitch) => Err(format!(
             "objective-gate source slot {source_slot} has no package-authored semantic identity"
         )),
-        (None, 0 | 1 | 4, _, _) => Err(format!(
+        (None, 0 | 1 | 4 | 12, _, _) => Err(format!(
             "switch source slot {source_slot} has package-supported model {raw_model} action {raw_action} but no semantic identity"
         )),
         _ => Ok(()),
@@ -4148,6 +4150,7 @@ impl Level2ResetSession {
             player_life: initial_player_life,
             player_menu_state: 0,
             player_death_notification: None,
+            level_exit: LevelExitSequence::default(),
             level2_group8_activated: false,
             // The qualified frame-zero model-32 row observes stage index 3's
             // source state 1; the switch completes only after that state is 2.
@@ -4225,6 +4228,21 @@ impl Level2ResetSession {
                 self.session
                     .definition
                     .scenery_for_authored_record(source.authored_index)
+            })
+            .or_else(|| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .authored_class14()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .and_then(|source| {
+                        self.session
+                            .definition
+                            .scenery_for_authored_record(source.authored_index)
+                    })
             })
             .or_else(|| {
                 self.session
@@ -4929,6 +4947,11 @@ impl Level2ResetSession {
     #[must_use]
     pub const fn level2_objective_done(&self) -> bool {
         self.session.state.live.level2_objective_done
+    }
+
+    #[must_use]
+    pub const fn level_exit_sequence(&self) -> LevelExitSequence {
+        self.session.state.live.level_exit
     }
 
     /// Bind the source per-player `MenuState_0x3DF` consumed by the dying
@@ -7450,7 +7473,7 @@ impl Level2ResetSession {
                 (2, 0 | 1)
                     | (5, 2 | 3 | 4 | 9 | 14 | 19)
                     | (10, 1 | 5 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 76)
-                    | (11, 0 | 1 | 17 | 32)
+                    | (11, 0 | 1 | 12 | 16 | 17 | 32)
                     | (14, 3 | 5)
                     | (15, 2 | 3 | 6 | 11)
             )
@@ -7463,7 +7486,7 @@ impl Level2ResetSession {
 
         for feature in rows
             .iter()
-            .filter(|feature| (feature.kind, feature.subtype) == (11, 17))
+            .filter(|feature| feature.kind == 11 && matches!(feature.subtype, 16 | 17))
         {
             let target_group = u16::try_from(feature.stage_tag).map_err(|_| {
                 format!(
@@ -7770,7 +7793,7 @@ impl Level2ResetSession {
                             .insert(feature.index);
                     }
                 }
-                (11, model @ (0 | 1)) => {
+                (11, model @ (0 | 1 | 12)) => {
                     let position = feature.world_position(
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
@@ -7797,7 +7820,7 @@ impl Level2ResetSession {
                             .insert(feature.index);
                     }
                 }
-                (11, 17) => {
+                (11, model @ (16 | 17)) => {
                     let target_group = u16::try_from(feature.stage_tag)
                         .expect("authored countdown target was preflighted");
                     let word_10 = i16::try_from(feature.word_10)
@@ -7813,7 +7836,7 @@ impl Level2ResetSession {
                         .economy
                         .allocate_authored_switch_producer(
                             feature.index,
-                            17,
+                            u8::try_from(model).expect("authored countdown model fits u8"),
                             target_group,
                             word_10,
                             position,
@@ -10465,13 +10488,25 @@ impl Level2ResetSession {
                 .ok_or_else(|| {
                     format!("item source slot {source_slot} has no live class-14 carrier")
                 })?;
-            validate_semantic_item_dispatch(
-                source_slot,
-                self.item_kind_for_source_slot(source_slot),
-                source.model,
-                source.action,
-                visit.handler,
-            )?;
+            match source.model {
+                3 => validate_semantic_scenery_dispatch(
+                    source_slot,
+                    self.scenery_kind_for_source_slot(source_slot),
+                    visit.handler,
+                )?,
+                5 => validate_semantic_item_dispatch(
+                    source_slot,
+                    self.item_kind_for_source_slot(source_slot),
+                    source.model,
+                    source.action,
+                    visit.handler,
+                )?,
+                model => {
+                    return Err(format!(
+                        "class-14 source slot {source_slot} has unsupported model {model}"
+                    ));
+                }
+            }
         }
         if let Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
             kind: Level2DynamicArenaKind::SpellPickup,
@@ -10583,7 +10618,7 @@ impl Level2ResetSession {
                 _ => None,
             };
             if let Some((raw_model, raw_action)) = raw_selector
-                && (semantic_switch.is_some() || matches!(raw_model, 0 | 1 | 4 | 32))
+                && (semantic_switch.is_some() || matches!(raw_model, 0 | 1 | 4 | 12 | 32))
             {
                 validate_semantic_switch_dispatch(
                     source_slot,
@@ -11996,7 +12031,7 @@ impl Level2ResetSession {
         source_slot: u16,
         observed_creature_present: bool,
     ) -> std::result::Result<(), String> {
-        let (target_group, outcome) = {
+        let (model, target_group, outcome) = {
             let source = self
                 .session
                 .state
@@ -12009,26 +12044,30 @@ impl Level2ResetSession {
                     source.active
                         && source.source_entity_index == source_slot
                         && source.source_class == 11
-                        && source.model == 17
-                        && source.action == 17
+                        && matches!(source.model, 16 | 17)
+                        && source.action == source.model
                 })
                 .ok_or_else(|| {
                     format!(
-                        "countdown-switch callback lost class-11/model-17/action-17 source slot {source_slot}"
+                        "countdown-switch callback lost authored class-11 action source slot {source_slot}"
                     )
                 })?;
             let outcome = countdown_switch::step_absence_countdown(
                 &mut source.dword_0x10,
                 observed_creature_present,
             );
-            (source.stage_tag, outcome)
+            (source.model, source.stage_tag, outcome)
         };
 
         if outcome != countdown_switch::CountdownSwitchStep::Fire {
             return Ok(());
         }
 
-        mark_source_audio_call(SourceAudioCallTag::CountdownSwitchModel17);
+        mark_source_audio_call(if model == 16 {
+            SourceAudioCallTag::CountdownSwitchModel16
+        } else {
+            SourceAudioCallTag::CountdownSwitchModel17
+        });
         self.push_flight_effect(FlightEvent::PrepareSound {
             #[cfg(test)]
             audio_site: crate::MissionAudioSite::CountdownSwitch,
@@ -12991,7 +13030,7 @@ impl Level2ResetSession {
         pass: u8,
         source_slot: u16,
     ) -> bool {
-        let Some((position, model, word_10)) = self
+        let Some((position, word_10)) = self
             .session
             .state
             .live
@@ -12999,16 +13038,26 @@ impl Level2ResetSession {
             .authored_switch_producers()
             .iter()
             .find(|source| source.active && source.source_entity_index == source_slot)
-            .map(|source| (source.position, source.model, source.word_10))
+            .map(|source| (source.position, source.word_10))
         else {
             return false;
         };
+        let switch_kind = self.switch_kind_for_source_slot(source_slot);
+        if switch_kind == Some(SwitchKind::ExitSequenceTrigger)
+            && (self.session.state.live.level_exit.active
+                || self.session.state.live.level_exit.complete)
+        {
+            return false;
+        }
         let switch_extent = word_10.cast_unsigned().wrapping_shl(8).cast_signed();
         let overlap = self.level2_model0_overlap_matches(
             position,
             switch_extent,
             switch_extent,
-            model == 0,
+            matches!(
+                switch_kind,
+                Some(SwitchKind::AreaEntryTrigger | SwitchKind::ExitSequenceTrigger)
+            ),
             |entity| {
                 if entity.index == self.session.state.live.core.state.entity_index {
                     self.session.state.live.core.state.position
@@ -13026,6 +13075,62 @@ impl Level2ResetSession {
         else {
             return false;
         };
+        if switch_kind == Some(SwitchKind::ExitSequenceTrigger) {
+            let portal_entity_index = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_class14()
+                .iter()
+                .find(|source| {
+                    source.active
+                        && source.model == 3
+                        && self.scenery_kind_for_source_slot(source.source_entity_index)
+                            == Some(SceneryKind::ExitPortal)
+                })
+                .map_or(0, |source| source.source_entity_index);
+            if !self
+                .session
+                .state
+                .live
+                .level_exit
+                .start(source_slot, portal_entity_index)
+            {
+                return false;
+            }
+            if portal_entity_index != 0
+                && !self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .reveal_authored_class14_slot(portal_entity_index)
+            {
+                return false;
+            }
+            let player_entity_index = self.session.state.live.core.state.entity_index;
+            mark_source_audio_call(SourceAudioCallTag::ExitOverlapSwitch);
+            self.push_flight_effect(FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::ExitOverlap,
+                entity_index: player_entity_index,
+                player_index: -1,
+                sound_id: 41,
+            });
+            self.push_dispatch_effect(Level2DispatchEvent::LevelExitSequenceStarted {
+                pass,
+                trigger_entity_index: source_slot,
+                portal_entity_index,
+            });
+            return self
+                .session
+                .state
+                .live
+                .economy
+                .complete_authored_switch_producer_slot(source_slot);
+        }
         if let Err(error) = self.consume_authored_group(pass, source_slot, target_group) {
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
@@ -14765,6 +14870,16 @@ impl Level2ResetSession {
             self.session.state.live.level2_objective_pause,
             u8::from(self.session.state.live.level2_objective_done),
         ]);
+        hasher.update(b"level-exit-sequence-v1");
+        let level_exit = self.session.state.live.level_exit;
+        hasher.update([
+            u8::from(level_exit.active),
+            u8::from(level_exit.complete),
+            level_exit.phase,
+        ]);
+        hasher.update(level_exit.timer.to_le_bytes());
+        hasher.update(level_exit.trigger_entity_index.to_le_bytes());
+        hasher.update(level_exit.portal_entity_index.to_le_bytes());
         hasher.update(b"level2-nyphur-dispatcher-v1");
         if let Some(dispatcher) = self.session.state.live.nyphur_dispatcher.as_ref() {
             hasher.update([1]);
@@ -16137,6 +16252,206 @@ mod tests {
                         ..
                     } if *source_slot == mismatch_slot
                 ))
+        );
+    }
+
+    #[test]
+    fn semantic_exit_portal_trigger_starts_once_then_reclaims_and_rejects_raw_substitution() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+
+        // The preceding objective gate is a separate package-present chain.
+        // Stage only its real group-4 boundary; construction, numeric visits,
+        // trigger cadence, audio, hide, and reclaim remain production-owned.
+        session
+            .consume_authored_group(0, 0, 4)
+            .expect("real package group 4 materializes through the shared arena");
+        let portal = session
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == 132)
+            .copied()
+            .expect("package row 132 is the exit portal");
+        let trigger = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 137)
+            .copied()
+            .expect("package row 137 is the exit-sequence trigger");
+        assert_eq!(
+            session.scenery_kind_for_source_slot(portal.source_entity_index),
+            Some(SceneryKind::ExitPortal)
+        );
+        assert_eq!(
+            session.switch_kind_for_source_slot(trigger.source_entity_index),
+            Some(SwitchKind::ExitSequenceTrigger)
+        );
+        assert_eq!((portal.model, portal.action), (3, 8));
+        assert_eq!(portal.control_flags & 1, 1);
+        assert_eq!((trigger.model, trigger.action), (12, 12));
+
+        let player_entity_index = session.state.entity_index;
+        session
+            .set_level2_entity_position(player_entity_index, trigger.position)
+            .expect("stage the real player inside the real package trigger");
+        let turns_until_cadence = usize::from((8_u8.wrapping_sub(trigger.phase & 7)) & 7) + 1;
+        for _ in 1..turns_until_cadence {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(!session.level_exit_sequence().active);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(
+                event,
+                Level2DispatchEvent::LevelExitSequenceStarted { .. }
+            )));
+        }
+
+        let journal_start = session.effect_journal().records().len();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let exit = session.level_exit_sequence();
+        assert_eq!(
+            (
+                exit.active,
+                exit.complete,
+                exit.phase,
+                exit.timer,
+                exit.trigger_entity_index,
+                exit.portal_entity_index,
+            ),
+            (
+                true,
+                false,
+                0,
+                0,
+                trigger.source_entity_index,
+                portal.source_entity_index,
+            )
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_class14()
+                .iter()
+                .find(|source| source.source_entity_index == portal.source_entity_index)
+                .expect("the captured exit portal remains in the shared arena")
+                .control_flags
+                & 1,
+            0,
+            "the trigger reveals the authoritative portal row"
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::LevelExitSequenceStarted {
+                trigger_entity_index,
+                portal_entity_index,
+                ..
+            } if *trigger_entity_index == trigger.source_entity_index
+                && *portal_entity_index == portal.source_entity_index
+        )));
+        let new_records = &session.effect_journal().records()[journal_start..];
+        let sound_ordinal = new_records
+            .iter()
+            .position(|record| {
+                matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index,
+                        sound_id: 41,
+                        ..
+                    }) if entity_index == player_entity_index
+                )
+            })
+            .expect("the overlap sound is journaled against the player");
+        let start_ordinal = new_records
+            .iter()
+            .position(|record| {
+                matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Dispatch(
+                        Level2DispatchEvent::LevelExitSequenceStarted {
+                            trigger_entity_index,
+                            ..
+                        }
+                    ) if trigger_entity_index == trigger.source_entity_index
+                )
+            })
+            .expect("the semantic exit start is journaled");
+        assert!(sound_ordinal < start_ordinal);
+        let retained = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.source_entity_index == trigger.source_entity_index)
+            .expect("the hidden trigger is retained through its firing pass");
+        assert!(retained.active);
+        assert!(retained.fired);
+        assert!(!retained.drawing_enabled);
+        assert_eq!(
+            retained.phase,
+            trigger
+                .phase
+                .wrapping_add(u8::try_from(turns_until_cadence).expect("one cadence fits u8"))
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.source_entity_index != trigger.source_entity_index)
+        );
+        assert!(session.level_exit_sequence().active);
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+        assert_eq!(
+            campaign.level2_compatibility().level_exit_sequence(),
+            LevelExitSequence::default()
+        );
+
+        let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor reopens for the planted negative");
+        let mismatch_session = mismatch.level2_compatibility_mut();
+        mismatch_session
+            .consume_authored_group(0, 0, 4)
+            .expect("real package group 4 materializes for the planted negative");
+        let mismatch_slot = mismatch_session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 137)
+            .map(|source| source.source_entity_index)
+            .expect("the semantic exit trigger has a source slot");
+        mismatch_session
+            .economy_mut()
+            .authored_switch_producers
+            .iter_mut()
+            .find(|source| source.source_entity_index == mismatch_slot)
+            .expect("the package trigger remains in the shared arena")
+            .action = 0;
+
+        mismatch_session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            mismatch_session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot,
+                        message,
+                        ..
+                    } if *source_slot == mismatch_slot
+                        && message.contains("semantic exit_sequence_trigger")
+                        && message.contains("model 12 action 0")
+                ))
+        );
+        assert_eq!(
+            mismatch_session.level_exit_sequence(),
+            LevelExitSequence::default()
         );
     }
 

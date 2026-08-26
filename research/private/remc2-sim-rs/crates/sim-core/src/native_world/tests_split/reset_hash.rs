@@ -825,7 +825,11 @@ fn level_two_goat_pool_is_production_wired_and_reset_isolated() {
             | Level2DispatchEvent::Error { source_slot, .. }
             | Level2DispatchEvent::DynamicArena { source_slot, .. }
             | Level2DispatchEvent::Economy { source_slot, .. }
-            | Level2DispatchEvent::Goat { source_slot, .. } => Some(*source_slot),
+            | Level2DispatchEvent::Goat { source_slot, .. }
+            | Level2DispatchEvent::LevelExitSequenceStarted {
+                trigger_entity_index: source_slot,
+                ..
+            } => Some(*source_slot),
             // This is constructor metadata emitted at the producer
             // boundary; the live source rows below carry cursor order.
             Level2DispatchEvent::AuthoredGroupActivated { .. } => return None,

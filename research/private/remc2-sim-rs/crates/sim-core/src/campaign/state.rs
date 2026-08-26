@@ -807,6 +807,15 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
         }
         None => hasher.update([0]),
     }
+    hasher.update(b"level-exit-sequence-v1");
+    hasher.update([
+        u8::from(state.level_exit.active),
+        u8::from(state.level_exit.complete),
+        state.level_exit.phase,
+    ]);
+    hasher.update(state.level_exit.timer.to_le_bytes());
+    hasher.update(state.level_exit.trigger_entity_index.to_le_bytes());
+    hasher.update(state.level_exit.portal_entity_index.to_le_bytes());
     hasher.update([
         u8::from(state.level2_group8_activated),
         state.level2_selected_objective_stage_state,

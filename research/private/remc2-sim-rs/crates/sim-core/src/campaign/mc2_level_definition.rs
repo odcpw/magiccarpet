@@ -55,6 +55,7 @@ impl Mc2LevelDefinition {
         match (class, model, action) {
             (2, 0, 0) => Some(SceneryKind::Tree),
             (2, 1, 3) => Some(SceneryKind::Stone),
+            (14, 3, 8) => Some(SceneryKind::ExitPortal),
             _ => None,
         }
     }
@@ -79,6 +80,7 @@ impl Mc2LevelDefinition {
             (11, 0, 0) => Some(SwitchKind::AreaEntryTrigger),
             (11, 1, 1) => Some(SwitchKind::AreaExitTrigger),
             (11, 4, 4) => Some(SwitchKind::LevelExitGate),
+            (11, 12, 12) => Some(SwitchKind::ExitSequenceTrigger),
             (11, 32, 32) => Some(SwitchKind::ObjectiveGate),
             _ => None,
         }
@@ -170,6 +172,9 @@ impl Mc2LevelDefinition {
             let scenery_kind = match (feature.kind, feature.subtype) {
                 (2, 0) => Some(SceneryKind::Tree),
                 (2, 1) => Some(SceneryKind::Stone),
+                // `sub_51570` constructs the package's class-14 exit target.
+                // Shared callers see the scenery role, never its MC2 selector.
+                (14, 3) => Some(SceneryKind::ExitPortal),
                 _ => None,
             };
             if let Some(kind) = scenery_kind {
@@ -240,6 +245,9 @@ impl Mc2LevelDefinition {
                 (11, 0) => Some(SwitchKind::AreaEntryTrigger),
                 (11, 1) => Some(SwitchKind::AreaExitTrigger),
                 (11, 4) => Some(SwitchKind::LevelExitGate),
+                // This overlap trigger starts the player-owned exit sequence;
+                // it does not activate its stage tag as another area group.
+                (11, 12) => Some(SwitchKind::ExitSequenceTrigger),
                 // `AddSwitch0B_20_6F1C0` waits for one objective-state
                 // selector, then activates the row's authored group.
                 (11, 32) => Some(SwitchKind::ObjectiveGate),

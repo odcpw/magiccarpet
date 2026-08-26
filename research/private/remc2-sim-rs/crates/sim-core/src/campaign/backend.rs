@@ -835,13 +835,18 @@ mod tests {
                 (SpellKind::Castle, TilePosition { x: 194, y: 213 }, Some(1)),
                 (SpellKind::Speed, TilePosition { x: 202, y: 212 }, Some(11)),
             ],
-            &[(SceneryKind::Tree, 18), (SceneryKind::Stone, 1)],
+            &[
+                (SceneryKind::Tree, 18),
+                (SceneryKind::Stone, 1),
+                (SceneryKind::ExitPortal, 1),
+            ],
             &[(ItemKind::ExperienceScroll, 5)],
             &[(BuildingKind::House, 81)],
             &[
                 (SwitchKind::AreaEntryTrigger, 24),
                 (SwitchKind::AreaExitTrigger, 2),
                 (SwitchKind::LevelExitGate, 1),
+                (SwitchKind::ExitSequenceTrigger, 1),
                 (SwitchKind::ObjectiveGate, 4),
             ],
             &[
@@ -893,13 +898,18 @@ mod tests {
                 (SpellKind::BeyondSight, TilePosition { x: 1, y: 152 }, None),
                 (SpellKind::Speed, TilePosition { x: 167, y: 59 }, None),
             ],
-            &[(SceneryKind::Tree, 12), (SceneryKind::Stone, 1)],
+            &[
+                (SceneryKind::Tree, 12),
+                (SceneryKind::Stone, 1),
+                (SceneryKind::ExitPortal, 1),
+            ],
             &[(ItemKind::ExperienceScroll, 24)],
             &[(BuildingKind::House, 25)],
             &[
                 (SwitchKind::AreaEntryTrigger, 17),
                 (SwitchKind::AreaExitTrigger, 4),
                 (SwitchKind::LevelExitGate, 1),
+                (SwitchKind::ExitSequenceTrigger, 1),
                 (SwitchKind::ObjectiveGate, 6),
             ],
             &[],
@@ -934,12 +944,17 @@ mod tests {
                 ),
                 (SpellKind::Morph, TilePosition { x: 110, y: 109 }, Some(4)),
             ],
-            &[(SceneryKind::Tree, 37), (SceneryKind::Stone, 12)],
+            &[
+                (SceneryKind::Tree, 37),
+                (SceneryKind::Stone, 12),
+                (SceneryKind::ExitPortal, 1),
+            ],
             &[(ItemKind::ExperienceScroll, 10)],
             &[(BuildingKind::House, 97)],
             &[
                 (SwitchKind::AreaEntryTrigger, 4),
                 (SwitchKind::LevelExitGate, 1),
+                (SwitchKind::ExitSequenceTrigger, 1),
                 (SwitchKind::ObjectiveGate, 5),
             ],
             &[(

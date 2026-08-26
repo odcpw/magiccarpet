@@ -79,6 +79,7 @@ pub enum MechanicKind {
 pub enum SceneryKind {
     Tree,
     Stone,
+    ExitPortal,
 }
 
 impl SceneryKind {
@@ -87,6 +88,7 @@ impl SceneryKind {
         match self {
             Self::Tree => "tree",
             Self::Stone => "stone",
+            Self::ExitPortal => "exit_portal",
         }
     }
 }
@@ -127,6 +129,7 @@ pub enum SwitchKind {
     AreaEntryTrigger,
     AreaExitTrigger,
     LevelExitGate,
+    ExitSequenceTrigger,
     ObjectiveGate,
 }
 
@@ -137,6 +140,7 @@ impl SwitchKind {
             Self::AreaEntryTrigger => "area_entry_trigger",
             Self::AreaExitTrigger => "area_exit_trigger",
             Self::LevelExitGate => "level_exit_gate",
+            Self::ExitSequenceTrigger => "exit_sequence_trigger",
             Self::ObjectiveGate => "objective_gate",
         }
     }

@@ -1393,7 +1393,7 @@ impl Level2EconomyState {
         selected
     }
 
-    /// Allocate one authored class-11 model-0/model-1/model-12/model-17 switch producer using
+    /// Allocate one authored class-11 model-0/model-1/model-12/model-16/model-17 switch producer using
     /// the shared `NewEvent_4A050` source arena.  `stage_tag` is the source
     /// entity id consumed by the next `sub_4A1E0` group scan.
     pub fn allocate_authored_switch_producer(
@@ -1405,7 +1405,7 @@ impl Level2EconomyState {
         position: Position,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredSwitchProducerSource> {
-        if !matches!(model, 0 | 1 | 12 | 17) || stage_tag == 0 {
+        if !matches!(model, 0 | 1 | 12 | 16 | 17) || stage_tag == 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -4417,6 +4417,19 @@ impl Level2EconomyState {
                 y: source.position.y,
             })
             .is_ok()
+    }
+
+    /// Reveal the captured class-14 exit portal by clearing the constructor's
+    /// source no-draw bit. The portal row remains the sole visibility
+    /// authority consumed by presentation.
+    pub fn reveal_authored_class14_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self.authored_class14.iter_mut().find(|source| {
+            source.source_entity_index == source_slot && source.active && source.model == 3
+        }) else {
+            return false;
+        };
+        source.control_flags &= !1;
+        true
     }
 
     /// Apply `DisableEntityDrawing04_57F10` to an authored class-14 row. The
