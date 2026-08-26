@@ -76,6 +76,9 @@ impl Mc2LevelDefinition {
         action: u8,
     ) -> Option<SwitchKind> {
         match (class, model, action) {
+            (11, 0, 0) => Some(SwitchKind::AreaEntryTrigger),
+            (11, 1, 1) => Some(SwitchKind::AreaExitTrigger),
+            (11, 4, 4) => Some(SwitchKind::LevelExitGate),
             (11, 32, 32) => Some(SwitchKind::ObjectiveGate),
             _ => None,
         }
@@ -231,6 +234,12 @@ impl Mc2LevelDefinition {
             }
 
             let switch_kind = match (feature.kind, feature.subtype) {
+                // These one-shot area triggers activate their authored group
+                // on entry or exit respectively. `AddSwitch0B_04_6F150`
+                // waits for the package's level-complete player state.
+                (11, 0) => Some(SwitchKind::AreaEntryTrigger),
+                (11, 1) => Some(SwitchKind::AreaExitTrigger),
+                (11, 4) => Some(SwitchKind::LevelExitGate),
                 // `AddSwitch0B_20_6F1C0` waits for one objective-state
                 // selector, then activates the row's authored group.
                 (11, 32) => Some(SwitchKind::ObjectiveGate),

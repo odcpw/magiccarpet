@@ -200,16 +200,24 @@ fn validate_semantic_item_dispatch(
 fn validate_semantic_switch_dispatch(
     source_slot: u16,
     switch_kind: Option<SwitchKind>,
+    raw_model: u8,
+    raw_action: u8,
     handler: ExistingHandler,
 ) -> std::result::Result<(), String> {
-    match (switch_kind, handler) {
-        (Some(SwitchKind::ObjectiveGate), ExistingHandler::ObjectiveSwitch) => Ok(()),
-        (Some(kind), actual) => Err(format!(
-            "switch source slot {source_slot} is semantic {}, but the MC2 selector resolved {actual:?}",
+    match (switch_kind, raw_model, raw_action, handler) {
+        (Some(SwitchKind::AreaEntryTrigger), 0, 0, ExistingHandler::SwitchProducers)
+        | (Some(SwitchKind::AreaExitTrigger), 1, 1, ExistingHandler::SwitchProducers)
+        | (Some(SwitchKind::LevelExitGate), 4, 4, ExistingHandler::SwitchProducers)
+        | (Some(SwitchKind::ObjectiveGate), 32, 32, ExistingHandler::ObjectiveSwitch) => Ok(()),
+        (Some(kind), _, _, actual) => Err(format!(
+            "switch source slot {source_slot} is semantic {}, but the MC2 selector resolved model {raw_model} action {raw_action} through {actual:?}",
             kind.as_str()
         )),
-        (None, ExistingHandler::ObjectiveSwitch) => Err(format!(
+        (None, 32, 32, ExistingHandler::ObjectiveSwitch) => Err(format!(
             "objective-gate source slot {source_slot} has no package-authored semantic identity"
+        )),
+        (None, 0 | 1 | 4, _, _) => Err(format!(
+            "switch source slot {source_slot} has package-supported model {raw_model} action {raw_action} but no semantic identity"
         )),
         _ => Ok(()),
     }
@@ -4301,6 +4309,21 @@ impl Level2ResetSession {
                 self.session
                     .definition
                     .switch_for_authored_record(source.authored_index)
+            })
+            .or_else(|| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .authored_switch_producers()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .and_then(|source| {
+                        self.session
+                            .definition
+                            .switch_for_authored_record(source.authored_index)
+                    })
             })
             .or_else(|| {
                 self.session
@@ -10522,8 +10545,53 @@ impl Level2ResetSession {
         }
         if self.session.definition.semantic_level().is_some() {
             let semantic_switch = self.switch_kind_for_source_slot(source_slot);
-            if semantic_switch.is_some() || visit.handler == ExistingHandler::ObjectiveSwitch {
-                validate_semantic_switch_dispatch(source_slot, semantic_switch, visit.handler)?;
+            let raw_selector = match visit.route {
+                Level2SourceRoute::Imported | Level2SourceRoute::ExitSwitch => self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get(usize::from(source_slot))
+                    .map(|source| (source.model, source.action)),
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::AuthoredSwitchProducer,
+                    ..
+                }) => self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .authored_switch_producers()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .map(|source| (source.model, source.action)),
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::AuthoredModel32,
+                    ..
+                }) => self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .authored_model32()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .map(|source| (source.model, source.action)),
+                _ => None,
+            };
+            if let Some((raw_model, raw_action)) = raw_selector
+                && (semantic_switch.is_some() || matches!(raw_model, 0 | 1 | 4 | 32))
+            {
+                validate_semantic_switch_dispatch(
+                    source_slot,
+                    semantic_switch,
+                    raw_model,
+                    raw_action,
+                    visit.handler,
+                )?;
             }
         }
         Ok(())
@@ -15938,6 +16006,136 @@ mod tests {
                 .all(|event| !matches!(
                     event,
                     Level2DispatchEvent::House { source_slot, .. } if *source_slot == mismatch_slot
+                ))
+        );
+    }
+
+    #[test]
+    fn semantic_area_exit_trigger_activates_its_package_group_and_rejects_entry_substitution() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+        let trigger = session
+            .entities()
+            .iter()
+            .find(|source| {
+                source.active
+                    && session.switch_kind_for_source_slot(source.index)
+                        == Some(SwitchKind::AreaExitTrigger)
+                    && source.source_id == 1
+            })
+            .cloned()
+            .expect("real Level 1 reset contains the group-1 area-exit trigger");
+        assert_eq!((trigger.model, trigger.action), (1, 1));
+
+        let turns_until_inside_cadence =
+            usize::from((8_u8.wrapping_sub(trigger.phase & 7)) & 7) + 1;
+        for _ in 0..turns_until_inside_cadence {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 1,
+                ..
+            } if *source_slot == trigger.index
+        )));
+        let inside = &session.entities()[usize::from(trigger.index)];
+        assert!(inside.active);
+        assert!(!inside.drawing_disabled());
+
+        let player_entity_index = session.state.entity_index;
+        session
+            .set_level2_entity_position(
+                player_entity_index,
+                Position {
+                    x: trigger.position.x.wrapping_add(20_000),
+                    y: trigger.position.y,
+                    z: trigger.position.z,
+                },
+            )
+            .expect("stage the real player outside the package trigger extent");
+        let phase_before_exit = session.entities()[usize::from(trigger.index)].phase;
+        let turns_until_exit_cadence =
+            usize::from((8_u8.wrapping_sub(phase_before_exit & 7)) & 7) + 1;
+        for _ in 0..turns_until_exit_cadence {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 1,
+                authored_indices,
+                ..
+            } if *source_slot == trigger.index
+                && authored_indices.starts_with(&[31, 99, 104])
+        )));
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == trigger.index
+        )));
+        let fired = &session.entities()[usize::from(trigger.index)];
+        assert!(fired.active);
+        assert!(fired.drawing_disabled());
+        assert_eq!(
+            fired.phase,
+            phase_before_exit
+                .wrapping_add(u8::try_from(turns_until_exit_cadence).expect("one cadence fits u8"))
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.entities()[usize::from(trigger.index)].active);
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+
+        let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor reopens for the planted negative");
+        let mismatch_session = mismatch.level2_compatibility_mut();
+        let mismatch_slot = mismatch_session
+            .entities()
+            .iter()
+            .find(|source| {
+                source.active
+                    && mismatch_session.switch_kind_for_source_slot(source.index)
+                        == Some(SwitchKind::AreaExitTrigger)
+                    && source.source_id == 1
+            })
+            .map(|source| source.index)
+            .expect("semantic area-exit trigger has a source slot");
+        mismatch_session.session.state.live.economy.entities[usize::from(mismatch_slot)].action = 0;
+
+        mismatch_session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            mismatch_session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot,
+                        message,
+                        ..
+                    } if *source_slot == mismatch_slot
+                        && message.contains("semantic area_exit_trigger")
+                        && message.contains("model 1 action 0")
+                ))
+        );
+        assert!(
+            mismatch_session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group: 1,
+                        ..
+                    } if *source_slot == mismatch_slot
                 ))
         );
     }

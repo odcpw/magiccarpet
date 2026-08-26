@@ -838,7 +838,12 @@ mod tests {
             &[(SceneryKind::Tree, 18), (SceneryKind::Stone, 1)],
             &[(ItemKind::ExperienceScroll, 5)],
             &[(BuildingKind::House, 81)],
-            &[(SwitchKind::ObjectiveGate, 4)],
+            &[
+                (SwitchKind::AreaEntryTrigger, 24),
+                (SwitchKind::AreaExitTrigger, 2),
+                (SwitchKind::LevelExitGate, 1),
+                (SwitchKind::ObjectiveGate, 4),
+            ],
             &[
                 (
                     MechanicKind::AbsenceCountdown {
@@ -891,7 +896,12 @@ mod tests {
             &[(SceneryKind::Tree, 12), (SceneryKind::Stone, 1)],
             &[(ItemKind::ExperienceScroll, 24)],
             &[(BuildingKind::House, 25)],
-            &[(SwitchKind::ObjectiveGate, 6)],
+            &[
+                (SwitchKind::AreaEntryTrigger, 17),
+                (SwitchKind::AreaExitTrigger, 4),
+                (SwitchKind::LevelExitGate, 1),
+                (SwitchKind::ObjectiveGate, 6),
+            ],
             &[],
             &[
                 ObjectiveCondition::ReachLocation(TilePosition { x: 2, y: 152 }),
@@ -927,7 +937,11 @@ mod tests {
             &[(SceneryKind::Tree, 37), (SceneryKind::Stone, 12)],
             &[(ItemKind::ExperienceScroll, 10)],
             &[(BuildingKind::House, 97)],
-            &[(SwitchKind::ObjectiveGate, 5)],
+            &[
+                (SwitchKind::AreaEntryTrigger, 4),
+                (SwitchKind::LevelExitGate, 1),
+                (SwitchKind::ObjectiveGate, 5),
+            ],
             &[(
                 MechanicKind::AbsenceCountdown {
                     creature: CreatureKind::Worm,
