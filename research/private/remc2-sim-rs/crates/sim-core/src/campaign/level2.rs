@@ -4647,6 +4647,18 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    /// Stage one real package activation-group boundary for a focused
+    /// downstream production test. Constructors, allocator behavior, source
+    /// ordering, callbacks, epilogues, and cleanup remain owned by the normal
+    /// shared engine path.
+    #[cfg(test)]
+    pub(crate) fn activate_authored_group_prerequisite_for_test(
+        &mut self,
+        target_group: u16,
+    ) -> std::result::Result<(), String> {
+        self.consume_authored_group(0, 0, target_group)
+    }
+
     /// Evaluate every participating owner's remaining Level 2 objective
     /// stage after the entity pass. This mirrors the source
     /// `sub_58F00_game_objectives` walk: stage selectors at one are eligible,
@@ -4788,12 +4800,16 @@ impl Level2ResetSession {
                         }
                         ObjectiveCondition::NoLivingCreatures(kind) => {
                             objective.text_selector as usize == stage_index
-                            // Only Bee and Archer currently have complete
-                            // production, damage, hide, and following-pass
-                            // cleanup paths in the shared arena. Semantic
-                            // objectives for later creatures remain visible
-                            // in the definition but fail closed at runtime.
-                            && matches!(kind, CreatureKind::Bee | CreatureKind::Archer)
+                            // Admit a semantic absence objective only after
+                            // that creature's complete production, damage,
+                            // hide, and following-pass cleanup lifecycle is
+                            // shared by the authoritative arena.
+                            && matches!(
+                                kind,
+                                CreatureKind::Bee
+                                    | CreatureKind::Archer
+                                    | CreatureKind::Firefly
+                            )
                             && self
                                 .session
                                 .definition

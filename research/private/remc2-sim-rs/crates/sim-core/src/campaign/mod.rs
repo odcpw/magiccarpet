@@ -3817,6 +3817,147 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cf15_level1_firefly_extinction_unlocks_the_real_exit_group_next_turn() {
+        const GROUP6_ROWS: [u16; 6] = [108, 134, 135, 154, 189, 193];
+        const FIREFLY_ROWS: [u16; 5] = [108, 134, 135, 189, 193];
+        const GROUP4_ROWS: [u16; 12] = [21, 132, 137, 138, 139, 140, 141, 233, 304, 305, 307, 308];
+
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens through the shared engine");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+
+        // The preceding castle objective and row-190 gate are already proven
+        // by the real package progression test. Stage only that exact group-6
+        // boundary; this test owns the downstream extinction objective and
+        // level-end switch chronology.
+        session
+            .activate_authored_group_prerequisite_for_test(6)
+            .expect("real package group 6 materializes through the shared arena");
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 6,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == GROUP6_ROWS
+        )));
+        let fireflies = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| FIREFLY_ROWS.contains(&source.authored_index))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(fireflies.len(), FIREFLY_ROWS.len());
+
+        let objective = &mut session.session.state.live.core.runtime.objectives[0];
+        objective.stage_selectors[..5].copy_from_slice(&[2, 2, 2, 2, 1]);
+        objective.text_selector = 4;
+        objective.is_level_end = 0;
+        objective.done = 0;
+
+        let exit_gate = session
+            .entities()
+            .iter()
+            .find(|source| {
+                source.active
+                    && source.class == 11
+                    && source.model == 4
+                    && source.action == 4
+                    && source.source_id == 4
+            })
+            .map(|source| source.index)
+            .expect("the Level 1 reset contains its package level-end gate");
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[4], 1);
+        assert_eq!(session.runtime().objectives[0].is_level_end, 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
+        )));
+
+        // Queue source-sized damage into each real package root. The ordinary
+        // numeric callbacks own mailbox consumption and the 156/157 death
+        // transitions; no synthetic Firefly or objective row is introduced.
+        let attacker = session.state.entity_index;
+        for firefly in &fireflies {
+            for _ in 0..2 {
+                session.apply_fireball_impact_to_firefly_for_test(firefly.position, attacker, 500);
+            }
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[4], 1);
+        assert!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .filter(|source| FIREFLY_ROWS.contains(&source.authored_index))
+                .all(|source| source.life < 0 && source.action == 156)
+        );
+
+        // The next pass-start family rebuild excludes life-negative roots.
+        // Objective service runs after the complete numeric pass, so the gate
+        // has already missed the newly written level-end state this turn.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[4], 2);
+        assert_eq!(session.runtime().objectives[0].is_level_end, 1);
+        assert!(!session.entities()[usize::from(exit_gate)].drawing_disabled());
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
+        )));
+
+        // Only the following ordinary numeric visit may consume group 4.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 4,
+                authored_indices,
+                ..
+            } if *source_slot == exit_gate && authored_indices.as_ref() == GROUP4_ROWS
+        )));
+        assert!(session.entities()[usize::from(exit_gate)].drawing_disabled());
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        assert!(
+            session
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|source| source.authored_index == 132 && source.model == 3)
+        );
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 137 && source.model == 12)
+        );
+        assert!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .any(|source| source.authored_index == 307 && source.model == 3)
+        );
+
+        // No-Claim: this does not prove the later group-33/34 switches,
+        // multipart combat, exit-trigger overlap, or the full exit animation.
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+    }
+
     /// mc-iol7n census receipt: the fifteen live Level 3 reset selectors.
     const CF14_LEVEL3_LIVE_PAIRS: [(u8, u8); 15] = [
         (2, 0),
