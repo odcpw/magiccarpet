@@ -1,8 +1,8 @@
 //! Immutable, hash-bound campaign inputs admitted by package schema v1.
 //!
 //! These are data facts, not presentation resources and not executable
-//! package content.  Contract v1 admits only the three kinds already proven
-//! for the qualified Level 2 package.
+//! package content. The validated campaign profile determines which of the
+//! closed fact kinds have real package carriers.
 
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -68,10 +68,9 @@ pub(crate) struct SourceFactContext<'a> {
     pub files: &'a BTreeMap<String, (u64, String)>,
     pub members: &'a BTreeMap<String, Vec<u8>>,
     pub authored_collision_provenance: &'a [SelectorProvenance],
-    /// Census-profiled identity of the qualified collision-mask bank for the
-    /// validated selection.  The profile table in `spec` owns these values.
-    pub collision_bank_bytes: usize,
-    pub collision_bank_sha256: &'a str,
+    /// Census-profiled identity of the collision bank when the selected owner
+    /// package actually carries one.
+    pub collision_bank: Option<(usize, &'a str)>,
 }
 
 const SOURCE_ARTIFACTS: &[(&str, u64, &str)] = &[
@@ -372,7 +371,8 @@ fn decode_collision_masks(bytes: &[u8], expected: &[u16]) -> Result<(), String> 
     Ok(())
 }
 
-/// Parse and validate the complete, sorted Level 2 SourceFact set.
+/// Parse and validate the complete, sorted SourceFact set for the package's
+/// real immutable carriers.
 pub(crate) fn validate_source_facts(
     value: &Value,
     context: &SourceFactContext<'_>,
@@ -380,16 +380,16 @@ pub(crate) fn validate_source_facts(
     let rows = value
         .as_array()
         .ok_or_else(|| "source_facts is not an array".to_owned())?;
-    if rows.len() != 3 {
-        return Err("Level 2 requires exactly three SourceFacts".to_owned());
-    }
-    let expected = [
-        (
+    let mut expected = Vec::new();
+    if context.collision_bank.is_some() {
+        expected.push((
             "collision-mask-bank",
             SourceFactKind::CollisionMask,
             "collision-masks.bin",
             &["CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"][..],
-        ),
+        ));
+    }
+    expected.extend([
         (
             "feature-construction-inputs",
             SourceFactKind::FeatureConstructionInputs,
@@ -410,7 +410,13 @@ pub(crate) fn validate_source_facts(
                 "GAME/NETHERW/CLEVELS/LEVELS.TAB",
             ][..],
         ),
-    ];
+    ]);
+    if rows.len() != expected.len() {
+        return Err(format!(
+            "campaign profile requires exactly {} SourceFacts",
+            expected.len()
+        ));
+    }
     let mut result = Vec::with_capacity(rows.len());
     let mut member_claims = BTreeMap::<String, String>::new();
     for (index, (raw, expected)) in rows.iter().zip(expected).enumerate() {
@@ -538,15 +544,17 @@ pub(crate) fn validate_source_facts(
     if decode_feature_construction_inputs(feature_inputs)? != expected_selectors {
         return Err("feature construction selectors differ from authored provenance".to_owned());
     }
-    let collision = context
-        .members
-        .get("collision-masks.bin")
-        .ok_or_else(|| "collision-mask member is absent".to_owned())?;
-    decode_collision_masks(collision, &expected_selectors)?;
-    if collision.len() != context.collision_bank_bytes
-        || super::spec::sha256_hex(collision) != context.collision_bank_sha256
-    {
-        return Err("collision SourceFact differs from the census-qualified bytes".to_owned());
+    if let Some((collision_bank_bytes, collision_bank_sha256)) = context.collision_bank {
+        let collision = context
+            .members
+            .get("collision-masks.bin")
+            .ok_or_else(|| "collision-mask member is absent".to_owned())?;
+        decode_collision_masks(collision, &expected_selectors)?;
+        if collision.len() != collision_bank_bytes
+            || super::spec::sha256_hex(collision) != collision_bank_sha256
+        {
+            return Err("collision SourceFact differs from the census-qualified bytes".to_owned());
+        }
     }
     Ok(result)
 }

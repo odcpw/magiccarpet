@@ -308,7 +308,7 @@ Arguments parse_arguments(int argc, char** argv) {
     if (result.campaign_package_v1 &&
         campaign_emission_profile(result.level.external) == nullptr) {
         throw std::runtime_error(
-            "--campaign-package-v1 admits only census-profiled external levels 2 and 3");
+            "--campaign-package-v1 admits only census-profiled external levels 1, 2, and 3");
     }
     return result;
 }
@@ -1592,10 +1592,11 @@ struct CampaignBehaviorRow {
     std::vector<std::uint16_t> initial_dispatch_sites;
 };
 
-// Census-proven per-level campaign emission facts.  Level 2 values are the
-// preserved Day reset census; Level 3 values are the mc-iol7n byte-identical
-// twin exports.  Any external level without an entry fails closed before any
-// campaign envelope is staged.
+// Census-proven per-level campaign emission facts. Level 1 retains its sealed
+// 573-byte player component and has no collision-mask carrier. Level 2 values
+// are the preserved Day reset census; Level 3 values are the mc-iol7n
+// byte-identical twin exports. Any external level without an entry fails
+// closed before any campaign envelope is staged.
 struct CampaignEmissionProfile {
     std::uint16_t external = 0;
     std::uint16_t internal = 0;
@@ -1604,12 +1605,15 @@ struct CampaignEmissionProfile {
     std::uint16_t number_of_players = 0;
     std::initializer_list<std::int8_t> objective_stage_forms;
     std::size_t objective_count = 0;
+    const char* player_schema = nullptr;
+    bool includes_collision_masks = false;
 };
 
 const CampaignEmissionProfile* campaign_emission_profile(std::uint16_t external) {
     static const CampaignEmissionProfile kProfiles[] = {
-        {2, 1, 0, 114, 2, {3, 5, 7, 9}, 5},
-        {3, 2, 0, 252, 1, {0, 5, 7}, 5},
+        {1, 0, 1, 177, 1, {0, 5, 7}, 5, "mc2-player-arena/v2", false},
+        {2, 1, 0, 114, 2, {3, 5, 7, 9}, 5, "mc2-player-arena/v4", true},
+        {3, 2, 0, 252, 1, {0, 5, 7}, 5, "mc2-player-arena/v4", true},
     };
     for (const auto& profile : kProfiles) {
         if (profile.external == external) return &profile;
@@ -1813,7 +1817,8 @@ canonical_json campaign_objective_operations(
 canonical_json campaign_source_facts(
     const json& file_manifest,
     const json& owner_sources,
-    const std::vector<CampaignBehaviorRow>& behavior_rows) {
+    const std::vector<CampaignBehaviorRow>& behavior_rows,
+    bool include_collision_masks) {
     canonical_json selector_provenance = canonical_json::array();
     for (const auto& row : behavior_rows) {
         if (row.has_initial_source_slot || row.class_id != 10 || row.subtype != 45 ||
@@ -1834,18 +1839,20 @@ canonical_json campaign_source_facts(
     }
 
     canonical_json facts = canonical_json::array();
-    facts.push_back({
-        {"fact_id", "collision-mask-bank"},
-        {"kind", 3},
-        {"lifetime", "immutable-through-session"},
-        {"member", "collision-masks.bin"},
-        {"member_sha256", file_manifest.at("collision-masks.bin").at("sha256")},
-        {"selector_provenance", selector_provenance},
-        {"source_artifacts", campaign_source_artifacts(
-            owner_sources,
-            {"CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"})},
-        {"version", 1}
-    });
+    if (include_collision_masks) {
+        facts.push_back({
+            {"fact_id", "collision-mask-bank"},
+            {"kind", 3},
+            {"lifetime", "immutable-through-session"},
+            {"member", "collision-masks.bin"},
+            {"member_sha256", file_manifest.at("collision-masks.bin").at("sha256")},
+            {"selector_provenance", selector_provenance},
+            {"source_artifacts", campaign_source_artifacts(
+                owner_sources,
+                {"CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"})},
+            {"version", 1}
+        });
+    }
     facts.push_back({
         {"fact_id", "feature-construction-inputs"},
         {"kind", 2},
@@ -1896,7 +1903,7 @@ canonical_json build_campaign_definition(
     reset_entities["count"] = kEntitySlots;
     reset_entities["record_bytes"] = entity_record_size;
     canonical_json reset_players = typed_campaign_member(
-        file_manifest, "players.bin", "mc2-player-arena/v4");
+        file_manifest, "players.bin", profile.player_schema);
     reset_players["count"] = 8;
     reset_players["record_bytes"] = player_record_size;
 
@@ -1961,7 +1968,11 @@ canonical_json build_campaign_definition(
         {"required_behaviors", campaign_required_behaviors(behavior_rows)},
         {"schema", "mc2-campaign-definition/v1"},
         {"source", {{"remc2_commit", MC2_UPSTREAM_COMMIT}}},
-        {"source_facts", campaign_source_facts(file_manifest, owner_sources, behavior_rows)}
+        {"source_facts", campaign_source_facts(
+            file_manifest,
+            owner_sources,
+            behavior_rows,
+            profile.includes_collision_masks)}
     };
 }
 
@@ -3004,6 +3015,8 @@ int run(const Arguments& arguments) {
             throw std::runtime_error(
                 "campaign local player slot/count differs from the census receipt");
         }
+        const std::string owner_export_package_sha256 =
+            manifest.at("package_sha256").get<std::string>();
         const canonical_json definition = build_campaign_definition(
             *campaign_profile,
             manifest,
@@ -3012,6 +3025,16 @@ int run(const Arguments& arguments) {
             entities,
             entity_record_size,
             player_record_size);
+        if (level_one) {
+            const std::string owner_manifest_text = manifest.dump(2) + "\n";
+            const std::vector<std::uint8_t> owner_manifest_bytes(
+                owner_manifest_text.begin(), owner_manifest_text.end());
+            write_bytes(staging / "owner-manifest.json", owner_manifest_bytes);
+            file_manifest["owner-manifest.json"] = {
+                {"bytes", owner_manifest_bytes.size()},
+                {"sha256", sha256(owner_manifest_bytes)}
+            };
+        }
         const std::string definition_text = definition.dump() + "\n";
         const std::vector<std::uint8_t> definition_bytes(
             definition_text.begin(), definition_text.end());
@@ -3020,17 +3043,33 @@ int run(const Arguments& arguments) {
             {"bytes", definition_bytes.size()},
             {"sha256", sha256(definition_bytes)}
         };
-        manifest = {
-            {"schema", "mc2-owner-campaign-package/v1"},
-            {"byte_order", "little-endian"},
-            {"level", {
-                {"external", arguments.level.external},
-                {"internal", arguments.level.internal},
-                {"map_type", {{"id", map_profile.id}, {"name", map_profile.name}}}
-            }},
-            {"files", file_manifest},
-            {"package_sha256", campaign_package_identity(file_manifest)}
-        };
+        if (level_one) {
+            manifest = {
+                {"schema", "mc2-owner-campaign-package/v1"},
+                {"byte_order", "little-endian"},
+                {"level", {
+                    {"external", arguments.level.external},
+                    {"internal", arguments.level.internal},
+                    {"map_type", {{"id", map_profile.id}, {"name", map_profile.name}}}
+                }},
+                {"owner_export_package_sha256", owner_export_package_sha256},
+                {"files", file_manifest},
+                {"package_sha256", campaign_package_identity(file_manifest)}
+            };
+        } else {
+            // Preserve the already-qualified Level 2/3 envelope bytes exactly.
+            manifest = {
+                {"schema", "mc2-owner-campaign-package/v1"},
+                {"byte_order", "little-endian"},
+                {"level", {
+                    {"external", arguments.level.external},
+                    {"internal", arguments.level.internal},
+                    {"map_type", {{"id", map_profile.id}, {"name", map_profile.name}}}
+                }},
+                {"files", file_manifest},
+                {"package_sha256", campaign_package_identity(file_manifest)}
+            };
+        }
     }
     write_text(staging / "manifest.json", manifest.dump(2) + "\n");
 

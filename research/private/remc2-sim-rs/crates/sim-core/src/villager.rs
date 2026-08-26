@@ -252,6 +252,26 @@ impl VillagerFamily {
         })
     }
 
+    /// Adopt every live Villager row from a validated campaign reset in
+    /// source-slot order.  Population and reset actions are package data;
+    /// the shared behavior carrier does not impose a Level-N slot list.
+    pub fn from_campaign_entities(
+        entities: &[EntitySnapshot],
+        config: VillagerBehaviorConfig,
+    ) -> Result<Self, String> {
+        let villagers = entities
+            .iter()
+            .filter(|entity| {
+                entity.active && entity.class == VILLAGER_CLASS && entity.model == VILLAGER_MODEL
+            })
+            .map(VillagerState::from_snapshot)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            villagers: villagers.into_boxed_slice(),
+            config,
+        })
+    }
+
     /// Decode the Level 2 Day ordinary-villager pool.  Behavior is shared with
     /// Level 1, but the reset action/stage values and source-slot census are
     /// profile data rather than Level 1 assumptions.

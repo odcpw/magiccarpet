@@ -20,7 +20,7 @@ pub const CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v1";
 pub const CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v1";
 pub const LEVEL2_REMC2_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 
-const CAMPAIGN_MEMBERS: [&str; 15] = [
+const FEATURE_CAMPAIGN_MEMBERS: [&str; 15] = [
     "authored-level.bin",
     "campaign-definition.json",
     "collision-masks.bin",
@@ -38,6 +38,24 @@ const CAMPAIGN_MEMBERS: [&str; 15] = [
     "terrain.bin",
 ];
 
+const LEVEL1_CAMPAIGN_MEMBERS: [&str; 15] = [
+    "authored-level.bin",
+    "campaign-definition.json",
+    "entities-post-features.bin",
+    "entities.bin",
+    "feature-allocator.bin",
+    "feature-construction-inputs.bin",
+    "feature-end.bin",
+    "feature-start.bin",
+    "owner-manifest.json",
+    "players.bin",
+    "presentation.bin",
+    "runtime.bin",
+    "terrain-post-features.bin",
+    "terrain-pre-features.bin",
+    "terrain.bin",
+];
+
 const AUTHORED_RECORD_OFFSET: usize = 1_091;
 const AUTHORED_RECORD_COUNT: usize = 1_200;
 const AUTHORED_RECORD_BYTES: usize = 20;
@@ -46,7 +64,18 @@ const AUTHORED_STAGE_OFFSET: usize =
 const ENTITY_COUNT: usize = 1_000;
 const ENTITY_RECORD_BYTES: usize = 176;
 const PLAYER_COUNT: usize = 8;
-const PLAYER_RECORD_BYTES: usize = 663;
+
+#[derive(Debug, Clone, Copy)]
+struct CampaignPackageProfile {
+    members: &'static [&'static str],
+    player_schema: &'static str,
+    player_version: u16,
+    player_record_bytes: usize,
+    feature_allocator_bytes: usize,
+    feature_allocator_trace_count: u32,
+    has_collision_bank: bool,
+    has_owner_manifest: bool,
+}
 
 /// Caller identity that must equal both the outer and descriptor identities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +86,11 @@ pub struct CampaignSelection {
 }
 
 impl CampaignSelection {
+    pub const LEVEL1: Self = Self {
+        external_level: 1,
+        internal_level: 0,
+        map_type_id: 1,
+    };
     pub const LEVEL2: Self = Self {
         external_level: 2,
         internal_level: 1,
@@ -67,6 +101,32 @@ impl CampaignSelection {
         internal_level: 2,
         map_type_id: 0,
     };
+}
+
+fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPackageProfile> {
+    match selection {
+        CampaignSelection::LEVEL1 => Some(CampaignPackageProfile {
+            members: &LEVEL1_CAMPAIGN_MEMBERS,
+            player_schema: "mc2-player-arena/v2",
+            player_version: 2,
+            player_record_bytes: 573,
+            feature_allocator_bytes: 4_440,
+            feature_allocator_trace_count: 51,
+            has_collision_bank: false,
+            has_owner_manifest: true,
+        }),
+        CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => Some(CampaignPackageProfile {
+            members: &FEATURE_CAMPAIGN_MEMBERS,
+            player_schema: "mc2-player-arena/v4",
+            player_version: 4,
+            player_record_bytes: 663,
+            feature_allocator_bytes: 4_032,
+            feature_allocator_trace_count: 0,
+            has_collision_bank: true,
+            has_owner_manifest: false,
+        }),
+        _ => None,
+    }
 }
 
 fn campaign_map_type_name(map_type_id: u8) -> Option<&'static str> {
@@ -373,9 +433,21 @@ impl CampaignDefinition {
                 stage: ValidationStage::OuterManifest,
                 message: format!("cannot parse manifest.json: {error}"),
             })?;
+        let manifest_fields: &[&str] = if caller == CampaignSelection::LEVEL1 {
+            &[
+                "byte_order",
+                "files",
+                "level",
+                "owner_export_package_sha256",
+                "package_sha256",
+                "schema",
+            ]
+        } else {
+            &["byte_order", "files", "level", "package_sha256", "schema"]
+        };
         let manifest = exact_object(
             &manifest_value,
-            &["byte_order", "files", "level", "package_sha256", "schema"],
+            manifest_fields,
             "manifest",
             ValidationStage::OuterManifest,
         )?;
@@ -441,14 +513,23 @@ impl CampaignDefinition {
                 "caller/outer selection or map-type name mismatches the campaign profile",
             );
         }
+        let Some(profile) = campaign_package_profile(outer) else {
+            return fail(
+                ValidationStage::OuterManifest,
+                format!(
+                    "outer selection external {}/internal {}/map {} has no campaign package profile",
+                    outer.external_level, outer.internal_level, outer.map_type_id
+                ),
+            );
+        };
         let files_value = exact_object(
             &manifest["files"],
-            &CAMPAIGN_MEMBERS,
+            profile.members,
             "manifest.files",
             ValidationStage::OuterManifest,
         )?;
         let mut files = BTreeMap::new();
-        for name in CAMPAIGN_MEMBERS {
+        for &name in profile.members {
             normalized_member_name(name, ValidationStage::OuterManifest)?;
             let metadata = exact_object(
                 &files_value[name],
@@ -475,8 +556,10 @@ impl CampaignDefinition {
         )?;
 
         // Stage 2: exact regular directory set.
-        let expected_paths = CAMPAIGN_MEMBERS
-            .into_iter()
+        let expected_paths = profile
+            .members
+            .iter()
+            .copied()
             .chain(std::iter::once("manifest.json"))
             .collect::<BTreeSet<_>>();
         let mut actual_paths = BTreeSet::new();
@@ -517,7 +600,7 @@ impl CampaignDefinition {
         // Stage 3: every member and the sorted member identity.
         let mut members = BTreeMap::new();
         let mut identity_bytes = Vec::new();
-        for name in CAMPAIGN_MEMBERS {
+        for &name in profile.members {
             let bytes =
                 fs::read(package_root.join(name)).map_err(|error| CampaignPackageError {
                     stage: ValidationStage::MemberHashes,
@@ -546,6 +629,20 @@ impl CampaignDefinition {
                 ValidationStage::MemberHashes,
                 "package_sha256 differs from sorted member identity",
             );
+        }
+
+        if profile.has_owner_manifest {
+            let owner_export_package_sha256 = lower_sha256(
+                &manifest["owner_export_package_sha256"],
+                "manifest.owner_export_package_sha256",
+                ValidationStage::OuterManifest,
+            )?;
+            validate_owner_manifest(
+                &members["owner-manifest.json"],
+                outer,
+                &files,
+                &owner_export_package_sha256,
+            )?;
         }
 
         // Stage 4: canonical definition, source pin, and identity equality.
@@ -677,9 +774,9 @@ impl CampaignDefinition {
             &reset_sources["players"],
             &files,
             "campaign_spec.reset_sources.players",
-            Some("mc2-player-arena/v4"),
+            Some(profile.player_schema),
             Some(8),
-            Some(663),
+            Some(u64::try_from(profile.player_record_bytes).expect("player width fits u64")),
             ValidationStage::TypedMembers,
         )?;
         let terrain_ref = parse_member_ref(
@@ -702,7 +799,7 @@ impl CampaignDefinition {
         )?;
         let authored = &members[&authored_records.member];
         let entities = &members[&entities_ref.member];
-        let expected_rows = decode_behavior_rows(authored, entities)?;
+        let expected_rows = decode_behavior_rows(authored, entities, outer.map_type_id)?;
         let declared_rows = parse_behavior_rows(&spec_value["authored_behavior_rows"])?;
         if declared_rows != expected_rows {
             return fail(
@@ -716,12 +813,19 @@ impl CampaignDefinition {
             &members[&players_ref.member],
             entities,
             usize::from(runtime_player_count),
+            profile.player_version,
+            profile.player_record_bytes,
         )?;
         validate_terrain(&members["terrain.bin"], "terrain.bin")?;
-        let feature_boundary =
-            validate_feature_boundary(&reset_sources["feature_boundary"], &files, &members)?;
+        let feature_boundary = validate_feature_boundary(
+            &reset_sources["feature_boundary"],
+            &files,
+            &members,
+            profile.feature_allocator_bytes,
+            profile.feature_allocator_trace_count,
+        )?;
         let presentation_recipe =
-            validate_presentation(&spec_value["presentation_recipe"], &files, &members)?;
+            validate_presentation(&spec_value["presentation_recipe"], &files, &members, outer)?;
 
         // Stage 6: SourceFacts.  Context contains no presentation bytes.
         let authored_collision_provenance = declared_rows
@@ -747,9 +851,13 @@ impl CampaignDefinition {
                 files: &files,
                 members: &members,
                 authored_collision_provenance: &authored_collision_provenance,
-                collision_bank_bytes: usize::try_from(files["collision-masks.bin"].0)
-                    .expect("campaign member size fits usize"),
-                collision_bank_sha256: &files["collision-masks.bin"].1,
+                collision_bank: profile.has_collision_bank.then(|| {
+                    let collision = &files["collision-masks.bin"];
+                    (
+                        usize::try_from(collision.0).expect("campaign member size fits usize"),
+                        collision.1.as_str(),
+                    )
+                }),
             },
         )
         .map_err(|message| CampaignPackageError {
@@ -843,14 +951,17 @@ impl CampaignDefinition {
 
     /// Reconstruct the identity of the wrapped owner-level export.
     ///
-    /// The campaign envelope adds exactly `campaign-definition.json` to the
-    /// already hash-bound export. Owner caches remain bound to that wrapped
-    /// export, not to the later envelope, so consumers must keep the two
-    /// identities distinct.
+    /// Campaign-only definition/compatibility-manifest members are not part
+    /// of the wrapped owner export. Owner caches remain bound to the original
+    /// owner-member identity, so consumers must keep the two identities
+    /// distinct.
     pub(crate) fn owner_export_package_sha256(&self) -> Result<String> {
         let mut identity = Vec::new();
         for (name, expected_sha256) in &self.member_hashes {
-            if name == "campaign-definition.json" {
+            if matches!(
+                name.as_str(),
+                "campaign-definition.json" | "owner-manifest.json"
+            ) {
                 continue;
             }
             let bytes = self.read_member(name)?;
@@ -898,6 +1009,147 @@ impl CampaignDefinition {
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn validate_owner_manifest(
+    bytes: &[u8],
+    selection: CampaignSelection,
+    campaign_files: &BTreeMap<String, (u64, String)>,
+    expected_owner_package_sha256: &str,
+) -> Result<()> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|error| CampaignPackageError {
+        stage: ValidationStage::Definition,
+        message: format!("cannot parse owner-manifest.json: {error}"),
+    })?;
+    let manifest = value.as_object().ok_or_else(|| CampaignPackageError {
+        stage: ValidationStage::Definition,
+        message: "owner-manifest.json is not an object".to_owned(),
+    })?;
+    require_string_eq(
+        manifest.get("schema").unwrap_or(&Value::Null),
+        "mc2-owner-level-export/v3",
+        "owner manifest.schema",
+        ValidationStage::Definition,
+    )?;
+    require_string_eq(
+        manifest.get("byte_order").unwrap_or(&Value::Null),
+        "little-endian",
+        "owner manifest.byte_order",
+        ValidationStage::Definition,
+    )?;
+    let level = manifest
+        .get("level")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CampaignPackageError {
+            stage: ValidationStage::Definition,
+            message: "owner manifest.level is not an object".to_owned(),
+        })?;
+    let map_type = level
+        .get("map_type")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CampaignPackageError {
+            stage: ValidationStage::Definition,
+            message: "owner manifest.level.map_type is not an object".to_owned(),
+        })?;
+    if bounded_u16(
+        level.get("external").unwrap_or(&Value::Null),
+        "owner manifest.level.external",
+        ValidationStage::Definition,
+    )? != selection.external_level
+        || bounded_u16(
+            level.get("internal").unwrap_or(&Value::Null),
+            "owner manifest.level.internal",
+            ValidationStage::Definition,
+        )? != selection.internal_level
+        || bounded_u8(
+            map_type.get("id").unwrap_or(&Value::Null),
+            "owner manifest.level.map_type.id",
+            ValidationStage::Definition,
+        )? != selection.map_type_id
+        || string(
+            map_type.get("name").unwrap_or(&Value::Null),
+            "owner manifest.level.map_type.name",
+            ValidationStage::Definition,
+        )? != campaign_map_type_name(selection.map_type_id).expect("profile map type")
+    {
+        return fail(
+            ValidationStage::Definition,
+            "owner manifest identity differs from the campaign selection",
+        );
+    }
+
+    let owner_files = manifest
+        .get("files")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CampaignPackageError {
+            stage: ValidationStage::Definition,
+            message: "owner manifest.files is not an object".to_owned(),
+        })?;
+    let expected_names = campaign_files
+        .keys()
+        .filter(|name| {
+            !matches!(
+                name.as_str(),
+                "campaign-definition.json" | "owner-manifest.json"
+            )
+        })
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let actual_names = owner_files
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if actual_names != expected_names {
+        return fail(
+            ValidationStage::Definition,
+            "owner manifest file set differs from the wrapped owner export",
+        );
+    }
+    let mut identity = Vec::new();
+    for name in expected_names {
+        let metadata = exact_object(
+            &owner_files[name],
+            &["bytes", "sha256"],
+            &format!("owner manifest.files.{name}"),
+            ValidationStage::Definition,
+        )?;
+        let declared_bytes = unsigned(
+            &metadata["bytes"],
+            &format!("owner manifest.files.{name}.bytes"),
+            ValidationStage::Definition,
+        )?;
+        let declared_sha256 = lower_sha256(
+            &metadata["sha256"],
+            &format!("owner manifest.files.{name}.sha256"),
+            ValidationStage::Definition,
+        )?;
+        if campaign_files[name] != (declared_bytes, declared_sha256.clone()) {
+            return fail(
+                ValidationStage::Definition,
+                format!("owner manifest member {name} differs from the campaign envelope"),
+            );
+        }
+        identity.extend_from_slice(name.as_bytes());
+        identity.push(0);
+        identity.extend_from_slice(declared_sha256.as_bytes());
+        identity.push(0);
+        identity.extend_from_slice(declared_bytes.to_string().as_bytes());
+        identity.push(b'\n');
+    }
+    let owner_package_sha256 = lower_sha256(
+        manifest.get("package_sha256").unwrap_or(&Value::Null),
+        "owner manifest.package_sha256",
+        ValidationStage::Definition,
+    )?;
+    if owner_package_sha256 != sha256_hex(&identity)
+        || owner_package_sha256 != expected_owner_package_sha256
+    {
+        return fail(
+            ValidationStage::Definition,
+            "owner manifest package identity differs from its bound owner members",
+        );
+    }
+    Ok(())
 }
 
 fn exact_object<'a>(
@@ -1097,8 +1349,12 @@ fn read_u32(bytes: &[u8], offset: usize, label: &str, stage: ValidationStage) ->
     Ok(u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
 }
 
-fn decode_behavior_rows(authored: &[u8], entities: &[u8]) -> Result<Vec<AuthoredBehaviorRow>> {
-    if authored.len() != 0x6604 || authored.get(6) != Some(&0) {
+fn decode_behavior_rows(
+    authored: &[u8],
+    entities: &[u8],
+    expected_map_type_id: u8,
+) -> Result<Vec<AuthoredBehaviorRow>> {
+    if authored.len() != 0x6604 || authored.get(6) != Some(&expected_map_type_id) {
         return fail(
             ValidationStage::TypedMembers,
             "authored-level.bin extent/map identity changed",
@@ -1382,11 +1638,22 @@ fn validate_entities(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn validate_players(bytes: &[u8], entities: &[u8], bound_player_slots: usize) -> Result<()> {
-    if bytes.len() != 12 + PLAYER_COUNT * PLAYER_RECORD_BYTES
+fn validate_players(
+    bytes: &[u8],
+    entities: &[u8],
+    bound_player_slots: usize,
+    expected_version: u16,
+    player_record_bytes: usize,
+) -> Result<()> {
+    if bytes.len() != 12 + PLAYER_COUNT * player_record_bytes
         || bytes.get(..4) != Some(b"MCP1")
-        || read_u16(bytes, 4, "players version", ValidationStage::TypedMembers)? != 4
-        || read_u16(bytes, 6, "players width", ValidationStage::TypedMembers)? != 663
+        || read_u16(bytes, 4, "players version", ValidationStage::TypedMembers)? != expected_version
+        || usize::from(read_u16(
+            bytes,
+            6,
+            "players width",
+            ValidationStage::TypedMembers,
+        )?) != player_record_bytes
         || read_u32(bytes, 8, "players count", ValidationStage::TypedMembers)? != 8
     {
         return fail(
@@ -1395,7 +1662,7 @@ fn validate_players(bytes: &[u8], entities: &[u8], bound_player_slots: usize) ->
         );
     }
     for slot in 0..PLAYER_COUNT {
-        let offset = 12 + slot * PLAYER_RECORD_BYTES;
+        let offset = 12 + slot * player_record_bytes;
         if usize::from(read_u16(
             bytes,
             offset,
@@ -1561,6 +1828,8 @@ fn validate_feature_boundary(
     value: &Value,
     files: &BTreeMap<String, (u64, String)>,
     members: &BTreeMap<String, Vec<u8>>,
+    expected_allocator_bytes: usize,
+    expected_allocator_trace_count: u32,
 ) -> Result<Vec<MemberRef>> {
     let expected = [
         ("feature-start.bin", "mc2-feature-boundary/v1"),
@@ -1633,7 +1902,7 @@ fn validate_feature_boundary(
         "entities-post-features.bin",
     )?;
     let allocator = &members["feature-allocator.bin"];
-    if allocator.len() != 4_032
+    if allocator.len() != expected_allocator_bytes
         || allocator.get(..4) != Some(b"MCA3")
         || read_u16(
             allocator,
@@ -1658,7 +1927,7 @@ fn validate_feature_boundary(
             24,
             "feature allocator trace count",
             ValidationStage::TypedMembers,
-        )? != 0
+        )? != expected_allocator_trace_count
         || read_u16(
             allocator,
             28,
@@ -1684,6 +1953,7 @@ fn validate_presentation(
     value: &Value,
     files: &BTreeMap<String, (u64, String)>,
     members: &BTreeMap<String, Vec<u8>>,
+    selection: CampaignSelection,
 ) -> Result<PresentationRecipe> {
     let object = exact_object(
         value,
@@ -1716,15 +1986,27 @@ fn validate_presentation(
         None,
         ValidationStage::TypedMembers,
     )?;
-    let expected_strings = [
-        ("block_bank", "BL32N0-0"),
-        ("map_type", "Day"),
-        ("palette", "PALD-0"),
-        ("sky_bank", "SKYD0-0"),
-        ("sprite_bank", "MSPRD0-0"),
-        ("terrain_bank", "TMAPS0-0"),
-        ("web_bank", "MWEBD0-0"),
-    ];
+    let expected_strings = match selection {
+        CampaignSelection::LEVEL1 => [
+            ("block_bank", "BL32N0-0"),
+            ("map_type", "Night"),
+            ("palette", "PALN-0"),
+            ("sky_bank", "SKYN0-0"),
+            ("sprite_bank", "MSPRN0-0"),
+            ("terrain_bank", "TMAPS1-0"),
+            ("web_bank", "MWEBN0-0"),
+        ],
+        CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => [
+            ("block_bank", "BL32N0-0"),
+            ("map_type", "Day"),
+            ("palette", "PALD-0"),
+            ("sky_bank", "SKYD0-0"),
+            ("sprite_bank", "MSPRD0-0"),
+            ("terrain_bank", "TMAPS0-0"),
+            ("web_bank", "MWEBD0-0"),
+        ],
+        _ => unreachable!("selection was profile-validated"),
+    };
     for (name, expected) in expected_strings {
         require_string_eq(
             &object[name],
@@ -1770,7 +2052,7 @@ fn validate_presentation(
     if terrain_graphics_flag_2 || terrain_graphics_flags != 0 {
         return fail(
             ValidationStage::TypedMembers,
-            "presentation recipe terrain flags differ from proven Level 2",
+            "presentation recipe terrain flags differ from the campaign profile",
         );
     }
     let resolved = exact_object(
@@ -1791,19 +2073,35 @@ fn validate_presentation(
         "presentation_recipe.resolved_files",
         ValidationStage::TypedMembers,
     )?;
-    let expected_resolved = [
-        ("block_bank", "owner:CD_Files/DATA/BL32N0-0.DAT"),
-        ("building_bank", "owner:CD_Files/DATA/BUILD0-0.DAT"),
-        ("font_bank", "owner:CD_Files/DATA/FONT1.DAT"),
-        ("language", "owner:CD_Files/LANGUAGE/L1.TXT"),
-        ("level_records", "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT"),
-        ("palette", "owner:CD_Files/DATA/PALD-0.DAT"),
-        ("sky_bank", "owner:CD_Files/DATA/SKYD0-0.DAT"),
-        ("spell_table", "owner:CD_Files/DATA/SPELLS.DAT"),
-        ("sprite_bank", "owner:CD_Files/DATA/MSPRD0-0.DAT"),
-        ("terrain_bank", "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT"),
-        ("web_bank", "owner:CD_Files/DATA/MWEBD0-0.DAT"),
-    ];
+    let expected_resolved = match selection {
+        CampaignSelection::LEVEL1 => [
+            ("block_bank", "owner:CD_Files/DATA/BL32N0-0.DAT"),
+            ("building_bank", "owner:CD_Files/DATA/BUILD0-0.DAT"),
+            ("font_bank", "owner:CD_Files/DATA/FONT1.DAT"),
+            ("language", "owner:CD_Files/LANGUAGE/L1.TXT"),
+            ("level_records", "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT"),
+            ("palette", "owner:CD_Files/DATA/PALN-0.DAT"),
+            ("sky_bank", "owner:CD_Files/DATA/SKYN0-0.DAT"),
+            ("spell_table", "owner:CD_Files/DATA/SPELLS.DAT"),
+            ("sprite_bank", "owner:CD_Files/DATA/MSPRN0-0.DAT"),
+            ("terrain_bank", "owner:GAME/NETHERW/CDATA/TMAPS1-0.DAT"),
+            ("web_bank", "owner:CD_Files/DATA/MWEBN0-0.DAT"),
+        ],
+        CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => [
+            ("block_bank", "owner:CD_Files/DATA/BL32N0-0.DAT"),
+            ("building_bank", "owner:CD_Files/DATA/BUILD0-0.DAT"),
+            ("font_bank", "owner:CD_Files/DATA/FONT1.DAT"),
+            ("language", "owner:CD_Files/LANGUAGE/L1.TXT"),
+            ("level_records", "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT"),
+            ("palette", "owner:CD_Files/DATA/PALD-0.DAT"),
+            ("sky_bank", "owner:CD_Files/DATA/SKYD0-0.DAT"),
+            ("spell_table", "owner:CD_Files/DATA/SPELLS.DAT"),
+            ("sprite_bank", "owner:CD_Files/DATA/MSPRD0-0.DAT"),
+            ("terrain_bank", "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT"),
+            ("web_bank", "owner:CD_Files/DATA/MWEBD0-0.DAT"),
+        ],
+        _ => unreachable!("selection was profile-validated"),
+    };
     for (name, expected) in expected_resolved {
         require_string_eq(
             &resolved[name],
@@ -2450,6 +2748,117 @@ mod tests {
         )
     }
 
+    fn level1_fixture() -> PathBuf {
+        PathBuf::from(
+            std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1")
+                .expect("set MC_CAMPAIGN_LEVEL1_PACKAGE_V1 to a real Level 1 campaign envelope"),
+        )
+    }
+
+    #[test]
+    #[ignore = "requires a real owner-data Level 1 campaign envelope"]
+    fn cf15_level1_definition_preflights_and_inspects_without_collision() {
+        let accept = |_: &super::BehaviorKey| true;
+        let definition =
+            CampaignDefinition::preflight(level1_fixture(), CampaignSelection::LEVEL1, &accept)
+                .expect("real Level 1 descriptor preflights");
+        assert_eq!(definition.completed_stage, ValidationStage::ResetState);
+        assert_eq!(definition.source_facts.len(), 2);
+        assert_eq!(
+            definition
+                .campaign_spec
+                .reset_sources
+                .players
+                .schema
+                .as_deref(),
+            Some("mc2-player-arena/v2")
+        );
+        assert_eq!(
+            definition.campaign_spec.reset_sources.players.record_bytes,
+            Some(573)
+        );
+        let inspection = crate::native_world::NativeWorld::inspect_campaign_definition(&definition)
+            .expect("Level 1 descriptor-backed inspection opens");
+        assert_eq!(inspection.players().len(), 8);
+        assert!(inspection.collision_mask_bank().is_none());
+        assert_eq!(inspection.metadata().external_level, 1);
+        assert_eq!(inspection.metadata().internal_level, 0);
+
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(level1_fixture().join("manifest.json")).expect("campaign manifest exists"),
+        )
+        .expect("campaign manifest parses");
+        let outer = manifest
+            .as_object()
+            .expect("campaign manifest is an object");
+        assert_eq!(
+            definition
+                .owner_export_package_sha256()
+                .expect("wrapped owner identity reconstructs"),
+            outer["owner_export_package_sha256"]
+                .as_str()
+                .expect("owner export identity is a string")
+        );
+
+        let mut file_map = std::collections::BTreeMap::new();
+        for (name, metadata) in outer["files"]
+            .as_object()
+            .expect("campaign file map is an object")
+        {
+            file_map.insert(
+                name.clone(),
+                (
+                    metadata["bytes"].as_u64().expect("member bytes is u64"),
+                    metadata["sha256"]
+                        .as_str()
+                        .expect("member hash is a string")
+                        .to_owned(),
+                ),
+            );
+        }
+        let mut tampered_owner: serde_json::Value = serde_json::from_slice(
+            &fs::read(level1_fixture().join("owner-manifest.json")).expect("owner manifest exists"),
+        )
+        .expect("owner manifest parses");
+        tampered_owner["package_sha256"] = serde_json::Value::String("0".repeat(64));
+        let error = super::validate_owner_manifest(
+            &serde_json::to_vec(&tampered_owner).expect("tampered owner manifest serializes"),
+            CampaignSelection::LEVEL1,
+            &file_map,
+            outer["owner_export_package_sha256"]
+                .as_str()
+                .expect("owner export identity is a string"),
+        )
+        .expect_err("tampered owner manifest/package binding rejects");
+        assert_eq!(error.stage, ValidationStage::Definition);
+        assert!(error.message.contains("package identity differs"));
+
+        let mut substituted_files = outer["files"].clone();
+        substituted_files
+            .as_object_mut()
+            .expect("campaign file map is an object")
+            .insert("collision-masks.bin".to_owned(), serde_json::Value::Null);
+        let profile = super::campaign_package_profile(CampaignSelection::LEVEL1)
+            .expect("Level 1 package profile exists");
+        let error = super::exact_object(
+            &substituted_files,
+            profile.members,
+            "Level 1 substituted file map",
+            ValidationStage::OuterManifest,
+        )
+        .expect_err("a Level 2 collision member cannot be substituted into Level 1");
+        assert_eq!(error.stage, ValidationStage::OuterManifest);
+
+        let level2_players = fs::read(fixture().join("players.bin"))
+            .expect("qualified Level 2 players member exists");
+        let level1_entities = fs::read(level1_fixture().join("entities.bin"))
+            .expect("real Level 1 entities member exists");
+        let error = super::validate_players(&level2_players, &level1_entities, 1, 2, 573)
+            .expect_err("a Level 2 player layout cannot be substituted into Level 1");
+        assert_eq!(error.stage, ValidationStage::TypedMembers);
+        assert!(error.message.contains("players.bin header/extent changed"));
+    }
+
     #[test]
     fn cf02_level2_definition_preflights_before_reset_state() {
         let accept = |_: &super::BehaviorKey| true;
@@ -2510,8 +2919,9 @@ mod tests {
         let offset = AUTHORED_RECORD_OFFSET + record * AUTHORED_RECORD_BYTES + 2;
         authored[offset..offset + 2].copy_from_slice(&(-2_i16).to_le_bytes());
 
-        let error = decode_behavior_rows(&authored, &entities)
-            .expect_err("negative signed subtype cannot narrow into schema-v1 u8");
+        let error =
+            decode_behavior_rows(&authored, &entities, CampaignSelection::LEVEL2.map_type_id)
+                .expect_err("negative signed subtype cannot narrow into schema-v1 u8");
         assert_eq!(error.stage, ValidationStage::TypedMembers);
         assert!(error.message.contains("schema-v1 widths"));
     }

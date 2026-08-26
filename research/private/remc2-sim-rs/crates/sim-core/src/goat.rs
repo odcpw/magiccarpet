@@ -478,6 +478,33 @@ impl GoatFamily {
         })
     }
 
+    /// Adopt every live Goat row from a validated campaign reset in source
+    /// slot order.  The campaign package owns the population; unlike the
+    /// retained Level 1/2 compatibility constructors this path does not
+    /// assume a fixed slot census.
+    pub fn from_campaign_entities(
+        entities: &[EntitySnapshot],
+        stage_point: Position,
+        config: GoatBehaviorConfig,
+    ) -> Result<Self, String> {
+        let mut goats = Vec::new();
+        let mut child_links = Vec::new();
+        for snapshot in entities.iter().filter(|entity| {
+            entity.active && entity.class == GOAT_CLASS && entity.model == GOAT_MODEL
+        }) {
+            goats.push(GoatState::from_snapshot(snapshot)?);
+            child_links.push(snapshot_child_relation(snapshot));
+        }
+        Ok(Self {
+            goats: goats.into_boxed_slice(),
+            child_links: child_links.into_boxed_slice(),
+            source_entities: source_entity_states(entities),
+            stage_point,
+            config,
+            outer_tick: 0,
+        })
+    }
+
     /// Construct the complete Level 2 class-5/model-1 family in authored
     /// source-pool order.  Level 2 keeps a separate pool from Level 1; in
     /// particular, reset slots 39 and 71 are the two action-11 rows.

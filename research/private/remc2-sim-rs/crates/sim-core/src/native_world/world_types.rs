@@ -1476,16 +1476,12 @@ pub fn level2_castle_root_positions_with_resolution<W: FlightWorld>(
 }
 
 impl Level2Dolmen {
-    pub(super) fn from_entity(entity: &EntitySnapshot, planes: &TerrainPlanes) -> Result<Self> {
-        let Some(ordinal) = [108_u16, 109, 110]
-            .iter()
-            .position(|slot| *slot == entity.index)
-        else {
-            return Err(NativeWorldError::new(format!(
-                "Level 2 dolmen source slot {} is not one of 108..=110",
-                entity.index
-            )));
-        };
+    /// Adopt one source-valid Dolmen from a campaign reset without assuming a
+    /// profile-specific slot list or frozen record hash.
+    pub(super) fn from_campaign_entity(
+        entity: &EntitySnapshot,
+        planes: &TerrainPlanes,
+    ) -> Result<Self> {
         if !entity.active
             || entity.class != 2
             || entity.model != 2
@@ -1502,7 +1498,7 @@ impl Level2Dolmen {
             || entity.next_entity() != 0
         {
             return Err(NativeWorldError::new(format!(
-                "Level 2 dolmen {} constructor fields do not match pinned sub_4ADF0",
+                "campaign dolmen {} constructor fields do not match pinned sub_4ADF0",
                 entity.index
             )));
         }
@@ -1512,14 +1508,7 @@ impl Level2Dolmen {
         );
         if planes.entity_indices[terrain_index(map_cell.0, map_cell.1)] != entity.index as i16 {
             return Err(NativeWorldError::new(format!(
-                "Level 2 dolmen {} is not the head of its authored terrain map cell",
-                entity.index
-            )));
-        }
-        let record_hash = sha256_hex(entity.record_bytes());
-        if record_hash != LEVEL2_DOLMEN_RECORD_SHA256[ordinal] {
-            return Err(NativeWorldError::new(format!(
-                "Level 2 dolmen {} record hash changed: {record_hash}",
+                "campaign dolmen {} is not the head of its authored terrain map cell",
                 entity.index
             )));
         }
@@ -1528,6 +1517,27 @@ impl Level2Dolmen {
             entity: entity.clone(),
             map_cell,
         })
+    }
+
+    pub(super) fn from_entity(entity: &EntitySnapshot, planes: &TerrainPlanes) -> Result<Self> {
+        let Some(ordinal) = [108_u16, 109, 110]
+            .iter()
+            .position(|slot| *slot == entity.index)
+        else {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 dolmen source slot {} is not one of 108..=110",
+                entity.index
+            )));
+        };
+        let campaign = Self::from_campaign_entity(entity, planes)?;
+        let record_hash = sha256_hex(entity.record_bytes());
+        if record_hash != LEVEL2_DOLMEN_RECORD_SHA256[ordinal] {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 dolmen {} record hash changed: {record_hash}",
+                entity.index
+            )));
+        }
+        Ok(campaign)
     }
 
     #[must_use]
@@ -3741,14 +3751,31 @@ impl NativeWorldInspection {
             &self.entities,
             &self.players,
             &self.runtime,
+            &self.presentation,
+            &self.terrain_planes,
             self.level2_house_build_footprints.clone(),
             &house_parameters,
         )?;
-        let goats = GoatFamily::empty(
-            &self.entities,
-            GOAT_STAGE_POINT,
-            GoatBehaviorConfig::LEVEL_TWO,
-        );
+        let goats =
+            if self.entities.iter().any(|entity| {
+                entity.active && entity.class == GOAT_CLASS && entity.model == GOAT_MODEL
+            }) {
+                let config = GoatBehaviorConfig::from_parameter_record(
+                    self.presentation.entity_parameters.get(98).ok_or_else(|| {
+                        NativeWorldError::new("campaign Goat parameter row 98 is absent")
+                    })?,
+                )
+                .map_err(NativeWorldError::new)?;
+                let stage_point = super::decode_level_one_goat_stage_point(&self.runtime)?;
+                GoatFamily::from_campaign_entities(&self.entities, stage_point, config)
+                    .map_err(NativeWorldError::new)?
+            } else {
+                GoatFamily::empty(
+                    &self.entities,
+                    GOAT_STAGE_POINT,
+                    GoatBehaviorConfig::LEVEL_ONE,
+                )
+            };
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
             self.package_sha256.clone(),

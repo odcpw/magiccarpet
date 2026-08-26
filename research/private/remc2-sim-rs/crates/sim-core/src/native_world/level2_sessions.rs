@@ -585,6 +585,7 @@ impl Level2SharedSpellResetSession {
     pub(super) fn pickup(&self, source_slot: u16) -> Option<&EntitySnapshot> {
         self.pickups
             .iter()
+            .chain(self.holders.iter())
             .chain(self.dynamic_pickups.iter())
             .find(|entity| entity.index == source_slot)
     }
@@ -592,6 +593,13 @@ impl Level2SharedSpellResetSession {
     pub(super) fn pickup_mut(&mut self, source_slot: u16) -> Option<&mut EntitySnapshot> {
         if let Some(entity) = self
             .pickups
+            .iter_mut()
+            .find(|entity| entity.index == source_slot)
+        {
+            return Some(entity);
+        }
+        if let Some(entity) = self
+            .holders
             .iter_mut()
             .find(|entity| entity.index == source_slot)
         {
@@ -3352,12 +3360,35 @@ impl Level2OrdinaryResetSession {
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
         runtime: &RuntimeSnapshot,
+        presentation: &PresentationSelectors,
+        terrain_planes: &TerrainPlanes,
         house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
         house_parameters: &BTreeMap<u8, HouseParameter>,
     ) -> Result<Self> {
         let houses = HouseFamily::from_campaign_entities(entities, house_parameters)
             .map_err(NativeWorldError::new)?;
-        let villagers = VillagerFamily::empty(VillagerBehaviorConfig::LEVEL_TWO);
+        let villagers = if entities.iter().any(|entity| {
+            entity.active && entity.class == VILLAGER_CLASS && entity.model == VILLAGER_MODEL
+        }) {
+            let config = VillagerBehaviorConfig::from_parameter_record(
+                presentation.entity_parameters.get(100).ok_or_else(|| {
+                    NativeWorldError::new("campaign Villager parameter row 100 is absent")
+                })?,
+            )
+            .map_err(NativeWorldError::new)?;
+            VillagerFamily::from_campaign_entities(entities, config)
+                .map_err(NativeWorldError::new)?
+        } else {
+            VillagerFamily::empty(VillagerBehaviorConfig::LEVEL_ONE)
+        };
+        let dolmens = entities
+            .iter()
+            .filter(|entity| {
+                entity.active && entity.class == 2 && entity.model == 2 && entity.action == 6
+            })
+            .map(|entity| Level2Dolmen::from_campaign_entity(entity, terrain_planes))
+            .collect::<Result<Vec<_>>>()?
+            .into_boxed_slice();
         let player_entities = players
             .iter()
             .take(usize::from(runtime.player_count))
@@ -3370,9 +3401,19 @@ impl Level2OrdinaryResetSession {
             house_build_footprints,
             houses,
             villagers,
-            dolmens: Box::new([]),
+            dolmens,
             players: player_entities,
-            population_census: 0,
+            population_census: u32::try_from(
+                entities
+                    .iter()
+                    .filter(|entity| {
+                        entity.active
+                            && entity.class == VILLAGER_CLASS
+                            && entity.model == VILLAGER_MODEL
+                    })
+                    .count(),
+            )
+            .expect("campaign Villager count fits u32"),
         })
     }
 

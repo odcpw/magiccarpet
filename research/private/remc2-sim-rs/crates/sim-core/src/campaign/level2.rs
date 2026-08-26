@@ -2312,9 +2312,8 @@ impl Level2ResetSession {
             .state
             .live
             .shared_spells
-            .dynamic_pickups
-            .iter()
-            .find(|holder| {
+            .pickup(holder_index)
+            .filter(|holder| {
                 holder.index == holder_index
                     && holder.active
                     && holder.class == 15
@@ -2448,9 +2447,7 @@ impl Level2ResetSession {
             .state
             .live
             .shared_spells
-            .dynamic_pickups
-            .iter_mut()
-            .find(|candidate| candidate.index == holder_index)
+            .pickup_mut(holder_index)
         {
             authoritative.active_value = next_active_value;
             authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
@@ -2590,9 +2587,8 @@ impl Level2ResetSession {
             .state
             .live
             .shared_spells
-            .dynamic_pickups
-            .iter()
-            .find(|holder| {
+            .pickup(holder_index)
+            .filter(|holder| {
                 holder.index == holder_index
                     && holder.active
                     && holder.class == 15
@@ -2793,9 +2789,7 @@ impl Level2ResetSession {
             .state
             .live
             .shared_spells
-            .dynamic_pickups
-            .iter_mut()
-            .find(|candidate| candidate.index == holder_index)
+            .pickup_mut(holder_index)
         {
             authoritative.active_value = next_active_value;
             authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
@@ -3355,9 +3349,8 @@ impl Level2ResetSession {
             .state
             .live
             .shared_spells
-            .dynamic_pickups
-            .iter()
-            .find(|holder| {
+            .pickup(holder_index)
+            .filter(|holder| {
                 holder.index == holder_index
                     && holder.active
                     && holder.class == 15
@@ -3588,9 +3581,7 @@ impl Level2ResetSession {
             .state
             .live
             .shared_spells
-            .dynamic_pickups
-            .iter_mut()
-            .find(|candidate| candidate.index == holder_index)
+            .pickup_mut(holder_index)
         {
             authoritative.active_value = next_active_value;
             authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
@@ -4453,6 +4444,7 @@ impl Level2ResetSession {
             .shared_spells
             .pickups()
             .iter()
+            .chain(self.session.state.live.shared_spells.holders.iter())
             .chain(self.session.state.live.shared_spells.dynamic_pickups())
             .find(|entity| entity.index == source_slot)
             .cloned()
@@ -8439,27 +8431,39 @@ impl Level2ResetSession {
                 pickup.class,
                 pickup.action,
             ))
-        } else if let Some(holder) = live.shared_spells.dynamic_pickups().iter().find(|holder| {
-            holder.active
-                && holder.index == source_slot
-                && holder.class == 15
-                && holder.model == POSSESSION_SPELL_FAMILY
-                && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
-                && holder.source_spell_parent_entity_index() == player_entity_index
-        }) {
+        } else if let Some(holder) = live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .chain(live.shared_spells.holders.iter())
+            .find(|holder| {
+                holder.active
+                    && holder.index == source_slot
+                    && holder.class == 15
+                    && holder.model == POSSESSION_SPELL_FAMILY
+                    && holder.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
+                    && holder.source_spell_parent_entity_index() == player_entity_index
+            })
+        {
             Some((
                 Level2SourceRoute::PossessionHolder,
                 holder.class,
                 holder.action,
             ))
-        } else if let Some(holder) = live.shared_spells.dynamic_pickups().iter().find(|holder| {
-            holder.active
-                && holder.index == source_slot
-                && holder.class == 15
-                && holder.model == FIREBALL_SPELL_FAMILY
-                && holder.action == 0
-                && holder.source_spell_parent_entity_index() == player_entity_index
-        }) {
+        } else if let Some(holder) = live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .chain(live.shared_spells.holders.iter())
+            .find(|holder| {
+                holder.active
+                    && holder.index == source_slot
+                    && holder.class == 15
+                    && holder.model == FIREBALL_SPELL_FAMILY
+                    && holder.action == 0
+                    && holder.source_spell_parent_entity_index() == player_entity_index
+            })
+        {
             Some((
                 Level2SourceRoute::FireballHolder,
                 holder.class,
@@ -8495,13 +8499,19 @@ impl Level2ResetSession {
                 holder.class,
                 holder.action,
             ))
-        } else if let Some(holder) = live.shared_spells.dynamic_pickups().iter().find(|holder| {
-            holder.active
-                && holder.index == source_slot
-                && holder.class == 15
-                && holder.model == CASTLE_SPELL_FAMILY
-                && holder.action == CASTLE_SPELL_FAMILY.saturating_mul(3)
-        }) {
+        } else if let Some(holder) = live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .chain(live.shared_spells.holders.iter())
+            .find(|holder| {
+                holder.active
+                    && holder.index == source_slot
+                    && holder.class == 15
+                    && holder.model == CASTLE_SPELL_FAMILY
+                    && holder.action == CASTLE_SPELL_FAMILY.saturating_mul(3)
+            })
+        {
             Some((Level2SourceRoute::CastleHolder, holder.class, holder.action))
         } else if let Some(stone) = live
             .bad_stones
@@ -8654,6 +8664,7 @@ impl Level2ResetSession {
                 .shared_spells
                 .pickups()
                 .iter()
+                .chain(live.shared_spells.holders.iter())
                 .chain(live.shared_spells.dynamic_pickups())
                 .find(|row| row.active && row.index == source_slot)
                 .map(|row| row.phase)
@@ -8675,9 +8686,8 @@ impl Level2ResetSession {
                         .map(|row| row.phase)
                 } else {
                     live.shared_spells
-                        .dynamic_pickups()
-                        .iter()
-                        .find(|row| row.active && row.index == source_slot)
+                        .pickup(source_slot)
+                        .filter(|row| row.active)
                         .map(|row| row.phase)
                 }
             }
@@ -8870,6 +8880,7 @@ impl Level2ResetSession {
                 .shared_spells
                 .pickups()
                 .iter()
+                .chain(live.shared_spells.holders.iter())
                 .chain(live.shared_spells.dynamic_pickups())
                 .find(|row| row.index == source_slot)
                 .map(|row| row.phase)
@@ -9118,17 +9129,13 @@ impl Level2ResetSession {
                         .map(|row| &mut row.phase)
                 } else {
                     live.shared_spells
-                        .dynamic_pickups
-                        .iter_mut()
-                        .find(|row| row.index == source_slot)
+                        .pickup_mut(source_slot)
                         .map(|row| &mut row.phase)
                 }
             }
             Level2SourceRoute::CastleHolder => live
                 .shared_spells
-                .dynamic_pickups
-                .iter_mut()
-                .find(|row| row.index == source_slot)
+                .pickup_mut(source_slot)
                 .map(|row| &mut row.phase),
             Level2SourceRoute::Dynamic(row) => {
                 macro_rules! dynamic_phase_mut {
@@ -9347,22 +9354,12 @@ impl Level2ResetSession {
                     {
                         row.record[66] = advanced;
                     }
-                } else if let Some(row) = live
-                    .shared_spells
-                    .dynamic_pickups
-                    .iter_mut()
-                    .find(|row| row.index == source_slot)
-                {
+                } else if let Some(row) = live.shared_spells.pickup_mut(source_slot) {
                     row.record[66] = advanced;
                 }
             }
             Level2SourceRoute::CastleHolder => {
-                if let Some(row) = live
-                    .shared_spells
-                    .dynamic_pickups
-                    .iter_mut()
-                    .find(|row| row.index == source_slot)
-                {
+                if let Some(row) = live.shared_spells.pickup_mut(source_slot) {
                     row.record[66] = advanced;
                 }
             }
@@ -9410,6 +9407,22 @@ impl Level2ResetSession {
                 switch.phase = advanced;
                 switch.position = position;
             }
+        }
+        let sync_imported_holder = matches!(
+            route,
+            Level2SourceRoute::PossessionHolder
+                | Level2SourceRoute::CastleHolder
+                | Level2SourceRoute::FireballHolder
+        ) && source_slot != LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+            && source_slot != LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+            && live
+                .economy
+                .entities
+                .get(usize::from(source_slot))
+                .is_some_and(|row| row.index == source_slot && row.class == 15);
+        if sync_imported_holder {
+            self.commit_imported_spell_source_projection(source_slot)
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     }

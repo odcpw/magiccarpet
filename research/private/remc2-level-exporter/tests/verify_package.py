@@ -53,6 +53,7 @@ V3_FILES = V2_FILES | {
 }
 V4_FILES = V3_FILES | {"collision-masks.bin"}
 V5_FILES = V4_FILES
+CAMPAIGN_ENVELOPE_FILES = {"campaign-definition.json", "owner-manifest.json"}
 CAMPAIGN_FILES = V5_FILES | {"campaign-definition.json"}
 REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 # Census-proven per-level campaign profile facts keyed by the outer selection
@@ -60,8 +61,28 @@ REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 # reset census; Level 3 values are the mc-iol7n byte-identical twin exports.
 # A selection without an entry fails closed before any member is decoded.
 CAMPAIGN_PROFILES = {
+    (1, 0, 1): {
+        "map_type_name": "Night",
+        "map_type_id": 1,
+        "active_entities": 177,
+        "bound_player_slots": 1,
+        "runtime_player_count": 1,
+        "runtime_music_selector": 1,
+        "objective_stage_forms": {0, 5, 7},
+        "objective_count": 5,
+        "player_schema": "mc2-player-arena/v2",
+        "player_component_version": 2,
+        "player_record_bytes": 573,
+        "owner_manifest_schema": SCHEMA_V3,
+        "files": V3_FILES | CAMPAIGN_ENVELOPE_FILES,
+        "source_fact_ids": {
+            "feature-construction-inputs",
+            "level-records",
+        },
+    },
     (2, 1, 0): {
         "map_type_name": "Day",
+        "map_type_id": 0,
         "active_entities": 114,
         "collision_bank_bytes": 4638,
         "collision_bank_sha256": "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432",
@@ -70,9 +91,20 @@ CAMPAIGN_PROFILES = {
         "runtime_music_selector": 2,
         "objective_stage_forms": {3, 5, 7, 9},
         "objective_count": 5,
+        "player_schema": "mc2-player-arena/v4",
+        "player_component_version": 4,
+        "player_record_bytes": 663,
+        "owner_manifest_schema": None,
+        "files": CAMPAIGN_FILES,
+        "source_fact_ids": {
+            "collision-mask-bank",
+            "feature-construction-inputs",
+            "level-records",
+        },
     },
     (3, 2, 0): {
         "map_type_name": "Day",
+        "map_type_id": 0,
         "active_entities": 252,
         "collision_bank_bytes": 3718,
         "collision_bank_sha256": "e1c2bd67c7ce43d0378d274431c252c9a427bf1a17bb638a344940433f06f5e6",
@@ -81,6 +113,16 @@ CAMPAIGN_PROFILES = {
         "runtime_music_selector": 2,
         "objective_stage_forms": {0, 5, 7},
         "objective_count": 5,
+        "player_schema": "mc2-player-arena/v4",
+        "player_component_version": 4,
+        "player_record_bytes": 663,
+        "owner_manifest_schema": None,
+        "files": CAMPAIGN_FILES,
+        "source_fact_ids": {
+            "collision-mask-bank",
+            "feature-construction-inputs",
+            "level-records",
+        },
     },
 }
 CAMPAIGN_SOURCE_ARTIFACTS = {
@@ -1563,8 +1605,16 @@ def _campaign_member_ref(value: object, files: dict, label: str, *, schema: str 
     return result
 
 
-def _campaign_decode_behavior_rows(authored: bytes, entities: bytes, expected_active_entities: int) -> list[dict]:
-    require(len(authored) == 0x6604 and authored[6] == 0, "campaign authored member identity/layout changed")
+def _campaign_decode_behavior_rows(
+    authored: bytes,
+    entities: bytes,
+    expected_active_entities: int,
+    expected_map_type_id: int = 0,
+) -> list[dict]:
+    require(
+        len(authored) == 0x6604 and authored[6] == expected_map_type_id,
+        "campaign authored member identity/layout changed",
+    )
     rows: list[dict] = []
     for index in range(1200):
         offset = 1091 + index * 20
@@ -1677,18 +1727,33 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         schema="mc2-entity-arena/v1", count=1000, record_bytes=176,
     )
     entities = (package / entities_descriptor["member"]).read_bytes()
-    expected_rows = _campaign_decode_behavior_rows(authored, entities, profile["active_entities"])
+    expected_rows = _campaign_decode_behavior_rows(
+        authored,
+        entities,
+        profile["active_entities"],
+        profile["map_type_id"],
+    )
     require(_strict_equal(spec["authored_behavior_rows"], expected_rows), "authored_behavior_rows differ from fresh authored/reset decode")
 
     players_descriptor = _campaign_member_ref(
         spec["reset_sources"]["players"], files, "campaign_spec.reset_sources.players",
-        schema="mc2-player-arena/v4", count=8, record_bytes=663,
+        schema=profile["player_schema"],
+        count=8,
+        record_bytes=profile["player_record_bytes"],
     )
     players = (package / players_descriptor["member"]).read_bytes()
-    require(len(players) == 12 + 8 * 663 and players[:4] == b"MCP1", "campaign players extent/magic changed")
-    require((u16(players, 4), u16(players, 6), u32(players, 8)) == (4, 663, 8), "campaign players header changed")
+    player_record_bytes = profile["player_record_bytes"]
+    require(
+        len(players) == 12 + 8 * player_record_bytes and players[:4] == b"MCP1",
+        "campaign players extent/magic changed",
+    )
+    require(
+        (u16(players, 4), u16(players, 6), u32(players, 8))
+        == (profile["player_component_version"], player_record_bytes, 8),
+        "campaign players header changed",
+    )
     for slot in range(8):
-        offset = 12 + slot * 663
+        offset = 12 + slot * player_record_bytes
         require(u16(players, offset) == slot, f"player slot/index mismatch at {slot}")
         require(players[offset + 2] in (0, 1) and players[offset + 3] == 0, f"player {slot} flags are invalid")
         require(u16(players, offset + 4) < 1000, f"player {slot} entity relation is out of bounds")
@@ -1705,7 +1770,11 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         schema="mc2-terrain/v1",
     )
     terrain = (package / terrain_descriptor["member"]).read_bytes()
-    require(len(terrain) == 0x70000 and terrain[0x40000:0x50000] == bytes(0x10000), "campaign terrain extent/Day normalization changed")
+    require(
+        len(terrain) == 0x70000
+        and terrain[0x40000:0x50000] == bytes(0x10000),
+        "campaign terrain extent/non-Cave normalization changed",
+    )
 
     runtime_descriptor = _campaign_member_ref(
         spec["reset_sources"]["runtime"], files, "campaign_spec.reset_sources.runtime",
@@ -1772,12 +1841,27 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         require(len(content) == 16 and content[:4] == magic and (u16(content, 4), u16(content, 6), u16(content, 10)) == (1, 16, 0), f"{name} layout changed")
     for name in ("terrain-pre-features.bin", "terrain-post-features.bin"):
         content = (package / name).read_bytes()
-        require(len(content) == 0x70000 and content[0x40000:0x50000] == bytes(0x10000), f"{name} layout/Day normalization changed")
+        require(
+            len(content) == 0x70000
+            and content[0x40000:0x50000] == bytes(0x10000),
+            f"{name} layout/non-Cave normalization changed",
+        )
     post_entities = (package / "entities-post-features.bin").read_bytes()
     require(len(post_entities) == 12 + 1000 * 176 and post_entities[:4] == b"MCE3" and (u16(post_entities, 4), u16(post_entities, 6), u32(post_entities, 8)) == (1, 176, 1000), "post-feature entity arena changed")
     allocator = (package / "feature-allocator.bin").read_bytes()
-    require(len(allocator) == 4032 and allocator[:4] == b"MCA3" and (u16(allocator, 4), u16(allocator, 6)) == (1, 32), "feature allocator layout changed")
-    require(u32(allocator, 20) == 0 and u32(allocator, 24) == 0 and (u16(allocator, 28), u16(allocator, 30)) == (2, 8), "feature allocator reserved/trace layout changed")
+    require(
+        len(allocator) >= 32
+        and allocator[:4] == b"MCA3"
+        and (u16(allocator, 4), u16(allocator, 6)) == (1, 32),
+        "feature allocator layout changed",
+    )
+    trace_count = u32(allocator, 24)
+    require(
+        u32(allocator, 20) == 0
+        and (u16(allocator, 28), u16(allocator, 30)) == (2, 8)
+        and len(allocator) == 32 + 1000 * 4 + trace_count * 8,
+        "feature allocator reserved/trace layout changed",
+    )
     return authored, entities, runtime
 
 
@@ -1822,7 +1906,11 @@ def _campaign_decode_collision(content: bytes, authored_selectors: list[int]) ->
 def _campaign_validate_source_facts(package: Path, facts_value: object, files: dict, behavior_rows: list[dict], profile: dict) -> None:
     require(isinstance(facts_value, list), "source_facts is not an array")
     facts = facts_value
-    require(len(facts) == 3, "Level 2 requires exactly three proven SourceFacts")
+    source_fact_ids = profile["source_fact_ids"]
+    require(
+        len(facts) == len(source_fact_ids),
+        "campaign SourceFact count differs from the census profile",
+    )
     authored_provenance = [
         {
             "authored_record": row["authored_record"],
@@ -1835,15 +1923,16 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
         for row in behavior_rows
         if row["initial_source_slot"] is None and row["class"] == 10 and row["subtype"] == 45 and row["action"] == 255
     ]
-    expected = {
+    all_expected = {
         "collision-mask-bank": (3, "collision-masks.bin", authored_provenance, {"CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"}),
         "feature-construction-inputs": (2, "feature-construction-inputs.bin", authored_provenance, {"CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"}),
         "level-records": (1, "authored-level.bin", [], {"GAME/NETHERW/CLEVELS/LEVELS.DAT", "GAME/NETHERW/CLEVELS/LEVELS.TAB"}),
     }
+    expected = {fact_id: all_expected[fact_id] for fact_id in source_fact_ids}
     fact_ids = [fact.get("fact_id") for fact in facts if isinstance(fact, dict)]
     require(
         fact_ids == sorted(expected),
-        "source_facts are not the exact sorted Level 2 fact-id set",
+        "source_facts are not the exact sorted census-profiled fact-id set",
     )
     member_claims: dict[str, str] = {}
     for fact_index, raw_fact in enumerate(facts):
@@ -1876,9 +1965,15 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
     feature_selectors = _campaign_decode_feature_inputs((package / "feature-construction-inputs.bin").read_bytes())
     authored_selectors = [row["model"] for row in behavior_rows if row["initial_source_slot"] is None and row["class"] == 10 and row["subtype"] == 45 and row["action"] == 255]
     require(feature_selectors == sorted(set(authored_selectors)), "feature construction selectors differ from authored provenance")
-    collision = (package / "collision-masks.bin").read_bytes()
-    _campaign_decode_collision(collision, authored_selectors)
-    require(len(collision) == profile["collision_bank_bytes"] and hashlib.sha256(collision).hexdigest() == profile["collision_bank_sha256"], "collision SourceFact differs from the census-qualified bytes")
+    if "collision-mask-bank" in source_fact_ids:
+        collision = (package / "collision-masks.bin").read_bytes()
+        _campaign_decode_collision(collision, authored_selectors)
+        require(
+            len(collision) == profile["collision_bank_bytes"]
+            and hashlib.sha256(collision).hexdigest()
+            == profile["collision_bank_sha256"],
+            "collision SourceFact differs from the census-qualified bytes",
+        )
 
 
 def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, package: Path, profile: dict) -> None:
@@ -1912,10 +2007,23 @@ def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, pack
     require(len(feature_end) == 16, "initial RNG member extent changed")
 
 
-def _campaign_validate_presentation(recipe_value: object, files: dict) -> None:
+def _campaign_validate_presentation(
+    recipe_value: object,
+    files: dict,
+    *,
+    owner_manifest: dict | None = None,
+) -> None:
     keys = {"block_bank", "cursor", "map_type", "member", "palette", "resolved_files", "sky_bank", "sound_bank", "sprite_bank", "terrain_bank", "terrain_graphics_flag_2", "terrain_graphics_flags", "texture_size", "vga_resolution_selector", "web_bank"}
     recipe = _exact_object(recipe_value, keys, "campaign_spec.presentation_recipe")
     _campaign_member_ref(recipe["member"], files, "presentation_recipe.member", schema="mc2-presentation-snapshot/v1")
+    if owner_manifest is not None:
+        expected = owner_manifest["presentation_dependencies"]
+        actual = {name: value for name, value in recipe.items() if name != "member"}
+        require(
+            _strict_equal(actual, expected),
+            "presentation recipe differs from the bound owner manifest",
+        )
+        return
     expected = {
         "block_bank": "BL32N0-0", "cursor": 9, "map_type": "Day", "palette": "PALD-0",
         "sky_bank": "SKYD0-0", "sound_bank": 1, "sprite_bank": "MSPRD0-0",
@@ -1953,6 +2061,101 @@ def _campaign_validate_presentation(recipe_value: object, files: dict) -> None:
     require(resolved == expected_resolved, "presentation recipe resolved asset identities differ")
 
 
+def _campaign_package_identity(files: dict) -> str:
+    identity = bytearray()
+    for name in sorted(files):
+        metadata = files[name]
+        identity.extend(
+            name.encode("ascii")
+            + b"\0"
+            + metadata["sha256"].encode("ascii")
+            + b"\0"
+            + str(metadata["bytes"]).encode("ascii")
+            + b"\n"
+        )
+    return hashlib.sha256(identity).hexdigest()
+
+
+def _campaign_validate_owner_manifest(
+    package: Path,
+    outer_manifest: dict,
+    files: dict,
+    outer_selection: tuple[int, int, int],
+    profile: dict,
+) -> dict:
+    owner_manifest_bytes = (package / "owner-manifest.json").read_bytes()
+    try:
+        owner_manifest = json.loads(owner_manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AssertionError(f"owner manifest is not UTF-8 JSON: {error}") from error
+
+    require(
+        owner_manifest.get("schema") == profile["owner_manifest_schema"],
+        "owner manifest schema differs from the campaign profile",
+    )
+    require(
+        _strict_equal(owner_manifest.get("level"), outer_manifest["level"]),
+        "owner manifest selection differs from the campaign envelope",
+    )
+    owner_files = _exact_object(
+        owner_manifest.get("files"),
+        V3_FILES,
+        "owner manifest.files",
+    )
+    require(
+        not (set(owner_files) & CAMPAIGN_ENVELOPE_FILES),
+        "owner export identity includes campaign envelope members",
+    )
+    require(
+        _strict_equal(owner_files, {name: files[name] for name in V3_FILES}),
+        "owner manifest files differ from the outer campaign member map",
+    )
+    owner_identity = _campaign_package_identity(owner_files)
+    require(
+        owner_manifest.get("package_sha256") == owner_identity,
+        "owner manifest package_sha256 includes unbound or envelope members",
+    )
+    require(
+        outer_manifest["owner_export_package_sha256"] == owner_identity,
+        "campaign owner_export_package_sha256 differs from the bound owner export",
+    )
+
+    owner_selection = (
+        owner_manifest["level"]["external"],
+        owner_manifest["level"]["internal"],
+        owner_manifest["level"]["map_type"]["id"],
+    )
+    require(owner_selection == outer_selection, "owner manifest selection is cross-bound")
+    require(owner_manifest["byte_order"] == "little-endian", "owner manifest byte order differs")
+    require(owner_manifest["capture"] == {"frame": 0, "site": "0x002285ff"}, "owner manifest capture differs")
+    require(owner_manifest["counts"]["active_entities"] == profile["active_entities"], "owner manifest active entity census differs")
+    require(owner_manifest["record_sizes"]["player"] == profile["player_record_bytes"], "owner manifest player record width differs")
+    require(owner_manifest["record_layouts"]["player"]["record_bytes"] == profile["player_record_bytes"], "owner manifest player layout width differs")
+    require("collision_masks" not in owner_manifest, "Level 1 owner manifest carries a collision bank")
+    require(
+        owner_manifest["source"]["upstream_commit"] == REM_C2_COMMIT,
+        "Level 1 owner source commit differs from pinned remc2",
+    )
+    _lower_hex(
+        owner_manifest["source"]["upstream_worktree_diff_sha256"],
+        64,
+        "Level 1 owner worktree-diff identity",
+    )
+    _lower_hex(
+        owner_manifest["source"]["compiled_source_sha256"],
+        64,
+        "Level 1 owner compiled-source identity",
+    )
+    require(str(package) not in owner_manifest_bytes.decode("utf-8"), "owner manifest embeds its output path")
+    require("/home/" not in owner_manifest_bytes.decode("utf-8"), "owner manifest embeds a home path")
+    require("\\\\" not in owner_manifest_bytes.decode("utf-8"), "owner manifest contains noncanonical separators")
+    require("missing:" not in owner_manifest_bytes.decode("utf-8"), "owner manifest contains unresolved owner inputs")
+
+    verify_feature_generation_input(package, owner_manifest)
+    verify_binary_structure(package, owner_manifest)
+    return owner_manifest
+
+
 def verify_campaign_package(
     package: Path,
     manifest: dict,
@@ -1961,7 +2164,15 @@ def verify_campaign_package(
     campaign_capabilities: set[tuple[int, int, int, int]] | None = None,
 ) -> dict:
     # Stage 1: closed outer shape and normalized identities.
-    _exact_object(manifest, {"schema", "byte_order", "level", "files", "package_sha256"}, "campaign manifest")
+    level_one_envelope = manifest.get("level") == {
+        "external": 1,
+        "internal": 0,
+        "map_type": {"id": 1, "name": "Night"},
+    }
+    manifest_keys = {"schema", "byte_order", "level", "files", "package_sha256"}
+    if level_one_envelope:
+        manifest_keys.add("owner_export_package_sha256")
+    _exact_object(manifest, manifest_keys, "campaign manifest")
     require(manifest["schema"] == CAMPAIGN_PACKAGE_SCHEMA and manifest["byte_order"] == "little-endian", "campaign outer schema/byte order differs")
     level = _exact_object(manifest["level"], {"external", "internal", "map_type"}, "campaign manifest.level")
     map_type = _exact_object(level["map_type"], {"id", "name"}, "campaign manifest.level.map_type")
@@ -1977,7 +2188,7 @@ def verify_campaign_package(
         and map_type["name"] == profile["map_type_name"],
         "campaign caller/outer selection mismatch",
     )
-    files = _exact_object(manifest["files"], CAMPAIGN_FILES, "campaign manifest.files")
+    files = _exact_object(manifest["files"], profile["files"], "campaign manifest.files")
     for name, raw_metadata in files.items():
         _normalized_member_name(name, "campaign member name")
         metadata = _exact_object(raw_metadata, {"bytes", "sha256"}, f"campaign file {name}")
@@ -1987,18 +2198,29 @@ def verify_campaign_package(
 
     # Stage 2: exact regular directory set (symlinks and nested entries fail).
     actual_entries = {entry.name: entry for entry in package.iterdir()}
-    require(set(actual_entries) == CAMPAIGN_FILES | {"manifest.json"}, "campaign package directory member set differs")
+    require(
+        set(actual_entries) == profile["files"] | {"manifest.json"},
+        "campaign package directory member set differs",
+    )
     for name, entry in actual_entries.items():
         require(entry.is_file() and not entry.is_symlink(), f"campaign package member {name} is not a regular file")
 
     # Stage 3: member and aggregate hashes.
-    identity = bytearray()
     for name in sorted(files):
         content = (package / name).read_bytes()
         digest = hashlib.sha256(content).hexdigest()
         require((len(content), digest) == (files[name]["bytes"], files[name]["sha256"]), f"campaign member {name} size/hash mismatch")
-        identity.extend(name.encode("ascii") + b"\0" + digest.encode("ascii") + b"\0" + str(len(content)).encode("ascii") + b"\n")
-    require(hashlib.sha256(identity).hexdigest() == manifest["package_sha256"], "campaign package_sha256 mismatch")
+    require(_campaign_package_identity(files) == manifest["package_sha256"], "campaign package_sha256 mismatch")
+
+    owner_manifest = None
+    if profile["owner_manifest_schema"] is not None:
+        owner_manifest = _campaign_validate_owner_manifest(
+            package,
+            manifest,
+            files,
+            outer_selection,
+            profile,
+        )
 
     # Stage 4: canonical closed definition and caller/outer identity equality.
     definition_bytes = (package / "campaign-definition.json").read_bytes()
@@ -2032,7 +2254,11 @@ def verify_campaign_package(
 
     # Stage 7: reviewed census-profiled operations only.
     _campaign_validate_operations(spec, authored, files, package, profile)
-    _campaign_validate_presentation(spec["presentation_recipe"], files)
+    _campaign_validate_presentation(
+        spec["presentation_recipe"],
+        files,
+        owner_manifest=owner_manifest,
+    )
 
     # Stage 8: source-derived post-GenerateEvents runtime roots, then compiled
     # capabilities. Later selectors remain fail-closed at the source scheduler.

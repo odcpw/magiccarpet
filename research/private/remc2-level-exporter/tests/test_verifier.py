@@ -12,12 +12,15 @@ import stat
 import tempfile
 
 from verify_package import (
+    CAMPAIGN_PACKAGE_SCHEMA,
     LEVEL2_PLAYER_RECORD_BYTES,
     LEVEL2_V4_PLAYER_RECORD_BYTES,
     SCHEMA_V2,
     SCHEMA_V3,
     SCHEMA_V4,
     SCHEMA_V5,
+    _campaign_package_identity,
+    _canonical_json_bytes,
     verify,
 )
 
@@ -89,6 +92,105 @@ def mutate_u16(candidate: Path, name: str, offset: int, value: int) -> None:
     refresh_file_identity(candidate, name)
 
 
+def rewrite_campaign_definition(candidate: Path, operation) -> None:
+    path = candidate / "campaign-definition.json"
+    definition = json.loads(path.read_text(encoding="utf-8"))
+    operation(definition)
+    path.write_bytes(_canonical_json_bytes(definition))
+    refresh_file_identity(candidate, "campaign-definition.json")
+
+
+def cross_bind_owner_manifest(candidate: Path) -> None:
+    path = candidate / "owner-manifest.json"
+    owner_manifest = json.loads(path.read_text(encoding="utf-8"))
+    owner_manifest["files"]["players.bin"]["sha256"] = "0" * 64
+    owner_manifest["package_sha256"] = _campaign_package_identity(
+        owner_manifest["files"]
+    )
+    path.write_text(json.dumps(owner_manifest, indent=2) + "\n", encoding="utf-8")
+    outer_manifest_path = candidate / "manifest.json"
+    outer_manifest = json.loads(outer_manifest_path.read_text(encoding="utf-8"))
+    outer_manifest["owner_export_package_sha256"] = owner_manifest["package_sha256"]
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    outer_manifest["files"]["owner-manifest.json"] = {
+        "bytes": path.stat().st_size,
+        "sha256": digest,
+    }
+    outer_manifest["package_sha256"] = _campaign_package_identity(
+        outer_manifest["files"]
+    )
+    outer_manifest_path.write_text(
+        json.dumps(outer_manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def verify_level1_campaign_negatives(package: Path) -> None:
+    expect_rejected(
+        package,
+        lambda candidate: rewrite_campaign_definition(
+            candidate,
+            lambda definition: definition["campaign_spec"]["reset_sources"][
+                "players"
+            ].update({"schema": "mc2-player-arena/v4"}),
+        ),
+        expected_error="schema differs",
+    )
+    expect_rejected(
+        package,
+        lambda candidate: rewrite_campaign_definition(
+            candidate,
+            lambda definition: definition["campaign_spec"]["reset_sources"][
+                "players"
+            ].update({"record_bytes": LEVEL2_PLAYER_RECORD_BYTES}),
+        ),
+        expected_error="record width differs",
+    )
+
+    def tamper_owner_manifest(candidate: Path) -> None:
+        path = candidate / "owner-manifest.json"
+        path.write_bytes(path.read_bytes() + b" ")
+
+    expect_rejected(
+        package,
+        tamper_owner_manifest,
+        expected_error="campaign member owner-manifest.json size/hash mismatch",
+    )
+    expect_rejected(
+        package,
+        cross_bind_owner_manifest,
+        expected_error="owner manifest files differ from the outer campaign member map",
+    )
+
+    def inject_collision_member(candidate: Path) -> None:
+        (candidate / "collision-masks.bin").write_bytes(b"MCM1")
+
+    expect_rejected(
+        package,
+        inject_collision_member,
+        expected_error="campaign package directory member set differs",
+    )
+    expect_rejected(
+        package,
+        lambda candidate: rewrite_campaign_definition(
+            candidate,
+            lambda definition: definition["source_facts"].append(
+                {
+                    "fact_id": "collision-mask-bank",
+                    "kind": 3,
+                    "lifetime": "immutable-through-session",
+                    "member": "collision-masks.bin",
+                    "member_sha256": "0" * 64,
+                    "selector_provenance": [],
+                    "source_artifacts": [],
+                    "version": 1,
+                }
+            ),
+        ),
+        expected_error="SourceFact count differs from the census profile",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("package", type=Path)
@@ -98,6 +200,12 @@ def main() -> int:
 
     manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
     schema = manifest["schema"]
+
+    if schema == CAMPAIGN_PACKAGE_SCHEMA:
+        if manifest["level"]["external"] == 1:
+            verify_level1_campaign_negatives(package)
+        print(f"PASS: valid {schema} package and schema-aware tamper suite rejected")
+        return 0
 
     if schema == SCHEMA_V5 and manifest["level"]["external"] == 2:
         players = (package / "players.bin").read_bytes()

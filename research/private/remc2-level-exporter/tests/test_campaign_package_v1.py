@@ -53,6 +53,21 @@ def refresh_package_hash(package: Path, manifest: dict) -> None:
     (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
+def package_identity(files: dict[str, dict[str, object]]) -> str:
+    identity = bytearray()
+    for name in sorted(files):
+        entry = files[name]
+        identity.extend(
+            name.encode("ascii")
+            + b"\0"
+            + str(entry["sha256"]).encode("ascii")
+            + b"\0"
+            + str(entry["bytes"]).encode("ascii")
+            + b"\n"
+        )
+    return hashlib.sha256(identity).hexdigest()
+
+
 def rewrite_definition(package: Path, mutate) -> None:
     definition_path = package / "campaign-definition.json"
     definition = json.loads(definition_path.read_text(encoding="utf-8"))
@@ -331,7 +346,7 @@ def test_campaign_package_v1_additional_closed_union_and_carrier_negatives(
 def test_campaign_package_v1_flag_is_census_profiled_only(tmp_path: Path) -> None:
     exporter = Path(os.environ.get("MC2_LEVEL_EXPORTER_BIN", "/tmp/magiccarpet-remc2-level-exporter-build/remc2-level-exporter"))
     owner_root = Path(os.environ.get("MC2_OWNER_ROOT", str(ROOT / "research/private/remc2-native-runtime")))
-    for level in ("1", "4"):
+    for level in ("4",):
         output = tmp_path / f"level{level}"
         result = subprocess.run(
             [
@@ -345,6 +360,125 @@ def test_campaign_package_v1_flag_is_census_profiled_only(tmp_path: Path) -> Non
         assert result.returncode != 0
         assert "admits only census-profiled external levels" in result.stderr
         assert not output.exists()
+
+
+@pytest.fixture(scope="module")
+def level1_campaign_exports() -> tuple[Path, Path, Path]:
+    exporter = Path(os.environ.get("MC2_LEVEL_EXPORTER_BIN", "/tmp/magiccarpet-remc2-level-exporter-build/remc2-level-exporter"))
+    if not exporter.is_file():
+        raise AssertionError("CF-15 tests require the clean built remc2-level-exporter")
+    owner_root = Path(os.environ.get("MC2_OWNER_ROOT", str(ROOT / "research/private/remc2-native-runtime")))
+    generated_root = ROOT / "research/private/generated"
+    generated_root.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="mc-cf15-level1-package-v1-", dir=generated_root))
+    ordinary = scratch / "ordinary"
+    first, second = scratch / "campaign-a", scratch / "campaign-b"
+    common = [
+        str(exporter),
+        "--owner-root", str(owner_root),
+        "--level", "1",
+    ]
+    try:
+        subprocess.run(
+            common + ["--output", str(ordinary)],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        for output in (first, second):
+            subprocess.run(
+                common + ["--campaign-package-v1", "--output", str(output)],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        yield ordinary, first, second
+    finally:
+        shutil.rmtree(scratch)
+
+
+def test_cf15_level1_campaign_wraps_exact_owner_export(
+    level1_campaign_exports: tuple[Path, Path, Path],
+) -> None:
+    ordinary, first, second = level1_campaign_exports
+    verify(first)
+    verify(second)
+    assert tree_bytes(first) == tree_bytes(second)
+
+    outer = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
+    owner_manifest_bytes = (first / "owner-manifest.json").read_bytes()
+    owner = json.loads(owner_manifest_bytes)
+    definition = json.loads((first / "campaign-definition.json").read_text(encoding="utf-8"))
+
+    assert owner_manifest_bytes == (ordinary / "manifest.json").read_bytes()
+    assert owner["schema"] == "mc2-owner-level-export/v3"
+    assert owner["level"] == {
+        "external": 1,
+        "internal": 0,
+        "map_type": {"id": 1, "name": "Night"},
+    }
+    assert owner["counts"]["active_entities"] == 177
+    assert owner["record_sizes"]["player"] == 573
+    assert owner["record_layouts"]["player"]["record_bytes"] == 573
+    assert "collision-masks.bin" not in owner["files"]
+    assert "collision_masks" not in owner
+
+    for name in owner["files"]:
+        assert (first / name).read_bytes() == (ordinary / name).read_bytes()
+    assert owner["package_sha256"] == package_identity(owner["files"])
+
+    assert set(outer) == {
+        "schema",
+        "byte_order",
+        "level",
+        "owner_export_package_sha256",
+        "files",
+        "package_sha256",
+    }
+    assert outer["schema"] == "mc2-owner-campaign-package/v1"
+    assert outer["level"] == owner["level"]
+    assert outer["owner_export_package_sha256"] == owner["package_sha256"]
+    assert outer["package_sha256"] == package_identity(outer["files"])
+    assert set(outer["files"]) == set(owner["files"]) | {
+        "campaign-definition.json",
+        "owner-manifest.json",
+    }
+    assert outer["files"]["owner-manifest.json"] == {
+        "bytes": len(owner_manifest_bytes),
+        "sha256": hashlib.sha256(owner_manifest_bytes).hexdigest(),
+    }
+    assert "collision-masks.bin" not in outer["files"]
+    assert not (first / "collision-masks.bin").exists()
+
+    assert definition["identity"] == {
+        "external_level": 1,
+        "internal_level": 0,
+        "map_type_id": 1,
+    }
+    players = definition["campaign_spec"]["reset_sources"]["players"]
+    assert players["schema"] == "mc2-player-arena/v2"
+    assert players["count"] == 8
+    assert players["record_bytes"] == 573
+    player_bytes = (first / "players.bin").read_bytes()
+    assert player_bytes[:4] == b"MCP1"
+    assert struct.unpack_from("<HHI", player_bytes, 4) == (2, 573, 8)
+    runtime = (first / "runtime.bin").read_bytes()
+    assert struct.unpack_from("<hh", runtime, 16) == (0, 1)
+
+    objectives = definition["campaign_spec"]["objectives"]
+    assert len(objectives) == 5
+    assert {row["operands"]["stage_index"] for row in objectives} == {0, 5, 7}
+    assert {
+        row["fact_id"] for row in definition["source_facts"]
+    } == {"feature-construction-inputs", "level-records"}
+    assert sum(
+        row["initial_source_slot"] is not None
+        for row in definition["campaign_spec"]["authored_behavior_rows"]
+    ) == 177
 
 
 @pytest.fixture(scope="module")

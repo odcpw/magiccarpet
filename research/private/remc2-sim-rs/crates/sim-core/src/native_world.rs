@@ -4124,7 +4124,9 @@ impl NativeWorld {
         let terrain_bytes = read("terrain.bin")?;
         let presentation_bytes = read("presentation.bin")?;
         let feature_end = read("feature-end.bin")?;
-        let collision_mask_bytes = read("collision-masks.bin")?;
+        let collision_mask_bytes = (definition.identity != CampaignSelection::LEVEL1)
+            .then(|| read("collision-masks.bin"))
+            .transpose()?;
 
         let map_type = MapType::decode(
             definition.identity.map_type_id,
@@ -4160,8 +4162,16 @@ impl NativeWorld {
         let entities = parse_entities(&entities_bytes)?;
         let players = parse_players(
             &players_bytes,
-            OwnerPackageProfile::Campaign,
-            OwnerPackageSchema::V5,
+            if definition.identity == CampaignSelection::LEVEL1 {
+                OwnerPackageProfile::Level1
+            } else {
+                OwnerPackageProfile::Campaign
+            },
+            if definition.identity == CampaignSelection::LEVEL1 {
+                OwnerPackageSchema::V3
+            } else {
+                OwnerPackageSchema::V5
+            },
         )?;
         let runtime = parse_runtime(&runtime_bytes)?;
         validate_campaign_runtime(&runtime, &players, &entities)?;
@@ -4170,19 +4180,27 @@ impl NativeWorld {
             &entities_bytes,
             &players_bytes,
             &runtime_bytes,
+            if definition.identity == CampaignSelection::LEVEL1 {
+                PLAYER_LEGACY_RECORD_BYTES
+            } else {
+                PLAYER_LEVEL2_RECORD_BYTES
+            },
         )?);
         // Campaign preflight has already bound this exact member to the
         // selection's source-pinned byte length and SHA-256. Materialization
         // now performs only the common structural decode; applying the
         // historical Level-2 byte identity here would reject every later
         // descriptor by construction.
-        let collision_masks = Some(CollisionMaskBank::parse(&collision_mask_bytes).map_err(
-            |error| {
-                NativeWorldError::new(format!(
-                    "qualified campaign collision-mask bank rejected: {error:?}"
-                ))
-            },
-        )?);
+        let collision_masks = collision_mask_bytes
+            .as_deref()
+            .map(|bytes| {
+                CollisionMaskBank::parse(bytes).map_err(|error| {
+                    NativeWorldError::new(format!(
+                        "qualified campaign collision-mask bank rejected: {error:?}"
+                    ))
+                })
+            })
+            .transpose()?;
         let (level2_castle_stage_footprints, level2_house_build_footprints) = owner_cache
             .filter(|_| definition.identity == CampaignSelection::LEVEL2)
             .map(|owner_cache| {
@@ -4193,7 +4211,11 @@ impl NativeWorld {
 
         Ok(NativeWorldInspection {
             profile: OwnerPackageProfile::Campaign,
-            schema: OwnerPackageSchema::V5,
+            schema: if definition.identity == CampaignSelection::LEVEL1 {
+                OwnerPackageSchema::V3
+            } else {
+                OwnerPackageSchema::V5
+            },
             metadata,
             package_sha256: owner_export_package_sha256,
             terrain_planes,
@@ -6801,7 +6823,7 @@ fn validate_manifest_layouts(
     require_exact_u64(sizes, "entity", ENTITY_RECORD_BYTES as u64, "record_sizes")?;
     let (expected_player_bytes, has_type_str_164_auxiliary, has_banishment_state) =
         match (profile, schema) {
-            (OwnerPackageProfile::Level1, OwnerPackageSchema::V2)
+            (OwnerPackageProfile::Level1, OwnerPackageSchema::V2 | OwnerPackageSchema::V3)
             | (OwnerPackageProfile::Level2, OwnerPackageSchema::V3) => {
                 (PLAYER_LEGACY_RECORD_BYTES, false, false)
             }
@@ -7309,7 +7331,7 @@ fn parse_players(
 ) -> Result<Vec<PlayerSnapshot>> {
     let (version, record_size, record_size_u16, has_type_str_164_auxiliary, has_banishment_state) =
         match (profile, schema) {
-            (OwnerPackageProfile::Level1, OwnerPackageSchema::V2)
+            (OwnerPackageProfile::Level1, OwnerPackageSchema::V2 | OwnerPackageSchema::V3)
             | (OwnerPackageProfile::Level2, OwnerPackageSchema::V3) => (
                 2,
                 PLAYER_LEGACY_RECORD_BYTES,
@@ -7757,14 +7779,9 @@ fn parse_campaign_reset_state(
     entities: &[u8],
     players: &[u8],
     runtime: &[u8],
+    player_record_bytes: usize,
 ) -> Result<FlightState> {
-    parse_reset_state_from_player_relation(
-        entities,
-        players,
-        runtime,
-        PLAYER_LEVEL2_RECORD_BYTES,
-        None,
-    )
+    parse_reset_state_from_player_relation(entities, players, runtime, player_record_bytes, None)
 }
 
 fn parse_level_two_reset_state(

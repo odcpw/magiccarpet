@@ -3,8 +3,8 @@
 //! The sealed Level 1 route and legacy Level 2 inspection API remain
 //! compatibility adapters. New campaign sessions validate a complete
 //! [`spec::CampaignDefinition`] before any mutable inspection/session state is
-//! constructed, then delegate the already-qualified Level 2 behavior to the
-//! folded Rust authority.
+//! constructed, then delegate the package-present behavior to the shared Rust
+//! authority.
 
 use std::{fmt, path::Path, sync::Arc};
 
@@ -63,7 +63,7 @@ pub struct CampaignSession {
 
 impl CampaignSession {
     /// Validate and open a campaign package. Contract v1 admits the
-    /// census-profiled selections (qualified Level 2 and Level 3); unsupported
+    /// census-profiled selections (qualified Levels 1, 2, and 3); unsupported
     /// identities fail during descriptor preflight rather than selecting a
     /// fallback implementation. Behavior closure validates every live selector
     /// against the shared compiled registry before this materializer runs, so
@@ -210,7 +210,7 @@ mod tests {
             schedule::{ScheduleReceipt, SourcePass, VisitKind},
             spec::{BehaviorSelector, CampaignDefinition, ValidationStage},
         },
-        native_world::{Level2NyphurDispatchCall, NativeWorld},
+        native_world::{Level2DispatchEvent, Level2NyphurDispatchCall, NativeWorld},
     };
     use std::{
         collections::BTreeMap,
@@ -246,6 +246,16 @@ mod tests {
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
+            },
+            PathBuf::from,
+        )
+    }
+
+    fn level_one_descriptor_fixture_path() -> PathBuf {
+        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf15-level1-package-current")
             },
             PathBuf::from,
         )
@@ -328,6 +338,195 @@ mod tests {
         };
         assert_eq!(error.stage, ValidationStage::OuterManifest);
         assert!(!MATERIALIZER_CALLED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cf15_level1_real_reset_families_enter_shared_scheduler() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens through the shared engine");
+        let session = campaign.level2_compatibility();
+
+        let raw_slots = |class: u8, model: u8, action: u8| {
+            session
+                .entities()
+                .iter()
+                .filter(|row| {
+                    row.active && row.class == class && row.model == model && row.action == action
+                })
+                .map(|row| row.index)
+                .collect::<Vec<_>>()
+        };
+        let goat_slots = raw_slots(5, 1, 15);
+        let villager_slots = raw_slots(5, 13, 111);
+        let dolmen_slots = raw_slots(2, 2, 6);
+        let mut holder_slots = raw_slots(15, 0, 0);
+        holder_slots.extend(raw_slots(15, 1, 3));
+        holder_slots.sort_unstable();
+
+        assert_eq!(goat_slots.len(), 33);
+        assert_eq!(villager_slots.len(), 28);
+        assert_eq!(dolmen_slots.len(), 3);
+        assert_eq!(holder_slots.len(), 2);
+        assert_eq!(session.goats().len(), goat_slots.len());
+        assert_eq!(session.ordinary().villagers().len(), villager_slots.len());
+        assert_eq!(session.ordinary().dolmens().len(), dolmen_slots.len());
+        assert_eq!(session.shared_spells().holders().len(), holder_slots.len());
+        assert_eq!(
+            session
+                .goats()
+                .iter()
+                .map(|row| row.entity_index)
+                .collect::<Vec<_>>(),
+            goat_slots
+        );
+        assert_eq!(
+            session
+                .ordinary()
+                .villagers()
+                .iter()
+                .map(|row| row.entity_index)
+                .collect::<Vec<_>>(),
+            villager_slots
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .holders()
+                .iter()
+                .map(|row| row.index)
+                .collect::<Vec<_>>(),
+            holder_slots
+        );
+
+        let initial_hash = campaign.state_hash();
+        let goat_phases = session
+            .goats()
+            .iter()
+            .map(|row| (row.entity_index, row.phase))
+            .collect::<Vec<_>>();
+        let villager_phases = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .map(|row| (row.entity_index, row.phase))
+            .collect::<Vec<_>>();
+        let holder_phases = session
+            .shared_spells()
+            .holders()
+            .iter()
+            .map(|row| (row.index, row.phase))
+            .collect::<Vec<_>>();
+        let mut hydrated_slots = goat_slots;
+        hydrated_slots.extend(villager_slots);
+        hydrated_slots.extend(dolmen_slots);
+        hydrated_slots.extend(holder_slots);
+        hydrated_slots.sort_unstable();
+
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        for source_slot in hydrated_slots {
+            assert!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::SlotResolved {
+                        pass: SourcePass::UpdateEntities,
+                        scan: 0,
+                        slot,
+                        kind: VisitKind::Callback,
+                        ..
+                    } if *slot == source_slot
+                )),
+                "hydrated Level 1 slot {source_slot} was not resolved as a callback"
+            );
+            assert!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted {
+                        pass: SourcePass::UpdateEntities,
+                        scan: 0,
+                        slot,
+                        ..
+                    } if *slot == source_slot
+                )),
+                "hydrated Level 1 slot {source_slot} did not complete its callback"
+            );
+            assert!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::EpilogueCompleted {
+                        pass: SourcePass::UpdateEntities,
+                        scan: 0,
+                        slot,
+                        ..
+                    } if *slot == source_slot
+                )),
+                "hydrated Level 1 slot {source_slot} did not complete its phase epilogue"
+            );
+            assert!(
+                campaign.events().iter().all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::Error { source_slot: slot, .. } if *slot == source_slot
+                )),
+                "hydrated Level 1 slot {source_slot} emitted a dispatch error"
+            );
+        }
+        let session = campaign.level2_compatibility();
+        for (slot, phase) in goat_phases {
+            assert_eq!(
+                session
+                    .goats()
+                    .iter()
+                    .find(|row| row.entity_index == slot)
+                    .expect("Goat remains live after one ordinary pass")
+                    .phase,
+                phase.wrapping_add(1)
+            );
+        }
+        for (slot, phase) in villager_phases {
+            assert_eq!(
+                session
+                    .ordinary()
+                    .villagers()
+                    .iter()
+                    .find(|row| row.entity_index == slot)
+                    .expect("Villager remains live after one ordinary pass")
+                    .phase,
+                phase.wrapping_add(1)
+            );
+        }
+        for (slot, phase) in holder_phases {
+            let holder = session
+                .shared_spells()
+                .holders()
+                .iter()
+                .find(|row| row.index == slot)
+                .expect("initial spell holder remains live after one ordinary pass");
+            assert_eq!(holder.phase, phase.wrapping_add(1));
+            assert_eq!(session.entities()[usize::from(slot)].phase, holder.phase);
+        }
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), initial_hash);
+        assert_eq!(campaign.level2_compatibility().goats().len(), 33);
+        assert_eq!(
+            campaign.level2_compatibility().ordinary().villagers().len(),
+            28
+        );
+        assert_eq!(
+            campaign.level2_compatibility().ordinary().dolmens().len(),
+            3
+        );
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .shared_spells()
+                .holders()
+                .len(),
+            2
+        );
     }
 
     /// mc-iol7n census receipt: the fifteen live Level 3 reset selectors.
