@@ -2,6 +2,7 @@
 members = [
     "crates/atlas-registry",
     "crates/sim-definition",
+    "crates/sim-input",
     "crates/sim-voxel",
     "crates/sim-core",
     "crates/sim-cli",

@@ -42,7 +42,7 @@ pub mod mode5_raster;
 pub mod music;
 pub mod native_world;
 pub mod presentation_frame;
-pub mod recording;
+pub use sim_input::{PlayerCommand, recording};
 pub mod regression_state;
 pub mod render_camera;
 pub mod renderable_map_chain;
@@ -321,55 +321,6 @@ pub const fn positional_sound_should_replace(
     current_volume_q15: i32,
 ) -> bool {
     candidate_volume_q15 - current_volume_q15 >= -8
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PlayerCommand {
-    pub opcode: i8,
-    pub argument_1: i8,
-    pub argument_2: i8,
-    pub roll: i8,
-    pub pitch: i8,
-    pub flags: i8,
-    pub argument_6: u16,
-    pub argument_8: u16,
-}
-
-const _: () = assert!(size_of::<PlayerCommand>() == 10);
-
-impl PlayerCommand {
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 10] {
-        let argument_6 = self.argument_6.to_le_bytes();
-        let argument_8 = self.argument_8.to_le_bytes();
-        [
-            self.opcode.cast_unsigned(),
-            self.argument_1.cast_unsigned(),
-            self.argument_2.cast_unsigned(),
-            self.roll.cast_unsigned(),
-            self.pitch.cast_unsigned(),
-            self.flags.cast_unsigned(),
-            argument_6[0],
-            argument_6[1],
-            argument_8[0],
-            argument_8[1],
-        ]
-    }
-
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 10]) -> Self {
-        Self {
-            opcode: bytes[0].cast_signed(),
-            argument_1: bytes[1].cast_signed(),
-            argument_2: bytes[2].cast_signed(),
-            roll: bytes[3].cast_signed(),
-            pitch: bytes[4].cast_signed(),
-            flags: bytes[5].cast_signed(),
-            argument_6: u16::from_le_bytes([bytes[6], bytes[7]]),
-            argument_8: u16::from_le_bytes([bytes[8], bytes[9]]),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

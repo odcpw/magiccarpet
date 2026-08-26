@@ -1,3 +1,5 @@
+//! Parsers for current and legacy deterministic input-recording layouts.
+
 use crate::PlayerCommand;
 
 const SIGNATURE: &[u8; 16] = b"MC2-HD-Recording";

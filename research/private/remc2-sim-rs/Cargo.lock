@@ -199,6 +199,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sim-definition",
+ "sim-input",
  "sim-voxel",
 ]
 
@@ -210,6 +211,10 @@ dependencies = [
  "serde_json",
  "sha2",
 ]
+
+[[package]]
+name = "sim-input"
+version = "0.1.0"
 
 [[package]]
 name = "sim-voxel"
