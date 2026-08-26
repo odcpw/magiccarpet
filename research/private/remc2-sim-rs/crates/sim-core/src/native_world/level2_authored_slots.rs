@@ -7092,6 +7092,7 @@ impl Level2EconomyState {
         hasher.update(b"authored-firefly-stage-v1");
         for state in &self.authored_fireflies {
             hasher.update(state.source_entity_index.to_le_bytes());
+            hasher.update(state.linked_entity_index.to_le_bytes());
             hasher.update(state.control_flags.to_le_bytes());
             hasher.update([state.byte_0x38, state.xtype]);
             hasher.update(state.descriptor_index.to_le_bytes());

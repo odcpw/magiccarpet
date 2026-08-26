@@ -10395,7 +10395,7 @@ impl Level2ResetSession {
                     ..
                 }),
             ) => {
-                let action = self
+                let (action, life, pending_damage) = self
                     .session
                     .state
                     .live
@@ -10403,25 +10403,54 @@ impl Level2ResetSession {
                     .authored_class5()
                     .iter()
                     .find(|source| source.source_entity_index == source_slot)
-                    .map(|source| source.action)
+                    .map(|source| (source.action, source.life, source.pending_word_0x62))
                     .ok_or_else(|| format!("Firefly source slot {source_slot} is absent"))?;
-                if action != level2_class5::firefly::FIREFLY_STAGE_ACTION {
+                if life < 0 || pending_damage != 0 {
                     return Err(format!(
-                        "Firefly source slot {source_slot} reached unimplemented action {action}"
+                        "Firefly source slot {source_slot} reached the unimplemented damage/death path"
                     ));
                 }
                 let terrain = &self.session.state.live.terrain;
-                let live = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .step_authored_firefly_stage_slot(
-                        source_slot,
-                        &pass_start_class5_model_slots
-                            [usize::from(level2_class5::firefly::FIREFLY_MODEL)],
-                        terrain,
-                    );
+                let frozen_model19_slots = &pass_start_class5_model_slots
+                    [usize::from(level2_class5::firefly::FIREFLY_MODEL)];
+                let live = match action {
+                    level2_class5::firefly::FIREFLY_STAGE_ACTION => self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .step_authored_firefly_stage_slot(
+                            source_slot,
+                            frozen_model19_slots,
+                            terrain,
+                        ),
+                    level2_class5::firefly::FIREFLY_ROAM_ACTION => self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .step_authored_firefly_roam_slot(
+                            source_slot,
+                            goat_players,
+                            frozen_model19_slots,
+                            terrain,
+                        ),
+                    level2_class5::firefly::FIREFLY_LINKED_ACTION => self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .step_authored_firefly_linked_slot(
+                            source_slot,
+                            frozen_model19_slots,
+                            terrain,
+                        ),
+                    _ => {
+                        return Err(format!(
+                            "Firefly source slot {source_slot} reached unimplemented action {action}"
+                        ));
+                    }
+                };
                 if live {
                     self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
                         pass,

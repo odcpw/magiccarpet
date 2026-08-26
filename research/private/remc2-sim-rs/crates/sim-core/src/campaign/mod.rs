@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn cf15_level1_group3_reaches_archer_countdown_and_speed_jar_from_real_flight() {
+    fn cf15_level1_real_package_progression_reaches_archers_speed_and_fireflies() {
         const GROUP_ROWS: [u16; 6] = [101, 102, 103, 106, 109, 153];
         const ARCHER_ROWS: [u16; 4] = [101, 102, 103, 106];
         const GROUP13_MODEL5_ROWS: [u16; 9] = [295, 296, 297, 298, 299, 300, 301, 302, 303];
@@ -1777,6 +1777,310 @@ mod tests {
                     ))
             );
         }
+
+        // Stage only the already-proven package roots at the model-19 stage
+        // target. Natural travel time is not under test; the ordinary
+        // PreDispatch arrival, action-153 decision, action-155 visits, and
+        // shared numeric epilogues remain authoritative production work.
+        let roam_slot = firefly_slots[0];
+        let peer_slot = firefly_slots[1];
+        assert!(roam_slot < peer_slot);
+        assert!(
+            firefly_route
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_authored_firefly_peer_roam_prerequisite_for_test(roam_slot, peer_slot,)
+        );
+        let staged_roam = *firefly_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == roam_slot)
+            .expect("the staged real Firefly root remains live");
+        let motion_config = crate::ground_creature_motion::GroundCreatureMotionConfig {
+            ground_clearance: 51,
+            descent: -8,
+            turn_limit: 113,
+            terrain_mask: u32::MAX,
+            maximum_tile_slope: 20,
+        };
+        let expected_roam_motion = crate::ground_creature_motion::step_ground_creature_motion(
+            staged_roam.position,
+            staged_roam.yaw,
+            staged_roam.roll,
+            staged_roam.actual_speed,
+            &firefly_route
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .terrain,
+            motion_config,
+        );
+        let next_rng16 = |seed: u16| seed.wrapping_mul(9_377).wrapping_add(9_439);
+        let wander_direction = next_rng16(staged_roam.entity_rng);
+        let roam_rng_after_decision = next_rng16(wander_direction);
+        let wander_sign = if wander_direction % 157 < 79 { -1 } else { 1 };
+        let wander_delta = i16::try_from((roam_rng_after_decision & 0x00ff) + 85)
+            .expect("Firefly wander delta fits i16");
+        let expected_roam_roll = staged_roam.roll.wrapping_add(wander_sign * wander_delta) & 0x07ff;
+
+        let _ = firefly_route.step(PlayerCommand::default(), 0);
+        let firefly_session = firefly_route.level2_compatibility();
+        let roam = firefly_session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == roam_slot)
+            .expect("the real Firefly survives its roam decision");
+        let roam_state = firefly_session
+            .economy()
+            .authored_fireflies()
+            .iter()
+            .find(|state| state.source_entity_index == roam_slot)
+            .expect("the real Firefly keeps its model-19 sidecar");
+        assert_eq!(
+            (
+                roam.action,
+                roam.source_byte_3e,
+                roam.entity_rng,
+                roam.actual_speed,
+                roam.position,
+                roam.yaw,
+                roam.roll,
+                roam_state.stage_var1,
+                roam_state.stage_var2,
+                roam_state.linked_entity_index,
+            ),
+            (
+                155,
+                71,
+                roam_rng_after_decision,
+                76,
+                expected_roam_motion.position,
+                expected_roam_motion.yaw,
+                expected_roam_roll,
+                0,
+                0,
+                peer_slot,
+            ),
+            "arrival changes 159->153 before dispatch; action 153 alone consumes two RNG draws and records the real peer"
+        );
+        assert!(
+            firefly_session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted {
+                        pass: SourcePass::UpdateEntities,
+                        slot,
+                        ..
+                    } if *slot == roam_slot
+                ))
+        );
+        assert!(
+            firefly_session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::EpilogueCompleted {
+                        pass: SourcePass::UpdateEntities,
+                        slot,
+                        ..
+                    } if *slot == roam_slot
+                ))
+        );
+        assert!(
+            firefly_route
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        // Action 155 moves on intervening visits but consumes the link only
+        // on its own 35-tick decision cadence. This rejects recursive
+        // same-visit redispatch after action 153 selects the peer.
+        let linked_before = *roam;
+        let expected_linked_motion = crate::ground_creature_motion::step_ground_creature_motion(
+            linked_before.position,
+            linked_before.yaw,
+            linked_before.roll,
+            linked_before.actual_speed,
+            &firefly_route
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .terrain,
+            motion_config,
+        );
+        let mut invalid_link = firefly_route.clone();
+        let peer_authored_index = invalid_link
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == peer_slot)
+            .expect("the selected peer is one of the real package roots")
+            .authored_index;
+        assert_eq!(
+            invalid_link
+                .level2_compatibility_mut()
+                .economy_mut()
+                .hide_authored_class5_rows_for_test(&[peer_authored_index]),
+            1
+        );
+        let _ = invalid_link.step(PlayerCommand::default(), 0);
+        let invalid_root = invalid_link
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == roam_slot)
+            .expect("an invalid peer does not remove the following Firefly");
+        let invalid_state = invalid_link
+            .level2_compatibility()
+            .economy()
+            .authored_fireflies()
+            .iter()
+            .find(|state| state.source_entity_index == roam_slot)
+            .expect("the following Firefly retains its sidecar");
+        assert_eq!(
+            (
+                invalid_root.action,
+                invalid_root.source_byte_3e,
+                invalid_root.position,
+                invalid_root.yaw,
+                invalid_state.linked_entity_index,
+            ),
+            (
+                153,
+                72,
+                expected_linked_motion.position,
+                expected_linked_motion.yaw,
+                0,
+            ),
+            "an invalid word-0x32 peer is cleared after movement even off cadence"
+        );
+
+        let _ = firefly_route.step(PlayerCommand::default(), 0);
+        let off_cadence = firefly_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == roam_slot)
+            .expect("linked Firefly remains live before its decision cadence");
+        assert_eq!(
+            (
+                off_cadence.action,
+                off_cadence.source_byte_3e,
+                off_cadence.entity_rng,
+                off_cadence.actual_speed,
+                off_cadence.position,
+                off_cadence.yaw,
+            ),
+            (
+                155,
+                72,
+                roam_rng_after_decision,
+                76,
+                expected_linked_motion.position,
+                expected_linked_motion.yaw,
+            )
+        );
+        let decision_root_before = *off_cadence;
+        let peer_position_before = firefly_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == peer_slot)
+            .expect("the linked package peer remains live before the decision visit")
+            .position;
+        let expected_decision_motion = crate::ground_creature_motion::step_ground_creature_motion(
+            decision_root_before.position,
+            decision_root_before.yaw,
+            decision_root_before.roll,
+            decision_root_before.actual_speed,
+            &firefly_route
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .terrain,
+            motion_config,
+        );
+        let expected_linked_roll = i16::try_from(crate::heading_for_positions(
+            expected_decision_motion.position,
+            peer_position_before,
+        ))
+        .expect("Firefly linked heading fits i16");
+        assert!(
+            firefly_route
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_authored_firefly_phase_prerequisite_for_test(roam_slot, 105)
+        );
+        let _ = firefly_route.step(PlayerCommand::default(), 0);
+        let firefly_session = firefly_route.level2_compatibility();
+        let roam = firefly_session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == roam_slot)
+            .expect("linked Firefly remains live after consuming its peer relation");
+        let roam_state = firefly_session
+            .economy()
+            .authored_fireflies()
+            .iter()
+            .find(|state| state.source_entity_index == roam_slot)
+            .expect("linked Firefly retains its peer relation");
+        assert_eq!(
+            (
+                roam.action,
+                roam.source_byte_3e,
+                roam.entity_rng,
+                roam.actual_speed,
+                roam.position,
+                roam.yaw,
+                roam.roll,
+                roam_state.linked_entity_index,
+            ),
+            (
+                155,
+                106,
+                roam_rng_after_decision,
+                84,
+                expected_decision_motion.position,
+                expected_decision_motion.yaw,
+                expected_linked_roll,
+                peer_slot,
+            ),
+            "action 155 follows the real action-153 peer only on its later source cadence"
+        );
+        assert!(
+            firefly_session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted {
+                        pass: SourcePass::UpdateEntities,
+                        slot,
+                        ..
+                    } if *slot == roam_slot
+                ))
+        );
+        assert!(
+            firefly_route
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
 
         let mut allocation_failure = campaign.clone();
         let restored_slot = allocation_failure

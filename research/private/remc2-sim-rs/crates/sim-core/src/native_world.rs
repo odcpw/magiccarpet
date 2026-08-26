@@ -2403,12 +2403,15 @@ pub struct Level2AuthoredClass5RuntimeState {
     pub linked_head: u16,
 }
 
-/// Mutable state used only by the authored class-5/model-19 Firefly stage
-/// route. The generic class-5 root remains the source entity authority; this
-/// sidecar carries the StageVar and descriptor fields consumed by action 159.
+/// Mutable state specific to authored class-5/model-19 Fireflies. The generic
+/// class-5 root remains the source entity authority; this sidecar carries the
+/// StageVar, descriptor, movement, and peer-link fields used by their actions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthoredFireflyRuntime {
     pub source_entity_index: u16,
+    /// Source `word_0x32`, the Firefly peer-follow relation. This is not the
+    /// class-5 child-chain `word_0x34` carried by the generic runtime state.
+    pub linked_entity_index: u16,
     pub control_flags: u32,
     pub byte_0x38: u8,
     pub xtype: u8,
