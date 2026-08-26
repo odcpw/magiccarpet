@@ -9,7 +9,7 @@ use crate::{
     level_definition::{
         ActivationGroupId, CreatureKind, ItemKind, LevelDefinition, LevelEntityDefinition,
         LevelEntityId, LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition,
-        SceneryKind, SpellKind, TilePosition,
+        SceneryKind, SpellKind, SwitchKind, TilePosition,
     },
     level1_mission::parse_authored_features,
 };
@@ -23,6 +23,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) creature_model_by_kind: BTreeMap<CreatureKind, u8>,
     pub(crate) scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
+    pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
 }
 
@@ -55,6 +56,17 @@ impl Mc2LevelDefinition {
         }
     }
 
+    pub(crate) const fn switch_for_reset_selector(
+        class: u8,
+        model: u8,
+        action: u8,
+    ) -> Option<SwitchKind> {
+        match (class, model, action) {
+            (11, 32, 32) => Some(SwitchKind::ObjectiveGate),
+            _ => None,
+        }
+    }
+
     pub(crate) fn from_authored_bytes(
         bytes: &[u8],
         objective_operations: &[ObjectiveOperation],
@@ -64,11 +76,13 @@ impl Mc2LevelDefinition {
         let mut spell_ordinals = BTreeMap::<SpellKind, u16>::new();
         let mut scenery_ordinals = BTreeMap::<SceneryKind, u16>::new();
         let mut item_ordinals = BTreeMap::<ItemKind, u16>::new();
+        let mut switch_ordinals = BTreeMap::<SwitchKind, u16>::new();
         let mut mechanic_ordinals = BTreeMap::<MechanicKind, u16>::new();
         let mut creature_by_authored_record = BTreeMap::new();
         let mut creature_model_by_kind = BTreeMap::new();
         let mut scenery_by_authored_record = BTreeMap::new();
         let mut item_by_authored_record = BTreeMap::new();
+        let mut switch_by_authored_record = BTreeMap::new();
         let mut mechanic_by_authored_record = BTreeMap::new();
         let mut entities = Vec::new();
         let activation_groups = features
@@ -173,6 +187,28 @@ impl Mc2LevelDefinition {
                     activation_group,
                 ));
                 item_by_authored_record.insert(feature.index, kind);
+                continue;
+            }
+
+            let switch_kind = match (feature.kind, feature.subtype) {
+                // `AddSwitch0B_20_6F1C0` waits for one objective-state
+                // selector, then activates the row's authored group.
+                (11, 32) => Some(SwitchKind::ObjectiveGate),
+                _ => None,
+            };
+            if let Some(kind) = switch_kind {
+                let ordinal = switch_ordinals.entry(kind).or_default();
+                let id = LevelEntityId::switch(kind, *ordinal);
+                *ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| format!("too many authored {} switches", kind.as_str()))?;
+                entities.push(LevelEntityDefinition::new(
+                    id,
+                    LevelEntityKind::Switch(kind),
+                    position,
+                    activation_group,
+                ));
+                switch_by_authored_record.insert(feature.index, kind);
                 continue;
             }
 
@@ -324,6 +360,7 @@ impl Mc2LevelDefinition {
             creature_model_by_kind,
             scenery_by_authored_record,
             item_by_authored_record,
+            switch_by_authored_record,
             mechanic_by_authored_record,
         })
     }

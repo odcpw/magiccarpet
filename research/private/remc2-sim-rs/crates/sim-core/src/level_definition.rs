@@ -102,6 +102,21 @@ impl ItemKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwitchKind {
+    ObjectiveGate,
+}
+
+impl SwitchKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ObjectiveGate => "objective_gate",
+        }
+    }
+}
+
 impl MechanicKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -148,6 +163,10 @@ impl LevelEntityId {
         Self(format!("item.{}.{}", kind.as_str(), ordinal + 1))
     }
 
+    pub(crate) fn switch(kind: SwitchKind, ordinal: u16) -> Self {
+        Self(format!("switch.{}.{}", kind.as_str(), ordinal + 1))
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -182,6 +201,7 @@ pub enum LevelEntityKind {
     SpellPickup(SpellKind),
     Scenery(SceneryKind),
     Item(ItemKind),
+    Switch(SwitchKind),
     Mechanic(MechanicKind),
 }
 
@@ -327,6 +347,7 @@ impl LevelDefinition {
                 LevelEntityKind::SpellPickup(_)
                 | LevelEntityKind::Scenery(_)
                 | LevelEntityKind::Item(_)
+                | LevelEntityKind::Switch(_)
                 | LevelEntityKind::Mechanic(_) => None,
             })
             .collect::<BTreeSet<_>>()
@@ -349,6 +370,7 @@ impl LevelDefinition {
                 LevelEntityKind::SpellPickup(kind) => Some(kind),
                 LevelEntityKind::Scenery(_)
                 | LevelEntityKind::Item(_)
+                | LevelEntityKind::Switch(_)
                 | LevelEntityKind::Mechanic(_) => None,
             })
             .collect::<BTreeSet<_>>()
@@ -370,7 +392,8 @@ impl LevelDefinition {
                 LevelEntityKind::Creature(_)
                 | LevelEntityKind::SpellPickup(_)
                 | LevelEntityKind::Scenery(_)
-                | LevelEntityKind::Item(_) => None,
+                | LevelEntityKind::Item(_)
+                | LevelEntityKind::Switch(_) => None,
                 LevelEntityKind::Mechanic(kind) => Some(kind),
             })
             .collect::<BTreeSet<_>>()
@@ -392,6 +415,7 @@ impl LevelDefinition {
                 LevelEntityKind::Creature(_)
                 | LevelEntityKind::SpellPickup(_)
                 | LevelEntityKind::Item(_)
+                | LevelEntityKind::Switch(_)
                 | LevelEntityKind::Mechanic(_) => None,
                 LevelEntityKind::Scenery(kind) => Some(kind),
             })
@@ -414,8 +438,32 @@ impl LevelDefinition {
                 LevelEntityKind::Creature(_)
                 | LevelEntityKind::SpellPickup(_)
                 | LevelEntityKind::Scenery(_)
+                | LevelEntityKind::Switch(_)
                 | LevelEntityKind::Mechanic(_) => None,
                 LevelEntityKind::Item(kind) => Some(kind),
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+    }
+
+    #[must_use]
+    pub fn authored_switch_count(&self, kind: SwitchKind) -> usize {
+        self.entities
+            .iter()
+            .filter(|entity| entity.kind == LevelEntityKind::Switch(kind))
+            .count()
+    }
+
+    pub fn switch_kinds(&self) -> impl Iterator<Item = SwitchKind> + '_ {
+        self.entities
+            .iter()
+            .filter_map(|entity| match entity.kind {
+                LevelEntityKind::Creature(_)
+                | LevelEntityKind::SpellPickup(_)
+                | LevelEntityKind::Scenery(_)
+                | LevelEntityKind::Item(_)
+                | LevelEntityKind::Mechanic(_) => None,
+                LevelEntityKind::Switch(kind) => Some(kind),
             })
             .collect::<BTreeSet<_>>()
             .into_iter()

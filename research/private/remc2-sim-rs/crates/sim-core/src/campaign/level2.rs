@@ -17,7 +17,7 @@ use crate::campaign::{
     spec::{BehaviorKey, BehaviorSelector},
 };
 use crate::level_definition::{
-    CreatureKind, ItemKind, MechanicKind, ObjectiveCondition, SceneryKind,
+    CreatureKind, ItemKind, MechanicKind, ObjectiveCondition, SceneryKind, SwitchKind,
 };
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
@@ -191,6 +191,24 @@ fn validate_semantic_item_dispatch(
         )),
         (None, 5, 10, ExistingHandler::Class14Events) => Err(format!(
             "experience-scroll source slot {source_slot} has no package-authored semantic identity"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_semantic_switch_dispatch(
+    source_slot: u16,
+    switch_kind: Option<SwitchKind>,
+    handler: ExistingHandler,
+) -> std::result::Result<(), String> {
+    match (switch_kind, handler) {
+        (Some(SwitchKind::ObjectiveGate), ExistingHandler::ObjectiveSwitch) => Ok(()),
+        (Some(kind), actual) => Err(format!(
+            "switch source slot {source_slot} is semantic {}, but the MC2 selector resolved {actual:?}",
+            kind.as_str()
+        )),
+        (None, ExistingHandler::ObjectiveSwitch) => Err(format!(
+            "objective-gate source slot {source_slot} has no package-authored semantic identity"
         )),
         _ => Ok(()),
     }
@@ -4158,6 +4176,27 @@ impl Level2ResetSession {
                 self.session
                     .definition
                     .item_for_authored_record(source.authored_index)
+            })
+    }
+
+    fn switch_kind_for_source_slot(&self, source_slot: u16) -> Option<SwitchKind> {
+        self.session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_model32()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .and_then(|source| {
+                self.session
+                    .definition
+                    .switch_for_authored_record(source.authored_index)
+            })
+            .or_else(|| {
+                self.session
+                    .definition
+                    .switch_for_initial_source_slot(source_slot)
             })
     }
 
@@ -10302,6 +10341,12 @@ impl Level2ResetSession {
                 visit.handler,
             )?;
         }
+        if self.session.definition.semantic_level().is_some() {
+            let semantic_switch = self.switch_kind_for_source_slot(source_slot);
+            if semantic_switch.is_some() || visit.handler == ExistingHandler::ObjectiveSwitch {
+                validate_semantic_switch_dispatch(source_slot, semantic_switch, visit.handler)?;
+            }
+        }
         Ok(())
     }
 
@@ -15651,6 +15696,116 @@ mod tests {
             .pickup_events()
             .iter()
             .any(|event| matches!(event, Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, .. } if *source_slot == mismatch_scroll_slot)));
+    }
+
+    #[test]
+    fn semantic_objective_gate_activates_its_package_group_and_rejects_unbound_rows() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
+            .expect("real Level 2 descriptor opens");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+        let (gate_slot, gate_stage_index) = session
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 32
+                    && entity.action == 32
+                    && entity.source_id == 21
+            })
+            .map(|entity| {
+                (
+                    entity.index,
+                    usize::try_from(entity.level_gate)
+                        .expect("objective-gate stage index fits usize"),
+                )
+            })
+            .expect("the real reset contains the group-21 objective gate");
+        assert_eq!(
+            session.switch_kind_for_source_slot(gate_slot),
+            Some(SwitchKind::ObjectiveGate)
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 21, .. }
+        )));
+        assert!(!session.entities()[usize::from(gate_slot)].drawing_disabled());
+
+        for objective_index in 0..session.session.state.live.core.runtime.objectives.len() {
+            session
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .set_level2_objective_stage_selector_for(objective_index, gate_stage_index, 2);
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 21,
+                authored_indices,
+                ..
+            } if *source_slot == gate_slot && authored_indices.as_ref() == [229, 230, 231]
+        )));
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == gate_slot
+        )));
+        assert!(session.entities()[usize::from(gate_slot)].drawing_disabled());
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.entities()[usize::from(gate_slot)].active);
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+
+        let level_one = level_one_descriptor_fixture_path();
+        let mut mismatch = CampaignSession::open(&level_one, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens for the planted negative");
+        let mismatch_session = mismatch.level2_compatibility_mut();
+        mismatch_session
+            .consume_authored_group(0, 0, 1)
+            .expect("real package group 1 materializes its first objective gate");
+        let gate = mismatch_session
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|source| source.authored_index == 99)
+            .copied()
+            .expect("package row 99 is a live objective gate");
+        let mut mismatch_economy = mismatch_session.economy_mut();
+        let source = mismatch_economy
+            .authored_model32
+            .iter_mut()
+            .find(|source| source.source_entity_index == gate.source_entity_index)
+            .expect("the objective gate remains in the shared arena");
+        source.authored_index = u16::MAX;
+
+        mismatch_session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            mismatch_session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot,
+                        message,
+                        ..
+                    } if *source_slot == gate.source_entity_index
+                        && message.contains("objective-gate")
+                        && message.contains("no package-authored semantic identity")
+                ))
+        );
     }
 
     fn level_three_descriptor_fixture_path() -> PathBuf {

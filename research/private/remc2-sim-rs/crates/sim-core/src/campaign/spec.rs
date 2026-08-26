@@ -8,7 +8,9 @@ use super::mc2_level_definition::Mc2LevelDefinition;
 use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
 };
-use crate::level_definition::{CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind};
+use crate::level_definition::{
+    CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind, SwitchKind,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -365,6 +367,8 @@ pub struct CampaignDefinition {
     scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     scenery_by_initial_source_slot: BTreeMap<u16, SceneryKind>,
     item_by_authored_record: BTreeMap<u16, ItemKind>,
+    switch_by_authored_record: BTreeMap<u16, SwitchKind>,
+    switch_by_initial_source_slot: BTreeMap<u16, SwitchKind>,
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
     member_hashes: BTreeMap<String, String>,
@@ -905,6 +909,17 @@ impl CampaignDefinition {
                 ))
             })
             .collect::<BTreeMap<_, _>>();
+        let switch_by_initial_source_slot = expected_rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.initial_source_slot?,
+                    Mc2LevelDefinition::switch_for_reset_selector(
+                        row.class, row.model, row.action,
+                    )?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
         for scenery in scenery_by_initial_source_slot.values() {
             if !semantic_level.semantic.entities().iter().any(|entity| {
                 entity.kind() == crate::level_definition::LevelEntityKind::Scenery(*scenery)
@@ -927,6 +942,19 @@ impl CampaignDefinition {
                     format!(
                         "reset {} has no matching authored semantic mechanic",
                         mechanic.as_str()
+                    ),
+                );
+            }
+        }
+        for switch in switch_by_initial_source_slot.values() {
+            if !semantic_level.semantic.entities().iter().any(|entity| {
+                entity.kind() == crate::level_definition::LevelEntityKind::Switch(*switch)
+            }) {
+                return fail(
+                    ValidationStage::TypedOperations,
+                    format!(
+                        "reset {} has no matching authored semantic switch",
+                        switch.as_str()
                     ),
                 );
             }
@@ -1005,6 +1033,8 @@ impl CampaignDefinition {
             scenery_by_authored_record: semantic_level.scenery_by_authored_record,
             scenery_by_initial_source_slot,
             item_by_authored_record: semantic_level.item_by_authored_record,
+            switch_by_authored_record: semantic_level.switch_by_authored_record,
+            switch_by_initial_source_slot,
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
             mechanic_by_initial_source_slot,
             member_hashes: files
@@ -1043,6 +1073,14 @@ impl CampaignDefinition {
 
     pub(crate) fn item_bindings(&self) -> &BTreeMap<u16, ItemKind> {
         &self.item_by_authored_record
+    }
+
+    pub(crate) fn switch_bindings(&self) -> &BTreeMap<u16, SwitchKind> {
+        &self.switch_by_authored_record
+    }
+
+    pub(crate) fn initial_switch_bindings(&self) -> &BTreeMap<u16, SwitchKind> {
+        &self.switch_by_initial_source_slot
     }
 
     pub(crate) fn mechanic_bindings(&self) -> &BTreeMap<u16, MechanicKind> {

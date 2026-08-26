@@ -16,7 +16,9 @@ use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, SpellFireContext, SpellFireSource,
     TetherTarget,
     collision_mask::CollisionMaskBank,
-    level_definition::{CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind},
+    level_definition::{
+        CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind, SwitchKind,
+    },
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
         PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
@@ -74,6 +76,8 @@ pub struct CampaignDefinition {
     authored_scenery: BTreeMap<u16, SceneryKind>,
     initial_source_scenery: BTreeMap<u16, SceneryKind>,
     authored_items: BTreeMap<u16, ItemKind>,
+    authored_switches: BTreeMap<u16, SwitchKind>,
+    initial_source_switches: BTreeMap<u16, SwitchKind>,
     authored_mechanics: BTreeMap<u16, MechanicKind>,
     initial_source_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) collision_masks: Option<CollisionMaskBank>,
@@ -91,6 +95,8 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) authored_scenery: BTreeMap<u16, SceneryKind>,
     pub(crate) initial_source_scenery: BTreeMap<u16, SceneryKind>,
     pub(crate) authored_items: BTreeMap<u16, ItemKind>,
+    pub(crate) authored_switches: BTreeMap<u16, SwitchKind>,
+    pub(crate) initial_source_switches: BTreeMap<u16, SwitchKind>,
     pub(crate) authored_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) initial_source_mechanics: BTreeMap<u16, MechanicKind>,
 }
@@ -346,6 +352,8 @@ impl CampaignDefinition {
             authored_scenery: BTreeMap::new(),
             initial_source_scenery: BTreeMap::new(),
             authored_items: BTreeMap::new(),
+            authored_switches: BTreeMap::new(),
+            initial_source_switches: BTreeMap::new(),
             authored_mechanics: BTreeMap::new(),
             initial_source_mechanics: BTreeMap::new(),
             collision_masks,
@@ -360,6 +368,8 @@ impl CampaignDefinition {
         self.authored_scenery = bindings.authored_scenery;
         self.initial_source_scenery = bindings.initial_source_scenery;
         self.authored_items = bindings.authored_items;
+        self.authored_switches = bindings.authored_switches;
+        self.initial_source_switches = bindings.initial_source_switches;
         self.authored_mechanics = bindings.authored_mechanics;
         self.initial_source_mechanics = bindings.initial_source_mechanics;
     }
@@ -390,6 +400,14 @@ impl CampaignDefinition {
 
     pub(crate) fn item_for_authored_record(&self, authored_record: u16) -> Option<ItemKind> {
         self.authored_items.get(&authored_record).copied()
+    }
+
+    pub(crate) fn switch_for_authored_record(&self, authored_record: u16) -> Option<SwitchKind> {
+        self.authored_switches.get(&authored_record).copied()
+    }
+
+    pub(crate) fn switch_for_initial_source_slot(&self, source_slot: u16) -> Option<SwitchKind> {
+        self.initial_source_switches.get(&source_slot).copied()
     }
 
     pub(crate) fn mechanic_for_authored_record(
