@@ -11165,7 +11165,7 @@ impl Level2ResetSession {
                     ..
                 }),
             ) => {
-                let (action, life, pending_damage, target_entity_index) = self
+                let (action, target_entity_index) = self
                     .session
                     .state
                     .live
@@ -11173,21 +11173,52 @@ impl Level2ResetSession {
                     .authored_class5()
                     .iter()
                     .find(|source| source.source_entity_index == source_slot)
-                    .map(|source| {
-                        (
-                            source.action,
-                            source.life,
-                            source.pending_word_0x62,
-                            source.word_0x96_150,
-                        )
-                    })
+                    .map(|source| (source.action, source.word_0x96_150))
                     .ok_or_else(|| format!("Firefly source slot {source_slot} is absent"))?;
-                if life < 0 || pending_damage != 0 {
-                    return Err(format!(
-                        "Firefly source slot {source_slot} reached the unimplemented damage/death path"
-                    ));
-                }
                 let terrain = &self.session.state.live.terrain;
+                let lifecycle = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_firefly_lifecycle_slot(source_slot, terrain)?;
+                if lifecycle.handled {
+                    if let Some(killer_entity_index) = lifecycle.pre_kill_credit {
+                        let qualifying_killer = killer_entity_index != source_slot
+                            && self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .entities
+                                .iter()
+                                .any(|entity| {
+                                    entity.index == killer_entity_index
+                                        && entity.active
+                                        && entity.life >= 0
+                                        && entity.class == 3
+                                        && entity.model == 0
+                                        && !entity.drawing_disabled()
+                                });
+                        if qualifying_killer {
+                            let _ = self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .record_authored_creature_kill(killer_entity_index);
+                        }
+                    }
+                    self.append_new_economy_events(pass, source_slot);
+                    if lifecycle.retained_for_epilogue {
+                        self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                            pass,
+                            source_slot,
+                            kind: Level2DynamicArenaKind::AuthoredClass5,
+                        });
+                    }
+                    return Ok(());
+                }
                 let frozen_model19_slots = &pass_start_class5_model_slots
                     [usize::from(level2_class5::firefly::FIREFLY_MODEL)];
                 let attack_target = self.firefly_attack_target(target_entity_index);
@@ -13456,7 +13487,7 @@ impl Level2ResetSession {
 
     /// Apply the shared `sub_10C80(a2 = 0)` damage pulse emitted by a
     /// class-10/model-0 impact. Imported rows retain their lossless mailbox;
-    /// typed Castle and Bee rows receive the same additive owner/payload
+    /// typed Castle, Bee, and Firefly rows receive the same additive owner/payload
     /// write through their authoritative carriers.
     fn apply_level2_class10_model0_damage(
         &mut self,
@@ -13566,6 +13597,45 @@ impl Level2ResetSession {
             );
         }
 
+        let firefly_slots = self
+            .session
+            .state
+            .live
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|target| {
+                target.active
+                    && target.drawing_enabled
+                    && target.life >= 0
+                    && target.model == level2_class5::firefly::FIREFLY_MODEL
+                    && target.source_entity_index != step.owner_entity_index
+                    && crate::level1_mission::source_entities_overlap(
+                        step.position,
+                        LEVEL2_FIREBALL_COLLISION_HALF_WIDTH,
+                        LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET,
+                        LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT,
+                        target.position,
+                        target.shift_rot_x,
+                        0,
+                        target.shift_rot_y,
+                    )
+            })
+            .map(|target| target.source_entity_index)
+            .collect::<Vec<_>>();
+        for target_slot in firefly_slots {
+            let _ = self
+                .session
+                .state
+                .live
+                .economy
+                .submit_authored_firefly_damage(
+                    target_slot,
+                    i32::from(step.payload),
+                    step.owner_entity_index,
+                );
+        }
+
         let generic_slots = source_map_search_slots(
             &self.session.state.live.economy.map_chains,
             step.position,
@@ -13600,6 +13670,27 @@ impl Level2ResetSession {
                 target.apply_model76_mailbox(step.owner_entity_index, step.payload);
             }
         }
+    }
+
+    /// Feed one already-produced class-10/model-0 callback result through the
+    /// real overlap/mailbox adapter. The distinct class-9 -> class-10 numeric
+    /// lifecycle is covered separately; this seam keeps the Level-1 package
+    /// test focused on the Firefly target and death consumer.
+    #[cfg(test)]
+    pub(crate) fn apply_fireball_impact_to_firefly_for_test(
+        &mut self,
+        position: Position,
+        owner_entity_index: u16,
+        payload: u16,
+    ) {
+        self.apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
+            live: true,
+            first_impact: true,
+            damage_pulse: true,
+            owner_entity_index,
+            payload,
+            position,
+        });
     }
 
     /// Complete `sub_33C00`/`sub_10C80(a2 = 0)` owner path for authored

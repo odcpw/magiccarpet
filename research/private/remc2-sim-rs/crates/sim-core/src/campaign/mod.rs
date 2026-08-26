@@ -2733,6 +2733,156 @@ mod tests {
             "the focused birth remains outside impact range and proves the distinct flyer row"
         );
 
+        // Continue one real package model-19 root through the shared damage
+        // mailbox and its ordinary 156/157 death tail. Two source-sized
+        // impact payloads are queued before the root's numeric visit, proving
+        // the occupied-mailbox additive rule without inventing a test-only
+        // creature or action.
+        let mut death_route = fireball_route.clone();
+        let dying_slot = firefly_slots[1];
+        let dying_before = *death_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == dying_slot)
+            .expect("the real package Firefly is available for damage");
+        death_route
+            .level2_compatibility_mut()
+            .apply_fireball_impact_to_firefly_for_test(
+                dying_before.position,
+                projectile.owner_entity_index,
+                500,
+            );
+        death_route
+            .level2_compatibility_mut()
+            .apply_fireball_impact_to_firefly_for_test(
+                dying_before.position,
+                projectile.owner_entity_index,
+                500,
+            );
+        let _ = death_route.step(PlayerCommand::default(), 0);
+        let pre_kill = *death_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == dying_slot)
+            .expect("lethal Firefly remains allocated for pre-kill");
+        assert_eq!(
+            (
+                pre_kill.action,
+                pre_kill.life,
+                pre_kill.word_0x26,
+                pre_kill.word_0x24,
+                pre_kill.pending_word_0x62,
+                pre_kill.source_byte_3e,
+            ),
+            (
+                156,
+                dying_before.life - 1_000,
+                projectile.owner_entity_index,
+                projectile.owner_entity_index,
+                0,
+                dying_before.source_byte_3e.wrapping_add(1),
+            )
+        );
+        assert!(death_route.events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Economy {
+                event: Level2EconomyEvent::DamageApplied {
+                    target_entity_index,
+                    attacker_entity_index,
+                    damage: 1_000,
+                    lethal: true,
+                },
+                ..
+            } if *target_entity_index == dying_slot
+                && *attacker_entity_index == projectile.owner_entity_index
+        )));
+
+        let _ = death_route.step(PlayerCommand::default(), 0);
+        let mut kill_phase = death_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == dying_slot)
+            .expect("pre-kill transitions to the retained kill row")
+            .source_byte_3e;
+        assert_eq!(
+            death_route
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|root| root.source_entity_index == dying_slot)
+                .expect("retained kill row")
+                .action,
+            157
+        );
+        while kill_phase & 7 != 0 {
+            let _ = death_route.step(PlayerCommand::default(), 0);
+            kill_phase = death_route
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|root| root.source_entity_index == dying_slot)
+                .expect("off-cadence kill row remains retained")
+                .source_byte_3e;
+        }
+        let death_rng_before = death_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == dying_slot)
+            .expect("phase-ready kill row")
+            .entity_rng;
+        let _ = death_route.step(PlayerCommand::default(), 0);
+        let killed = *death_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == dying_slot)
+            .expect("kill callback retains the hidden row through its epilogue");
+        assert!(!killed.active);
+        assert!(!killed.drawing_enabled);
+        assert_eq!(killed.action, 157);
+        assert_eq!(killed.source_byte_3e, kill_phase.wrapping_add(1));
+        assert_eq!(
+            killed.entity_rng,
+            death_rng_before.wrapping_mul(9_377).wrapping_add(9_439)
+        );
+        assert!(
+            death_route
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| sphere.mana == 300 && sphere.owner_entity_index == 0)
+        );
+        assert!(
+            death_route
+                .level2_compatibility()
+                .economy()
+                .death_bursts()
+                .iter()
+                .any(|burst| burst.parent_entity_index == dying_slot
+                    && burst.id_entity_index == dying_slot)
+        );
+        let _ = death_route.step(PlayerCommand::default(), 0);
+        assert!(
+            death_route
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .all(|root| root.source_entity_index != dying_slot)
+        );
+
         let mut allocation_failure = campaign.clone();
         let restored_slot = allocation_failure
             .level2_compatibility_mut()

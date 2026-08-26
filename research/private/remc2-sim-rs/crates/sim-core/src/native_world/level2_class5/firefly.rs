@@ -1,9 +1,8 @@
 //! Authored class-5/model-19 Firefly construction, patrol, roaming, and charge.
 //!
-//! The ordinary undamaged actions 159, 153, and 155 and action-154's orbit and
-//! charge branch are implemented here. Fireball emission delegates to the
-//! shared class-9 projectile arena; Firefly damage, death conversion, and
-//! reclaim remain fail-closed until their source lifecycles are implemented.
+//! The ordinary actions 159, 153, 154, and 155 plus the 156/157 death tail are
+//! implemented here. Fireball emission, death conversion, and reclaim use the
+//! shared dynamic arena rather than a Level-1-only creature path.
 
 use super::super::*;
 use crate::goat::GoatPlayerTarget;
@@ -12,6 +11,8 @@ pub(crate) const FIREFLY_MODEL: u8 = 19;
 pub(crate) const FIREFLY_ROAM_ACTION: u8 = 153;
 pub(crate) const FIREFLY_ATTACK_ACTION: u8 = 154;
 pub(crate) const FIREFLY_LINKED_ACTION: u8 = 155;
+pub(crate) const FIREFLY_PRE_KILL_ACTION: u8 = 156;
+pub(crate) const FIREFLY_KILL_ACTION: u8 = 157;
 pub(crate) const FIREFLY_STAGE_ACTION: u8 = 159;
 pub(crate) const FIREFLY_MINIMUM_SPEED: i16 = 76;
 pub(crate) const FIREFLY_MAXIMUM_SPEED: i16 = 8;
@@ -77,6 +78,13 @@ pub(crate) struct FireflyStageRoute {
     pub(crate) stage_var1: u8,
     pub(crate) stage_var2: u8,
     pub(crate) target: Position,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FireflyLifecycleStep {
+    pub(crate) handled: bool,
+    pub(crate) retained_for_epilogue: bool,
+    pub(crate) pre_kill_credit: Option<u16>,
 }
 
 impl Level2EconomyState {
@@ -153,6 +161,15 @@ impl Level2EconomyState {
         };
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_class5.push(source);
+        self.authored_class5_runtime
+            .push(Level2AuthoredClass5RuntimeState {
+                source_entity_index,
+                byte_0x38: 1,
+                xtype: 3,
+                descriptor_index: FIREFLY_DESCRIPTOR,
+                pending_damage: 0,
+                linked_head: 0,
+            });
         self.authored_fireflies.push(AuthoredFireflyRuntime {
             source_entity_index,
             linked_entity_index: 0,
@@ -166,6 +183,187 @@ impl Level2EconomyState {
             movement_blocked: false,
         });
         Some(source)
+    }
+
+    /// Submit one `sub_10C80(a2 = 0)` mailbox write to a live Firefly root.
+    pub(crate) fn submit_authored_firefly_damage(
+        &mut self,
+        target_slot: u16,
+        damage: i32,
+        attacker: u16,
+    ) -> bool {
+        if damage <= 0 || attacker == 0 || !self.map_chains.is_linked(target_slot) {
+            return false;
+        }
+        let Some(source_index) = self.authored_class5.iter().position(|source| {
+            source.active
+                && source.drawing_enabled
+                && source.life >= 0
+                && source.source_entity_index == target_slot
+                && source.source_entity_index != attacker
+                && source.model == FIREFLY_MODEL
+        }) else {
+            return false;
+        };
+        let Some(runtime) = self
+            .authored_class5_runtime
+            .iter_mut()
+            .find(|state| state.source_entity_index == target_slot)
+        else {
+            return false;
+        };
+        let source = &mut self.authored_class5[source_index];
+        runtime.pending_damage = if source.pending_word_0x62 == 0 {
+            damage
+        } else {
+            runtime.pending_damage.wrapping_add(damage)
+        };
+        source.pending_word_0x62 = attacker;
+        true
+    }
+
+    /// Consume one Firefly damage mailbox or action-156/157 death visit.
+    /// The shared scheduler remains the sole byte-0x3E epilogue owner.
+    pub(crate) fn step_authored_firefly_lifecycle_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> std::result::Result<FireflyLifecycleStep, String> {
+        let Some(source_index) = self.authored_class5.iter().position(|source| {
+            source.source_entity_index == source_slot && source.model == FIREFLY_MODEL
+        }) else {
+            return Ok(FireflyLifecycleStep::default());
+        };
+        let runtime_index = self
+            .authored_class5_runtime
+            .iter()
+            .position(|state| state.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Firefly source slot {source_slot} has no class-5 runtime"))?;
+        let firefly_index = self
+            .authored_fireflies
+            .iter()
+            .position(|state| state.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Firefly source slot {source_slot} has no runtime sidecar"))?;
+        let mut source = self.authored_class5[source_index];
+        let mut runtime = self.authored_class5_runtime[runtime_index];
+        let mut firefly = self.authored_fireflies[firefly_index];
+
+        if source.pending_word_0x62 != 0 {
+            let prior_action = source.action;
+            let attacker = source.pending_word_0x62;
+            let damage = runtime.pending_damage;
+            source.life = source.life.wrapping_sub(damage);
+            source.word_0x26 = attacker;
+            source.pending_word_0x62 = 0;
+            runtime.pending_damage = 0;
+            let lethal = source.life < 0;
+            if lethal {
+                source.word_0x24 = attacker;
+                firefly.linked_entity_index = 0;
+                source.action = FIREFLY_PRE_KILL_ACTION;
+            } else {
+                if prior_action == FIREFLY_LINKED_ACTION
+                    && firefly.linked_entity_index != 0
+                    && let Some(peer_index) = self.authored_class5.iter().position(|peer| {
+                        peer.active
+                            && peer.drawing_enabled
+                            && peer.life >= 0
+                            && peer.model == FIREFLY_MODEL
+                            && peer.source_entity_index == firefly.linked_entity_index
+                    })
+                {
+                    let peer_slot = self.authored_class5[peer_index].source_entity_index;
+                    self.authored_class5[peer_index].word_0x96_150 = attacker;
+                    self.authored_class5[peer_index].byte_0x46_70 = 0;
+                    self.authored_class5[peer_index].action = FIREFLY_ATTACK_ACTION;
+                    if let Some(peer_state) = self
+                        .authored_fireflies
+                        .iter_mut()
+                        .find(|state| state.source_entity_index == peer_slot)
+                    {
+                        peer_state.linked_entity_index = 0;
+                    }
+                }
+                source.word_0x96_150 = attacker;
+                firefly.linked_entity_index = 0;
+                source.action = FIREFLY_ATTACK_ACTION;
+                source.byte_0x46_70 = if prior_action == FIREFLY_ATTACK_ACTION {
+                    7
+                } else {
+                    0
+                };
+            }
+            self.events.push(Level2EconomyEvent::DamageApplied {
+                target_entity_index: source_slot,
+                attacker_entity_index: attacker,
+                damage,
+                lethal,
+            });
+            self.authored_class5[source_index] = source;
+            self.authored_class5_runtime[runtime_index] = runtime;
+            self.authored_fireflies[firefly_index] = firefly;
+            return Ok(FireflyLifecycleStep {
+                handled: true,
+                retained_for_epilogue: true,
+                pre_kill_credit: None,
+            });
+        }
+
+        if source.life < 0 && source.action < FIREFLY_PRE_KILL_ACTION {
+            source.action = FIREFLY_PRE_KILL_ACTION;
+            self.authored_class5[source_index] = source;
+            return Ok(FireflyLifecycleStep {
+                handled: true,
+                retained_for_epilogue: true,
+                pre_kill_credit: None,
+            });
+        }
+        if source.action == FIREFLY_PRE_KILL_ACTION {
+            let pre_kill_credit = (source.word_0x24 != 0).then_some(source.word_0x24);
+            source.action = FIREFLY_KILL_ACTION;
+            self.authored_class5[source_index] = source;
+            return Ok(FireflyLifecycleStep {
+                handled: true,
+                retained_for_epilogue: true,
+                pre_kill_credit,
+            });
+        }
+        if source.action != FIREFLY_KILL_ACTION {
+            return Ok(FireflyLifecycleStep::default());
+        }
+        if source.source_byte_3e & 7 == 0 {
+            if source.mana > 0 {
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                let owner = self.source_owner(source_slot);
+                let _ = self.spawn_mana_sphere_from_death(
+                    source_slot,
+                    source.position,
+                    source.yaw,
+                    source.entity_rng,
+                    source.mana,
+                    owner,
+                    terrain,
+                );
+            }
+            if firefly.control_flags & 0x0010_0000 == 0 {
+                let _ = self.spawn_death_burst_from_death_with_id(
+                    source_slot,
+                    source_slot,
+                    source.position,
+                );
+            }
+            source.drawing_enabled = false;
+            source.active = false;
+            firefly.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+            self.source_rng.insert(source_slot, source.entity_rng);
+            self.authored_class5[source_index] = source;
+            self.authored_fireflies[firefly_index] = firefly;
+        }
+        Ok(FireflyLifecycleStep {
+            handled: true,
+            retained_for_epilogue: true,
+            pre_kill_credit: None,
+        })
     }
 
     pub(crate) fn advance_authored_firefly_stage_rows(&mut self) {

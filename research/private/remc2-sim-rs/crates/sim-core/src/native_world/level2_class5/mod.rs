@@ -78,7 +78,7 @@ impl Level2EconomyState {
     /// source owns this counter on the qualifying class-3/model-0 player
     /// carrier; the typed Level 2 package does not serialize that unrelated
     /// Type_str_164 byte, so this reset-scoped map is its lossless projection.
-    pub fn record_authored_bee_kill(&mut self, killer_entity_index: u16) -> bool {
+    pub fn record_authored_creature_kill(&mut self, killer_entity_index: u16) -> bool {
         if killer_entity_index == 0 {
             return false;
         }
@@ -88,6 +88,11 @@ impl Level2EconomyState {
             .or_default();
         *count = count.wrapping_add(1);
         true
+    }
+
+    /// Frozen compatibility name for existing Bee-specific callers/tests.
+    pub fn record_authored_bee_kill(&mut self, killer_entity_index: u16) -> bool {
+        self.record_authored_creature_kill(killer_entity_index)
     }
 
     #[must_use]
