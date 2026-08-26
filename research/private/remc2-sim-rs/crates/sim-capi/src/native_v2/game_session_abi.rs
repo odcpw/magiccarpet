@@ -748,6 +748,10 @@ mod tests {
 
     fn open_campaign_fixture() -> u64 {
         let package = campaign_fixture_path();
+        open_campaign_path(&package)
+    }
+
+    fn open_campaign_path(package: &Path) -> u64 {
         let package = package.to_string_lossy();
         let mut handle = 0;
         assert_eq!(
@@ -1433,6 +1437,46 @@ mod tests {
         assert_eq!(campaign_snapshot(reopened)["value"], stepped["value"]);
         assert_eq!(mc_game_session_destroy_v1(reopened), MC_STATUS_OK);
         assert_eq!(mc_game_session_destroy_v1(owned), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn neutral_campaign_contract_opens_steps_and_resets_real_levels_one_two_and_three() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let packages = [
+            generated.join("mc-cf15-level1-package-current"),
+            generated.join("mc-cf02-campaign-package-v1-a/qualified-level2"),
+            generated.join("mc-cf14-campaign-package-v1-a/qualified-level3"),
+        ];
+        let command = br#"{"longitudinal":"accelerate"}"#;
+
+        for package in packages {
+            let handle = open_campaign_path(&package);
+            let initial = campaign_snapshot(handle);
+            assert_eq!(initial["identity"]["generation"], "1");
+            assert_eq!(initial["identity"]["tick"], "0");
+            assert_eq!(initial["value"]["tick"], "0");
+
+            assert_eq!(
+                mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32,),
+                MC_STATUS_OK,
+                "{} must step through the neutral campaign backend",
+                package.display()
+            );
+            let stepped = campaign_snapshot(handle);
+            assert_eq!(stepped["identity"]["tick"], "1");
+            assert_eq!(stepped["value"]["tick"], "1");
+            assert_ne!(
+                stepped["value"]["state_hash"],
+                initial["value"]["state_hash"]
+            );
+
+            assert_eq!(mc_game_session_reset_v1(handle, 1, 1), MC_STATUS_OK);
+            let reset = campaign_snapshot(handle);
+            assert_eq!(reset["identity"]["generation"], "2");
+            assert_eq!(reset["identity"]["tick"], "0");
+            assert_eq!(reset["value"], initial["value"]);
+            assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
+        }
     }
 
     #[test]
