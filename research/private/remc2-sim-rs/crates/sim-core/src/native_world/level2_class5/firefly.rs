@@ -1,7 +1,8 @@
-//! Authored class-5/model-19 Firefly construction, stage patrol, and roaming.
+//! Authored class-5/model-19 Firefly construction, patrol, roaming, and charge.
 //!
-//! The ordinary undamaged actions 159, 153, and 155 are implemented here.
-//! Attack, damage, death conversion, and reclaim remain fail-closed until
+//! The ordinary undamaged actions 159, 153, and 155 and action-154's orbit and
+//! charge branch are implemented here. Fireball emission, charge contact,
+//! Firefly damage, death conversion, and reclaim remain fail-closed until
 //! their source lifecycles are implemented.
 
 use super::super::*;
@@ -9,6 +10,7 @@ use crate::goat::GoatPlayerTarget;
 
 pub(crate) const FIREFLY_MODEL: u8 = 19;
 pub(crate) const FIREFLY_ROAM_ACTION: u8 = 153;
+pub(crate) const FIREFLY_ATTACK_ACTION: u8 = 154;
 pub(crate) const FIREFLY_LINKED_ACTION: u8 = 155;
 pub(crate) const FIREFLY_STAGE_ACTION: u8 = 159;
 pub(crate) const FIREFLY_MINIMUM_SPEED: i16 = 76;
@@ -30,6 +32,24 @@ const FIREFLY_SEPARATION: i32 = 85;
 const FIREFLY_LINKED_SEPARATION: i32 = 256;
 const FIREFLY_RANGE: u16 = 5_120;
 const FIREFLY_VIEW_HALF_ANGLE: i16 = 682;
+const FIREFLY_ORBIT_RADIUS: i16 = 2_048;
+const FIREFLY_ORBIT_REACHED_DISTANCE: u32 = 1_280;
+const FIREFLY_CHARGE_DURATION: i32 = 24;
+const FIREFLY_CHARGE_CONTACT_RANGE: u32 = 768;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FireflyAttackTarget {
+    pub(crate) entity_index: u16,
+    pub(crate) position: Position,
+    pub(crate) yaw: i16,
+    pub(crate) live: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FireflyAttackStep {
+    pub(crate) live: bool,
+    pub(crate) sound_id: Option<u16>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FireflyStageRoute {
@@ -434,6 +454,236 @@ impl Level2EconomyState {
             .is_ok()
     }
 
+    /// Undamaged `HitFirebug_25610` orbit and charge branch for a live
+    /// class-5/model-19/action-154 row. Substates 4/5 are the separate
+    /// Firefly-fireball producer and stay fail-closed until that projectile's
+    /// distinct class-9 lifecycle is represented by the shared arena.
+    pub(crate) fn step_authored_firefly_charge_slot(
+        &mut self,
+        source_slot: u16,
+        target: Option<FireflyAttackTarget>,
+        frozen_model19_slots: &[u16],
+        terrain: &SessionTerrain,
+    ) -> std::result::Result<FireflyAttackStep, String> {
+        let Some(source_index) = self.authored_class5.iter().position(|source| {
+            source.active
+                && source.source_entity_index == source_slot
+                && source.model == FIREFLY_MODEL
+                && source.action == FIREFLY_ATTACK_ACTION
+        }) else {
+            return Ok(FireflyAttackStep::default());
+        };
+        let Some(state_index) = self
+            .authored_fireflies
+            .iter()
+            .position(|state| state.source_entity_index == source_slot)
+        else {
+            return Err(format!(
+                "Firefly source slot {source_slot} has no runtime sidecar"
+            ));
+        };
+
+        let mut source = self.authored_class5[source_index];
+        let mut state = self.authored_fireflies[state_index];
+        step_firefly_motion(&mut source, &mut state, terrain);
+
+        let Some(target) = target.filter(|target| {
+            target.live && target.entity_index != 0 && target.entity_index == source.word_0x96_150
+        }) else {
+            // Source LABEL_92 resets only action and speed. The target word,
+            // attack substate, and Firefly peer word are deliberately left
+            // untouched here.
+            source.action = FIREFLY_ROAM_ACTION;
+            source.actual_speed = FIREFLY_MINIMUM_SPEED;
+            let live = self.commit_authored_firefly_step(source_index, state_index, source, state);
+            return Ok(FireflyAttackStep {
+                live,
+                ..FireflyAttackStep::default()
+            });
+        };
+
+        let mut sound_id = None;
+        loop {
+            match source.byte_0x46_70 {
+                0 => {
+                    source.actual_speed = FIREFLY_MINIMUM_SPEED;
+                    source.byte_0x46_70 = 1;
+                }
+                1 => {
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    let orbit_yaw = target.yaw.wrapping_sub(256).wrapping_add(
+                        i16::try_from((u32::from(source.entity_rng % 90) << 11) / 360)
+                            .expect("Firefly orbit delta fits i16"),
+                    ) & 0x07ff;
+                    let mut orbit_point = target.position;
+                    crate::move_entity(&mut orbit_point, orbit_yaw, 0, FIREFLY_ORBIT_RADIUS);
+                    if firefly_distance_3d(source.position, orbit_point)
+                        <= FIREFLY_ORBIT_REACHED_DISTANCE
+                    {
+                        source.byte_0x46_70 = 2;
+                    } else {
+                        source.roll = i16::try_from(crate::heading_for_positions(
+                            source.position,
+                            orbit_point,
+                        ))
+                        .expect("Firefly orbit heading fits i16");
+                        if source.source_byte_3e & 3 == 0 {
+                            apply_firefly_separation(
+                                &mut source,
+                                frozen_model19_slots,
+                                &self.authored_class5,
+                                FIREFLY_SEPARATION,
+                            );
+                        }
+                    }
+                    break;
+                }
+                2 => {
+                    source.actual_speed = FIREFLY_MAXIMUM_SPEED;
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    source.dword_0x10 =
+                        i32::from(target.position.z) + i32::from(source.entity_rng & 0x03ff);
+                    source.byte_0x46_70 = 3;
+                }
+                3 => {
+                    source.roll = i16::try_from(crate::heading_for_positions(
+                        source.position,
+                        target.position,
+                    ))
+                    .expect("Firefly target heading fits i16");
+                    if source.source_byte_3e & 3 != 0 {
+                        break;
+                    }
+                    apply_firefly_separation(
+                        &mut source,
+                        frozen_model19_slots,
+                        &self.authored_class5,
+                        FIREFLY_SEPARATION,
+                    );
+                    let mut ahead = target.position;
+                    crate::move_entity(&mut ahead, target.yaw, 0, FIREFLY_ORBIT_RADIUS);
+                    if firefly_distance_3d(source.position, ahead) > FIREFLY_ORBIT_REACHED_DISTANCE
+                    {
+                        source.byte_0x46_70 = 0;
+                        break;
+                    }
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    let maneuver = source.entity_rng % 287;
+                    if maneuver & 0x3f == 0 {
+                        source.byte_0x46_70 = 6;
+                    }
+                    if maneuver & 0x1f == 0 {
+                        source.byte_0x46_70 = 7;
+                    }
+                    if maneuver == 0 {
+                        source.byte_0x46_70 = 4;
+                    }
+                    if maneuver & 3 == 0 {
+                        source.position.z = source.position.z.wrapping_add(
+                            if i32::from(source.position.z) <= source.dword_0x10 {
+                                64
+                            } else {
+                                -64
+                            },
+                        );
+                    }
+                    break;
+                }
+                4 | 5 => {
+                    return Err(format!(
+                        "Firefly source slot {source_slot} reached the unimplemented fireball branch substate {}",
+                        source.byte_0x46_70
+                    ));
+                }
+                6 => {
+                    source.action = FIREFLY_ROAM_ACTION;
+                    source.actual_speed = FIREFLY_MINIMUM_SPEED;
+                    break;
+                }
+                7 => {
+                    source.actual_speed = FIREFLY_MINIMUM_SPEED.saturating_mul(3);
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    sound_id = Some(43 + (source.entity_rng & 1));
+                    source.dword_0x10 = FIREFLY_CHARGE_DURATION;
+                    source.byte_0x46_70 = 8;
+                }
+                8 | 9 => {
+                    source.dword_0x10 = source.dword_0x10.wrapping_sub(1);
+                    if source.dword_0x10 == 0 {
+                        source.byte_0x46_70 = 0;
+                        break;
+                    }
+                    if source.source_byte_3e & 3 == 0 {
+                        if source.dword_0x10 > 16 {
+                            source.roll = i16::try_from(crate::heading_for_positions(
+                                source.position,
+                                target.position,
+                            ))
+                            .expect("Firefly charge heading fits i16");
+                        }
+                        apply_firefly_separation(
+                            &mut source,
+                            frozen_model19_slots,
+                            &self.authored_class5,
+                            FIREFLY_SEPARATION,
+                        );
+                    }
+                    let altitude_delta = i32::from(target.position.z)
+                        .wrapping_sub(i32::from(source.position.z))
+                        .clamp(-64, 64);
+                    source.position.z = source.position.z.wrapping_add(
+                        i16::try_from(altitude_delta)
+                            .expect("clamped Firefly altitude delta fits i16"),
+                    );
+                    if source.byte_0x46_70 == 8
+                        && firefly_distance_3d(source.position, target.position)
+                            < FIREFLY_CHARGE_CONTACT_RANGE
+                    {
+                        return Err(format!(
+                            "Firefly source slot {source_slot} reached the unimplemented charge-contact path"
+                        ));
+                    }
+                    if source.source_byte_3e % FIREFLY_DESCRIPTOR_CADENCE == 0
+                        && firefly_distance_3d(source.position, target.position)
+                            >= u32::from(FIREFLY_RANGE)
+                    {
+                        source.byte_0x46_70 = 6;
+                    }
+                    break;
+                }
+                substate => {
+                    return Err(format!(
+                        "Firefly source slot {source_slot} reached unsupported attack substate {substate}"
+                    ));
+                }
+            }
+        }
+
+        let live = self.commit_authored_firefly_step(source_index, state_index, source, state);
+        Ok(FireflyAttackStep { live, sound_id })
+    }
+
+    fn commit_authored_firefly_step(
+        &mut self,
+        source_index: usize,
+        state_index: usize,
+        source: Level2AuthoredClass5Source,
+        state: AuthoredFireflyRuntime,
+    ) -> bool {
+        self.source_rng
+            .insert(source.source_entity_index, source.entity_rng);
+        self.authored_class5[source_index] = source;
+        self.authored_fireflies[state_index] = state;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source.source_entity_index,
+                active: source.active,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
     /// Stage only the geometry and cadence prerequisite for the real-package
     /// action-153 -> action-155 production test. Construction, PreDispatch
     /// arrival, numeric dispatch, callback ordering, and epilogues remain on
@@ -532,6 +782,80 @@ impl Level2EconomyState {
         source.source_byte_3e = phase;
         true
     }
+
+    /// Stage only geometry, cadence, and private RNG for the real-package
+    /// action-153 player acquisition -> action-154 charge test. The ordinary
+    /// scheduler still owns target acquisition, every attack callback, sound,
+    /// charge-contact refusal and phase epilogues.
+    #[cfg(test)]
+    pub(crate) fn stage_authored_firefly_charge_prerequisite_for_test(
+        &mut self,
+        source_slot: u16,
+        player_position: Position,
+        player_yaw: i16,
+    ) -> bool {
+        if !self.authored_class5.iter().any(|source| {
+            source.source_entity_index == source_slot && source.model == FIREFLY_MODEL
+        }) || !self
+            .authored_fireflies
+            .iter()
+            .any(|state| state.source_entity_index == source_slot)
+        {
+            return false;
+        }
+
+        let mut position = player_position;
+        crate::move_entity(&mut position, player_yaw, 0, FIREFLY_ORBIT_RADIUS);
+        let toward_player = player_yaw.wrapping_add(1_024) & 0x07ff;
+        let mut remote_ordinal = 0_u16;
+        let mut seeds = Vec::new();
+        for source in self
+            .authored_class5
+            .iter_mut()
+            .filter(|source| source.model == FIREFLY_MODEL)
+        {
+            if source.source_entity_index == source_slot {
+                source.action = FIREFLY_ROAM_ACTION;
+                source.actual_speed = FIREFLY_MINIMUM_SPEED;
+                source.entity_rng = 739;
+                source.source_byte_3e = 70;
+                source.source_byte_39 = 1;
+                source.word_0x96_150 = 0;
+                source.byte_0x46_70 = 0;
+                source.dword_0x10 = 0;
+                source.position = position;
+                source.yaw = toward_player;
+                source.roll = toward_player;
+            } else {
+                remote_ordinal = remote_ordinal.wrapping_add(1);
+                source.position = Position {
+                    x: player_position
+                        .x
+                        .wrapping_add(12_000_u16.wrapping_add(remote_ordinal * 1_000)),
+                    y: player_position.y.wrapping_add(12_000),
+                    z: player_position.z,
+                };
+            }
+            seeds.push(RenderableMapSeed {
+                entity_index: source.source_entity_index,
+                active: source.active,
+                x: source.position.x,
+                y: source.position.y,
+            });
+        }
+        for state in &mut self.authored_fireflies {
+            state.linked_entity_index = 0;
+            state.movement_blocked = false;
+            if state.source_entity_index == source_slot {
+                state.stage_var1 = 0;
+                state.stage_var2 = 0;
+            }
+        }
+        self.source_rng.insert(source_slot, 739);
+        seeds
+            .into_iter()
+            .all(|seed| self.map_chains.sync_entity(seed).is_ok())
+    }
 }
 
 fn leave_firefly_link(source: &mut Level2AuthoredClass5Source, state: &mut AuthoredFireflyRuntime) {
@@ -582,6 +906,18 @@ fn squared_wrapping_xy_distance(left: Position, right: Position) -> u32 {
     dx.wrapping_mul(dx)
         .cast_unsigned()
         .wrapping_add(dy.wrapping_mul(dy).cast_unsigned())
+}
+
+fn firefly_distance_3d(left: Position, right: Position) -> u32 {
+    let dx = i32::from(right.x.wrapping_sub(left.x).cast_signed());
+    let dy = i32::from(right.y.wrapping_sub(left.y).cast_signed());
+    let dz = i32::from(right.z.wrapping_sub(left.z));
+    crate::legacy_sqrt(
+        dx.wrapping_mul(dx)
+            .cast_unsigned()
+            .wrapping_add(dy.wrapping_mul(dy).cast_unsigned())
+            .wrapping_add(dz.wrapping_mul(dz).cast_unsigned()),
+    )
 }
 
 fn nearest_unlinked_firefly(

@@ -211,7 +211,8 @@ mod tests {
             spec::{BehaviorSelector, CampaignDefinition, ValidationStage},
         },
         native_world::{
-            EntitySpecialRelation, Level2DispatchEvent, Level2NyphurDispatchCall, NativeWorld,
+            EntitySpecialRelation, Level2AuthoredClass5Source, Level2DispatchEvent,
+            Level2NyphurDispatchCall, NativeWorld,
         },
     };
     use std::{
@@ -1782,6 +1783,7 @@ mod tests {
         // target. Natural travel time is not under test; the ordinary
         // PreDispatch arrival, action-153 decision, action-155 visits, and
         // shared numeric epilogues remain authoritative production work.
+        let mut charge_route = firefly_route.clone();
         let roam_slot = firefly_slots[0];
         let peer_slot = firefly_slots[1];
         assert!(roam_slot < peer_slot);
@@ -2077,6 +2079,266 @@ mod tests {
         );
         assert!(
             firefly_route
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        // Stop the real player through its public command, then stage only a
+        // real package Firefly's geometry/cadence/private RNG so the ordinary
+        // action-153 scan reaches action 154's charge branch promptly. This
+        // proves the production callbacks and visible sound, not the branch's
+        // natural random waiting time or its separate fireball lifecycle.
+        let _ = charge_route.step(
+            PlayerCommand {
+                opcode: 0x27,
+                argument_1: 1,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let attack_player = charge_route.level2_compatibility().state;
+        assert_eq!(
+            (attack_player.actual_speed, attack_player.target_speed),
+            (0, 0)
+        );
+        let attack_slot = firefly_slots[0];
+        assert!(
+            charge_route
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_authored_firefly_charge_prerequisite_for_test(
+                    attack_slot,
+                    attack_player.position,
+                    attack_player.yaw,
+                )
+        );
+        let charge_cursor = charge_route.effect_cursor();
+        let expected_motion = |route: &CampaignSession, root: &Level2AuthoredClass5Source| {
+            crate::ground_creature_motion::step_ground_creature_motion(
+                root.position,
+                root.yaw,
+                root.roll,
+                root.actual_speed,
+                &route.level2_compatibility().session.state.live.terrain,
+                motion_config,
+            )
+        };
+
+        let staged_attack = *charge_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the staged attacker is a real group-6 Firefly");
+        let acquisition_motion = expected_motion(&charge_route, &staged_attack);
+        let _ = charge_route.step(PlayerCommand::default(), 0);
+        let acquired = *charge_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the Firefly survives its real player acquisition");
+        assert_eq!(
+            (
+                acquired.action,
+                acquired.word_0x96_150,
+                acquired.byte_0x46_70,
+                acquired.source_byte_3e,
+                acquired.entity_rng,
+                acquired.position,
+                acquired.yaw,
+            ),
+            (
+                154,
+                attack_player.entity_index,
+                0,
+                71,
+                54_209,
+                acquisition_motion.position,
+                acquisition_motion.yaw,
+            ),
+            "action 153 moves, consumes exactly two private RNG draws, and selects the real player without recursively dispatching action 154"
+        );
+
+        let orbit_motion = expected_motion(&charge_route, &acquired);
+        let _ = charge_route.step(PlayerCommand::default(), 0);
+        let orbit = *charge_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the Firefly survives its orbit visit");
+        assert_eq!(
+            (
+                orbit.action,
+                orbit.byte_0x46_70,
+                orbit.source_byte_3e,
+                orbit.entity_rng,
+                orbit.actual_speed,
+                orbit.position,
+                orbit.yaw,
+            ),
+            (
+                154,
+                2,
+                72,
+                30_016,
+                76,
+                orbit_motion.position,
+                orbit_motion.yaw,
+            ),
+            "substates 0 and 1 share one callback and consume the orbit draw"
+        );
+
+        let maneuver_motion = expected_motion(&charge_route, &orbit);
+        let _ = charge_route.step(PlayerCommand::default(), 0);
+        let maneuver_target = charge_route.level2_compatibility().state;
+        let maneuver = *charge_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the Firefly survives its charge selection");
+        let expected_altitude_target = i32::from(maneuver_target.position.z) + 543;
+        let mut expected_maneuver_position = maneuver_motion.position;
+        expected_maneuver_position.z = expected_maneuver_position.z.wrapping_add(
+            if i32::from(expected_maneuver_position.z) <= expected_altitude_target {
+                64
+            } else {
+                -64
+            },
+        );
+        assert_eq!(
+            (
+                maneuver.action,
+                maneuver.byte_0x46_70,
+                maneuver.source_byte_3e,
+                maneuver.entity_rng,
+                maneuver.actual_speed,
+                maneuver.dword_0x10,
+                maneuver.position,
+                maneuver.yaw,
+            ),
+            (
+                154,
+                7,
+                73,
+                46_686,
+                8,
+                expected_altitude_target,
+                expected_maneuver_position,
+                maneuver_motion.yaw,
+            ),
+            "state 2 falls through state 3, preserving the source RNG and rare charge selector order"
+        );
+        let pre_charge_effects = charge_route
+            .effects_after(charge_cursor, 16_384)
+            .expect("bounded pre-charge journal page");
+        assert!(pre_charge_effects.records.iter().all(|record| !matches!(
+            record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                sound_id: 43 | 44,
+                ..
+            })
+        )));
+
+        let player_record_before_charge = charge_route.level2_compatibility().entities()
+            [usize::from(attack_player.entity_index)]
+        .record_bytes()[98..104]
+            .to_vec();
+        let charge_motion = expected_motion(&charge_route, &maneuver);
+        let _ = charge_route.step(PlayerCommand::default(), 0);
+        let charge_target = charge_route.level2_compatibility().state;
+        let charged = *charge_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the charging Firefly remains live");
+        let mut expected_charge_position = charge_motion.position;
+        let charge_altitude = i32::from(charge_target.position.z)
+            .wrapping_sub(i32::from(expected_charge_position.z))
+            .clamp(-64, 64);
+        expected_charge_position.z = expected_charge_position
+            .z
+            .wrapping_add(charge_altitude as i16);
+        assert_eq!(
+            (
+                charged.action,
+                charged.byte_0x46_70,
+                charged.source_byte_3e,
+                charged.entity_rng,
+                charged.actual_speed,
+                charged.dword_0x10,
+                charged.position,
+                charged.yaw,
+            ),
+            (
+                154,
+                8,
+                74,
+                3_581,
+                228,
+                23,
+                expected_charge_position,
+                charge_motion.yaw,
+            ),
+            "state 7 emits sound and falls through state 8, so its first completed timer is 23"
+        );
+        let charge_effects = charge_route
+            .effects_after(charge_cursor, 16_384)
+            .expect("bounded charge journal page");
+        assert_eq!(
+            charge_effects
+                .records
+                .iter()
+                .filter(|record| matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::PrepareSound {
+                            entity_index,
+                            player_index: -1,
+                            sound_id: 44,
+                            ..
+                        }
+                    ) if entity_index == attack_slot
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            charge_effects
+                .records
+                .iter()
+                .filter(|record| matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::PrepareSound {
+                            entity_index,
+                            player_index: -1,
+                            sound_id: 43 | 44,
+                            ..
+                        }
+                    ) if entity_index == attack_slot
+                ))
+                .count(),
+            1,
+            "the charge visit emits exactly one RNG-selected Firefly sound"
+        );
+        assert_eq!(
+            charge_route.level2_compatibility().entities()[usize::from(attack_player.entity_index)]
+                .record_bytes()[98..104],
+            player_record_before_charge,
+            "the staged geometry remains outside the strict contact radius, so this slice does not counterfeit damage"
+        );
+        assert!(
+            charge_route
                 .events()
                 .iter()
                 .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))

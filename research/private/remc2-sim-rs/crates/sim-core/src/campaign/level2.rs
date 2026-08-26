@@ -1752,6 +1752,39 @@ impl Level2ResetSession {
         targets
     }
 
+    fn firefly_attack_target(
+        &self,
+        entity_index: u16,
+    ) -> Option<level2_class5::firefly::FireflyAttackTarget> {
+        let entity = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .find(|entity| entity.index == entity_index)?;
+        let local = entity_index == self.session.state.live.core.state.entity_index;
+        Some(level2_class5::firefly::FireflyAttackTarget {
+            entity_index,
+            position: if local {
+                self.session.state.live.core.state.position
+            } else {
+                entity.position
+            },
+            yaw: if local {
+                self.session.state.live.core.state.yaw
+            } else {
+                entity.yaw
+            },
+            live: entity.active
+                && entity.life >= 0
+                && entity.class == 3
+                && entity.model == 0
+                && !entity.drawing_disabled(),
+        })
+    }
+
     /// Refresh the shared spell scan from the live source entity arena at the
     /// source-cursor boundary. Movement has already committed to `state`, so
     /// the local source row is synchronized before the linked-list walk; the
@@ -10395,7 +10428,7 @@ impl Level2ResetSession {
                     ..
                 }),
             ) => {
-                let (action, life, pending_damage) = self
+                let (action, life, pending_damage, target_entity_index) = self
                     .session
                     .state
                     .live
@@ -10403,7 +10436,14 @@ impl Level2ResetSession {
                     .authored_class5()
                     .iter()
                     .find(|source| source.source_entity_index == source_slot)
-                    .map(|source| (source.action, source.life, source.pending_word_0x62))
+                    .map(|source| {
+                        (
+                            source.action,
+                            source.life,
+                            source.pending_word_0x62,
+                            source.word_0x96_150,
+                        )
+                    })
                     .ok_or_else(|| format!("Firefly source slot {source_slot} is absent"))?;
                 if life < 0 || pending_damage != 0 {
                     return Err(format!(
@@ -10413,6 +10453,7 @@ impl Level2ResetSession {
                 let terrain = &self.session.state.live.terrain;
                 let frozen_model19_slots = &pass_start_class5_model_slots
                     [usize::from(level2_class5::firefly::FIREFLY_MODEL)];
+                let attack_target = self.firefly_attack_target(target_entity_index);
                 let live = match action {
                     level2_class5::firefly::FIREFLY_STAGE_ACTION => self
                         .session
@@ -10445,6 +10486,30 @@ impl Level2ResetSession {
                             frozen_model19_slots,
                             terrain,
                         ),
+                    level2_class5::firefly::FIREFLY_ATTACK_ACTION => {
+                        let step = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .step_authored_firefly_charge_slot(
+                                source_slot,
+                                attack_target,
+                                frozen_model19_slots,
+                                terrain,
+                            )?;
+                        if let Some(sound_id) = step.sound_id {
+                            mark_source_audio_call(SourceAudioCallTag::FireflyChargeAction154);
+                            self.push_flight_effect(FlightEvent::PrepareSound {
+                                #[cfg(test)]
+                                audio_site: crate::MissionAudioSite::FireflyCharge,
+                                entity_index: source_slot,
+                                player_index: -1,
+                                sound_id,
+                            });
+                        }
+                        step.live
+                    }
                     _ => {
                         return Err(format!(
                             "Firefly source slot {source_slot} reached unimplemented action {action}"
