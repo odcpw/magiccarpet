@@ -6,7 +6,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::campaign::source_arena::SourceArena;
 use crate::campaign::state::{
     CampaignDefinition, CampaignSession, CampaignState, CampaignStepError, CanonicalRuntimeState,
-    ResetReceipt, ResetState, SemanticLevelBindings, encode_reset_v1_into,
+    ResetReceipt, ResetState, SemanticLevelBindings, digest_level_exit_sequence,
+    encode_reset_v1_into,
 };
 use crate::campaign::{
     dispatch::{CAMPAIGN_BEHAVIOR_REGISTRY, DispatchSite, ExistingHandler},
@@ -10782,6 +10783,9 @@ impl Level2ResetSession {
                         self.step_level2_player_dying_action(pass, source_slot, body.proposed);
                         *player_position = self.session.state.live.core.state.position;
                         evidence.push(body);
+                    } else if player_action_at_visit == crate::level_exit::EXIT_PLAYER_ACTION {
+                        self.step_level_exit_player_action(pass, source_slot)?;
+                        *player_position = self.session.state.live.core.state.position;
                     } else if player_action_at_visit == 0 {
                         // `UpdateEntities_57730` reaches the local player at
                         // source slot 111 before the later Possession holder
@@ -13091,6 +13095,20 @@ impl Level2ResetSession {
                             == Some(SceneryKind::ExitPortal)
                 })
                 .map_or(0, |source| source.source_entity_index);
+            let player_entity_index = self.session.state.live.core.state.entity_index;
+            let player_is_present = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(player_entity_index))
+                .is_some_and(|player| {
+                    player.index == player_entity_index && player.class == 3 && player.model == 0
+                });
+            if !player_is_present {
+                return false;
+            }
             if !self
                 .session
                 .state
@@ -13110,14 +13128,28 @@ impl Level2ResetSession {
             {
                 return false;
             }
-            let player_entity_index = self.session.state.live.core.state.entity_index;
+            let Some(player) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get_mut(usize::from(player_entity_index))
+                .filter(|player| {
+                    player.index == player_entity_index && player.class == 3 && player.model == 0
+                })
+            else {
+                unreachable!("the exit trigger preflighted the authoritative player row");
+            };
+            player.set_source_action(crate::level_exit::EXIT_PLAYER_ACTION);
+            player.set_source_byte_46(0);
             mark_source_audio_call(SourceAudioCallTag::ExitOverlapSwitch);
             self.push_flight_effect(FlightEvent::PrepareSound {
                 #[cfg(test)]
                 audio_site: crate::MissionAudioSite::ExitOverlap,
                 entity_index: player_entity_index,
                 player_index: -1,
-                sound_id: 41,
+                sound_id: crate::level_exit::EXIT_SWITCH_SOUND,
             });
             self.push_dispatch_effect(Level2DispatchEvent::LevelExitSequenceStarted {
                 pass,
@@ -13144,6 +13176,155 @@ impl Level2ResetSession {
             .live
             .economy
             .complete_authored_switch_producer_slot(source_slot)
+    }
+
+    fn step_level_exit_player_action(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
+        if !self.session.state.live.level_exit.active
+            && !self.session.state.live.level_exit.complete
+        {
+            return Err(format!(
+                "player source slot {source_slot} selected exit action 12 without an active semantic exit sequence"
+            ));
+        }
+
+        let portal_entity_index = self.session.state.live.level_exit.portal_entity_index;
+        let portal_position = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class14()
+            .iter()
+            .find(|portal| {
+                portal.active
+                    && portal.source_entity_index == portal_entity_index
+                    && self.scenery_kind_for_source_slot(portal.source_entity_index)
+                        == Some(SceneryKind::ExitPortal)
+            })
+            .map(|portal| portal.position);
+        let phase_before = self.session.state.live.level_exit.phase;
+        let speed_holder_index = self.session.state.live.core.state.speed_spell_holder_index;
+        let effects = {
+            let live = &mut self.session.state.live;
+            live.level_exit.advance(
+                &live.terrain,
+                self.session.definition.profile,
+                &mut live.core.state,
+                &mut live.core.context,
+                portal_position,
+            )
+        };
+
+        if phase_before == 0 && speed_holder_index != 0 {
+            if let Some(holder) = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .pickup_mut(speed_holder_index)
+            {
+                holder.active_value = 0;
+                holder.record[50..52].fill(0);
+            }
+            if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
+                && let Some(holder) = fire
+                    .holders
+                    .iter_mut()
+                    .find(|holder| holder.entity_index == speed_holder_index)
+            {
+                holder.active_value = 0;
+            }
+        }
+
+        if let Some(effect_state) = self.session.state.live.core.context.effects.as_mut() {
+            effect_state.palette_submode = self.session.state.live.level_exit.palette_submode;
+        }
+        let player_entity_index = self.session.state.live.core.state.entity_index;
+        let player_position = self.session.state.live.core.state.position;
+        let player_yaw = self.session.state.live.core.state.yaw;
+        let player_speed = self.session.state.live.core.state.actual_speed;
+        let exit_phase = self.session.state.live.level_exit.phase;
+        for player in self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter_mut()
+            .filter(|player| player.index == player_entity_index)
+        {
+            player.set_position(player_position);
+            player.set_yaw(player_yaw);
+            player.set_actual_speed(player_speed);
+            player.set_source_action(crate::level_exit::EXIT_PLAYER_ACTION);
+            player.set_source_byte_46(exit_phase);
+        }
+        for player in std::iter::once(&mut self.session.state.live.shared_spells.player_entity)
+            .chain(
+                self.session
+                    .state
+                    .live
+                    .shared_spells
+                    .player_entities
+                    .iter_mut(),
+            )
+            .filter(|player| player.index == player_entity_index)
+        {
+            player.set_position(player_position);
+            player.set_yaw(player_yaw);
+            player.set_actual_speed(player_speed);
+            player.set_source_action(crate::level_exit::EXIT_PLAYER_ACTION);
+            player.set_source_byte_46(exit_phase);
+        }
+        self.session
+            .state
+            .live
+            .economy
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: player_entity_index,
+                active: true,
+                x: player_position.x,
+                y: player_position.y,
+            })?;
+
+        for effect in effects {
+            match effect {
+                crate::level_exit::LevelExitEffect::PrepareSound { sound_id } => {
+                    if sound_id == crate::level_exit::EXIT_SWITCH_SOUND {
+                        mark_source_audio_call(SourceAudioCallTag::ExitSequenceSwitch);
+                    } else {
+                        mark_source_audio_call(SourceAudioCallTag::ExitAcceleration);
+                    }
+                    self.push_flight_effect(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: if sound_id == crate::level_exit::EXIT_SWITCH_SOUND {
+                            crate::MissionAudioSite::ExitSequenceSwitch
+                        } else if exit_phase == 7 {
+                            crate::MissionAudioSite::ExitAccelerationPhase6
+                        } else {
+                            crate::MissionAudioSite::ExitAccelerationPhase8
+                        },
+                        entity_index: player_entity_index,
+                        player_index: -1,
+                        sound_id,
+                    });
+                }
+                crate::level_exit::LevelExitEffect::Completed { result_code } => {
+                    self.push_dispatch_effect(Level2DispatchEvent::LevelExitSequenceCompleted {
+                        pass,
+                        player_entity_index,
+                        result_code,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Apply the cadence-gated target mailbox half of remc2 `sub_33710`.
@@ -14870,16 +15051,7 @@ impl Level2ResetSession {
             self.session.state.live.level2_objective_pause,
             u8::from(self.session.state.live.level2_objective_done),
         ]);
-        hasher.update(b"level-exit-sequence-v1");
-        let level_exit = self.session.state.live.level_exit;
-        hasher.update([
-            u8::from(level_exit.active),
-            u8::from(level_exit.complete),
-            level_exit.phase,
-        ]);
-        hasher.update(level_exit.timer.to_le_bytes());
-        hasher.update(level_exit.trigger_entity_index.to_le_bytes());
-        hasher.update(level_exit.portal_entity_index.to_le_bytes());
+        digest_level_exit_sequence(&mut hasher, self.session.state.live.level_exit);
         hasher.update(b"level2-nyphur-dispatcher-v1");
         if let Some(dispatcher) = self.session.state.live.nyphur_dispatcher.as_ref() {
             hasher.update([1]);
@@ -16296,6 +16468,10 @@ mod tests {
         assert_eq!((trigger.model, trigger.action), (12, 12));
 
         let player_entity_index = session.state.entity_index;
+        assert!(
+            player_entity_index < trigger.source_entity_index,
+            "the package player cursor must precede the newly allocated exit trigger"
+        );
         session
             .set_level2_entity_position(player_entity_index, trigger.position)
             .expect("stage the real player inside the real package trigger");
@@ -16380,6 +16556,19 @@ mod tests {
             })
             .expect("the semantic exit start is journaled");
         assert!(sound_ordinal < start_ordinal);
+        assert!(
+            new_records.iter().all(|record| !matches!(
+                record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::ExitSequenceSwitch,
+                    ..
+                })
+            )),
+            "the already-visited player slot cannot run action 12 in the trigger pass"
+        );
+        let armed_player = &session.entities()[usize::from(player_entity_index)];
+        assert_eq!(armed_player.action, crate::level_exit::EXIT_PLAYER_ACTION);
+        assert_eq!(armed_player.record_bytes()[74], 0);
         let retained = session
             .economy()
             .authored_switch_producers()
@@ -16396,6 +16585,7 @@ mod tests {
                 .wrapping_add(u8::try_from(turns_until_cadence).expect("one cadence fits u8"))
         );
 
+        let phase_zero_journal_start = session.effect_journal().records().len();
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             session
@@ -16404,7 +16594,131 @@ mod tests {
                 .iter()
                 .all(|source| source.source_entity_index != trigger.source_entity_index)
         );
-        assert!(session.level_exit_sequence().active);
+        let phase_one = session.level_exit_sequence();
+        assert_eq!(
+            (
+                phase_one.active,
+                phase_one.complete,
+                phase_one.phase,
+                phase_one.palette_submode,
+                phase_one.player_status_flags,
+            ),
+            (
+                true,
+                false,
+                1,
+                crate::level_exit::EXIT_PALETTE_ENTRY_FLASH_REQUEST,
+                0x20
+            )
+        );
+        let phase_one_player = &session.entities()[usize::from(player_entity_index)];
+        assert_eq!(
+            phase_one_player.action,
+            crate::level_exit::EXIT_PLAYER_ACTION
+        );
+        assert_eq!(phase_one_player.record_bytes()[74], 1);
+        assert!(
+            session.effect_journal().records()[phase_zero_journal_start..]
+                .iter()
+                .any(|record| matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::ExitSequenceSwitch,
+                        entity_index,
+                        sound_id: crate::level_exit::EXIT_SWITCH_SOUND,
+                        ..
+                    }) if entity_index == player_entity_index
+                ))
+        );
+        assert_eq!(
+            session
+                .campaign_state()
+                .live
+                .core
+                .context
+                .effects
+                .as_ref()
+                .expect("campaign flight effects remain present")
+                .palette_submode,
+            crate::level_exit::EXIT_PALETTE_ENTRY_FLASH_REQUEST
+        );
+
+        let generation = session.session.generation;
+        let mut effect_cursor = session.effect_journal().cursor(generation);
+        let mut acceleration_sound_count = 0;
+        for _ in 0..700 {
+            if session.level_exit_sequence().complete {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let page = session
+                .effect_journal()
+                .page(generation, effect_cursor, usize::MAX)
+                .expect("exit sequence effects remain page-readable");
+            acceleration_sound_count += page
+                .records
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.effect,
+                        crate::campaign::journal::CampaignEffect::Flight(
+                            FlightEvent::PrepareSound {
+                                sound_id: crate::level_exit::EXIT_ACCELERATION_SOUND,
+                                ..
+                            }
+                        )
+                    )
+                })
+                .count();
+            effect_cursor = page.next_cursor;
+        }
+        let completed = session.level_exit_sequence();
+        assert_eq!(
+            (
+                completed.active,
+                completed.complete,
+                completed.phase,
+                completed.result_code,
+                completed.player_status_flags,
+                completed.display_blank,
+                completed.blur_mode,
+                completed.camera_fov,
+                completed.palette_submode,
+            ),
+            (
+                false,
+                true,
+                12,
+                10,
+                10,
+                true,
+                0,
+                121,
+                crate::level_exit::EXIT_PALETTE_BLACK_REQUEST,
+            )
+        );
+        assert_eq!(acceleration_sound_count, 1);
+        assert_eq!(
+            session
+                .dispatch_events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2DispatchEvent::LevelExitSequenceCompleted {
+                        player_entity_index: completed_player,
+                        result_code: 10,
+                        ..
+                    } if *completed_player == player_entity_index
+                ))
+                .count(),
+            1
+        );
+        let completed_player = &session.entities()[usize::from(player_entity_index)];
+        assert_eq!(
+            completed_player.action,
+            crate::level_exit::EXIT_PLAYER_ACTION
+        );
+        assert_eq!(completed_player.record_bytes()[74], 12);
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
         assert_eq!(

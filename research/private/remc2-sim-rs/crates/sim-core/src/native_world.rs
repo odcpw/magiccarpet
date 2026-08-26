@@ -128,6 +128,8 @@ use crate::{
     },
 };
 
+pub use crate::level_exit::LevelExitSequence;
+
 #[cfg(test)]
 use crate::level1_mission::POSSESSION_IMPACT_MODEL;
 #[cfg(test)]
@@ -3004,34 +3006,6 @@ pub(crate) struct Level2ImportedSwitchRootState {
     pub(crate) active: bool,
 }
 
-/// Canonical state established when a package exit trigger captures its
-/// portal. The player transition, sequence body, and presentation phases
-/// extend this same carrier; there is no level-specific exit session or
-/// parallel entity arena.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct LevelExitSequence {
-    pub active: bool,
-    pub complete: bool,
-    pub phase: u8,
-    pub timer: i16,
-    pub trigger_entity_index: u16,
-    pub portal_entity_index: u16,
-}
-
-impl LevelExitSequence {
-    pub(crate) fn start(&mut self, trigger_entity_index: u16, portal_entity_index: u16) -> bool {
-        if self.active || self.complete {
-            return false;
-        }
-        self.active = true;
-        self.phase = 0;
-        self.timer = 0;
-        self.trigger_entity_index = trigger_entity_index;
-        self.portal_entity_index = portal_entity_index;
-        true
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2LiveState {
     pub(crate) core: crate::campaign::state::CanonicalRuntimeState,
@@ -3202,6 +3176,11 @@ pub enum Level2DispatchEvent {
         trigger_entity_index: u16,
         portal_entity_index: u16,
     },
+    LevelExitSequenceCompleted {
+        pass: u8,
+        player_entity_index: u16,
+        result_code: u8,
+    },
     BadStone {
         pass: u8,
         step: Level2BadStoneStep,
@@ -3344,6 +3323,11 @@ impl Level2DispatchEvent {
                 1,
                 *trigger_entity_index,
             ),
+            Self::LevelExitSequenceCompleted {
+                pass,
+                player_entity_index,
+                result_code,
+            } => (*pass, 13, *result_code, 1, *player_entity_index),
             Self::BadStone { pass, step } => (
                 *pass,
                 3,

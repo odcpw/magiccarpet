@@ -1196,7 +1196,8 @@ fn level_two_outer_turn_dispatches_each_source_pass_in_order() {
                 | Level2DispatchEvent::Goat { pass, .. }
                 | Level2DispatchEvent::Error { pass, .. }
                 | Level2DispatchEvent::AuthoredGroupActivated { pass, .. }
-                | Level2DispatchEvent::LevelExitSequenceStarted { pass, .. } => *pass,
+                | Level2DispatchEvent::LevelExitSequenceStarted { pass, .. }
+                | Level2DispatchEvent::LevelExitSequenceCompleted { pass, .. } => *pass,
             })
             .collect::<Vec<_>>();
         assert!(!passes.is_empty(), "source pass {speed_index} was empty");

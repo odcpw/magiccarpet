@@ -444,6 +444,12 @@ impl EntitySnapshot {
         self.record[73] = action;
     }
 
+    /// Keep source `byte_0x46_70` in lockstep with the semantic player
+    /// action-12 exit phase.
+    pub(super) fn set_source_byte_46(&mut self, value: u8) {
+        self.record[74] = value;
+    }
+
     /// Set source control byte[0] bit 0x20. This is deliberately not the
     /// 0x400 bit installed by `DisableEntityDrawing04_57F10`.
     pub(super) fn set_player_death_hidden_bit(&mut self) {

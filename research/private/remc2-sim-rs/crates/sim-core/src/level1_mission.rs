@@ -13,9 +13,8 @@ use crate::native_world::{
 use crate::source_sprite_tmap::SourceSpritePaletteOwner;
 use crate::spell_activation::{SpeedSpellStepInput, step_speed_spell, step_speed_trail};
 use crate::{
-    FlightContext, FlightEvent, FlightProfile, FlightState, FlightWorld, MovementResolution,
-    Position, SIN_16_16, SourceAudioCallTag, SpellActivationHolder, SpellFireSource, SpellHolder,
-    Tile, angle_distance,
+    FlightContext, FlightEvent, FlightProfile, FlightState, FlightWorld, Position, SIN_16_16,
+    SourceAudioCallTag, SpellActivationHolder, SpellFireSource, SpellHolder, Tile, angle_distance,
     dynamic_lighting::{
         DYNAMIC_LIGHT_CAPACITY, DynamicLightLinkedEntity, DynamicLightSlot,
         DynamicLightingExecutionReceipt, DynamicLightingState,
@@ -27,7 +26,6 @@ use crate::{
     },
     legacy_sqrt, mark_source_audio_call, move_entity, pitch_for_delta,
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed},
-    resolve_legacy_movement,
     source_sprite_tmap::{
         CastleDefenseShotError, Level1SourceSpawnKind, Level1SourceSpriteState,
         SourceSpriteContractRow, SourceSpriteDisposition, castle_defense_shot_profile,
@@ -2469,7 +2467,6 @@ const LEVEL1_FIRST_WAYPOINT_SWITCH_CENTER: Position = Position {
 };
 const LEVEL1_FIRST_WAYPOINT_SWITCH_PHASE: u8 = 152;
 const LEVEL1_EXIT_SWITCH_FEATURE: u16 = 137;
-const LEVEL1_EXIT_TARGET_DISTANCE: u32 = 0x180;
 const EXIT_PLAYER_ACTION: u8 = 12;
 const EXIT_TARGET_CLASS: u8 = 14;
 const EXIT_TARGET_MODEL_PRIMARY: u8 = 3;
@@ -13658,253 +13655,100 @@ impl Level1MissionState {
         context: &mut FlightContext,
         camera_fov: &mut i16,
     ) {
-        if !self.exit_sequence_active || self.exit_sequence_complete {
-            return;
-        }
-        self.exit_last_movement_resolution = EXIT_MOVEMENT_NOT_ATTEMPTED;
-        loop {
-            match self.exit_sequence_phase {
-                0 => {
-                    mark_source_audio_call(SourceAudioCallTag::ExitSequenceSwitch);
-                    self.events.push(Level1MissionEvent::MissionSound {
-                        #[cfg(test)]
-                        audio_site: crate::MissionAudioSite::ExitSequenceSwitch,
-                        sound_id: EXIT_SWITCH_SOUND,
-                        source_entity_index: player.entity_index,
-                        position: player.position,
-                        random_state: self.global_rng,
-                    });
-                    self.exit_palette_submode = EXIT_PALETTE_ENTRY_FLASH_REQUEST;
-                    self.exit_player_status_flags |= 0x20;
-                    player.immobilize_counter = 0;
-                    player.speed_modifier = 0;
-                    player.target_speed = 0;
-                    player.recoil_speed = 0;
-                    player.strafe_speed = 0;
-                    if let Some(holder) = context.speed_spell_holder.as_mut() {
-                        holder.active_value = 0;
-                    }
-                    if let Some(actor) = self.actors.iter_mut().find(|actor| {
-                        actor.kind == Level1ActorKind::SpeedSpellJar && actor.collected
-                    }) {
-                        actor.state_value = 0;
-                    }
-                    self.exit_target_valid = self.actors.iter().any(|actor| {
-                        actor.source_entity_index == self.exit_target_source_entity_index
-                            && actor.active
-                            && actor.class == EXIT_TARGET_CLASS
-                            && matches!(
-                                actor.model,
-                                EXIT_TARGET_MODEL_PRIMARY | EXIT_TARGET_MODEL_ALTERNATE
-                            )
-                    });
-                    if !self.exit_target_valid {
-                        self.exit_target_source_entity_index = 0;
-                    }
-                    self.exit_sequence_phase = 1;
-                }
-                1 => {
-                    let old_speed = player.actual_speed;
-                    if !self.exit_try_move(world, player, player.yaw, old_speed) {
-                        player.actual_speed = 0;
-                    }
-                    if old_speed.unsigned_abs() <= 4 {
-                        player.actual_speed = 0;
-                    } else if old_speed <= 0 {
-                        player.actual_speed = player.actual_speed.wrapping_add(4);
-                    } else {
-                        player.actual_speed = player.actual_speed.wrapping_sub(4);
-                    }
-                    if player.actual_speed == 0 {
-                        self.exit_sequence_phase = if self.exit_target_source_entity_index == 0 {
-                            4
-                        } else {
-                            3
-                        };
-                    }
-                }
-                3 => {
-                    let Some(target) = self.exit_target_position() else {
-                        self.exit_target_source_entity_index = 0;
-                        self.exit_target_valid = false;
-                        self.exit_sequence_phase = 4;
-                        continue;
-                    };
-                    let target_yaw = i16::try_from(heading_for_positions(player.position, target))
-                        .expect("11-bit exit heading");
-                    if angle_distance(i32::from(player.yaw), i32::from(target_yaw)) <= 11 {
-                        player.yaw = target_yaw;
-                        self.exit_sequence_phase = 4;
-                    } else {
-                        player.yaw = player
-                            .yaw
-                            .wrapping_add(turn_toward(player.yaw, target_yaw, 11))
-                            & 0x07ff;
-                    }
-                }
-                4 => {
-                    self.exit_sequence_timer = 12;
-                    self.exit_sequence_phase = 5;
-                    self.exit_end_sequence_flag = true;
-                    continue;
-                }
-                5 => {
-                    self.exit_sequence_timer = self.exit_sequence_timer.wrapping_sub(1);
-                    if self.exit_sequence_timer > 4 {
-                        *camera_fov = camera_fov.wrapping_sub(1);
-                    }
-                    if self.exit_sequence_timer == 0 {
-                        self.exit_sequence_phase = if self.exit_target_source_entity_index == 0 {
-                            8
-                        } else {
-                            6
-                        };
-                    }
-                }
-                6 => {
-                    self.exit_sequence_timer = 512;
-                    player.actual_speed = 100;
-                    self.exit_sequence_phase = 7;
-                    self.exit_blur_mode = 2;
-                    mark_exit_acceleration_source_call();
-                    self.events.push(Level1MissionEvent::MissionSound {
-                        #[cfg(test)]
-                        audio_site: crate::MissionAudioSite::ExitAccelerationPhase6,
-                        sound_id: EXIT_ACCELERATION_SOUND,
-                        source_entity_index: player.entity_index,
-                        position: player.position,
-                        random_state: self.global_rng,
-                    });
-                    continue;
-                }
-                7 => {
-                    self.exit_sequence_timer = self.exit_sequence_timer.wrapping_sub(1);
-                    if self.exit_sequence_timer == 0 {
-                        self.exit_sequence_phase = 10;
-                    } else if let Some(target) = self.exit_target_position() {
-                        player.yaw = i16::try_from(heading_for_positions(player.position, target))
-                            .expect("11-bit exit heading");
-                        let speed = player.actual_speed;
-                        player.actual_speed = exit_accelerated_speed(player.actual_speed);
-                        if !self.exit_try_move(world, player, player.yaw, speed)
-                            || wrapping_xy_distance(player.position, target)
-                                < LEVEL1_EXIT_TARGET_DISTANCE
-                        {
-                            self.exit_sequence_phase = 10;
-                        }
-                    } else {
-                        self.exit_sequence_phase = 10;
-                    }
-                }
-                8 => {
-                    self.exit_sequence_timer = 128;
-                    player.actual_speed = 100;
-                    self.exit_sequence_phase = 9;
-                    self.exit_blur_mode = 2;
-                    mark_exit_acceleration_source_call();
-                    self.events.push(Level1MissionEvent::MissionSound {
-                        #[cfg(test)]
-                        audio_site: crate::MissionAudioSite::ExitAccelerationPhase8,
-                        sound_id: EXIT_ACCELERATION_SOUND,
-                        source_entity_index: player.entity_index,
-                        position: player.position,
-                        random_state: self.global_rng,
-                    });
-                    continue;
-                }
-                9 => {
-                    self.exit_sequence_timer = self.exit_sequence_timer.wrapping_sub(1);
-                    if self.exit_sequence_timer == 0 {
-                        self.exit_sequence_phase = 10;
-                    } else {
-                        let speed = player.actual_speed;
-                        player.actual_speed = exit_accelerated_speed(player.actual_speed);
-                        if !self.exit_try_move(world, player, player.yaw, speed) {
-                            self.exit_sequence_phase = 10;
-                        }
-                    }
-                }
-                10 => {
-                    self.exit_sequence_timer = 32;
-                    self.exit_sequence_phase = 11;
-                    self.exit_palette_submode = EXIT_PALETTE_BLACK_REQUEST;
-                    continue;
-                }
-                11 => {
-                    self.exit_sequence_timer = self.exit_sequence_timer.wrapping_sub(1);
-                    if self.exit_sequence_timer != 0
-                        && self.exit_palette_submode != EXIT_PALETTE_NONE
-                    {
-                        let _ = self.exit_try_move(world, player, player.yaw, 2);
-                    } else {
-                        self.exit_sequence_phase = 12;
-                    }
-                }
-                12 => {
-                    self.exit_result_code = 10;
-                    self.exit_player_status_flags = 10;
-                    self.exit_display_blank = true;
-                    self.exit_blur_mode = 0;
-                    self.exit_sequence_active = false;
-                    self.exit_sequence_complete = true;
-                    self.events.push(Level1MissionEvent::ExitSequenceCompleted {
-                        result_code: self.exit_result_code,
-                    });
-                }
-                _ => {}
-            }
-            break;
-        }
-
-        let ground = world.ground_height(player.position);
-        if i32::from(player.position.z) <= i32::from(ground) + 256 {
-            if player.position.z >= ground {
-                player.position.z = ground.wrapping_add(128);
-            } else {
-                player.position.z = player.position.z.wrapping_add(128);
-            }
-        } else {
-            player.position.z = player.position.z.wrapping_sub(128);
-        }
-        player.roll_accumulator = exit_relax_axis(player.roll_accumulator, 7, 3);
-        player.pitch_accumulator = exit_relax_axis(player.pitch_accumulator, 3, 2);
-    }
-
-    fn exit_target_position(&self) -> Option<Position> {
-        (self.exit_target_source_entity_index != 0)
-            .then(|| {
-                self.actors
-                    .iter()
-                    .find(|actor| actor.source_entity_index == self.exit_target_source_entity_index)
+        let phase_before = self.exit_sequence_phase;
+        let mut sequence = crate::level_exit::LevelExitSequence {
+            active: self.exit_sequence_active,
+            complete: self.exit_sequence_complete,
+            phase: self.exit_sequence_phase,
+            timer: self.exit_sequence_timer,
+            trigger_entity_index: 0,
+            portal_entity_index: self.exit_target_source_entity_index,
+            portal_valid: self.exit_target_valid,
+            end_sequence: self.exit_end_sequence_flag,
+            player_status_flags: self.exit_player_status_flags,
+            palette_submode: self.exit_palette_submode,
+            last_movement: match self.exit_last_movement_resolution {
+                EXIT_MOVEMENT_ACCEPTED => crate::level_exit::ExitMovementResolution::Accepted,
+                EXIT_MOVEMENT_REDIRECTED => crate::level_exit::ExitMovementResolution::Redirected,
+                EXIT_MOVEMENT_REJECTED => crate::level_exit::ExitMovementResolution::Rejected,
+                _ => crate::level_exit::ExitMovementResolution::NotAttempted,
+            },
+            display_blank: self.exit_display_blank,
+            blur_mode: self.exit_blur_mode,
+            result_code: self.exit_result_code,
+            camera_fov: *camera_fov,
+        };
+        let portal_position = self
+            .actors
+            .iter()
+            .find(|actor| {
+                actor.source_entity_index == self.exit_target_source_entity_index
+                    && actor.active
+                    && actor.class == EXIT_TARGET_CLASS
+                    && matches!(
+                        actor.model,
+                        EXIT_TARGET_MODEL_PRIMARY | EXIT_TARGET_MODEL_ALTERNATE
+                    )
             })
-            .flatten()
-            .map(|actor| actor.position)
-    }
+            .map(|actor| actor.position);
+        let effects = sequence.advance(
+            world,
+            FlightProfile::OUTDOOR,
+            player,
+            context,
+            portal_position,
+        );
 
-    fn exit_try_move<W: FlightWorld>(
-        &mut self,
-        world: &W,
-        player: &mut FlightState,
-        yaw: i16,
-        speed: i16,
-    ) -> bool {
-        let from = player.position;
-        let mut proposed = from;
-        move_entity(&mut proposed, yaw, 0, speed);
-        match resolve_legacy_movement(player, from, proposed, FlightProfile::OUTDOOR, world) {
-            MovementResolution::Accept(position) => {
-                player.position = position;
-                self.exit_last_movement_resolution = EXIT_MOVEMENT_ACCEPTED;
-                true
-            }
-            MovementResolution::Redirect(position) => {
-                player.position = position;
-                self.exit_last_movement_resolution = EXIT_MOVEMENT_REDIRECTED;
-                true
-            }
-            MovementResolution::Reject | MovementResolution::RejectAndStop => {
-                self.exit_last_movement_resolution = EXIT_MOVEMENT_REJECTED;
-                false
+        self.exit_sequence_active = sequence.active;
+        self.exit_sequence_complete = sequence.complete;
+        self.exit_sequence_phase = sequence.phase;
+        self.exit_sequence_timer = sequence.timer;
+        self.exit_result_code = sequence.result_code;
+        self.exit_target_source_entity_index = sequence.portal_entity_index;
+        self.exit_target_valid = sequence.portal_valid;
+        self.exit_end_sequence_flag = sequence.end_sequence;
+        self.exit_player_status_flags = sequence.player_status_flags;
+        self.exit_palette_submode = sequence.palette_submode;
+        self.exit_last_movement_resolution = sequence.last_movement as u8;
+        self.exit_display_blank = sequence.display_blank;
+        self.exit_blur_mode = sequence.blur_mode;
+        *camera_fov = sequence.camera_fov;
+
+        if phase_before == 0
+            && let Some(actor) = self
+                .actors
+                .iter_mut()
+                .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar && actor.collected)
+        {
+            actor.state_value = 0;
+        }
+        for effect in effects {
+            match effect {
+                crate::level_exit::LevelExitEffect::PrepareSound { sound_id } => {
+                    if sound_id == EXIT_SWITCH_SOUND {
+                        mark_source_audio_call(SourceAudioCallTag::ExitSequenceSwitch);
+                    } else {
+                        mark_exit_acceleration_source_call();
+                    }
+                    self.events.push(Level1MissionEvent::MissionSound {
+                        #[cfg(test)]
+                        audio_site: if sound_id == EXIT_SWITCH_SOUND {
+                            crate::MissionAudioSite::ExitSequenceSwitch
+                        } else if self.exit_sequence_phase == 7 {
+                            crate::MissionAudioSite::ExitAccelerationPhase6
+                        } else {
+                            crate::MissionAudioSite::ExitAccelerationPhase8
+                        },
+                        sound_id,
+                        source_entity_index: player.entity_index,
+                        position: player.position,
+                        random_state: self.global_rng,
+                    });
+                }
+                crate::level_exit::LevelExitEffect::Completed { result_code } => {
+                    self.events
+                        .push(Level1MissionEvent::ExitSequenceCompleted { result_code });
+                }
             }
         }
     }
@@ -22917,17 +22761,6 @@ fn squared_wrapping_xyz_distance(left: Position, right: Position) -> u32 {
 
 fn wrapping_xy_distance(left: Position, right: Position) -> u32 {
     legacy_sqrt(squared_wrapping_xy_distance(left, right))
-}
-
-fn exit_accelerated_speed(value: i16) -> i16 {
-    let value = value.wrapping_add(8);
-    if value < 0 { 0 } else { value.min(200) }
-}
-
-fn exit_relax_axis(value: i16, negative_bias: i16, shift: u32) -> i16 {
-    let source_sign = if value < 0 { -1_i32 } else { 0 };
-    let delta = (i32::from(value) - source_sign * i32::from(negative_bias)) >> shift;
-    value.wrapping_sub(i16::try_from(delta).expect("exit axis relaxation fits i16"))
 }
 
 fn distance_3d_wrapped(left: Position, right: Position) -> u32 {

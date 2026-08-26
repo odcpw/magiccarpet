@@ -22,7 +22,7 @@ use crate::{
     },
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
-        PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
+        LevelExitSequence, PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
     },
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash,
@@ -807,15 +807,7 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
         }
         None => hasher.update([0]),
     }
-    hasher.update(b"level-exit-sequence-v1");
-    hasher.update([
-        u8::from(state.level_exit.active),
-        u8::from(state.level_exit.complete),
-        state.level_exit.phase,
-    ]);
-    hasher.update(state.level_exit.timer.to_le_bytes());
-    hasher.update(state.level_exit.trigger_entity_index.to_le_bytes());
-    hasher.update(state.level_exit.portal_entity_index.to_le_bytes());
+    digest_level_exit_sequence(hasher, state.level_exit);
     hasher.update([
         u8::from(state.level2_group8_activated),
         state.level2_selected_objective_stage_state,
@@ -866,6 +858,40 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
             append_position(hasher, switch.position);
         }
         None => hasher.update([0]),
+    }
+}
+
+pub(crate) fn digest_level_exit_sequence(hasher: &mut Sha256, exit: LevelExitSequence) {
+    // Preserve the established default/reset bytes for every package that
+    // has not started an exit. The additive tail is present only once the
+    // shared action-12 sequence owns non-legacy state.
+    hasher.update(b"level-exit-sequence-v1");
+    hasher.update([u8::from(exit.active), u8::from(exit.complete), exit.phase]);
+    hasher.update(exit.timer.to_le_bytes());
+    hasher.update(exit.trigger_entity_index.to_le_bytes());
+    hasher.update(exit.portal_entity_index.to_le_bytes());
+    let legacy_only = LevelExitSequence {
+        active: exit.active,
+        complete: exit.complete,
+        phase: exit.phase,
+        timer: exit.timer,
+        trigger_entity_index: exit.trigger_entity_index,
+        portal_entity_index: exit.portal_entity_index,
+        ..LevelExitSequence::default()
+    };
+    if exit != legacy_only {
+        hasher.update(b"level-exit-sequence-extension-v1");
+        hasher.update([
+            u8::from(exit.portal_valid),
+            u8::from(exit.end_sequence),
+            exit.player_status_flags,
+            exit.palette_submode,
+            exit.last_movement as u8,
+            u8::from(exit.display_blank),
+            exit.blur_mode,
+            exit.result_code,
+        ]);
+        hasher.update(exit.camera_fov.to_le_bytes());
     }
 }
 

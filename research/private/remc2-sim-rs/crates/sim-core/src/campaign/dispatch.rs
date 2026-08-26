@@ -311,7 +311,7 @@ compiled_registry! {
         (BadStone, 2, [9]);
         (PlayerFlight, 3, [0]);
         (NyphurPlayer, 3, [1]);
-        (PlayerFlight, 3, [2, 3]);
+        (PlayerFlight, 3, [2, 3, 12]);
         (CastleRoot, 3, [4, 5, 6]);
         (ManaCarrier, 3, [9]);
         (GoatFamily, 5, [9, 10, 11, 12, 13, 14, 15]);
