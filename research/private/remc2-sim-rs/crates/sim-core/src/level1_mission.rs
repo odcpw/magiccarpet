@@ -22504,49 +22504,40 @@ fn move_ground_actor<W: FlightWorld, A: GroundActorMotion>(
     terrain_mask: u32,
     maximum_tile_slope: i32,
 ) -> ArcherMoveResult {
-    let original_position = actor.position();
-    let original_yaw = actor.yaw();
-    let headings = [
-        original_yaw,
-        original_yaw.wrapping_add(341) & 0x07ff,
-        archer_second_avoidance_heading(original_yaw),
-        archer_opposite_heading(original_yaw),
-    ];
-
-    for (attempt, heading) in headings.into_iter().enumerate() {
-        let mut predicted = original_position;
-        relax_to_terrain(&mut predicted, world, ground_clearance, descent);
-        move_entity(&mut predicted, heading, 0, actor.actual_speed());
-
-        let changed_tile = (original_position.x >> 8, original_position.y >> 8)
-            != (predicted.x >> 8, predicted.y >> 8);
-        if changed_tile
-            && !ground_actor_candidate_is_valid(world, predicted, terrain_mask, maximum_tile_slope)
-        {
-            continue;
-        }
-
-        actor.set_position(predicted);
-        actor.set_movement_blocked(attempt != 0);
-        actor.set_yaw(
-            heading.wrapping_add(turn_toward(heading, actor.desired_heading(), turn_limit))
-                & 0x07ff,
-        );
-        return if attempt == 0 && changed_tile {
-            ArcherMoveResult::DirectCrossTile
-        } else if attempt == 0 {
-            ArcherMoveResult::DirectSameTile
-        } else {
-            ArcherMoveResult::Alternate
-        };
+    let transition = crate::ground_creature_motion::step_ground_creature_motion(
+        actor.position(),
+        actor.yaw(),
+        actor.desired_heading(),
+        actor.actual_speed(),
+        world,
+        crate::ground_creature_motion::GroundCreatureMotionConfig {
+            ground_clearance,
+            descent,
+            turn_limit,
+            terrain_mask,
+            maximum_tile_slope,
+        },
+    );
+    actor.set_position(transition.position);
+    actor.set_yaw(transition.yaw);
+    actor.set_movement_blocked(transition.movement_blocked);
+    if transition.killed {
+        actor.set_life(-1);
     }
-
-    actor.set_yaw(archer_opposite_heading(original_yaw));
-    actor.set_movement_blocked(true);
-    // Archer row 75 has byte_0x20 bit 0 set, so exhausting every candidate
-    // kills it regardless of the current terrain material.
-    actor.set_life(-1);
-    ArcherMoveResult::Blocked
+    match transition.result {
+        crate::ground_creature_motion::GroundCreatureMoveResult::DirectSameTile => {
+            ArcherMoveResult::DirectSameTile
+        }
+        crate::ground_creature_motion::GroundCreatureMoveResult::DirectCrossTile => {
+            ArcherMoveResult::DirectCrossTile
+        }
+        crate::ground_creature_motion::GroundCreatureMoveResult::Alternate => {
+            ArcherMoveResult::Alternate
+        }
+        crate::ground_creature_motion::GroundCreatureMoveResult::Blocked => {
+            ArcherMoveResult::Blocked
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22557,14 +22548,19 @@ enum ArcherMoveResult {
     Blocked,
 }
 
+#[cfg(test)]
 fn ground_actor_candidate_is_valid<W: FlightWorld>(
     world: &W,
     position: Position,
     terrain_mask: u32,
     maximum_tile_slope: i32,
 ) -> bool {
-    let forbidden_material = world.material_mask(position) & !terrain_mask != 0;
-    !forbidden_material && tile_slope_metric(world, position) < maximum_tile_slope
+    crate::ground_creature_motion::candidate_is_valid(
+        world,
+        position,
+        terrain_mask,
+        maximum_tile_slope,
+    )
 }
 
 #[cfg(test)]
@@ -22572,35 +22568,19 @@ fn archer_candidate_is_valid<W: FlightWorld>(world: &W, position: Position) -> b
     ground_actor_candidate_is_valid(world, position, ARCHER_TERRAIN_MASK, ARCHER_MAX_TILE_SLOPE)
 }
 
+#[cfg(test)]
 fn archer_second_avoidance_heading(original: i16) -> i16 {
-    let original = original.cast_unsigned();
-    let low = original.wrapping_sub(85) & 0x00ff;
-    let high = original.wrapping_sub(341) & 0x0700;
-    (high | low).cast_signed()
+    crate::ground_creature_motion::second_avoidance_heading(original)
 }
 
+#[cfg(test)]
 fn archer_opposite_heading(original: i16) -> i16 {
-    let original = original.cast_unsigned();
-    (((original.wrapping_add(0x0400)) & 0x0700) | (original & 0x00ff)).cast_signed()
+    crate::ground_creature_motion::opposite_heading(original)
 }
 
+#[cfg(test)]
 fn tile_slope_metric<W: FlightWorld>(world: &W, position: Position) -> i32 {
-    let x = position.x & 0xff00;
-    let y = position.y & 0xff00;
-    let sample = |sample_x: u16, sample_y: u16| {
-        i32::from(world.ground_height(Position {
-            x: sample_x,
-            y: sample_y,
-            z: 0,
-        }))
-    };
-    let point_1 = sample(x, y);
-    let point_2 = sample(x.wrapping_add(0x0100), y);
-    let point_3 = sample(x.wrapping_add(0x0100), y.wrapping_add(0x0100));
-    let point_4 = sample(x, y.wrapping_add(0x0100));
-    let diagonal_1 = (point_1 + point_4 - point_2 - point_3).abs();
-    let diagonal_2 = (point_1 + point_2 - point_4 - point_3).abs();
-    diagonal_1.max(diagonal_2) / 32
+    crate::ground_creature_motion::tile_slope_metric(world, position)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23046,13 +23026,12 @@ fn relax_to_terrain<W: FlightWorld>(
     ground_clearance: i16,
     vertical_relaxation: i16,
 ) {
-    let ground = world.ground_height(*position);
-    if position.z > ground {
-        position.z = position.z.wrapping_add(vertical_relaxation);
-    }
-    if position.z <= ground.wrapping_add(ground_clearance) {
-        position.z = ground.wrapping_add(ground_clearance);
-    }
+    crate::ground_creature_motion::relax_to_terrain(
+        position,
+        world,
+        ground_clearance,
+        vertical_relaxation,
+    );
 }
 
 pub(crate) fn parse_authored_features(bytes: &[u8]) -> Result<Vec<AuthoredFeature>, String> {

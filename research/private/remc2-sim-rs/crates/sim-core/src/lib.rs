@@ -27,6 +27,7 @@ pub mod goat_draw_admission;
 pub mod goat_map_chain;
 pub mod goat_sprite_raster;
 pub mod goat_tmap;
+mod ground_creature_motion;
 pub mod house;
 pub mod indexed_overlay;
 pub mod indexed_postprocess;

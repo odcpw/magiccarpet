@@ -209,6 +209,8 @@ impl Level2EconomyState {
 
             authored_class5_runtime: Vec::new(),
 
+            authored_fireflies: Vec::new(),
+
             authored_class5_model3: Vec::new(),
 
             authored_class5_model3_children: Vec::new(),
@@ -226,6 +228,8 @@ impl Level2EconomyState {
             class5_model14_constructor_phase: 0,
 
             class5_model4_constructor_phase: 0,
+
+            class5_model19_constructor_phase: 0,
 
             castle_auxiliary_constructor_phase: 0,
 
@@ -787,6 +791,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_class5_runtime(&self) -> &[Level2AuthoredClass5RuntimeState] {
         &self.authored_class5_runtime
+    }
+
+    #[must_use]
+    pub fn authored_fireflies(&self) -> &[AuthoredFireflyRuntime] {
+        &self.authored_fireflies
     }
 
     #[must_use]
@@ -4682,6 +4691,23 @@ impl Level2EconomyState {
         self.castle
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_castle_mana_prerequisite_for_test(
+        &mut self,
+        castle_slot: u16,
+        mana: i32,
+    ) -> bool {
+        let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
+        else {
+            return false;
+        };
+        castle.mana = mana;
+        true
+    }
+
     #[must_use]
     pub fn castle_projectiles(&self) -> &[Level2CastleProjectile] {
         &self.castle_projectiles
@@ -6167,6 +6193,8 @@ impl Level2EconomyState {
             .collect::<BTreeSet<_>>();
         self.authored_class5_runtime
             .retain(|state| live_class5_slots.contains(&state.source_entity_index));
+        self.authored_fireflies
+            .retain(|state| live_class5_slots.contains(&state.source_entity_index));
         self.authored_class5_model3
             .retain(|state| live_class5_slots.contains(&state.source_entity_index));
         self.authored_class5_archer
@@ -7018,6 +7046,7 @@ impl Level2EconomyState {
             self.class5_model4_constructor_phase,
             self.class5_model9_constructor_phase,
             self.class5_model14_constructor_phase,
+            self.class5_model19_constructor_phase,
         ]);
         hasher.update(b"castle-auxiliary-constructor-phase-v1");
         hasher.update([self.castle_auxiliary_constructor_phase]);
@@ -7059,6 +7088,18 @@ impl Level2EconomyState {
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
+        }
+        hasher.update(b"authored-firefly-stage-v1");
+        for state in &self.authored_fireflies {
+            hasher.update(state.source_entity_index.to_le_bytes());
+            hasher.update(state.control_flags.to_le_bytes());
+            hasher.update([state.byte_0x38, state.xtype]);
+            hasher.update(state.descriptor_index.to_le_bytes());
+            hasher.update([state.stage_var1, state.stage_var2]);
+            hasher.update(state.stage_target.x.to_le_bytes());
+            hasher.update(state.stage_target.y.to_le_bytes());
+            hasher.update(state.stage_target.z.to_le_bytes());
+            hasher.update([u8::from(state.movement_blocked)]);
         }
         hasher.update(b"authored-class5-model3-v1");
         for state in &self.authored_class5_model3 {

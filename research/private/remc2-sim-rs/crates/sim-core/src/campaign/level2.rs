@@ -621,26 +621,20 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     .clone();
                 economy.rebuild_owner_max_mana_projection(&reset_owner_max_mana);
 
-                self.pass_start_class5_model_present = economy.rebuilt_class5_model_presence();
+                self.pass_start_class5_model_slots = economy.rebuilt_class5_model_slots();
+                self.pass_start_class5_model_present = std::array::from_fn(|model| {
+                    !self.pass_start_class5_model_slots[model].is_empty()
+                });
                 self.pass_start_class5_model3_present = self.pass_start_class5_model_present[3];
                 self.pass_start_class5_model4_present = self.pass_start_class5_model_present[4];
-                self.pass_start_class5_model_slots = std::array::from_fn(|_| Vec::new());
-                for entity in economy.entities.iter().filter(|entity| {
-                    entity.active
-                        && entity.class == 5
-                        && entity.life >= 0
-                        && !entity.drawing_disabled()
-                        && !matches!(entity.action, 180 | 232 | 234)
-                }) {
-                    if let Some(bucket) = self
-                        .pass_start_class5_model_slots
-                        .get_mut(usize::from(entity.model))
-                    {
-                        bucket.push(entity.index);
-                    }
-                }
             }
             PassPhase::PreDispatch => {
+                self.owner
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .advance_authored_firefly_stage_rows();
                 self.owner.step_level2_projectile_threat_prepass();
                 // Authored groups are consumed synchronously by the numeric
                 // source callback which fires their class-11 producer.  A
@@ -4237,6 +4231,41 @@ impl Level2ResetSession {
                     continue;
                 };
                 let achieved = match stage.kind {
+                    0 => {
+                        let RuntimeRelation::Scalar(required_percent) = stage.relation else {
+                            continue;
+                        };
+                        let Ok(required_percent) = i32::try_from(required_percent) else {
+                            continue;
+                        };
+                        let player_entity_index = self
+                            .session
+                            .state
+                            .live
+                            .core
+                            .players
+                            .iter()
+                            .find(|player| {
+                                usize::from(player.player_color_index()) == objective_index
+                            })
+                            .map_or(0, |player| player.entity_index);
+                        let economy = &self.session.state.live.economy.economy;
+                        let castle_slot = economy.player_castle_entity_index();
+                        let denominator = economy.owner_mana_global();
+                        castle_slot != 0
+                            && denominator > 0
+                            && economy.castle().is_some_and(|castle| {
+                                castle.active
+                                    && castle.source_entity_index == castle_slot
+                                    && castle.owner_entity_index == player_entity_index
+                                    && 100_i32
+                                        * economy
+                                            .owner_mana_aggregate(player_entity_index)
+                                            .saturating_add(castle.mana)
+                                        / denominator
+                                        >= required_percent
+                            })
+                    }
                     3 => {
                         // The source type-3 predicate is independent of
                         // ObjectiveText and reads the bound player's
@@ -5489,6 +5518,74 @@ impl Level2ResetSession {
         })
     }
 
+    fn authored_firefly_stage_route(
+        &self,
+        feature: AuthoredFeature,
+    ) -> Option<level2_class5::firefly::FireflyStageRoute> {
+        if feature.kind != 5 || feature.subtype != i16::from(level2_class5::firefly::FIREFLY_MODEL)
+        {
+            return None;
+        }
+        let stage_var = self
+            .session
+            .state
+            .live
+            .mission
+            .level2_authored_stage_variable_for(feature)?;
+        if stage_var.kind != 1 || !stage_var.subtype_match() || stage_var.flags & 0x60 != 0 {
+            return None;
+        }
+        let runtime_stage_var = self
+            .session
+            .state
+            .live
+            .core
+            .runtime
+            .stage_variables
+            .get(usize::from(stage_var.index))?;
+        let (point_x, point_y) = stage_var.point();
+        let expected_relation = u32::from(point_x) | (u32::from(point_y) << 16);
+        if runtime_stage_var.kind != i8::try_from(stage_var.kind).expect("StageVar kind fits i8")
+            || runtime_stage_var.flags as u8 != stage_var.flags
+            || runtime_stage_var.word_2 & 0x00ff != u16::from(stage_var.stage)
+            || runtime_stage_var.relation != RuntimeRelation::AxisScalar(expected_relation)
+        {
+            return None;
+        }
+        Some(level2_class5::firefly::FireflyStageRoute {
+            stage_var1: stage_var.index,
+            stage_var2: stage_var.kind,
+            target: Position {
+                x: point_x,
+                y: point_y,
+                z: 0,
+            },
+        })
+    }
+
+    fn allocate_authored_firefly_feature(
+        &mut self,
+        feature: AuthoredFeature,
+    ) -> Option<Level2AuthoredClass5Source> {
+        let route = self.authored_firefly_stage_route(feature)?;
+        let position = feature.world_position(
+            self.canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
+        let source = self.session.state.live.economy.allocate_authored_firefly(
+            feature.index,
+            position,
+            route,
+            &self.session.state.live.terrain,
+        )?;
+        assert!(
+            self.runtime
+                .advance_level2_stage_variable_counter(route.stage_var1),
+            "validated Firefly StageVar must retain its runtime counter carrier"
+        );
+        Some(source)
+    }
+
     pub(super) fn allocate_level2_authored_bee_feature(
         &mut self,
         feature: AuthoredFeature,
@@ -5716,6 +5813,20 @@ impl Level2EconomyTestView<'_> {
         (sphere_slot: u16) -> bool);
     terrain_method!(step_mana_carrier_slot,
         (carrier_slot: u16) -> bool);
+
+    pub(crate) fn set_castle_mana_prerequisite_for_test(
+        &mut self,
+        castle_slot: u16,
+        mana: i32,
+    ) -> bool {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .set_castle_mana_prerequisite_for_test(castle_slot, mana)
+    }
 
     pub(crate) fn step_model17_spawned_child_slot(&mut self, source_slot: u16) -> bool {
         let live = &mut self.session.session.state.live;
@@ -6791,7 +6902,7 @@ impl Level2ResetSession {
             !matches!(
                 (feature.kind, feature.subtype),
                 (2, 0 | 1)
-                    | (5, 2 | 3 | 4 | 9 | 14)
+                    | (5, 2 | 3 | 4 | 9 | 14 | 19)
                     | (10, 1 | 5 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 76)
                     | (11, 0 | 1 | 17 | 32)
                     | (14, 3 | 5)
@@ -6826,6 +6937,17 @@ impl Level2ResetSession {
                     feature.index, feature.word_10
                 )
             })?;
+        }
+        for feature in rows
+            .iter()
+            .filter(|feature| (feature.kind, feature.subtype) == (5, 19))
+        {
+            if self.authored_firefly_stage_route(*feature).is_none() {
+                return Err(format!(
+                    "authored Firefly row {} has no valid StageVar-1 route",
+                    feature.index
+                ));
+            }
         }
 
         let mut consumed = Vec::with_capacity(rows.len());
@@ -6883,6 +7005,15 @@ impl Level2ResetSession {
                         )
                         .is_some()
                     {
+                        self.session
+                            .state
+                            .live
+                            .level2_class5_activated
+                            .insert(feature.index);
+                    }
+                }
+                (5, 19) => {
+                    if self.allocate_authored_firefly_feature(feature).is_some() {
                         self.session
                             .state
                             .live
@@ -9722,6 +9853,7 @@ impl Level2ResetSession {
                         | ExistingHandler::VillagerFamily
                         | ExistingHandler::BuilderVillagerPostBuild
                         | ExistingHandler::TraderFamily
+                        | ExistingHandler::FireflyFamily
                 ),
                 Level2DynamicArenaKind::AuthoredSwitchProducer => {
                     matches!(
@@ -10254,6 +10386,48 @@ impl Level2ResetSession {
                     // construction, rather than a timer tick, releases
                     // the holder for the next public upgrade cast.
                     self.clear_castle_spell_holder_cooldown(holder_index);
+                }
+            }
+            (
+                ExistingHandler::FireflyFamily,
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::AuthoredClass5,
+                    ..
+                }),
+            ) => {
+                let action = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .authored_class5()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)
+                    .map(|source| source.action)
+                    .ok_or_else(|| format!("Firefly source slot {source_slot} is absent"))?;
+                if action != level2_class5::firefly::FIREFLY_STAGE_ACTION {
+                    return Err(format!(
+                        "Firefly source slot {source_slot} reached unimplemented action {action}"
+                    ));
+                }
+                let terrain = &self.session.state.live.terrain;
+                let live = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_firefly_stage_slot(
+                        source_slot,
+                        &pass_start_class5_model_slots
+                            [usize::from(level2_class5::firefly::FIREFLY_MODEL)],
+                        terrain,
+                    );
+                if live {
+                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                        pass,
+                        source_slot,
+                        kind: Level2DynamicArenaKind::AuthoredClass5,
+                    });
                 }
             }
             (

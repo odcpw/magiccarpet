@@ -2403,6 +2403,22 @@ pub struct Level2AuthoredClass5RuntimeState {
     pub linked_head: u16,
 }
 
+/// Mutable state used only by the authored class-5/model-19 Firefly stage
+/// route. The generic class-5 root remains the source entity authority; this
+/// sidecar carries the StageVar and descriptor fields consumed by action 159.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthoredFireflyRuntime {
+    pub source_entity_index: u16,
+    pub control_flags: u32,
+    pub byte_0x38: u8,
+    pub xtype: u8,
+    pub descriptor_index: u16,
+    pub stage_var1: u8,
+    pub stage_var2: u8,
+    pub stage_target: Position,
+    pub movement_blocked: bool,
+}
+
 /// The model-3-only words which are present in the source class-5 carrier but
 /// are not part of the shared model-4/model-9/trader projection.  The source
 /// slot remains the sole identity joining this sidecar to its root; no second
@@ -2825,6 +2841,8 @@ pub struct Level2EconomyState {
 
     authored_class5_runtime: Vec<Level2AuthoredClass5RuntimeState>,
 
+    authored_fireflies: Vec<AuthoredFireflyRuntime>,
+
     authored_class5_model3: Vec<Level2AuthoredClass5Model3State>,
 
     authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
@@ -2842,6 +2860,8 @@ pub struct Level2EconomyState {
     class5_model14_constructor_phase: u8,
 
     class5_model4_constructor_phase: u8,
+
+    class5_model19_constructor_phase: u8,
     /// Source `array_0x10[15]` constructor counter for Castle auxiliaries.
     castle_auxiliary_constructor_phase: u8,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3

@@ -161,19 +161,28 @@ impl SourceArena {
     /// callbacks and the following objective service consume the same census.
     #[must_use]
     pub(crate) fn rebuilt_class5_model_presence(&self) -> [bool; 29] {
+        self.rebuilt_class5_model_slots()
+            .map(|source_slots| !source_slots.is_empty())
+    }
+
+    /// Rebuild remc2's source-ordered class-5 model lists from every live
+    /// carrier.  Numeric callbacks consume this frozen pre-pass membership;
+    /// same-pass births do not time-travel into it.
+    #[must_use]
+    pub(crate) fn rebuilt_class5_model_slots(&self) -> [Vec<u16>; 29] {
         let dynamic_slots = self
             .economy
             .live_arena_slots()
             .into_iter()
             .map(|(source_slot, _)| source_slot)
             .collect::<BTreeSet<_>>();
-        let mut present = [false; 29];
-        let mut include = |model: u8, action: u8, life: i32| {
+        let mut slots: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        let mut include = |source_slot: u16, model: u8, action: u8, life: i32| {
             if life < 0 || matches!(action, 180 | 232 | 234) {
                 return;
             }
-            if let Some(value) = present.get_mut(usize::from(model)) {
-                *value = true;
+            if let Some(bucket) = slots.get_mut(usize::from(model)) {
+                bucket.push(source_slot);
             }
         };
 
@@ -183,7 +192,7 @@ impl SourceArena {
                 && entity.class == 5
                 && !entity.drawing_disabled()
         }) {
-            include(entity.model, entity.action, entity.life);
+            include(entity.index, entity.model, entity.action, entity.life);
         }
         for source in self
             .economy
@@ -191,7 +200,12 @@ impl SourceArena {
             .iter()
             .filter(|source| source.active && source.drawing_enabled)
         {
-            include(source.model, source.action, source.life);
+            include(
+                source.source_entity_index,
+                source.model,
+                source.action,
+                source.life,
+            );
         }
         for source in self
             .economy
@@ -199,7 +213,12 @@ impl SourceArena {
             .iter()
             .filter(|source| source.active && source.drawing_enabled)
         {
-            include(source.model, source.action, source.life);
+            include(
+                source.source_entity_index,
+                source.model,
+                source.action,
+                source.life,
+            );
         }
         for source in self
             .economy
@@ -207,21 +226,40 @@ impl SourceArena {
             .iter()
             .filter(|source| source.active && source.drawing_enabled)
         {
-            include(source.model, source.action, source.life);
+            include(
+                source.source_entity_index,
+                source.model,
+                source.action,
+                source.life,
+            );
         }
         for source in
             self.economy.authored_bees().iter().filter(|source| {
                 source.active && source.drawing_enabled && source.source_class == 5
             })
         {
-            include(source.model, source.action, i32::from(source.life));
+            include(
+                source.source_entity_index,
+                source.model,
+                source.action,
+                i32::from(source.life),
+            );
         }
         for source in self.economy.castle_children().iter().filter(|source| {
             source.active && source.source_class == 5 && !source.drawing_disabled()
         }) {
-            include(source.model, source.action, source.life);
+            include(
+                source.source_entity_index,
+                source.model,
+                source.action,
+                source.life,
+            );
         }
-        present
+        for bucket in &mut slots {
+            bucket.sort_unstable();
+            bucket.dedup();
+        }
+        slots
     }
 }
 

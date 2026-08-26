@@ -1380,6 +1380,7 @@ mod tests {
         let archer_objective_switch_slot = archer_objective_switch.source_entity_index;
         let mut castle_objective_switch_slot = None;
         let mut archer_objective_switch_phase_before_fire = None;
+        let mut firefly_constructor_route = None;
 
         for expected_timer in (1..=15).rev() {
             let evidence = campaign.step(PlayerCommand::default(), 0);
@@ -1539,9 +1540,242 @@ mod tests {
                         event,
                         Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
                     )));
+                    firefly_constructor_route = Some(campaign.clone());
                 }
                 _ => {}
             }
+        }
+
+        // This branch starts from the package-backed row-190 state proven
+        // above. Castle construction and mana collection are deliberately not
+        // under test: stage only those two upstream authority fields, then
+        // leave objective timing, row-190 dispatch, group construction, live
+        // numeric callbacks, and phase epilogues to the ordinary scheduler.
+        let mut firefly_route = firefly_constructor_route
+            .expect("the real row-190 route was captured while stage 3 remained open");
+        let mut missing_castle = firefly_route.clone();
+        let _ = missing_castle.step(PlayerCommand::default(), 0);
+        assert_eq!(
+            missing_castle.level2_compatibility().runtime().objectives[0].stage_selectors[3],
+            1,
+            "secured mana cannot satisfy the package objective without a Castle relation"
+        );
+        assert!(missing_castle.events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+        )));
+
+        let player_entity_index = firefly_route.level2_compatibility().state.entity_index;
+        let player_position = firefly_route.level2_compatibility().state.position;
+        let castle_slot = firefly_route
+            .level2_compatibility_mut()
+            .economy_mut()
+            .build_castle(player_position, player_entity_index)
+            .expect("the package arena can stage the Castle objective prerequisite");
+        assert!(
+            firefly_route
+                .level2_compatibility_mut()
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle_slot, 4_000)
+        );
+
+        let _ = firefly_route.step(PlayerCommand::default(), 0);
+        assert_eq!(
+            firefly_route.level2_compatibility().runtime().objectives[0].stage_selectors[3],
+            2,
+            "kind-0 Castle/mana completion is a post-entity objective phase"
+        );
+        assert!(firefly_route.events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+        )));
+        assert!(
+            firefly_route
+                .level2_compatibility()
+                .economy()
+                .authored_fireflies()
+                .is_empty()
+        );
+
+        let row190_slot = firefly_route
+            .level2_compatibility()
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|row| row.authored_index == 190)
+            .expect("the package group-6 producer remains live")
+            .source_entity_index;
+        let _ = firefly_route.step(PlayerCommand::default(), 0);
+        let firefly_session = firefly_route.level2_compatibility();
+        assert!(firefly_route.events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 6,
+                authored_indices,
+                ..
+            } if *source_slot == row190_slot
+                && authored_indices.as_ref() == [108, 134, 135, 154, 189, 193]
+        )));
+        assert_eq!(
+            firefly_session.runtime().objectives[0].stage_selectors[4],
+            1
+        );
+        let firefly_roots = firefly_session
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|row| [108, 134, 135, 189, 193].contains(&row.authored_index))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            firefly_roots
+                .iter()
+                .map(|row| row.authored_index)
+                .collect::<Vec<_>>(),
+            [108, 134, 135, 189, 193]
+        );
+        assert_eq!(firefly_session.economy().authored_fireflies().len(), 5);
+        let receipts = firefly_session.cf10_production_schedule_receipts();
+        for (ordinal, root) in firefly_roots.iter().enumerate() {
+            let callback_on_birth_pass = root.source_entity_index > row190_slot;
+            assert_eq!(
+                (
+                    root.model,
+                    root.action,
+                    root.minimum_speed,
+                    root.maximum_speed,
+                    root.actual_speed,
+                    root.max_life,
+                    root.life,
+                    root.mana,
+                    root.max_mana,
+                    root.subspell_index,
+                    root.dword_0x10,
+                ),
+                (
+                    19,
+                    159,
+                    76,
+                    8,
+                    76,
+                    600,
+                    600,
+                    300,
+                    0,
+                    300,
+                    i32::from(root.source_entity_index % 100),
+                )
+            );
+            assert_eq!(
+                (
+                    root.particle_index,
+                    root.shift_rot_x,
+                    root.shift_rot_y,
+                    root.source_byte_3e,
+                    root.active,
+                    root.drawing_enabled,
+                ),
+                (
+                    287,
+                    85,
+                    51,
+                    u8::try_from(ordinal)
+                        .expect("five Fireflies fit u8")
+                        .wrapping_add(u8::from(callback_on_birth_pass)),
+                    true,
+                    true,
+                )
+            );
+            let stage = firefly_session
+                .economy()
+                .authored_fireflies()
+                .iter()
+                .find(|stage| stage.source_entity_index == root.source_entity_index)
+                .expect("each Firefly root has one stage sidecar");
+            assert_eq!(
+                (
+                    stage.control_flags,
+                    stage.byte_0x38,
+                    stage.xtype,
+                    stage.descriptor_index,
+                    stage.stage_var1,
+                    stage.stage_var2,
+                    stage.stage_target.x,
+                    stage.stage_target.y,
+                ),
+                (8, 1, 3, 88, 8, 1, 242 << 8, 184 << 8)
+            );
+            assert_eq!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted {
+                        pass: SourcePass::UpdateEntities,
+                        slot,
+                        ..
+                    } if *slot == root.source_entity_index
+                )),
+                callback_on_birth_pass
+            );
+            assert_eq!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::EpilogueCompleted {
+                        pass: SourcePass::UpdateEntities,
+                        slot,
+                        ..
+                    } if *slot == root.source_entity_index
+                )),
+                callback_on_birth_pass
+            );
+        }
+        let firefly_slots = firefly_roots
+            .iter()
+            .map(|row| row.source_entity_index)
+            .collect::<Vec<_>>();
+        let third = firefly_slots[2];
+        let fourth = firefly_slots[3];
+        assert!(
+            firefly_session.entities().iter().any(|row| row.active
+                && row.class == 2
+                && row.model == 1
+                && row.action == 3
+                && row.index > third
+                && row.index < fourth),
+            "package Stone row 154 occupies the fourth group-6 NewEvent allocation"
+        );
+
+        let phases_before_following_visit = firefly_roots
+            .iter()
+            .map(|row| (row.source_entity_index, row.source_byte_3e))
+            .collect::<Vec<_>>();
+        let _ = firefly_route.step(PlayerCommand::default(), 0);
+        let firefly_session = firefly_route.level2_compatibility();
+        assert_eq!(
+            firefly_session.runtime().objectives[0].stage_selectors[4],
+            1
+        );
+        for (slot, phase) in phases_before_following_visit {
+            let root = firefly_session
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .expect("stage-patrol Firefly remains live on its following visit");
+            assert_eq!(root.source_byte_3e, phase.wrapping_add(1));
+            assert!(
+                firefly_session
+                    .cf10_production_schedule_receipts()
+                    .iter()
+                    .any(|receipt| matches!(
+                        receipt,
+                        ScheduleReceipt::CallbackCompleted {
+                            pass: SourcePass::UpdateEntities,
+                            slot: receipt_slot,
+                            ..
+                        } if *receipt_slot == slot
+                    ))
+            );
         }
 
         let mut allocation_failure = campaign.clone();
