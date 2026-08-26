@@ -3711,15 +3711,16 @@ impl NativeWorldInspection {
             .mission_content_template_from_definition(definition)?
             .session();
         let mut session = self.build_campaign_reset_session(definition, mission)?;
-        session.bind_semantic_level_definition(
-            definition.level_definition().clone(),
-            definition.creature_bindings().clone(),
-            definition.creature_models().clone(),
-            definition.scenery_bindings().clone(),
-            definition.initial_scenery_bindings().clone(),
-            definition.mechanic_bindings().clone(),
-            definition.initial_mechanic_bindings().clone(),
-        );
+        session.bind_semantic_level_definition(crate::campaign::state::SemanticLevelBindings {
+            level: definition.level_definition().clone(),
+            authored_creature_kinds: definition.creature_bindings().clone(),
+            creature_models: definition.creature_models().clone(),
+            authored_scenery: definition.scenery_bindings().clone(),
+            initial_source_scenery: definition.initial_scenery_bindings().clone(),
+            authored_items: definition.item_bindings().clone(),
+            authored_mechanics: definition.mechanic_bindings().clone(),
+            initial_source_mechanics: definition.initial_mechanic_bindings().clone(),
+        });
         Ok(session)
     }
 

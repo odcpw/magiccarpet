@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     level_definition::{
-        ActivationGroupId, CreatureKind, LevelDefinition, LevelEntityDefinition, LevelEntityId,
-        LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition, SceneryKind,
-        SpellKind, TilePosition,
+        ActivationGroupId, CreatureKind, ItemKind, LevelDefinition, LevelEntityDefinition,
+        LevelEntityId, LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition,
+        SceneryKind, SpellKind, TilePosition,
     },
     level1_mission::parse_authored_features,
 };
@@ -22,6 +22,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) creature_by_authored_record: BTreeMap<u16, CreatureKind>,
     pub(crate) creature_model_by_kind: BTreeMap<CreatureKind, u8>,
     pub(crate) scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
+    pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
 }
 
@@ -62,10 +63,12 @@ impl Mc2LevelDefinition {
         let mut creature_ordinals = BTreeMap::<CreatureKind, u16>::new();
         let mut spell_ordinals = BTreeMap::<SpellKind, u16>::new();
         let mut scenery_ordinals = BTreeMap::<SceneryKind, u16>::new();
+        let mut item_ordinals = BTreeMap::<ItemKind, u16>::new();
         let mut mechanic_ordinals = BTreeMap::<MechanicKind, u16>::new();
         let mut creature_by_authored_record = BTreeMap::new();
         let mut creature_model_by_kind = BTreeMap::new();
         let mut scenery_by_authored_record = BTreeMap::new();
+        let mut item_by_authored_record = BTreeMap::new();
         let mut mechanic_by_authored_record = BTreeMap::new();
         let mut entities = Vec::new();
         let activation_groups = features
@@ -147,6 +150,29 @@ impl Mc2LevelDefinition {
                     activation_group,
                 ));
                 scenery_by_authored_record.insert(feature.index, kind);
+                continue;
+            }
+
+            // `sub_51610` constructs model-5 rows and `UpdateScroll_59C80`
+            // awards spell experience on collection. Model 3 shares the raw
+            // class-14 carrier but is an exit target, not an inventory item.
+            let item_kind = match (feature.kind, feature.subtype) {
+                (14, 5) => Some(ItemKind::ExperienceScroll),
+                _ => None,
+            };
+            if let Some(kind) = item_kind {
+                let ordinal = item_ordinals.entry(kind).or_default();
+                let id = LevelEntityId::item(kind, *ordinal);
+                *ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| format!("too many authored {} items", kind.as_str()))?;
+                entities.push(LevelEntityDefinition::new(
+                    id,
+                    LevelEntityKind::Item(kind),
+                    position,
+                    activation_group,
+                ));
+                item_by_authored_record.insert(feature.index, kind);
                 continue;
             }
 
@@ -297,6 +323,7 @@ impl Mc2LevelDefinition {
             creature_by_authored_record,
             creature_model_by_kind,
             scenery_by_authored_record,
+            item_by_authored_record,
             mechanic_by_authored_record,
         })
     }

@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::campaign::source_arena::SourceArena;
 use crate::campaign::state::{
     CampaignDefinition, CampaignSession, CampaignState, CampaignStepError, CanonicalRuntimeState,
-    ResetReceipt, ResetState, encode_reset_v1_into,
+    ResetReceipt, ResetState, SemanticLevelBindings, encode_reset_v1_into,
 };
 use crate::campaign::{
     dispatch::{CAMPAIGN_BEHAVIOR_REGISTRY, DispatchSite, ExistingHandler},
@@ -17,7 +17,7 @@ use crate::campaign::{
     spec::{BehaviorKey, BehaviorSelector},
 };
 use crate::level_definition::{
-    CreatureKind, LevelDefinition, MechanicKind, ObjectiveCondition, SceneryKind,
+    CreatureKind, ItemKind, MechanicKind, ObjectiveCondition, SceneryKind,
 };
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
@@ -171,6 +171,26 @@ fn validate_semantic_scenery_dispatch(
         )),
         (None, ExistingHandler::TreeLifecycle) => Err(format!(
             "tree source slot {source_slot} has no package-authored semantic identity"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_semantic_item_dispatch(
+    source_slot: u16,
+    item_kind: Option<ItemKind>,
+    raw_model: u8,
+    raw_action: u8,
+    handler: ExistingHandler,
+) -> std::result::Result<(), String> {
+    match (item_kind, raw_model, raw_action, handler) {
+        (Some(ItemKind::ExperienceScroll), 5, 10, ExistingHandler::Class14Events) => Ok(()),
+        (Some(kind), _, _, actual) => Err(format!(
+            "item source slot {source_slot} is semantic {}, but the MC2 selector resolved model {raw_model} action {raw_action} through {actual:?}",
+            kind.as_str()
+        )),
+        (None, 5, 10, ExistingHandler::Class14Events) => Err(format!(
+            "experience-scroll source slot {source_slot} has no package-authored semantic identity"
         )),
         _ => Ok(()),
     }
@@ -4072,26 +4092,9 @@ impl Level2ResetSession {
         }
     }
 
-    pub(crate) fn bind_semantic_level_definition(
-        &mut self,
-        level_definition: LevelDefinition,
-        creature_bindings: BTreeMap<u16, CreatureKind>,
-        creature_models: BTreeMap<CreatureKind, u8>,
-        scenery_bindings: BTreeMap<u16, SceneryKind>,
-        initial_scenery_bindings: BTreeMap<u16, SceneryKind>,
-        mechanic_bindings: BTreeMap<u16, MechanicKind>,
-        initial_mechanic_bindings: BTreeMap<u16, MechanicKind>,
-    ) {
+    pub(crate) fn bind_semantic_level_definition(&mut self, bindings: SemanticLevelBindings) {
         let mut definition = (*self.session.definition).clone();
-        definition.bind_semantic_level(
-            level_definition,
-            creature_bindings,
-            creature_models,
-            scenery_bindings,
-            initial_scenery_bindings,
-            mechanic_bindings,
-            initial_mechanic_bindings,
-        );
+        definition.bind_semantic_level(bindings);
         self.session.definition = Arc::new(definition);
     }
 
@@ -4139,6 +4142,22 @@ impl Level2ResetSession {
                 self.session
                     .definition
                     .scenery_for_initial_source_slot(source_slot)
+            })
+    }
+
+    fn item_kind_for_source_slot(&self, source_slot: u16) -> Option<ItemKind> {
+        self.session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class14()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .and_then(|source| {
+                self.session
+                    .definition
+                    .item_for_authored_record(source.authored_index)
             })
     }
 
@@ -10258,6 +10277,31 @@ impl Level2ResetSession {
         {
             validate_semantic_scenery_dispatch(source_slot, semantic_scenery, visit.handler)?;
         }
+        if let Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+            kind: Level2DynamicArenaKind::AuthoredClass14,
+            ..
+        }) = visit.route
+        {
+            let source = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_class14()
+                .iter()
+                .find(|source| source.active && source.source_entity_index == source_slot)
+                .ok_or_else(|| {
+                    format!("item source slot {source_slot} has no live class-14 carrier")
+                })?;
+            validate_semantic_item_dispatch(
+                source_slot,
+                self.item_kind_for_source_slot(source_slot),
+                source.model,
+                source.action,
+                visit.handler,
+            )?;
+        }
         Ok(())
     }
 
@@ -15480,6 +15524,133 @@ mod tests {
             "dispatch events: {:?}",
             session.dispatch_events()
         );
+    }
+
+    #[test]
+    fn semantic_experience_scroll_collects_and_reclaims_through_the_source_scheduler() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
+            .expect("real Level 2 descriptor opens");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+        session
+            .consume_authored_group(0, 0, 5)
+            .expect("real package group 5 materializes through the shared arena");
+        let scroll = session
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == 248)
+            .copied()
+            .expect("package-authored experience scroll is present in the shared arena");
+        assert_eq!(
+            session.item_kind_for_source_slot(scroll.source_entity_index),
+            Some(ItemKind::ExperienceScroll)
+        );
+        let experience_before = *session.shared_spells().spell_experience();
+        let player_entity_index = session.state.entity_index;
+        session
+            .set_level2_entity_position(player_entity_index, scroll.position)
+            .expect("stage the real player at the real package scroll position");
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.shared_spells().pickup_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2SharedSpellEvent::ExperienceScrollCollected {
+                    source_slot,
+                    player_entity_index: observed_player,
+                } if *source_slot == scroll.source_entity_index
+                    && *observed_player == player_entity_index
+            )
+        }));
+        assert_ne!(
+            session.shared_spells().spell_experience(),
+            &experience_before,
+            "the semantic item callback must reach the existing XP consumer"
+        );
+        let retained = session
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.source_entity_index == scroll.source_entity_index)
+            .expect("collected scroll remains allocated through its callback pass");
+        assert!(retained.active);
+        assert!(!retained.drawing_enabled);
+        assert_eq!(retained.phase, scroll.phase.wrapping_add(1));
+        assert!(
+            session
+                .economy()
+                .map_chains()
+                .is_linked(scroll.source_entity_index)
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|source| source.source_entity_index == scroll.source_entity_index)
+        );
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .is_linked(scroll.source_entity_index)
+        );
+        assert!(
+            session
+                .economy()
+                .free_slots
+                .contains(&scroll.source_entity_index)
+        );
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+
+        let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL2)
+            .expect("real Level 2 descriptor reopens for the planted negative");
+        let mismatch_session = mismatch.level2_compatibility_mut();
+        mismatch_session
+            .consume_authored_group(0, 0, 5)
+            .expect("real package group 5 materializes for the planted negative");
+        let mismatch_scroll_slot = mismatch_session
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == 248)
+            .map(|source| source.source_entity_index)
+            .expect("the real package scroll has a source slot");
+        let mut mismatch_economy = mismatch_session.economy_mut();
+        let source = mismatch_economy
+            .authored_class14
+            .iter_mut()
+            .find(|source| source.source_entity_index == mismatch_scroll_slot)
+            .expect("the semantic scroll carrier remains mutable in the shared arena");
+        source.model = 3;
+        source.action = 8;
+
+        mismatch_session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(mismatch_session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Error {
+                    source_slot,
+                    message,
+                    ..
+                } if *source_slot == mismatch_scroll_slot
+                    && message.contains("semantic experience_scroll")
+                    && message.contains("model 3 action 8")
+            )
+        }));
+        assert!(!mismatch_session
+            .shared_spells()
+            .pickup_events()
+            .iter()
+            .any(|event| matches!(event, Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, .. } if *source_slot == mismatch_scroll_slot)));
     }
 
     fn level_three_descriptor_fixture_path() -> PathBuf {

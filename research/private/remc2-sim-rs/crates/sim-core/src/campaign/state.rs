@@ -16,7 +16,7 @@ use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, SpellFireContext, SpellFireSource,
     TetherTarget,
     collision_mask::CollisionMaskBank,
-    level_definition::{CreatureKind, LevelDefinition, MechanicKind, SceneryKind},
+    level_definition::{CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind},
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
         PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
@@ -73,10 +73,26 @@ pub struct CampaignDefinition {
     creature_models: BTreeMap<CreatureKind, u8>,
     authored_scenery: BTreeMap<u16, SceneryKind>,
     initial_source_scenery: BTreeMap<u16, SceneryKind>,
+    authored_items: BTreeMap<u16, ItemKind>,
     authored_mechanics: BTreeMap<u16, MechanicKind>,
     initial_source_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) collision_masks: Option<CollisionMaskBank>,
     pub(crate) presentation: PresentationSelectors,
+}
+
+/// Immutable semantic identities derived from one validated owner package.
+/// This is the shared binding boundary; raw MC2 selectors remain in the
+/// package adapter and live mutable state remains in the existing arena.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SemanticLevelBindings {
+    pub(crate) level: LevelDefinition,
+    pub(crate) authored_creature_kinds: BTreeMap<u16, CreatureKind>,
+    pub(crate) creature_models: BTreeMap<CreatureKind, u8>,
+    pub(crate) authored_scenery: BTreeMap<u16, SceneryKind>,
+    pub(crate) initial_source_scenery: BTreeMap<u16, SceneryKind>,
+    pub(crate) authored_items: BTreeMap<u16, ItemKind>,
+    pub(crate) authored_mechanics: BTreeMap<u16, MechanicKind>,
+    pub(crate) initial_source_mechanics: BTreeMap<u16, MechanicKind>,
 }
 
 /// Source slot/map topology observed alongside the lossless entity records.
@@ -329,6 +345,7 @@ impl CampaignDefinition {
             creature_models: BTreeMap::new(),
             authored_scenery: BTreeMap::new(),
             initial_source_scenery: BTreeMap::new(),
+            authored_items: BTreeMap::new(),
             authored_mechanics: BTreeMap::new(),
             initial_source_mechanics: BTreeMap::new(),
             collision_masks,
@@ -336,23 +353,15 @@ impl CampaignDefinition {
         }
     }
 
-    pub(crate) fn bind_semantic_level(
-        &mut self,
-        semantic_level: LevelDefinition,
-        authored_creature_kinds: BTreeMap<u16, CreatureKind>,
-        creature_models: BTreeMap<CreatureKind, u8>,
-        authored_scenery: BTreeMap<u16, SceneryKind>,
-        initial_source_scenery: BTreeMap<u16, SceneryKind>,
-        authored_mechanics: BTreeMap<u16, MechanicKind>,
-        initial_source_mechanics: BTreeMap<u16, MechanicKind>,
-    ) {
-        self.semantic_level = Some(semantic_level);
-        self.authored_creature_kinds = authored_creature_kinds;
-        self.creature_models = creature_models;
-        self.authored_scenery = authored_scenery;
-        self.initial_source_scenery = initial_source_scenery;
-        self.authored_mechanics = authored_mechanics;
-        self.initial_source_mechanics = initial_source_mechanics;
+    pub(crate) fn bind_semantic_level(&mut self, bindings: SemanticLevelBindings) {
+        self.semantic_level = Some(bindings.level);
+        self.authored_creature_kinds = bindings.authored_creature_kinds;
+        self.creature_models = bindings.creature_models;
+        self.authored_scenery = bindings.authored_scenery;
+        self.initial_source_scenery = bindings.initial_source_scenery;
+        self.authored_items = bindings.authored_items;
+        self.authored_mechanics = bindings.authored_mechanics;
+        self.initial_source_mechanics = bindings.initial_source_mechanics;
     }
 
     #[must_use]
@@ -377,6 +386,10 @@ impl CampaignDefinition {
 
     pub(crate) fn scenery_for_initial_source_slot(&self, source_slot: u16) -> Option<SceneryKind> {
         self.initial_source_scenery.get(&source_slot).copied()
+    }
+
+    pub(crate) fn item_for_authored_record(&self, authored_record: u16) -> Option<ItemKind> {
+        self.authored_items.get(&authored_record).copied()
     }
 
     pub(crate) fn mechanic_for_authored_record(

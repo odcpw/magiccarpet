@@ -8,7 +8,7 @@ use super::mc2_level_definition::Mc2LevelDefinition;
 use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
 };
-use crate::level_definition::{CreatureKind, LevelDefinition, MechanicKind, SceneryKind};
+use crate::level_definition::{CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -364,6 +364,7 @@ pub struct CampaignDefinition {
     creature_model_by_kind: BTreeMap<CreatureKind, u8>,
     scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     scenery_by_initial_source_slot: BTreeMap<u16, SceneryKind>,
+    item_by_authored_record: BTreeMap<u16, ItemKind>,
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
     member_hashes: BTreeMap<String, String>,
@@ -1003,6 +1004,7 @@ impl CampaignDefinition {
             creature_model_by_kind: semantic_level.creature_model_by_kind,
             scenery_by_authored_record: semantic_level.scenery_by_authored_record,
             scenery_by_initial_source_slot,
+            item_by_authored_record: semantic_level.item_by_authored_record,
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
             mechanic_by_initial_source_slot,
             member_hashes: files
@@ -1037,6 +1039,10 @@ impl CampaignDefinition {
 
     pub(crate) fn initial_scenery_bindings(&self) -> &BTreeMap<u16, SceneryKind> {
         &self.scenery_by_initial_source_slot
+    }
+
+    pub(crate) fn item_bindings(&self) -> &BTreeMap<u16, ItemKind> {
+        &self.item_by_authored_record
     }
 
     pub(crate) fn mechanic_bindings(&self) -> &BTreeMap<u16, MechanicKind> {

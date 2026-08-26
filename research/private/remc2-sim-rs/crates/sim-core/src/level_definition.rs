@@ -87,6 +87,21 @@ impl SceneryKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    ExperienceScroll,
+}
+
+impl ItemKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExperienceScroll => "experience_scroll",
+        }
+    }
+}
+
 impl MechanicKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -129,6 +144,10 @@ impl LevelEntityId {
         Self(format!("scenery.{}.{}", kind.as_str(), ordinal + 1))
     }
 
+    pub(crate) fn item(kind: ItemKind, ordinal: u16) -> Self {
+        Self(format!("item.{}.{}", kind.as_str(), ordinal + 1))
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -162,6 +181,7 @@ pub enum LevelEntityKind {
     Creature(CreatureKind),
     SpellPickup(SpellKind),
     Scenery(SceneryKind),
+    Item(ItemKind),
     Mechanic(MechanicKind),
 }
 
@@ -306,6 +326,7 @@ impl LevelDefinition {
                 LevelEntityKind::Creature(kind) => Some(kind),
                 LevelEntityKind::SpellPickup(_)
                 | LevelEntityKind::Scenery(_)
+                | LevelEntityKind::Item(_)
                 | LevelEntityKind::Mechanic(_) => None,
             })
             .collect::<BTreeSet<_>>()
@@ -326,7 +347,9 @@ impl LevelDefinition {
             .filter_map(|entity| match entity.kind {
                 LevelEntityKind::Creature(_) => None,
                 LevelEntityKind::SpellPickup(kind) => Some(kind),
-                LevelEntityKind::Scenery(_) | LevelEntityKind::Mechanic(_) => None,
+                LevelEntityKind::Scenery(_)
+                | LevelEntityKind::Item(_)
+                | LevelEntityKind::Mechanic(_) => None,
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -346,7 +369,8 @@ impl LevelDefinition {
             .filter_map(|entity| match entity.kind {
                 LevelEntityKind::Creature(_)
                 | LevelEntityKind::SpellPickup(_)
-                | LevelEntityKind::Scenery(_) => None,
+                | LevelEntityKind::Scenery(_)
+                | LevelEntityKind::Item(_) => None,
                 LevelEntityKind::Mechanic(kind) => Some(kind),
             })
             .collect::<BTreeSet<_>>()
@@ -367,8 +391,31 @@ impl LevelDefinition {
             .filter_map(|entity| match entity.kind {
                 LevelEntityKind::Creature(_)
                 | LevelEntityKind::SpellPickup(_)
+                | LevelEntityKind::Item(_)
                 | LevelEntityKind::Mechanic(_) => None,
                 LevelEntityKind::Scenery(kind) => Some(kind),
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+    }
+
+    #[must_use]
+    pub fn authored_item_count(&self, kind: ItemKind) -> usize {
+        self.entities
+            .iter()
+            .filter(|entity| entity.kind == LevelEntityKind::Item(kind))
+            .count()
+    }
+
+    pub fn item_kinds(&self) -> impl Iterator<Item = ItemKind> + '_ {
+        self.entities
+            .iter()
+            .filter_map(|entity| match entity.kind {
+                LevelEntityKind::Creature(_)
+                | LevelEntityKind::SpellPickup(_)
+                | LevelEntityKind::Scenery(_)
+                | LevelEntityKind::Mechanic(_) => None,
+                LevelEntityKind::Item(kind) => Some(kind),
             })
             .collect::<BTreeSet<_>>()
             .into_iter()

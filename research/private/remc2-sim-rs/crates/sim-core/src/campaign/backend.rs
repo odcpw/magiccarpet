@@ -637,9 +637,9 @@ mod tests {
     use crate::game_definition::SemanticValue;
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
-        ActivationGroupId, CreatureKind, LevelDefinition, LevelEntityDefinition, LevelEntityId,
-        LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition, SceneryKind,
-        SpellKind, TilePosition,
+        ActivationGroupId, CreatureKind, ItemKind, LevelDefinition, LevelEntityDefinition,
+        LevelEntityId, LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition,
+        SceneryKind, SpellKind, TilePosition,
     };
     use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
@@ -678,6 +678,7 @@ mod tests {
         expected_creatures: &[(CreatureKind, usize)],
         expected_spells: &[(SpellKind, TilePosition, Option<u16>)],
         expected_scenery: &[(SceneryKind, usize)],
+        expected_items: &[(ItemKind, usize)],
         expected_mechanics: &[(MechanicKind, TilePosition, Option<u16>)],
         expected_objectives: &[ObjectiveCondition],
         expected_activation_groups: &[u16],
@@ -722,6 +723,7 @@ mod tests {
                 .filter_map(|entity| match entity.kind() {
                     LevelEntityKind::Creature(_)
                     | LevelEntityKind::Scenery(_)
+                    | LevelEntityKind::Item(_)
                     | LevelEntityKind::Mechanic(_) => None,
                     LevelEntityKind::SpellPickup(kind) => Some((
                         kind,
@@ -738,6 +740,13 @@ mod tests {
                 .map(|kind| (kind, level.authored_scenery_count(kind)))
                 .collect::<Vec<_>>(),
             expected_scenery
+        );
+        assert_eq!(
+            level
+                .item_kinds()
+                .map(|kind| (kind, level.authored_item_count(kind)))
+                .collect::<Vec<_>>(),
+            expected_items
         );
         assert_eq!(
             level.mechanic_kinds().collect::<Vec<_>>(),
@@ -764,7 +773,8 @@ mod tests {
                 .filter_map(|entity| match entity.kind() {
                     LevelEntityKind::Creature(_)
                     | LevelEntityKind::SpellPickup(_)
-                    | LevelEntityKind::Scenery(_) => None,
+                    | LevelEntityKind::Scenery(_)
+                    | LevelEntityKind::Item(_) => None,
                     LevelEntityKind::Mechanic(kind) => Some((
                         kind,
                         entity.position(),
@@ -810,6 +820,7 @@ mod tests {
                 ),
             ],
             &[(SceneryKind::Tree, 18), (SceneryKind::Stone, 1)],
+            &[(ItemKind::ExperienceScroll, 5)],
             &[
                 (
                     MechanicKind::AbsenceCountdown {
@@ -864,6 +875,7 @@ mod tests {
                 (SpellKind::Possession, TilePosition { x: 167, y: 59 }, None),
             ],
             &[(SceneryKind::Tree, 12), (SceneryKind::Stone, 1)],
+            &[(ItemKind::ExperienceScroll, 24)],
             &[],
             &[
                 ObjectiveCondition::ReachLocation(TilePosition { x: 2, y: 152 }),
@@ -893,6 +905,7 @@ mod tests {
                 (SpellKind::Shield, TilePosition { x: 110, y: 109 }, Some(4)),
             ],
             &[(SceneryKind::Tree, 37), (SceneryKind::Stone, 12)],
+            &[(ItemKind::ExperienceScroll, 10)],
             &[(
                 MechanicKind::AbsenceCountdown {
                     creature: CreatureKind::Worm,
@@ -936,6 +949,7 @@ mod tests {
                 }
                 LevelEntityKind::SpellPickup(_)
                 | LevelEntityKind::Scenery(_)
+                | LevelEntityKind::Item(_)
                 | LevelEntityKind::Mechanic(_) => entity.clone(),
             })
             .collect();
