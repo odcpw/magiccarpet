@@ -637,9 +637,10 @@ mod tests {
     use crate::game_definition::SemanticValue;
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
-        CreatureKind, LevelDefinition, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
+        ActivationGroupId, CreatureKind, LevelDefinition, LevelEntityDefinition, LevelEntityId,
+        LevelEntityKind, SpellKind, TilePosition,
     };
-    use std::{path::PathBuf, sync::Arc};
+    use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
     fn descriptor_fixture_path() -> PathBuf {
         std::env::var_os("MC_CAMPAIGN_PACKAGE_V1").map_or_else(
@@ -671,7 +672,11 @@ mod tests {
         )
     }
 
-    fn assert_package_creatures(root: &Path, expected: &[(CreatureKind, usize)]) -> GameDefinition {
+    fn assert_package_content(
+        root: &Path,
+        expected_creatures: &[(CreatureKind, usize)],
+        expected_spells: &[(SpellKind, TilePosition, Option<u16>)],
+    ) -> GameDefinition {
         let catalog = default_catalog().unwrap();
         let definition = load_mc2_campaign(root, &catalog).unwrap();
         let level = definition
@@ -679,19 +684,55 @@ mod tests {
             .expect("the campaign package exposes semantic level content");
         assert_eq!(
             level.creature_kinds().collect::<Vec<_>>(),
-            expected.iter().map(|(kind, _)| *kind).collect::<Vec<_>>()
+            expected_creatures
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>()
         );
-        for (kind, count) in expected {
+        for (kind, count) in expected_creatures {
             assert_eq!(level.authored_creature_count(*kind), *count);
         }
+        assert_eq!(
+            level.spell_kinds().collect::<Vec<_>>(),
+            expected_spells
+                .iter()
+                .map(|(kind, _, _)| *kind)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        for kind in level.spell_kinds() {
+            assert_eq!(
+                level.authored_spell_pickup_count(kind),
+                expected_spells
+                    .iter()
+                    .filter(|(expected_kind, _, _)| *expected_kind == kind)
+                    .count()
+            );
+        }
+        assert_eq!(
+            level
+                .entities()
+                .iter()
+                .filter_map(|entity| match entity.kind() {
+                    LevelEntityKind::Creature(_) => None,
+                    LevelEntityKind::SpellPickup(kind) => Some((
+                        kind,
+                        entity.position(),
+                        entity.activation_group().map(ActivationGroupId::get),
+                    )),
+                })
+                .collect::<Vec<_>>(),
+            expected_spells
+        );
         definition
     }
 
     #[test]
-    fn semantic_creature_definitions_follow_level_one_two_and_three_packages() {
+    fn semantic_content_definitions_follow_level_one_two_and_three_packages() {
         let root = level_one_descriptor_fixture_path();
         let catalog = default_catalog().unwrap();
-        let definition = assert_package_creatures(
+        let definition = assert_package_content(
             &root,
             &[
                 (CreatureKind::Goat, 33),
@@ -700,8 +741,16 @@ mod tests {
                 (CreatureKind::Villager, 28),
                 (CreatureKind::Firefly, 6),
             ],
+            &[
+                (SpellKind::Speed, TilePosition { x: 194, y: 213 }, Some(1)),
+                (
+                    SpellKind::Possession,
+                    TilePosition { x: 202, y: 212 },
+                    Some(11),
+                ),
+            ],
         );
-        assert_package_creatures(
+        assert_package_content(
             &descriptor_fixture_path(),
             &[
                 (CreatureKind::Goat, 36),
@@ -712,8 +761,22 @@ mod tests {
                 (CreatureKind::Villager, 29),
                 (CreatureKind::Trader, 27),
             ],
+            &[
+                (
+                    SpellKind::Earthquake,
+                    TilePosition { x: 138, y: 219 },
+                    Some(22),
+                ),
+                (
+                    SpellKind::RubberBand,
+                    TilePosition { x: 138, y: 237 },
+                    Some(27),
+                ),
+                (SpellKind::Invisibility, TilePosition { x: 1, y: 152 }, None),
+                (SpellKind::Possession, TilePosition { x: 167, y: 59 }, None),
+            ],
         );
-        assert_package_creatures(
+        assert_package_content(
             &level_three_descriptor_fixture_path(),
             &[
                 (CreatureKind::Dragon, 5),
@@ -722,6 +785,11 @@ mod tests {
                 (CreatureKind::Worm, 5),
                 (CreatureKind::Archer, 18),
                 (CreatureKind::Skeleton, 11),
+            ],
+            &[
+                (SpellKind::Earthquake, TilePosition { x: 85, y: 85 }, None),
+                (SpellKind::RubberBand, TilePosition { x: 136, y: 85 }, None),
+                (SpellKind::Shield, TilePosition { x: 110, y: 109 }, Some(4)),
             ],
         );
         let level = definition
@@ -732,21 +800,24 @@ mod tests {
             .entities()
             .iter()
             .enumerate()
-            .map(|(ordinal, entity)| {
-                let LevelEntityKind::Creature(kind) = entity.kind();
-                let wrong_kind = match kind {
-                    CreatureKind::Archer => CreatureKind::Firefly,
-                    _ => CreatureKind::Archer,
-                };
-                LevelEntityDefinition::new(
-                    LevelEntityId::creature(
-                        wrong_kind,
-                        u16::try_from(ordinal).expect("Level 1 semantic entity ordinal fits u16"),
-                    ),
-                    LevelEntityKind::Creature(wrong_kind),
-                    entity.position(),
-                    entity.activation_group(),
-                )
+            .map(|(ordinal, entity)| match entity.kind() {
+                LevelEntityKind::Creature(kind) => {
+                    let wrong_kind = match kind {
+                        CreatureKind::Archer => CreatureKind::Firefly,
+                        _ => CreatureKind::Archer,
+                    };
+                    LevelEntityDefinition::new(
+                        LevelEntityId::creature(
+                            wrong_kind,
+                            u16::try_from(ordinal)
+                                .expect("Level 1 semantic entity ordinal fits u16"),
+                        ),
+                        LevelEntityKind::Creature(wrong_kind),
+                        entity.position(),
+                        entity.activation_group(),
+                    )
+                }
+                LevelEntityKind::SpellPickup(_) => entity.clone(),
             })
             .collect();
         let tampered = definition

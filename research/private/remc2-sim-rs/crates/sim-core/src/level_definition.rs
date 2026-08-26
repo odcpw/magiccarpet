@@ -39,6 +39,31 @@ impl CreatureKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpellKind {
+    Speed,
+    Possession,
+    Shield,
+    Earthquake,
+    RubberBand,
+    Invisibility,
+}
+
+impl SpellKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Speed => "speed",
+            Self::Possession => "possession",
+            Self::Shield => "shield",
+            Self::Earthquake => "earthquake",
+            Self::RubberBand => "rubber_band",
+            Self::Invisibility => "invisibility",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct LevelEntityId(String);
@@ -46,6 +71,10 @@ pub struct LevelEntityId(String);
 impl LevelEntityId {
     pub(crate) fn creature(kind: CreatureKind, ordinal: u16) -> Self {
         Self(format!("creature.{}.{}", kind.as_str(), ordinal + 1))
+    }
+
+    pub(crate) fn spell_pickup(kind: SpellKind, ordinal: u16) -> Self {
+        Self(format!("spell_pickup.{}.{}", kind.as_str(), ordinal + 1))
     }
 
     #[must_use]
@@ -79,6 +108,7 @@ impl ActivationGroupId {
 #[serde(rename_all = "snake_case")]
 pub enum LevelEntityKind {
     Creature(CreatureKind),
+    SpellPickup(SpellKind),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -163,6 +193,26 @@ impl LevelDefinition {
             .iter()
             .filter_map(|entity| match entity.kind {
                 LevelEntityKind::Creature(kind) => Some(kind),
+                LevelEntityKind::SpellPickup(_) => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+    }
+
+    #[must_use]
+    pub fn authored_spell_pickup_count(&self, kind: SpellKind) -> usize {
+        self.entities
+            .iter()
+            .filter(|entity| entity.kind == LevelEntityKind::SpellPickup(kind))
+            .count()
+    }
+
+    pub fn spell_kinds(&self) -> impl Iterator<Item = SpellKind> + '_ {
+        self.entities
+            .iter()
+            .filter_map(|entity| match entity.kind {
+                LevelEntityKind::Creature(_) => None,
+                LevelEntityKind::SpellPickup(kind) => Some(kind),
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
