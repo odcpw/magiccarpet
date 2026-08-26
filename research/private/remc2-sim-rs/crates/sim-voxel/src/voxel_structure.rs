@@ -1,7 +1,7 @@
 //! Private, renderer-free VoxelMode structure contract.
 //!
 //! This module deliberately stops at the structure/detail boundary.  The
-//! existing [`crate::house`] state remains the gameplay authority; this
+//! existing `sim-core` house state remains the gameplay authority; this
 //! loader only accepts a semantic house description and exposes immutable
 //! detail data for later mirror/renderer work.  It does not know about
 //! fireballs, Unity, C ABI handles, PhysX, or Track S city data.

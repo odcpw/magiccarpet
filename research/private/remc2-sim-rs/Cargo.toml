@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/atlas-registry",
+    "crates/sim-voxel",
     "crates/sim-core",
     "crates/sim-cli",
     "crates/sim-capi",
@@ -20,3 +21,15 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+# sim-core is a very large crate. Full DWARF plus parallel LLVM codegen has
+# repeatedly crashed both LLVM 22 and LLVM 23 while compiling its test binary.
+# Keep source line tables for ordinary development, but omit test-binary DWARF
+# and serialize codegen to avoid the unstable high-pressure compiler path.
+[profile.dev]
+debug = 1
+codegen-units = 1
+
+[profile.test]
+debug = 0
+codegen-units = 1

@@ -55,11 +55,7 @@ pub mod terrain_grid;
 pub mod terrain_presentation;
 pub mod terrain_reflection;
 pub mod villager;
-pub mod voxel_collapse;
-pub mod voxel_damage;
-pub mod voxel_snapshot;
-pub mod voxel_state;
-pub mod voxel_structure;
+pub use sim_voxel::{voxel_collapse, voxel_damage, voxel_snapshot, voxel_state, voxel_structure};
 
 include!(concat!(env!("OUT_DIR"), "/trig_table.rs"));
 
