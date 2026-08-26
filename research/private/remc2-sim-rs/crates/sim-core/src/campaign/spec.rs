@@ -9,7 +9,7 @@ use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
 };
 use crate::level_definition::{
-    CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind, SwitchKind,
+    CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind, SpellKind, SwitchKind,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -364,6 +364,8 @@ pub struct CampaignDefinition {
     level_definition: LevelDefinition,
     creature_by_authored_record: BTreeMap<u16, CreatureKind>,
     creature_model_by_kind: BTreeMap<CreatureKind, u8>,
+    spell_by_authored_record: BTreeMap<u16, SpellKind>,
+    spell_family_by_kind: BTreeMap<SpellKind, u8>,
     scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     scenery_by_initial_source_slot: BTreeMap<u16, SceneryKind>,
     item_by_authored_record: BTreeMap<u16, ItemKind>,
@@ -1030,6 +1032,8 @@ impl CampaignDefinition {
             level_definition: semantic_level.semantic,
             creature_by_authored_record: semantic_level.creature_by_authored_record,
             creature_model_by_kind: semantic_level.creature_model_by_kind,
+            spell_by_authored_record: semantic_level.spell_by_authored_record,
+            spell_family_by_kind: semantic_level.spell_family_by_kind,
             scenery_by_authored_record: semantic_level.scenery_by_authored_record,
             scenery_by_initial_source_slot,
             item_by_authored_record: semantic_level.item_by_authored_record,
@@ -1061,6 +1065,14 @@ impl CampaignDefinition {
 
     pub(crate) fn creature_models(&self) -> &BTreeMap<CreatureKind, u8> {
         &self.creature_model_by_kind
+    }
+
+    pub(crate) fn spell_bindings(&self) -> &BTreeMap<u16, SpellKind> {
+        &self.spell_by_authored_record
+    }
+
+    pub(crate) fn spell_families(&self) -> &BTreeMap<SpellKind, u8> {
+        &self.spell_family_by_kind
     }
 
     pub(crate) fn scenery_bindings(&self) -> &BTreeMap<u16, SceneryKind> {

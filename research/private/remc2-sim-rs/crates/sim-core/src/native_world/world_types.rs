@@ -3715,6 +3715,8 @@ impl NativeWorldInspection {
             level: definition.level_definition().clone(),
             authored_creature_kinds: definition.creature_bindings().clone(),
             creature_models: definition.creature_models().clone(),
+            authored_spells: definition.spell_bindings().clone(),
+            spell_families: definition.spell_families().clone(),
             authored_scenery: definition.scenery_bindings().clone(),
             initial_source_scenery: definition.initial_scenery_bindings().clone(),
             authored_items: definition.item_bindings().clone(),

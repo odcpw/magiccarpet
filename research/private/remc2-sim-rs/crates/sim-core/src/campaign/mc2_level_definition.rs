@@ -21,6 +21,8 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) semantic: LevelDefinition,
     pub(crate) creature_by_authored_record: BTreeMap<u16, CreatureKind>,
     pub(crate) creature_model_by_kind: BTreeMap<CreatureKind, u8>,
+    pub(crate) spell_by_authored_record: BTreeMap<u16, SpellKind>,
+    pub(crate) spell_family_by_kind: BTreeMap<SpellKind, u8>,
     pub(crate) scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
     pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
@@ -80,6 +82,8 @@ impl Mc2LevelDefinition {
         let mut mechanic_ordinals = BTreeMap::<MechanicKind, u16>::new();
         let mut creature_by_authored_record = BTreeMap::new();
         let mut creature_model_by_kind = BTreeMap::new();
+        let mut spell_by_authored_record = BTreeMap::new();
+        let mut spell_family_by_kind = BTreeMap::new();
         let mut scenery_by_authored_record = BTreeMap::new();
         let mut item_by_authored_record = BTreeMap::new();
         let mut switch_by_authored_record = BTreeMap::new();
@@ -215,15 +219,26 @@ impl Mc2LevelDefinition {
             let spell_kind = match (feature.kind, feature.subtype) {
                 // `AddSpellXX_XX_51120` receives these spell identities. Keep
                 // the numeric selectors inside the private MC2 adapter.
-                (15, 2) => Some(SpellKind::Speed),
-                (15, 3) => Some(SpellKind::Possession),
-                (15, 4) => Some(SpellKind::Shield),
-                (15, 6) => Some(SpellKind::Earthquake),
-                (15, 11) => Some(SpellKind::RubberBand),
-                (15, 12) => Some(SpellKind::Invisibility),
+                (15, 2) => Some(SpellKind::Castle),
+                (15, 3) => Some(SpellKind::Speed),
+                (15, 4) => Some(SpellKind::Morph),
+                (15, 6) => Some(SpellKind::Shield),
+                (15, 11) => Some(SpellKind::Invisibility),
+                (15, 12) => Some(SpellKind::BeyondSight),
                 _ => None,
             };
             if let Some(kind) = spell_kind {
+                let family = u8::try_from(feature.subtype)
+                    .map_err(|_| format!("authored {} family does not fit u8", kind.as_str()))?;
+                if spell_family_by_kind
+                    .insert(kind, family)
+                    .is_some_and(|prior| prior != family)
+                {
+                    return Err(format!(
+                        "authored {} maps to more than one MC2 spell family",
+                        kind.as_str()
+                    ));
+                }
                 let ordinal = spell_ordinals.entry(kind).or_default();
                 let id = LevelEntityId::spell_pickup(kind, *ordinal);
                 *ordinal = ordinal
@@ -235,6 +250,7 @@ impl Mc2LevelDefinition {
                     position,
                     activation_group,
                 ));
+                spell_by_authored_record.insert(feature.index, kind);
                 continue;
             }
 
@@ -358,6 +374,8 @@ impl Mc2LevelDefinition {
             semantic: LevelDefinition::new(entities, objectives, activation_groups)?,
             creature_by_authored_record,
             creature_model_by_kind,
+            spell_by_authored_record,
+            spell_family_by_kind,
             scenery_by_authored_record,
             item_by_authored_record,
             switch_by_authored_record,

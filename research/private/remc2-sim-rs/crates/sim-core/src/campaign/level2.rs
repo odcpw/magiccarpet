@@ -17,7 +17,7 @@ use crate::campaign::{
     spec::{BehaviorKey, BehaviorSelector},
 };
 use crate::level_definition::{
-    CreatureKind, ItemKind, MechanicKind, ObjectiveCondition, SceneryKind, SwitchKind,
+    CreatureKind, ItemKind, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind,
 };
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
@@ -209,6 +209,30 @@ fn validate_semantic_switch_dispatch(
         )),
         (None, ExistingHandler::ObjectiveSwitch) => Err(format!(
             "objective-gate source slot {source_slot} has no package-authored semantic identity"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_semantic_spell_dispatch(
+    source_slot: u16,
+    spell_kind: Option<SpellKind>,
+    expected_family: Option<u8>,
+    raw_family: u8,
+    handler: ExistingHandler,
+) -> std::result::Result<(), String> {
+    match (spell_kind, expected_family, handler) {
+        (Some(_kind), Some(family), ExistingHandler::SpellHolderAndPickup)
+            if family == raw_family =>
+        {
+            Ok(())
+        }
+        (Some(kind), expected, actual) => Err(format!(
+            "spell source slot {source_slot} is semantic {}, but the MC2 selector resolved family {raw_family} through {actual:?} (expected package family {expected:?})",
+            kind.as_str()
+        )),
+        (None, _, ExistingHandler::SpellHolderAndPickup) => Err(format!(
+            "spell source slot {source_slot} has no package-authored semantic identity"
         )),
         _ => Ok(()),
     }
@@ -4176,6 +4200,22 @@ impl Level2ResetSession {
                 self.session
                     .definition
                     .item_for_authored_record(source.authored_index)
+            })
+    }
+
+    fn spell_kind_for_source_slot(&self, source_slot: u16) -> Option<SpellKind> {
+        self.session
+            .state
+            .live
+            .economy
+            .economy
+            .spell_pickups()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .and_then(|source| {
+                self.session
+                    .definition
+                    .spell_for_authored_record(source.authored_index)
             })
     }
 
@@ -10341,6 +10381,32 @@ impl Level2ResetSession {
                 visit.handler,
             )?;
         }
+        if let Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+            kind: Level2DynamicArenaKind::SpellPickup,
+            ..
+        }) = visit.route
+        {
+            let source = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .spell_pickups()
+                .iter()
+                .find(|source| source.active && source.source_entity_index == source_slot)
+                .ok_or_else(|| {
+                    format!("spell source slot {source_slot} has no live pickup carrier")
+                })?;
+            let spell_kind = self.spell_kind_for_source_slot(source_slot);
+            validate_semantic_spell_dispatch(
+                source_slot,
+                spell_kind,
+                spell_kind.and_then(|kind| self.session.definition.spell_family(kind)),
+                source.family,
+                visit.handler,
+            )?;
+        }
         if self.session.definition.semantic_level().is_some() {
             let semantic_switch = self.switch_kind_for_source_slot(source_slot);
             if semantic_switch.is_some() || visit.handler == ExistingHandler::ObjectiveSwitch {
@@ -15524,6 +15590,158 @@ mod tests {
                     && message.contains("Model9Family")
             )
         }));
+    }
+
+    #[test]
+    fn semantic_speed_pickup_becomes_the_same_held_spell_and_rejects_family_divergence() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+
+        // Group 11's natural Archer-absence countdown is a separate proven
+        // producer. Stage only that package activation boundary here; the
+        // ordinary source scheduler owns pickup cadence and acquisition.
+        session
+            .consume_authored_group(0, 0, 11)
+            .expect("real package group 11 materializes its Speed pickup");
+        let pickup = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 100)
+            .copied()
+            .expect("package row 100 is a live spell pickup");
+        assert_eq!(
+            session.spell_kind_for_source_slot(pickup.source_entity_index),
+            Some(SpellKind::Speed)
+        );
+        assert_eq!((pickup.family, pickup.action), (3, 10));
+
+        let player_entity_index = session.state.entity_index;
+        session
+            .set_level2_entity_position(player_entity_index, pickup.position)
+            .expect("stage the real player at the real package pickup position");
+        let turns_until_cadence = usize::from((4_u8.wrapping_sub(pickup.phase & 3)) & 3) + 1;
+        for _ in 1..turns_until_cadence {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot,
+                    family: 3,
+                    result: None,
+                    ..
+                } if *source_slot == pickup.source_entity_index
+            )));
+            let live = session
+                .shared_spells()
+                .pickup(pickup.source_entity_index)
+                .expect("off-cadence pickup remains live");
+            assert_eq!((live.model, live.action), (3, 10));
+            assert_eq!(session.players()[0].enabled_spell_holders[3], 0);
+        }
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let acquired = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot,
+                    family: 3,
+                    result: Some(outcome),
+                    ..
+                } if *source_slot == pickup.source_entity_index => Some(*outcome),
+                _ => None,
+            })
+            .expect("the qualifying source visit acquires the package Speed pickup");
+        assert_eq!(
+            (
+                acquired.source_slot,
+                acquired.family,
+                acquired.holder_action,
+                acquired.parent_entity_index,
+            ),
+            (pickup.source_entity_index, 3, 9, player_entity_index)
+        );
+        let holder = session
+            .shared_spells()
+            .pickup(pickup.source_entity_index)
+            .expect("the acquired spell preserves the pickup entity");
+        assert_eq!(
+            (holder.index, holder.model, holder.action),
+            (pickup.source_entity_index, 3, 9)
+        );
+        assert_eq!(
+            session.players()[0].enabled_spell_holders[3],
+            pickup.source_entity_index
+        );
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        let acquired_phase = holder.phase;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let holder = session
+            .shared_spells()
+            .pickup(pickup.source_entity_index)
+            .expect("the following action-9 visit retains the same holder");
+        assert_eq!((holder.model, holder.action), (3, 9));
+        assert_eq!(holder.phase, acquired_phase.wrapping_add(1));
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+
+        let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor reopens for the planted negative");
+        let mismatch_session = mismatch.level2_compatibility_mut();
+        mismatch_session
+            .consume_authored_group(0, 0, 11)
+            .expect("real package group 11 materializes for the planted negative");
+        let mismatch_slot = mismatch_session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 100)
+            .map(|source| source.source_entity_index)
+            .expect("the semantic Speed pickup has a source slot");
+        let mut mismatch_economy = mismatch_session.economy_mut();
+        let source = mismatch_economy
+            .spell_pickups
+            .iter_mut()
+            .find(|source| source.source_entity_index == mismatch_slot)
+            .expect("the package spell remains in the shared arena");
+        source.family = 6;
+        source.action = 19;
+
+        mismatch_session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            mismatch_session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot,
+                        message,
+                        ..
+                    } if *source_slot == mismatch_slot
+                        && message.contains("semantic speed")
+                        && message.contains("family 6")
+                ))
+        );
+        assert_eq!(mismatch_session.players()[0].enabled_spell_holders[3], 0);
     }
 
     #[test]
