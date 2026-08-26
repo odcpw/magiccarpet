@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/atlas-registry",
+    "crates/sim-collision",
     "crates/sim-definition",
     "crates/sim-input",
     "crates/sim-voxel",

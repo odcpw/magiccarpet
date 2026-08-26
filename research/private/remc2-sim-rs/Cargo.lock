@@ -192,12 +192,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-collision"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "sim-core"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sim-collision",
  "sim-definition",
  "sim-input",
  "sim-voxel",

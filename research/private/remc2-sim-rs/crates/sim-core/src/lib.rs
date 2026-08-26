@@ -12,7 +12,7 @@ pub mod classic_hd_raster;
 pub mod classic_hd_render_graph;
 pub mod classic_hd_sprites;
 pub mod classic_hd_terrain;
-pub mod collision_mask;
+pub use sim_collision as collision_mask;
 pub mod combat_tmap;
 pub mod day_indexed_frame;
 pub mod dynamic_lighting;
