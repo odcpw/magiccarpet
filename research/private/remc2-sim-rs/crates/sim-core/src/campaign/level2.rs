@@ -17,7 +17,8 @@ use crate::campaign::{
     spec::{BehaviorKey, BehaviorSelector},
 };
 use crate::level_definition::{
-    CreatureKind, ItemKind, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind,
+    BuildingKind, CreatureKind, ItemKind, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind,
+    SwitchKind,
 };
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
@@ -234,6 +235,43 @@ fn validate_semantic_spell_dispatch(
         (None, _, ExistingHandler::SpellHolderAndPickup) => Err(format!(
             "spell source slot {source_slot} has no package-authored semantic identity"
         )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_semantic_building_dispatch(
+    source_slot: u16,
+    building_kind: Option<BuildingKind>,
+    route: Level2SourceRoute,
+    raw_action: u8,
+    handler: ExistingHandler,
+) -> std::result::Result<(), String> {
+    let source_is_house = matches!(route, Level2SourceRoute::House);
+    let source_is_house_construction = matches!(
+        route,
+        Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+            kind: Level2DynamicArenaKind::AuthoredModel45,
+            ..
+        })
+    );
+    match (building_kind, handler) {
+        (Some(BuildingKind::House), ExistingHandler::Class10Effects)
+            if (source_is_house && raw_action == 52)
+                || (source_is_house_construction && raw_action == 51) =>
+        {
+            Ok(())
+        }
+        (Some(kind), actual) => Err(format!(
+            "building source slot {source_slot} is semantic {}, but the MC2 selector resolved action {raw_action} through {actual:?}",
+            kind.as_str()
+        )),
+        (None, ExistingHandler::Class10Effects)
+            if source_is_house || source_is_house_construction =>
+        {
+            Err(format!(
+                "house source slot {source_slot} has no package-authored semantic identity"
+            ))
+        }
         _ => Ok(()),
     }
 }
@@ -4217,6 +4255,37 @@ impl Level2ResetSession {
                     .definition
                     .spell_for_authored_record(source.authored_index)
             })
+    }
+
+    fn building_kind_for_source_slot(
+        &self,
+        source_slot: u16,
+        route: Level2SourceRoute,
+    ) -> Option<BuildingKind> {
+        match route {
+            Level2SourceRoute::House => self
+                .session
+                .definition
+                .building_for_initial_source_slot(source_slot),
+            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                kind: Level2DynamicArenaKind::AuthoredModel45,
+                ..
+            }) => self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_model45()
+                .iter()
+                .find(|source| source.active && source.source_entity_index == source_slot)
+                .and_then(|source| {
+                    self.session
+                        .definition
+                        .building_for_authored_record(source.authored_index)
+                }),
+            _ => None,
+        }
     }
 
     fn switch_kind_for_source_slot(&self, source_slot: u16) -> Option<SwitchKind> {
@@ -10407,6 +10476,50 @@ impl Level2ResetSession {
                 visit.handler,
             )?;
         }
+        if self.session.definition.semantic_level().is_some()
+            && (matches!(visit.route, Level2SourceRoute::House)
+                || matches!(
+                    visit.route,
+                    Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                        kind: Level2DynamicArenaKind::AuthoredModel45,
+                        ..
+                    })
+                ))
+        {
+            let raw_action = match visit.route {
+                Level2SourceRoute::House => self
+                    .session
+                    .state
+                    .live
+                    .ordinary
+                    .houses()
+                    .iter()
+                    .find(|house| house.active && house.entity_index == source_slot)
+                    .map(|house| house.action),
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::AuthoredModel45,
+                    ..
+                }) => self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .authored_model45()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .map(|source| source.action),
+                _ => None,
+            }
+            .ok_or_else(|| format!("building source slot {source_slot} has no live carrier"))?;
+            validate_semantic_building_dispatch(
+                source_slot,
+                self.building_kind_for_source_slot(source_slot, visit.route),
+                visit.route,
+                raw_action,
+                visit.handler,
+            )?;
+        }
         if self.session.definition.semantic_level().is_some() {
             let semantic_switch = self.switch_kind_for_source_slot(source_slot);
             if semantic_switch.is_some() || visit.handler == ExistingHandler::ObjectiveSwitch {
@@ -15742,6 +15855,91 @@ mod tests {
                 ))
         );
         assert_eq!(mismatch_session.players()[0].enabled_spell_holders[3], 0);
+    }
+
+    #[test]
+    fn semantic_house_uses_the_ordinary_source_lifecycle_and_rejects_effect_substitution() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+        let house = session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.active && house.action == 52)
+            .copied()
+            .expect("real package contains a live House");
+        assert_eq!(
+            session.building_kind_for_source_slot(house.entity_index, Level2SourceRoute::House),
+            Some(BuildingKind::House)
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::House { source_slot, .. }
+                if *source_slot == house.entity_index
+        )));
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        let visited_house = session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .expect("ordinary House remains live after its callback");
+        assert_eq!(visited_house.phase, house.phase.wrapping_add(1));
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+
+        let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor reopens for the planted negative");
+        let mismatch_session = mismatch.level2_compatibility_mut();
+        let mismatch_slot = mismatch_session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.active && house.action == 52)
+            .map(|house| house.entity_index)
+            .expect("real package House has a source slot");
+        mismatch_session
+            .ordinary_mut()
+            .house_mut(mismatch_slot)
+            .expect("semantic House carrier remains live")
+            .action = 5;
+
+        mismatch_session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            mismatch_session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot,
+                        message,
+                        ..
+                    } if *source_slot == mismatch_slot
+                        && message.contains("semantic house")
+                        && message.contains("action 5")
+                ))
+        );
+        assert!(
+            mismatch_session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::House { source_slot, .. } if *source_slot == mismatch_slot
+                ))
+        );
     }
 
     #[test]

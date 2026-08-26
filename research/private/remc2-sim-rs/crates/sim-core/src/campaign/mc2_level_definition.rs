@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     level_definition::{
-        ActivationGroupId, CreatureKind, ItemKind, LevelDefinition, LevelEntityDefinition,
-        LevelEntityId, LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition,
-        SceneryKind, SpellKind, SwitchKind, TilePosition,
+        ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelDefinition,
+        LevelEntityDefinition, LevelEntityId, LevelEntityKind, LevelObjectiveDefinition,
+        MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
     },
     level1_mission::parse_authored_features,
 };
@@ -23,6 +23,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) creature_model_by_kind: BTreeMap<CreatureKind, u8>,
     pub(crate) spell_by_authored_record: BTreeMap<u16, SpellKind>,
     pub(crate) spell_family_by_kind: BTreeMap<SpellKind, u8>,
+    pub(crate) building_by_authored_record: BTreeMap<u16, BuildingKind>,
     pub(crate) scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
     pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
@@ -58,6 +59,17 @@ impl Mc2LevelDefinition {
         }
     }
 
+    pub(crate) const fn building_for_reset_selector(
+        class: u8,
+        model: u8,
+        action: u8,
+    ) -> Option<BuildingKind> {
+        match (class, model, action) {
+            (10, 45, 52) => Some(BuildingKind::House),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn switch_for_reset_selector(
         class: u8,
         model: u8,
@@ -84,6 +96,8 @@ impl Mc2LevelDefinition {
         let mut creature_model_by_kind = BTreeMap::new();
         let mut spell_by_authored_record = BTreeMap::new();
         let mut spell_family_by_kind = BTreeMap::new();
+        let mut building_ordinals = BTreeMap::<BuildingKind, u16>::new();
+        let mut building_by_authored_record = BTreeMap::new();
         let mut scenery_by_authored_record = BTreeMap::new();
         let mut item_by_authored_record = BTreeMap::new();
         let mut switch_by_authored_record = BTreeMap::new();
@@ -168,6 +182,28 @@ impl Mc2LevelDefinition {
                     activation_group,
                 ));
                 scenery_by_authored_record.insert(feature.index, kind);
+                continue;
+            }
+
+            let building_kind = match (feature.kind, feature.subtype) {
+                // `AddTerrainModification_50250` constructs the package's
+                // House rows before their ordinary live-house callback.
+                (10, 45) => Some(BuildingKind::House),
+                _ => None,
+            };
+            if let Some(kind) = building_kind {
+                let ordinal = building_ordinals.entry(kind).or_default();
+                let id = LevelEntityId::building(kind, *ordinal);
+                *ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| format!("too many authored {} buildings", kind.as_str()))?;
+                entities.push(LevelEntityDefinition::new(
+                    id,
+                    LevelEntityKind::Building(kind),
+                    position,
+                    activation_group,
+                ));
+                building_by_authored_record.insert(feature.index, kind);
                 continue;
             }
 
@@ -376,6 +412,7 @@ impl Mc2LevelDefinition {
             creature_model_by_kind,
             spell_by_authored_record,
             spell_family_by_kind,
+            building_by_authored_record,
             scenery_by_authored_record,
             item_by_authored_record,
             switch_by_authored_record,

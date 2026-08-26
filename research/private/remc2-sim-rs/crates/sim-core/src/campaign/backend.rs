@@ -637,9 +637,9 @@ mod tests {
     use crate::game_definition::SemanticValue;
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
-        ActivationGroupId, CreatureKind, ItemKind, LevelDefinition, LevelEntityDefinition,
-        LevelEntityId, LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition,
-        SceneryKind, SpellKind, SwitchKind, TilePosition,
+        ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelDefinition,
+        LevelEntityDefinition, LevelEntityId, LevelEntityKind, LevelObjectiveDefinition,
+        MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
     };
     use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
@@ -679,6 +679,7 @@ mod tests {
         expected_spells: &[(SpellKind, TilePosition, Option<u16>)],
         expected_scenery: &[(SceneryKind, usize)],
         expected_items: &[(ItemKind, usize)],
+        expected_buildings: &[(BuildingKind, usize)],
         expected_switches: &[(SwitchKind, usize)],
         expected_mechanics: &[(MechanicKind, TilePosition, Option<u16>)],
         expected_objectives: &[ObjectiveCondition],
@@ -725,6 +726,7 @@ mod tests {
                     LevelEntityKind::Creature(_)
                     | LevelEntityKind::Scenery(_)
                     | LevelEntityKind::Item(_)
+                    | LevelEntityKind::Building(_)
                     | LevelEntityKind::Switch(_)
                     | LevelEntityKind::Mechanic(_) => None,
                     LevelEntityKind::SpellPickup(kind) => Some((
@@ -749,6 +751,13 @@ mod tests {
                 .map(|kind| (kind, level.authored_item_count(kind)))
                 .collect::<Vec<_>>(),
             expected_items
+        );
+        assert_eq!(
+            level
+                .building_kinds()
+                .map(|kind| (kind, level.authored_building_count(kind)))
+                .collect::<Vec<_>>(),
+            expected_buildings
         );
         assert_eq!(
             level
@@ -784,6 +793,7 @@ mod tests {
                     | LevelEntityKind::SpellPickup(_)
                     | LevelEntityKind::Scenery(_)
                     | LevelEntityKind::Item(_)
+                    | LevelEntityKind::Building(_)
                     | LevelEntityKind::Switch(_) => None,
                     LevelEntityKind::Mechanic(kind) => Some((
                         kind,
@@ -827,6 +837,7 @@ mod tests {
             ],
             &[(SceneryKind::Tree, 18), (SceneryKind::Stone, 1)],
             &[(ItemKind::ExperienceScroll, 5)],
+            &[(BuildingKind::House, 81)],
             &[(SwitchKind::ObjectiveGate, 4)],
             &[
                 (
@@ -879,6 +890,7 @@ mod tests {
             ],
             &[(SceneryKind::Tree, 12), (SceneryKind::Stone, 1)],
             &[(ItemKind::ExperienceScroll, 24)],
+            &[(BuildingKind::House, 25)],
             &[(SwitchKind::ObjectiveGate, 6)],
             &[],
             &[
@@ -914,6 +926,7 @@ mod tests {
             ],
             &[(SceneryKind::Tree, 37), (SceneryKind::Stone, 12)],
             &[(ItemKind::ExperienceScroll, 10)],
+            &[(BuildingKind::House, 97)],
             &[(SwitchKind::ObjectiveGate, 5)],
             &[(
                 MechanicKind::AbsenceCountdown {
@@ -959,6 +972,7 @@ mod tests {
                 LevelEntityKind::SpellPickup(_)
                 | LevelEntityKind::Scenery(_)
                 | LevelEntityKind::Item(_)
+                | LevelEntityKind::Building(_)
                 | LevelEntityKind::Switch(_)
                 | LevelEntityKind::Mechanic(_) => entity.clone(),
             })

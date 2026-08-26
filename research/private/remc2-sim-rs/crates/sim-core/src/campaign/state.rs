@@ -17,7 +17,8 @@ use crate::{
     TetherTarget,
     collision_mask::CollisionMaskBank,
     level_definition::{
-        CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind, SpellKind, SwitchKind,
+        BuildingKind, CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind,
+        SpellKind, SwitchKind,
     },
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
@@ -75,6 +76,8 @@ pub struct CampaignDefinition {
     creature_models: BTreeMap<CreatureKind, u8>,
     authored_spells: BTreeMap<u16, SpellKind>,
     spell_families: BTreeMap<SpellKind, u8>,
+    authored_buildings: BTreeMap<u16, BuildingKind>,
+    initial_source_buildings: BTreeMap<u16, BuildingKind>,
     authored_scenery: BTreeMap<u16, SceneryKind>,
     initial_source_scenery: BTreeMap<u16, SceneryKind>,
     authored_items: BTreeMap<u16, ItemKind>,
@@ -96,6 +99,8 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) creature_models: BTreeMap<CreatureKind, u8>,
     pub(crate) authored_spells: BTreeMap<u16, SpellKind>,
     pub(crate) spell_families: BTreeMap<SpellKind, u8>,
+    pub(crate) authored_buildings: BTreeMap<u16, BuildingKind>,
+    pub(crate) initial_source_buildings: BTreeMap<u16, BuildingKind>,
     pub(crate) authored_scenery: BTreeMap<u16, SceneryKind>,
     pub(crate) initial_source_scenery: BTreeMap<u16, SceneryKind>,
     pub(crate) authored_items: BTreeMap<u16, ItemKind>,
@@ -355,6 +360,8 @@ impl CampaignDefinition {
             creature_models: BTreeMap::new(),
             authored_spells: BTreeMap::new(),
             spell_families: BTreeMap::new(),
+            authored_buildings: BTreeMap::new(),
+            initial_source_buildings: BTreeMap::new(),
             authored_scenery: BTreeMap::new(),
             initial_source_scenery: BTreeMap::new(),
             authored_items: BTreeMap::new(),
@@ -373,6 +380,8 @@ impl CampaignDefinition {
         self.creature_models = bindings.creature_models;
         self.authored_spells = bindings.authored_spells;
         self.spell_families = bindings.spell_families;
+        self.authored_buildings = bindings.authored_buildings;
+        self.initial_source_buildings = bindings.initial_source_buildings;
         self.authored_scenery = bindings.authored_scenery;
         self.initial_source_scenery = bindings.initial_source_scenery;
         self.authored_items = bindings.authored_items;
@@ -404,6 +413,20 @@ impl CampaignDefinition {
 
     pub(crate) fn spell_family(&self, kind: SpellKind) -> Option<u8> {
         self.spell_families.get(&kind).copied()
+    }
+
+    pub(crate) fn building_for_authored_record(
+        &self,
+        authored_record: u16,
+    ) -> Option<BuildingKind> {
+        self.authored_buildings.get(&authored_record).copied()
+    }
+
+    pub(crate) fn building_for_initial_source_slot(
+        &self,
+        source_slot: u16,
+    ) -> Option<BuildingKind> {
+        self.initial_source_buildings.get(&source_slot).copied()
     }
 
     pub(crate) fn scenery_for_authored_record(&self, authored_record: u16) -> Option<SceneryKind> {

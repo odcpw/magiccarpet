@@ -9,7 +9,8 @@ use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
 };
 use crate::level_definition::{
-    CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind, SpellKind, SwitchKind,
+    BuildingKind, CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind, SpellKind,
+    SwitchKind,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -366,6 +367,8 @@ pub struct CampaignDefinition {
     creature_model_by_kind: BTreeMap<CreatureKind, u8>,
     spell_by_authored_record: BTreeMap<u16, SpellKind>,
     spell_family_by_kind: BTreeMap<SpellKind, u8>,
+    building_by_authored_record: BTreeMap<u16, BuildingKind>,
+    building_by_initial_source_slot: BTreeMap<u16, BuildingKind>,
     scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     scenery_by_initial_source_slot: BTreeMap<u16, SceneryKind>,
     item_by_authored_record: BTreeMap<u16, ItemKind>,
@@ -911,6 +914,17 @@ impl CampaignDefinition {
                 ))
             })
             .collect::<BTreeMap<_, _>>();
+        let building_by_initial_source_slot = expected_rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.initial_source_slot?,
+                    Mc2LevelDefinition::building_for_reset_selector(
+                        row.class, row.model, row.action,
+                    )?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
         let switch_by_initial_source_slot = expected_rows
             .iter()
             .filter_map(|row| {
@@ -931,6 +945,19 @@ impl CampaignDefinition {
                     format!(
                         "reset {} has no matching authored semantic scenery",
                         scenery.as_str()
+                    ),
+                );
+            }
+        }
+        for building in building_by_initial_source_slot.values() {
+            if !semantic_level.semantic.entities().iter().any(|entity| {
+                entity.kind() == crate::level_definition::LevelEntityKind::Building(*building)
+            }) {
+                return fail(
+                    ValidationStage::TypedOperations,
+                    format!(
+                        "reset {} has no matching authored semantic building",
+                        building.as_str()
                     ),
                 );
             }
@@ -1034,6 +1061,8 @@ impl CampaignDefinition {
             creature_model_by_kind: semantic_level.creature_model_by_kind,
             spell_by_authored_record: semantic_level.spell_by_authored_record,
             spell_family_by_kind: semantic_level.spell_family_by_kind,
+            building_by_authored_record: semantic_level.building_by_authored_record,
+            building_by_initial_source_slot,
             scenery_by_authored_record: semantic_level.scenery_by_authored_record,
             scenery_by_initial_source_slot,
             item_by_authored_record: semantic_level.item_by_authored_record,
@@ -1073,6 +1102,14 @@ impl CampaignDefinition {
 
     pub(crate) fn spell_families(&self) -> &BTreeMap<SpellKind, u8> {
         &self.spell_family_by_kind
+    }
+
+    pub(crate) fn building_bindings(&self) -> &BTreeMap<u16, BuildingKind> {
+        &self.building_by_authored_record
+    }
+
+    pub(crate) fn initial_building_bindings(&self) -> &BTreeMap<u16, BuildingKind> {
+        &self.building_by_initial_source_slot
     }
 
     pub(crate) fn scenery_bindings(&self) -> &BTreeMap<u16, SceneryKind> {
