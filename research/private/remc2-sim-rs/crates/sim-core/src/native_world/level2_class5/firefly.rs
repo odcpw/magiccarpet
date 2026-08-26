@@ -1,9 +1,9 @@
 //! Authored class-5/model-19 Firefly construction, patrol, roaming, and charge.
 //!
 //! The ordinary undamaged actions 159, 153, and 155 and action-154's orbit and
-//! charge branch are implemented here. Fireball emission, Firefly damage,
-//! death conversion, and reclaim remain fail-closed until their source
-//! lifecycles are implemented.
+//! charge branch are implemented here. Fireball emission delegates to the
+//! shared class-9 projectile arena; Firefly damage, death conversion, and
+//! reclaim remain fail-closed until their source lifecycles are implemented.
 
 use super::super::*;
 use crate::goat::GoatPlayerTarget;
@@ -36,6 +36,7 @@ const FIREFLY_ORBIT_RADIUS: i16 = 2_048;
 const FIREFLY_ORBIT_REACHED_DISTANCE: u32 = 1_280;
 const FIREFLY_CHARGE_DURATION: i32 = 24;
 const FIREFLY_CHARGE_CONTACT_RANGE: u32 = 768;
+const FIREFLY_FIREBALL_PAYLOAD: u16 = 500;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FireflyAttackTarget {
@@ -50,6 +51,7 @@ pub(crate) struct FireflyAttackStep {
     pub(crate) live: bool,
     pub(crate) sound_id: Option<u16>,
     pub(crate) contact: Option<FireflyContact>,
+    pub(crate) fireball: Option<FireflyFireballLaunch>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +59,17 @@ pub(crate) struct FireflyContact {
     pub(crate) target_entity_index: u16,
     pub(crate) attacker_entity_index: u16,
     pub(crate) damage: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FireflyFireballLaunch {
+    pub(crate) owner_entity_index: u16,
+    pub(crate) target_entity_index: u16,
+    pub(crate) position: Position,
+    pub(crate) target_position: Position,
+    pub(crate) yaw: i16,
+    pub(crate) pitch: i16,
+    pub(crate) payload: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -512,6 +525,7 @@ impl Level2EconomyState {
 
         let mut sound_id = None;
         let mut contact = None;
+        let mut fireball = None;
         loop {
             match source.byte_0x46_70 {
                 0 => {
@@ -598,11 +612,59 @@ impl Level2EconomyState {
                     }
                     break;
                 }
-                4 | 5 => {
-                    return Err(format!(
-                        "Firefly source slot {source_slot} reached the unimplemented fireball branch substate {}",
-                        source.byte_0x46_70
-                    ));
+                4 => {
+                    source.actual_speed = FIREFLY_MINIMUM_SPEED;
+                    source.byte_0x46_70 = 5;
+                }
+                5 => {
+                    if source.source_byte_3e & 3 == 0 {
+                        source.roll = i16::try_from(crate::heading_for_positions(
+                            source.position,
+                            target.position,
+                        ))
+                        .expect("Firefly firing heading fits i16");
+                        apply_firefly_separation(
+                            &mut source,
+                            frozen_model19_slots,
+                            &self.authored_class5,
+                            FIREFLY_SEPARATION,
+                        );
+                    }
+                    if source.source_byte_3e % FIREFLY_DESCRIPTOR_CADENCE == 0 {
+                        if firefly_distance_3d(source.position, target.position)
+                            >= u32::from(FIREFLY_RANGE)
+                        {
+                            source.byte_0x46_70 = 6;
+                        } else {
+                            let angle_origin = source.position;
+                            let horizontal = crate::legacy_sqrt(squared_wrapping_xy_distance(
+                                angle_origin,
+                                target.position,
+                            ));
+                            let yaw = i16::try_from(crate::heading_for_positions(
+                                angle_origin,
+                                target.position,
+                            ))
+                            .expect("Firefly fireball heading fits i16");
+                            let pitch = crate::pitch_for_delta(
+                                i32::try_from(horizontal)
+                                    .expect("Firefly target distance fits i32"),
+                                i32::from(target.position.z.wrapping_sub(angle_origin.z)),
+                            );
+                            let mut position = angle_origin;
+                            position.z = position.z.wrapping_add(FIREFLY_SHIFT_Y);
+                            fireball = Some(FireflyFireballLaunch {
+                                owner_entity_index: source.source_entity_index,
+                                target_entity_index: target.entity_index,
+                                position,
+                                target_position: target.position,
+                                yaw,
+                                pitch,
+                                payload: FIREFLY_FIREBALL_PAYLOAD,
+                            });
+                        }
+                    }
+                    break;
                 }
                 6 => {
                     source.action = FIREFLY_ROAM_ACTION;
@@ -676,6 +738,7 @@ impl Level2EconomyState {
             live,
             sound_id,
             contact,
+            fireball,
         })
     }
 
@@ -891,6 +954,47 @@ impl Level2EconomyState {
             return false;
         };
         source.position = target_position;
+        let seed = RenderableMapSeed {
+            entity_index: source_slot,
+            active: source.active,
+            x: source.position.x,
+            y: source.position.y,
+        };
+        self.map_chains.sync_entity(seed).is_ok()
+    }
+
+    /// Stage only the geometry, state-5 selector, and 35-tick cadence for a
+    /// real package Firefly. The ordinary action-154 callback still moves the
+    /// creature, aims, allocates the shared class-9 projectile, updates the
+    /// target, and takes the common source epilogue.
+    #[cfg(test)]
+    pub(crate) fn stage_authored_firefly_fireball_prerequisite_for_test(
+        &mut self,
+        source_slot: u16,
+        target_position: Position,
+    ) -> bool {
+        let Some(source) = self.authored_class5.iter_mut().find(|source| {
+            source.source_entity_index == source_slot
+                && source.model == FIREFLY_MODEL
+                && source.action == FIREFLY_ATTACK_ACTION
+                && source.word_0x96_150 != 0
+        }) else {
+            return false;
+        };
+        source.byte_0x46_70 = 5;
+        source.source_byte_3e = 140;
+        source.actual_speed = FIREFLY_MINIMUM_SPEED;
+        source.position = Position {
+            x: target_position.x.wrapping_add(4_096),
+            y: target_position.y,
+            z: target_position.z,
+        };
+        source.yaw = i16::try_from(crate::heading_for_positions(
+            source.position,
+            target_position,
+        ))
+        .expect("Firefly firing prerequisite heading fits i16");
+        source.roll = source.yaw;
         let seed = RenderableMapSeed {
             entity_index: source_slot,
             active: source.active,

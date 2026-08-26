@@ -1021,11 +1021,23 @@ pub struct Level2CastleProjectile {
     pub drawing_disabled: bool,
 }
 
-/// The ordinary public family-0 Fireball flyer created by `sub_693F0` and
-/// `sub_6DCA0`. Its class-9 callback owns target acquisition, guidance,
-/// movement, and transactional construction of a distinct class-10 impact.
+/// Semantic producer identity for the shared class-9/model-0 Fireball row.
+/// Player spell projectiles acquire and steer toward a target; Firefly
+/// projectiles retain their launch yaw and adjust pitch toward their bound
+/// player target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FireballProjectileOrigin {
+    PlayerSpell,
+    Firefly,
+}
+
+/// The shared class-9/model-0 Fireball flyer. Its callback owns target
+/// guidance, movement, and transactional construction of a distinct class-10
+/// impact; `origin` selects the source-authored guidance rule without exposing
+/// an MC2 class/model selector as game-domain policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2FireballProjectile {
+    pub origin: FireballProjectileOrigin,
     pub source_entity_index: u16,
     pub entity_rng: u16,
     pub owner_entity_index: u16,

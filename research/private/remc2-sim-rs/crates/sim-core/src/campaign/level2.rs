@@ -2908,6 +2908,7 @@ impl Level2ResetSession {
                         .economy
                         .spawn_fireball_projectile_with_payload(
                             level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                                origin: FireballProjectileOrigin::PlayerSpell,
                                 position: launch_position,
                                 yaw: launch_yaw,
                                 pitch: launch_pitch,
@@ -2917,6 +2918,7 @@ impl Level2ResetSession {
                                 source_subspell_index: holder.subspell_index,
                                 source_mana: holder.mana,
                                 source_dword_0x10,
+                                target_source_entity_index: 0,
                             },
                             actual_speed,
                         );
@@ -3248,6 +3250,7 @@ impl Level2ResetSession {
                         .economy
                         .spawn_fireball_projectile_with_payload(
                             level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                                origin: FireballProjectileOrigin::PlayerSpell,
                                 position: launch_position,
                                 yaw: launch_yaw,
                                 pitch: launch_pitch,
@@ -3257,6 +3260,7 @@ impl Level2ResetSession {
                                 source_subspell_index: holder.subspell_index,
                                 source_mana: holder.mana,
                                 source_dword_0x10,
+                                target_source_entity_index: 0,
                             },
                             parent.actual_speed,
                         );
@@ -11240,6 +11244,32 @@ impl Level2ResetSession {
                                 player_index: -1,
                                 sound_id,
                             });
+                        }
+                        if let Some(launch) = step.fireball {
+                            let source_arena = &mut self.session.state.live.economy;
+                            let spawned =
+                                source_arena.economy.spawn_fireball_projectile_with_payload(
+                                    level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                                        origin: FireballProjectileOrigin::Firefly,
+                                        position: launch.position,
+                                        yaw: launch.yaw,
+                                        pitch: launch.pitch,
+                                        axis_position: launch.target_position,
+                                        source_id_entity_index: launch.owner_entity_index,
+                                        holder_entity_index: 0,
+                                        source_subspell_index: launch.payload,
+                                        source_mana: 0,
+                                        source_dword_0x10: 0,
+                                        target_source_entity_index: launch.target_entity_index,
+                                    },
+                                    0,
+                                );
+                            if spawned.is_some() {
+                                let _ = Level2EconomyState::apply_firefly_fireball_target_feedback(
+                                    &mut source_arena.entities,
+                                    launch.target_entity_index,
+                                );
+                            }
                         }
                         if let Some(contact) = step.contact {
                             let local_player = self.session.state.live.core.state.entity_index;

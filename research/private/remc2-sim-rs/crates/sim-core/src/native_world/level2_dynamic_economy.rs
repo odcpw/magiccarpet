@@ -22,6 +22,7 @@ const POSSESSION_TARGET_Z_SHIFT: i16 = 28;
 /// the constructor identity and its `byte_0x44` selector into the live row.
 const POSSESSION_TIERED_PROJECTILE_MODEL: u8 = 17;
 const POSSESSION_TIERED_PROJECTILE_ACTION: u8 = 18;
+const FIREFLY_FIREBALL_PITCH_TURN_LIMIT: i16 = 22;
 
 const fn possession_source_byte_0x44(physical_tier: u8) -> u8 {
     match physical_tier {
@@ -300,6 +301,7 @@ pub struct Level2CastleProjectileLaunchPayload {
 /// transform; the economy owns only the arena product and its callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2FireballProjectileLaunchPayload {
+    pub origin: FireballProjectileOrigin,
     pub position: Position,
     pub yaw: i16,
     pub pitch: i16,
@@ -309,6 +311,7 @@ pub struct Level2FireballProjectileLaunchPayload {
     pub source_subspell_index: u16,
     pub source_mana: i32,
     pub source_dword_0x10: i32,
+    pub target_source_entity_index: u16,
 }
 
 /// One live source-list row eligible for Fireball target acquisition. The
@@ -471,6 +474,7 @@ impl Level2EconomyState {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let projectile = Level2FireballProjectile {
+            origin: payload.origin,
             source_entity_index,
             entity_rng,
             owner_entity_index: payload.source_id_entity_index,
@@ -494,8 +498,8 @@ impl Level2EconomyState {
             life: FIREBALL_LIFETIME_TICKS,
             max_life: FIREBALL_LIFETIME_TICKS,
             dword_0x10: payload.source_dword_0x10,
-            target_source_entity_index: 0,
-            acquisition_attempted: false,
+            target_source_entity_index: payload.target_source_entity_index,
+            acquisition_attempted: payload.origin == FireballProjectileOrigin::Firefly,
             threat_accounted: false,
             control_flags: 0,
             source_word_2c: 0,
@@ -521,6 +525,26 @@ impl Level2EconomyState {
             .insert(source_entity_index, payload.source_id_entity_index);
         self.fireball_projectiles.push(projectile);
         Some(source_entity_index)
+    }
+
+    /// Source `sub_1CC20` applies `sub_5EF70` to the bound player only after
+    /// the Firefly's NewEvent allocation succeeds. Keep that target-side
+    /// entity write beside the shared projectile constructor so callers
+    /// cannot publish feedback for a failed allocation.
+    pub(super) fn apply_firefly_fireball_target_feedback(
+        imported_entities: &mut [EntitySnapshot],
+        target_entity_index: u16,
+    ) -> bool {
+        let Some(target) = imported_entities
+            .get_mut(usize::from(target_entity_index))
+            .filter(|target| {
+                target.active && target.life >= 0 && target.class == 3 && target.model == 0
+            })
+        else {
+            return false;
+        };
+        target.apply_source_sub_5ef70();
+        true
     }
 
     /// Submit one source-shaped Fireball damage mailbox write. The target is
@@ -578,7 +602,24 @@ impl Level2EconomyState {
         };
         let mut projectile = self.fireball_projectiles[projectile_index];
 
-        if projectile.target_source_entity_index == 0 {
+        if projectile.origin == FireballProjectileOrigin::Firefly {
+            if let Some(target) =
+                imported_entities.get(usize::from(projectile.target_source_entity_index))
+                && target.active
+                && target.life >= 0
+                && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+            {
+                let (_, desired_pitch) =
+                    projectile_guidance_angles(projectile.position, target.position);
+                projectile.roll = projectile.yaw;
+                projectile.fov = desired_pitch;
+                projectile.pitch = projectile.pitch.wrapping_add(turn_toward(
+                    projectile.pitch,
+                    desired_pitch,
+                    FIREFLY_FIREBALL_PITCH_TURN_LIMIT,
+                )) & 0x07ff;
+            }
+        } else if projectile.target_source_entity_index == 0 {
             if !projectile.acquisition_attempted {
                 projectile.acquisition_attempted = true;
                 let mut best = None;

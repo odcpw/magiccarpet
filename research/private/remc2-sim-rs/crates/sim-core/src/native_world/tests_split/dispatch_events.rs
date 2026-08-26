@@ -5543,6 +5543,7 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
         exhausted
             .spawn_fireball_projectile_with_payload(
                 level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                    origin: FireballProjectileOrigin::PlayerSpell,
                     position: Position::default(),
                     yaw: 0,
                     pitch: 0,
@@ -5552,6 +5553,7 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
                     source_subspell_index: 250,
                     source_mana: 20,
                     source_dword_0x10: 0,
+                    target_source_entity_index: 0,
                 },
                 0,
             )
@@ -5583,6 +5585,7 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
     let source_slot = economy
         .spawn_fireball_projectile_with_payload(
             level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                origin: FireballProjectileOrigin::PlayerSpell,
                 position: bee.position,
                 yaw: 0,
                 pitch: 0,
@@ -5592,6 +5595,7 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
                 source_subspell_index: 250,
                 source_mana: 20,
                 source_dword_0x10: 0,
+                target_source_entity_index: 0,
             },
             0,
         )

@@ -2549,6 +2549,190 @@ mod tests {
             "the ordinary nonlethal player visit clears the attacker mailbox"
         );
 
+        // The same real package Firefly also owns action 154's state-5
+        // fireball producer. Stage only its package-reachable substate,
+        // cadence, and geometry; allocation, target feedback, numeric source
+        // scheduling, guidance, and impact handling stay on the production
+        // arena path rather than a Firefly-only test path.
+        let mut fireball_route = charge_route.clone();
+        let fireball_player = fireball_route.level2_compatibility().state;
+        assert!(
+            fireball_route
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_authored_firefly_fireball_prerequisite_for_test(
+                    attack_slot,
+                    fireball_player.position,
+                )
+        );
+        let staged_firing = *fireball_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the real Firefly is staged for its state-5 firing cadence");
+        let firing_motion = expected_motion(&fireball_route, &staged_firing);
+
+        let mut fireball_failure = fireball_route.clone();
+        let target_word36_before = fireball_failure.level2_compatibility().entities()
+            [usize::from(fireball_player.entity_index)]
+        .record_bytes()[58..60]
+            .to_vec();
+        let _ = fireball_failure
+            .level2_compatibility_mut()
+            .economy_mut()
+            .exhaust_new_event_capacity_for_test()
+            .expect("the shared arena has capacity to exhaust for the Firefly negative");
+        let _ = fireball_failure.step(PlayerCommand::default(), 0);
+        assert!(
+            fireball_failure
+                .level2_compatibility()
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .all(|projectile| projectile.origin
+                    != crate::native_world::FireballProjectileOrigin::Firefly)
+        );
+        assert_eq!(
+            fireball_failure.level2_compatibility().entities()
+                [usize::from(fireball_player.entity_index)]
+            .record_bytes()[58..60]
+                .to_vec(),
+            target_word36_before,
+            "failed NewEvent allocation cannot publish Firefly target feedback"
+        );
+        let failed_firing = fireball_failure
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("allocation failure retains the firing Firefly");
+        assert_eq!(
+            (failed_firing.action, failed_firing.byte_0x46_70),
+            (154, 5),
+            "state 5 remains eligible to retry after allocation failure"
+        );
+
+        let _ = fireball_route.step(PlayerCommand::default(), 0);
+        let fired_player = fireball_route.level2_compatibility().state;
+        let fired_root = *fireball_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the firing Firefly remains live");
+        assert_eq!(
+            (
+                fired_root.action,
+                fired_root.byte_0x46_70,
+                fired_root.source_byte_3e,
+                fired_root.position,
+            ),
+            (154, 5, 141, firing_motion.position),
+            "state 5 moves, allocates, and takes one common source epilogue"
+        );
+        let projectile = *fireball_route
+            .level2_compatibility()
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .find(|projectile| {
+                projectile.origin == crate::native_world::FireballProjectileOrigin::Firefly
+                    && projectile.owner_entity_index == attack_slot
+            })
+            .expect("the real Firefly allocates one shared class-9 projectile");
+        assert_eq!(
+            (
+                projectile.source_class,
+                projectile.source_model,
+                projectile.action,
+                projectile.holder_entity_index,
+                projectile.source_subspell_index,
+                projectile.payload,
+                projectile.target_source_entity_index,
+                projectile.actual_speed,
+                projectile.life,
+            ),
+            (
+                9,
+                0,
+                0,
+                0,
+                500,
+                500,
+                fireball_player.entity_index,
+                384,
+                if projectile.source_entity_index > attack_slot {
+                    20
+                } else {
+                    21
+                },
+            )
+        );
+        assert_eq!(projectile.yaw, staged_firing.yaw);
+        assert_eq!(
+            i16::from_le_bytes(
+                fireball_route.level2_compatibility().entities()
+                    [usize::from(fireball_player.entity_index)]
+                .record_bytes()[58..60]
+                    .try_into()
+                    .expect("Firefly target feedback bytes"),
+            ),
+            100,
+            "sub_5EF70 target feedback follows successful allocation"
+        );
+        let projectile_callback_on_birth = projectile.source_entity_index > attack_slot;
+        let fireball_receipts = fireball_route
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        assert_eq!(
+            fireball_receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    slot,
+                    ..
+                } if *slot == projectile.source_entity_index
+            )),
+            projectile_callback_on_birth
+        );
+        assert_eq!(
+            fireball_receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::EpilogueCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    slot,
+                    ..
+                } if *slot == projectile.source_entity_index
+            )),
+            projectile_callback_on_birth
+        );
+        assert!(
+            crate::legacy_sqrt({
+                let dx = i32::from(
+                    fired_player
+                        .position
+                        .x
+                        .wrapping_sub(projectile.position.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    fired_player
+                        .position
+                        .y
+                        .wrapping_sub(projectile.position.y)
+                        .cast_signed(),
+                );
+                dx.wrapping_mul(dx)
+                    .cast_unsigned()
+                    .wrapping_add(dy.wrapping_mul(dy).cast_unsigned())
+            }) > 768,
+            "the focused birth remains outside impact range and proves the distinct flyer row"
+        );
+
         let mut allocation_failure = campaign.clone();
         let restored_slot = allocation_failure
             .level2_compatibility_mut()
