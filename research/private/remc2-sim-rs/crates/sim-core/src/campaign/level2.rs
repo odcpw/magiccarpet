@@ -11463,6 +11463,35 @@ impl Level2ResetSession {
             pickup.phase = pickup.phase.wrapping_add(1);
             pickup.record[66] = pickup.phase;
         }
+        let Some((action, position)) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup(source_slot)
+            .map(|pickup| (pickup.action, pickup.position))
+        else {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: "dynamic spell pickup lost its shared entity projection".to_owned(),
+            });
+            return false;
+        };
+        if !self
+            .session
+            .state
+            .live
+            .economy
+            .sync_spell_pickup_projection(source_slot, action, position)
+        {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: "dynamic spell pickup lost its source-arena projection".to_owned(),
+            });
+            return false;
+        }
         let remains_live = self
             .session
             .state

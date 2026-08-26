@@ -2809,6 +2809,29 @@ impl Level2EconomyState {
             .is_ok()
     }
 
+    /// Keep the shared class-15 entity projection and the source-arena cursor
+    /// on the same live row after `sub_68FF0` changes an ordinary pickup into
+    /// its active holder. The scheduler resolves the next visit from this
+    /// arena selector, so retaining the pre-acquisition action would dispatch
+    /// a stale callback even though the entity record already says otherwise.
+    pub(super) fn sync_spell_pickup_projection(
+        &mut self,
+        source_slot: u16,
+        action: u8,
+        position: Position,
+    ) -> bool {
+        let Some(source) = self
+            .spell_pickups
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.action = action;
+        source.position = position;
+        true
+    }
+
     pub fn step_authored_model45_slot(&mut self, source_slot: u16) -> bool {
         let Some(source) = self
             .authored_model45

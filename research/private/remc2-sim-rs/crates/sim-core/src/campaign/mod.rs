@@ -1703,8 +1703,265 @@ mod tests {
                 .authored_features_consumed
                 .contains(&100)
         );
+
+        // Continue the real row-100 route only as far as ordinary pickup.
+        // Speed casting and the nonzero action-9 lifecycle are a separate
+        // capability: this assertion proves that public flight, collision,
+        // and source cadence convert the same NewEvent row into the player's
+        // holder without substituting the legacy reset-time Speed pickup.
+        let acquisition_cursor = campaign.effect_cursor();
+        let mut saw_overlapping_off_cadence_refusal = false;
+        let mut acquired = None;
+        for _ in 0..512 {
+            let evidence = step_toward(&mut campaign, expected_position);
+            assert!(!evidence.is_empty());
+            assert!(
+                campaign
+                    .events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+            );
+            let unacquired_callback = campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot,
+                        family: 3,
+                        result: None,
+                        ..
+                    } if *source_slot == jar_slot
+                )
+            });
+            acquired = campaign.events().iter().find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot,
+                    family: 3,
+                    result: Some(outcome),
+                    ..
+                } if *source_slot == jar_slot => Some(*outcome),
+                _ => None,
+            });
+            if acquired.is_some() {
+                break;
+            }
+
+            let session = campaign.level2_compatibility();
+            let jar = session
+                .shared_spells()
+                .dynamic_pickups()
+                .iter()
+                .find(|row| row.index == jar_slot)
+                .expect("the uncollected real Speed jar remains live");
+            assert_eq!(jar.action, 10);
+            assert_eq!(
+                u16::from_le_bytes(
+                    jar.record_bytes()[44..46]
+                        .try_into()
+                        .expect("Speed pickup parent relation extent")
+                ),
+                0
+            );
+            assert_eq!(session.players()[0].enabled_spell_holders[3], 0);
+            let player = &session.entities()[usize::from(session.state.entity_index)];
+            let i16_at = |row: &crate::native_world::EntitySnapshot, offset: usize| {
+                i16::from_le_bytes(
+                    row.record_bytes()[offset..offset + 2]
+                        .try_into()
+                        .expect("entity collision extent"),
+                )
+            };
+            let overlaps = crate::level1_mission::source_entities_overlap(
+                jar.position,
+                i16_at(jar, 86),
+                i16_at(jar, 90),
+                i16_at(jar, 92),
+                player.position,
+                i16_at(player, 86),
+                i16_at(player, 90),
+                i16_at(player, 92),
+            );
+            let callback_phase = jar.phase.wrapping_sub(1);
+            if unacquired_callback && overlaps && callback_phase & 3 != 0 {
+                saw_overlapping_off_cadence_refusal = true;
+            }
+        }
+        assert!(
+            saw_overlapping_off_cadence_refusal,
+            "an overlapping off-cadence callback must leave the real jar unowned"
+        );
+        let acquired = acquired.expect("public flight reaches the real row-100 Speed jar");
+        let player_entity_index = campaign.level2_compatibility().state.entity_index;
+        assert_eq!(
+            (
+                acquired.family,
+                acquired.source_slot,
+                acquired.holder_action,
+                acquired.parent_entity_index,
+                acquired.presentation_timer,
+            ),
+            (3, jar_slot, 9, player_entity_index, 64)
+        );
+
+        let session = campaign.level2_compatibility();
+        let holder = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == jar_slot)
+            .expect("the acquired Speed holder preserves the row-100 source slot");
+        assert_eq!((holder.class, holder.model, holder.action), (15, 3, 9));
+        assert_eq!(
+            u16::from_le_bytes(
+                holder.record_bytes()[44..46]
+                    .try_into()
+                    .expect("Speed holder parent relation extent")
+            ),
+            player_entity_index
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                holder.record_bytes()[58..60]
+                    .try_into()
+                    .expect("Speed holder presentation timer extent")
+            ),
+            64
+        );
+        assert!(session.economy().spell_pickups().iter().any(|row| {
+            row.source_entity_index == jar_slot
+                && row.authored_index == 100
+                && row.family == 3
+                && row.action == 9
+        }));
+        let player = &session.players()[0];
+        assert_eq!(player.enabled_spell_holders[3], jar_slot);
+        assert_eq!(player.acquired_spell_flags[3], 1);
+        assert!(
+            (player.left_spell_slot == 3 && player.left_subspell_index == 0)
+                || (player.right_spell_slot == 3 && player.right_subspell_index == 0)
+        );
+
+        let acquisition_effects = campaign
+            .effects_after(acquisition_cursor, 16_384)
+            .expect("complete Speed acquisition journal page");
+        let pickup_sound_sequence = acquisition_effects
+            .records
+            .iter()
+            .find_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    entity_index,
+                    player_index: -1,
+                    sound_id: 18,
+                    ..
+                }) if entity_index == player_entity_index => Some(record.sequence),
+                _ => None,
+            })
+            .expect("ordinary Speed acquisition sound 18");
+        let acquired_sequence = acquisition_effects
+            .records
+            .iter()
+            .find_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::SharedSpell(
+                    crate::native_world::Level2SharedSpellEvent::SpellAcquired {
+                        source_slot,
+                        player_entity_index: owner,
+                        family: 3,
+                        holder_action: 9,
+                    },
+                ) if source_slot == jar_slot && owner == player_entity_index => {
+                    Some(record.sequence)
+                }
+                _ => None,
+            })
+            .expect("ordinary Speed holder acquisition event");
+        assert!(pickup_sound_sequence < acquired_sequence);
+
+        let acquired_phase = holder.phase;
+        let following_evidence = campaign.step(PlayerCommand::default(), 0);
+        assert!(!following_evidence.is_empty());
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        assert!(campaign.events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::SpellAcquisition {
+                source_slot,
+                family: 3,
+                result: Some(_),
+                ..
+            } if *source_slot == jar_slot
+        )));
+        let session = campaign.level2_compatibility();
+        assert!(
+            session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| {
+                    matches!(
+                        receipt,
+                        ScheduleReceipt::SlotResolved {
+                            pass: SourcePass::UpdateEntities,
+                            slot,
+                            selector,
+                            ..
+                        } if *slot == jar_slot
+                            && selector.registry_key().selector
+                                == crate::campaign::spec::BehaviorSelector::ClassAction {
+                                    class: 15,
+                                    action: 9,
+                                }
+                    )
+                })
+        );
+        assert!(
+            session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted {
+                        pass: SourcePass::UpdateEntities,
+                        slot,
+                        ..
+                    } if *slot == jar_slot
+                ))
+        );
+        let holder = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == jar_slot)
+            .expect("the following action-9 visit retains the Speed holder");
+        let arena_holder = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|row| row.source_entity_index == jar_slot)
+            .expect("the following visit retains the source-arena row");
+        assert_eq!((holder.action, arena_holder.action), (9, 9));
+        assert_eq!(
+            (holder.phase, arena_holder.phase),
+            (
+                acquired_phase.wrapping_add(1),
+                acquired_phase.wrapping_add(1)
+            )
+        );
+
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
+        assert_eq!(
+            campaign.level2_compatibility().players()[0].enabled_spell_holders[3],
+            0
+        );
+        assert!(
+            campaign
+                .level2_compatibility()
+                .shared_spells()
+                .dynamic_pickups()
+                .is_empty()
+        );
     }
 
     /// mc-iol7n census receipt: the fifteen live Level 3 reset selectors.
