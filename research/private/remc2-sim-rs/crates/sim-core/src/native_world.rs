@@ -1739,7 +1739,7 @@ fn select_level2_bee_class3_target(
     selected.map(|(target_index, _)| target_index)
 }
 
-/// Authored class-11 model-0/model-1/model-12 switch producer materialized by
+/// Authored class-11 model-0/model-1/model-12/model-17 switch producer materialized by
 /// the source `sub_4A1E0` group scan.  The authored `stage_tag` is copied into
 /// the live entity id and is therefore the next activation group, while the
 /// source phase/cooldown words remain mutable across outer turns.
@@ -1942,9 +1942,10 @@ pub struct Level2AuthoredModel53Source {
     pub active: bool,
 }
 
-/// The class-10/model-5/action-5 water splash created by remc2's
-/// `NewAdd0A05_4E570` for the model-53 water branch. It is a live mapped
-/// source row; its own action callback remains a later presentation slice.
+/// The class-10/model-5/action-5 effect created by remc2's
+/// `NewAdd0A05_4E570`, including authored group rows and model-53's water
+/// branch. It remains a live mapped source row until its action-5 lifecycle
+/// retires it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredModel5WaterSplashSource {
     pub source_entity_index: u16,
@@ -2515,7 +2516,9 @@ pub struct Level2HouseResidentSource {
     pub position: Position,
     pub model: u8,
     pub action: u8,
+    pub life: i32,
     pub phase: u8,
+    pub drawing_enabled: bool,
     pub active: bool,
 }
 

@@ -3348,7 +3348,7 @@ fn level_two_authored_model32_switch_reaches_group17_bees_from_production_turns(
         .expect("row-206 model-32 source");
     assert!(row206.fired);
     assert!(!row206.drawing_enabled);
-    assert_eq!(session.runtime.objectives[0].done, 1);
+    assert_eq!(session.runtime.objectives[0].done, 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated {

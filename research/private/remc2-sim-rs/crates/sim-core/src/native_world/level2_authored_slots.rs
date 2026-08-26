@@ -1269,7 +1269,7 @@ impl Level2EconomyState {
         selected
     }
 
-    /// Allocate one authored class-11 model-0/model-1/model-12 switch producer using
+    /// Allocate one authored class-11 model-0/model-1/model-12/model-17 switch producer using
     /// the shared `NewEvent_4A050` source arena.  `stage_tag` is the source
     /// entity id consumed by the next `sub_4A1E0` group scan.
     pub fn allocate_authored_switch_producer(
@@ -1281,7 +1281,7 @@ impl Level2EconomyState {
         position: Position,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredSwitchProducerSource> {
-        if !matches!(model, 0 | 1 | 12) || stage_tag == 0 {
+        if !matches!(model, 0 | 1 | 12 | 17) || stage_tag == 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -1835,9 +1835,10 @@ impl Level2EconomyState {
         true
     }
 
-    /// Materialize remc2's `NewAdd0A05_4E570` consumer for the model-53 water
-    /// branch. The constructor is class 10/model 5/action 5, max/life 8,
-    /// subspell 0, control dword 0x20000, grounded, mapped, and sprite 244.
+    /// Materialize remc2's shared `NewAdd0A05_4E570` constructor. Authored
+    /// group rows and model-53's water branch both produce class 10/model 5/
+    /// action 5 with max/life 8, subspell 0, control dword 0x20000, grounded,
+    /// mapped, and sprite 244.
     pub fn allocate_authored_model5_water_splash(
         &mut self,
         position: Position,
@@ -2600,7 +2601,9 @@ impl Level2EconomyState {
             position: request.position,
             model: request.model,
             action: request.action,
+            life: 1_000,
             phase: source_entity_index as u8,
+            drawing_enabled: true,
             active: true,
         };
         self.source_rng.insert(source_entity_index, entity_rng);
@@ -7013,8 +7016,10 @@ impl Level2EconomyState {
                 source.model,
                 source.action,
                 source.phase,
+                u8::from(source.drawing_enabled),
                 u8::from(source.active),
             ]);
+            hasher.update(source.life.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());

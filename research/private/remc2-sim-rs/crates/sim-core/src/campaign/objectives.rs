@@ -99,7 +99,11 @@ mod tests {
             .find(|source| source.authored_index == 206)
             .expect("row 206 remains available at its following-turn callback");
         assert!(row206.fired);
-        assert_eq!(session.runtime().objectives[0].done, 1);
+        assert_eq!(
+            session.runtime().objectives[0].done,
+            0,
+            "the post-UpdateEntities objective phase consumes the frame-local pause"
+        );
 
         let mut early = level_two_session();
         early.state.position = row11_position;

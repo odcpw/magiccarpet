@@ -431,6 +431,9 @@ struct Level2SourceSchedulerWorld<'session, 'evidence> {
     /// membership for the complete pass even if an earlier callback creates
     /// or retires a matching row.
     pass_start_class5_model3_present: bool,
+    /// The corresponding fixed class-5/model-4 Archer membership consumed
+    /// by class-11/action-17.
+    pass_start_class5_model4_present: bool,
     /// Fixed UpdateEntities class-5 model buckets. Membership is rebuilt once
     /// before the numeric scan; callbacks read member fields live.
     pass_start_class5_model_slots: [Vec<u16>; 29],
@@ -644,6 +647,27 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     });
                 self.pass_start_class5_model3_present =
                     imported_present || typed_root_present || typed_child_present;
+                self.pass_start_class5_model4_present =
+                    economy.entities.iter().any(|entity| {
+                        entity.active
+                            && entity.class == 5
+                            && entity.model == 4
+                            && entity.life >= 0
+                            && !entity.drawing_disabled()
+                            && !matches!(entity.action, 180 | 232 | 234)
+                    }) || economy.economy.authored_class5().iter().any(|source| {
+                        source.active
+                            && source.model == 4
+                            && source.life >= 0
+                            && source.drawing_enabled
+                            && !matches!(source.action, 180 | 232 | 234)
+                    }) || economy.economy.house_residents().iter().any(|source| {
+                        source.active
+                            && source.model == 4
+                            && source.life >= 0
+                            && source.drawing_enabled
+                            && !matches!(source.action, 180 | 232 | 234)
+                    });
                 self.pass_start_class5_model_slots = std::array::from_fn(|_| Vec::new());
                 for entity in economy.entities.iter().filter(|entity| {
                     entity.active
@@ -876,6 +900,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             &self.goat_players,
             &self.pass_start_mana_sphere_slots,
             self.pass_start_class5_model3_present,
+            self.pass_start_class5_model4_present,
             &self.pass_start_class5_model_slots,
             &self.pass_start_castle_auxiliary_membership,
             self.pass_start_castle_root_slot,
@@ -4220,7 +4245,16 @@ impl Level2ResetSession {
             else {
                 continue;
             };
-            if objective.done != 0 || objective.is_level_end != 0 {
+            if objective.done != 0 {
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .consume_objective_done_pause_for(objective_index);
+                continue;
+            }
+            if objective.is_level_end != 0 {
                 continue;
             }
             let mut completed = Vec::new();
@@ -6754,8 +6788,8 @@ impl Level2ResetSession {
                 (feature.kind, feature.subtype),
                 (2, 0 | 1)
                     | (5, 2 | 3 | 4 | 9 | 14)
-                    | (10, 1 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 76)
-                    | (11, 0 | 1 | 32)
+                    | (10, 1 | 5 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 76)
+                    | (11, 0 | 1 | 17 | 32)
                     | (14, 3 | 5)
                     | (15, 2 | 6 | 11)
             )
@@ -6764,6 +6798,30 @@ impl Level2ResetSession {
                 "authored group {target_group} reaches unsupported constructor {}/{} at row {}",
                 feature.kind, feature.subtype, feature.index
             ));
+        }
+
+        for feature in rows
+            .iter()
+            .filter(|feature| (feature.kind, feature.subtype) == (11, 17))
+        {
+            let target_group = u16::try_from(feature.stage_tag).map_err(|_| {
+                format!(
+                    "authored countdown row {} has invalid target group {}",
+                    feature.index, feature.stage_tag
+                )
+            })?;
+            if target_group == 0 {
+                return Err(format!(
+                    "authored countdown row {} has zero target group",
+                    feature.index
+                ));
+            }
+            i16::try_from(feature.word_10).map_err(|_| {
+                format!(
+                    "authored countdown row {} has invalid word_10 {}",
+                    feature.index, feature.word_10
+                )
+            })?;
         }
 
         let mut consumed = Vec::with_capacity(rows.len());
@@ -6803,7 +6861,32 @@ impl Level2ResetSession {
                         );
                     }
                 }
-                (5, model @ (3 | 4 | 9 | 14)) => {
+                (5, 4) => {
+                    let position = feature.world_position(
+                        self.canonical_terrain()
+                            .ground_height(feature.world_position(0)),
+                    );
+                    if self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .allocate_campaign_archer(
+                            feature.index,
+                            position,
+                            &self.session.state.live.terrain,
+                        )
+                        .is_some()
+                    {
+                        self.session
+                            .state
+                            .live
+                            .level2_class5_activated
+                            .insert(feature.index);
+                    }
+                }
+                (5, model @ (3 | 9 | 14)) => {
                     let position = feature.world_position(
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
@@ -6851,6 +6934,13 @@ impl Level2ResetSession {
                             .level2_model1_activated
                             .insert(feature.index);
                     }
+                }
+                (10, 5) => {
+                    let position = feature.world_position(0);
+                    let live = &mut self.session.state.live;
+                    let _ = live
+                        .economy
+                        .allocate_authored_model5_water_splash(position, &live.terrain);
                 }
                 (10, 6) => {
                     if self
@@ -7014,6 +7104,37 @@ impl Level2ResetSession {
                             u8::try_from(model).expect("authored switch model fits u8"),
                             u16::try_from(feature.stage_tag).unwrap_or_default(),
                             i16::try_from(feature.word_10).unwrap_or(i16::MAX),
+                            position,
+                            &self.session.state.live.terrain,
+                        )
+                        .is_some()
+                    {
+                        self.session
+                            .state
+                            .live
+                            .level2_switch_producers_activated
+                            .insert(feature.index);
+                    }
+                }
+                (11, 17) => {
+                    let target_group = u16::try_from(feature.stage_tag)
+                        .expect("authored countdown target was preflighted");
+                    let word_10 = i16::try_from(feature.word_10)
+                        .expect("authored countdown word_10 was preflighted");
+                    let position = feature.world_position(
+                        self.canonical_terrain()
+                            .ground_height(feature.world_position(0)),
+                    );
+                    if self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .allocate_authored_switch_producer(
+                            feature.index,
+                            17,
+                            target_group,
+                            word_10,
                             position,
                             &self.session.state.live.terrain,
                         )
@@ -9583,7 +9704,10 @@ impl Level2ResetSession {
                         | ExistingHandler::TraderFamily
                 ),
                 Level2DynamicArenaKind::AuthoredSwitchProducer => {
-                    handler == ExistingHandler::SwitchProducers
+                    matches!(
+                        handler,
+                        ExistingHandler::SwitchProducers | ExistingHandler::CountdownSwitch
+                    )
                 }
                 Level2DynamicArenaKind::AuthoredTree => handler == ExistingHandler::TreeLifecycle,
                 Level2DynamicArenaKind::AuthoredModel32 => {
@@ -9608,6 +9732,7 @@ impl Level2ResetSession {
         goat_players: &[GoatPlayerTarget],
         pass_start_mana_sphere_slots: &BTreeSet<u16>,
         pass_start_class5_model3_present: bool,
+        pass_start_class5_model4_present: bool,
         pass_start_class5_model_slots: &[Vec<u16>; 29],
         pass_start_castle_auxiliary_membership:
             &level2_dynamic_economy::Level2CastleAuxiliaryMembership,
@@ -9623,6 +9748,19 @@ impl Level2ResetSession {
                     pass,
                     source_slot,
                     pass_start_class5_model3_present,
+                )?;
+            }
+            (
+                ExistingHandler::CountdownSwitch,
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::AuthoredSwitchProducer,
+                    ..
+                }),
+            ) => {
+                self.step_authored_countdown_switch(
+                    pass,
+                    source_slot,
+                    pass_start_class5_model4_present,
                 )?;
             }
             (ExistingHandler::TerrainStripController, Level2SourceRoute::Imported) => {
@@ -10857,6 +10995,62 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    fn step_authored_countdown_switch(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+        pass_start_archer_present: bool,
+    ) -> std::result::Result<(), String> {
+        let (target_group, outcome) = {
+            let source = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_switch_producers
+                .iter_mut()
+                .find(|source| {
+                    source.active
+                        && source.source_entity_index == source_slot
+                        && source.source_class == 11
+                        && source.model == 17
+                        && source.action == 17
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "countdown-switch callback lost class-11/model-17/action-17 source slot {source_slot}"
+                    )
+                })?;
+            let outcome = countdown_switch::step_absence_countdown(
+                &mut source.dword_0x10,
+                pass_start_archer_present,
+            );
+            (source.stage_tag, outcome)
+        };
+
+        if outcome != countdown_switch::CountdownSwitchStep::Fire {
+            return Ok(());
+        }
+
+        mark_source_audio_call(SourceAudioCallTag::CountdownSwitchModel17);
+        self.push_flight_effect(FlightEvent::PrepareSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::CountdownSwitch,
+            entity_index: source_slot,
+            player_index: -1,
+            sound_id: 41,
+        });
+        self.consume_authored_group(pass, source_slot, target_group)?;
+        self.session
+            .state
+            .live
+            .economy
+            .economy
+            .complete_authored_switch_producer_slot(source_slot);
+        Ok(())
+    }
+
     /// Dispatch one reset-imported class-11 switch at its numeric source
     /// slot. This replaces the old pre-dispatch side wrapper: source player
     /// membership is rebuilt before the scan, the live selector is read at
@@ -11150,6 +11344,7 @@ impl Level2ResetSession {
             goat_players: Vec::new(),
             pass_start_mana_sphere_slots: BTreeSet::new(),
             pass_start_class5_model3_present: false,
+            pass_start_class5_model4_present: false,
             pass_start_class5_model_slots: std::array::from_fn(|_| Vec::new()),
             pass_start_castle_auxiliary_membership: Default::default(),
             pass_start_castle_root_slot: None,

@@ -1083,6 +1083,277 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cf15_level1_group3_materializes_archers_and_freezes_countdown_from_real_flight() {
+        const GROUP_ROWS: [u16; 6] = [101, 102, 103, 106, 109, 153];
+        const ARCHER_ROWS: [u16; 4] = [101, 102, 103, 106];
+        const GROUP13_MODEL5_ROWS: [u16; 9] = [295, 296, 297, 298, 299, 300, 301, 302, 303];
+
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens through the shared engine");
+        let reset_hash = campaign.state_hash();
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .mission()
+                .authored_features()
+                .iter()
+                .filter(|row| row.activation_group == 3 && row.kind != 0)
+                .map(|row| row.index)
+                .collect::<Vec<_>>(),
+            GROUP_ROWS
+        );
+
+        let step_toward = |campaign: &mut CampaignSession, target: crate::Position| {
+            let state = campaign.level2_compatibility().state;
+            let desired = i16::try_from(crate::heading_for_positions(state.position, target))
+                .expect("source heading is 11-bit");
+            let correction = crate::turn_toward(state.yaw, desired, 127);
+            campaign.step(
+                PlayerCommand {
+                    roll: correction.clamp(-24, 24) as i8,
+                    // Keep the source terrain-relative flight controller
+                    // climbing over the ridge between the two real
+                    // waypoints instead of repeatedly rejecting the same
+                    // horizontal move at ground height.
+                    pitch: -127,
+                    flags: 1,
+                    ..PlayerCommand::default()
+                },
+                0,
+            )
+        };
+        let stage_position = |campaign: &CampaignSession, stage_index: usize| {
+            let stage = &campaign.level2_compatibility().runtime().stages[stage_index];
+            crate::Position {
+                x: stage.axis_x.cast_unsigned(),
+                y: stage.axis_y.cast_unsigned(),
+                z: campaign.level2_compatibility().state.position.z,
+            }
+        };
+
+        let first_waypoint = stage_position(&campaign, 0);
+        let mut saw_group13_model5 = false;
+        for _ in 0..512 {
+            if campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0] == 2 {
+                break;
+            }
+            let _ = step_toward(&mut campaign, first_waypoint);
+            let activated_group13 = campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 13,
+                        authored_indices,
+                        ..
+                    } if authored_indices.len() == 33
+                        && authored_indices.ends_with(&GROUP13_MODEL5_ROWS)
+                )
+            });
+            if activated_group13 {
+                let splashes = campaign
+                    .level2_compatibility()
+                    .economy()
+                    .authored_model5_water_splashes();
+                assert_eq!(splashes.len(), GROUP13_MODEL5_ROWS.len());
+                assert!(splashes.iter().all(|source| {
+                    (
+                        source.source_class,
+                        source.model,
+                        source.action,
+                        source.max_life,
+                        source.life,
+                        source.control_flags,
+                        source.sprite_index,
+                        source.active,
+                        source.drawing_enabled,
+                    ) == (10, 5, 5, 8, 7, 0x20_002, 244, true, true)
+                }));
+                saw_group13_model5 = true;
+            }
+        }
+        assert_eq!(
+            campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0],
+            2,
+            "public flight must reach the real first waypoint"
+        );
+
+        let second_waypoint = stage_position(&campaign, 1);
+        let mut activation_evidence = None;
+        for _ in 0..512 {
+            let evidence = step_toward(&mut campaign, second_waypoint);
+            if evidence.is_empty() {
+                panic!(
+                    "public flight source turn failed at {:?}: {:?}",
+                    campaign.level2_compatibility().state.position,
+                    campaign.events()
+                );
+            }
+            let activated_group13 = campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 13,
+                        authored_indices,
+                        ..
+                    } if authored_indices.len() == 33
+                        && authored_indices.ends_with(&GROUP13_MODEL5_ROWS)
+                )
+            });
+            if activated_group13 {
+                let splashes = campaign
+                    .level2_compatibility()
+                    .economy()
+                    .authored_model5_water_splashes();
+                assert_eq!(splashes.len(), GROUP13_MODEL5_ROWS.len());
+                assert!(splashes.iter().all(|source| {
+                    (
+                        source.source_class,
+                        source.model,
+                        source.action,
+                        source.max_life,
+                        source.life,
+                        source.control_flags,
+                        source.sprite_index,
+                        source.active,
+                        source.drawing_enabled,
+                    ) == (10, 5, 5, 8, 7, 0x20_002, 244, true, true)
+                }));
+                saw_group13_model5 = true;
+            }
+            if campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 3,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == GROUP_ROWS
+                )
+            }) {
+                activation_evidence = Some(evidence);
+                break;
+            }
+        }
+        assert_eq!(
+            campaign.level2_compatibility().runtime().objectives[0].stage_selectors[1],
+            2,
+            "public flight ended at {:?} yaw {} speed {}/{} pitch {} without completing the second real waypoint; live model-32 rows {:?}",
+            campaign.level2_compatibility().state.position,
+            campaign.level2_compatibility().state.yaw,
+            campaign.level2_compatibility().state.actual_speed,
+            campaign.level2_compatibility().state.target_speed,
+            campaign.level2_compatibility().state.effective_pitch,
+            campaign
+                .level2_compatibility()
+                .economy()
+                .authored_model32()
+                .iter()
+                .map(|row| (row.authored_index, row.fired))
+                .collect::<Vec<_>>()
+        );
+        let _activation_evidence = activation_evidence
+            .expect("public commanded flight reaches the real objective/model-32 group-3 chain");
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        assert!(saw_group13_model5);
+
+        let session = campaign.level2_compatibility();
+        let archers = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|row| row.model == 4 && ARCHER_ROWS.contains(&row.authored_index))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            archers
+                .iter()
+                .map(|row| row.authored_index)
+                .collect::<Vec<_>>(),
+            ARCHER_ROWS
+        );
+        assert!(archers.iter().all(|row| {
+            row.active && row.drawing_enabled && row.life == 1_000 && row.max_life == 1_000
+        }));
+        assert_eq!(
+            archers.iter().map(|row| row.action).collect::<Vec<_>>(),
+            [35, 33, 33, 33],
+            "the constructor-phase-zero Archer links its nearest already-materialized Archer peer on its same-pass callback"
+        );
+        let countdown = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|row| row.authored_index == 109)
+            .copied()
+            .expect("group-3 row 109 materializes through the shared class-11 arena");
+        assert_eq!(
+            (
+                countdown.model,
+                countdown.action,
+                countdown.stage_tag,
+                countdown.dword_0x10,
+                countdown.active,
+                countdown.drawing_enabled,
+            ),
+            (17, 17, 11, 16, true, true)
+        );
+        assert!(
+            session
+                .economy()
+                .authored_model32()
+                .iter()
+                .any(|row| row.authored_index == 153)
+        );
+
+        let receipts = session.cf10_production_schedule_receipts();
+        for source_slot in archers
+            .iter()
+            .map(|row| row.source_entity_index)
+            .chain(std::iter::once(countdown.source_entity_index))
+        {
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    slot,
+                    ..
+                } if *slot == source_slot
+            )));
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::EpilogueCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    slot,
+                    ..
+                } if *slot == source_slot
+            )));
+        }
+
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let frozen = campaign
+            .level2_compatibility()
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|row| row.authored_index == 109)
+            .expect("live Archer membership retains the countdown producer");
+        assert_eq!(frozen.dword_0x10, 16);
+        assert!(campaign.events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
+        )));
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+    }
+
     /// mc-iol7n census receipt: the fifteen live Level 3 reset selectors.
     const CF14_LEVEL3_LIVE_PAIRS: [(u8, u8); 15] = [
         (2, 0),

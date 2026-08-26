@@ -340,7 +340,7 @@ compiled_registry! {
         (BallisticScenery, 2, [21]);
         (Model9Family, 5, [79]);
         (TerrainStripController, 10, [68, 69]);
-        (CountdownSwitch, 11, [16]);
+        (CountdownSwitch, 11, [16, 17]);
         (TerrainStripController, 14, [6]);
     }
     constructors {
@@ -369,7 +369,7 @@ compiled_registry! {
         (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 79, 91]);
         (TerrainStripController, 10, [63, 64]);
         (SwitchProducers, 11, [0, 1, 4, 12]);
-        (CountdownSwitch, 11, [16]);
+        (CountdownSwitch, 11, [16, 17]);
         (ObjectiveSwitch, 11, [32]);
         (TerrainStripController, 14, [1]);
         (Class14Events, 14, [3, 5]);
@@ -638,7 +638,7 @@ mod tests {
             (2_u16, &[21_u16][..], "ballistic-scenery"),
             (5, &[79][..], "level2-model9-family"),
             (10, &[68, 69][..], "terrain-strip-controller"),
-            (11, &[16][..], "absence-countdown-switch"),
+            (11, &[16, 17][..], "absence-countdown-switch"),
             (14, &[6][..], "terrain-strip-controller"),
         ] {
             for action in actions {
@@ -651,7 +651,7 @@ mod tests {
         for (class, models, handler) in [
             (2_u16, &[8_u16][..], "ballistic-scenery"),
             (10, &[63, 64][..], "terrain-strip-controller"),
-            (11, &[16][..], "absence-countdown-switch"),
+            (11, &[16, 17][..], "absence-countdown-switch"),
             (14, &[1][..], "terrain-strip-controller"),
         ] {
             for model in models {
@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 363);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 365);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -753,7 +753,7 @@ mod tests {
         }
         assert_eq!(expected_handlers.len(), 315);
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 363);
+        assert_eq!(expected_handlers.len(), 365);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

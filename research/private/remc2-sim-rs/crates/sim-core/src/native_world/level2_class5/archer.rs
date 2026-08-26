@@ -304,6 +304,19 @@ impl Level2EconomyState {
         if !is_authored_archer_row(authored_index) {
             return None;
         }
+        self.allocate_campaign_archer(authored_index, position, terrain)
+    }
+
+    /// Allocate a package-admitted class-5/model-4 row through the shared
+    /// Archer constructor. The campaign adapter has already established the
+    /// row's class/model identity, so source record numbers are data here,
+    /// not an engine-level Level-2 allowlist.
+    pub(crate) fn allocate_campaign_archer(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredClass5Source> {
         let state_before = self.clone();
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);

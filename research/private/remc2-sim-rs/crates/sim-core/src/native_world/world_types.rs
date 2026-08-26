@@ -3375,6 +3375,20 @@ impl RuntimeSnapshot {
         }
     }
 
+    /// Consume one owner's frame-local ObjectiveDone pause. remc2's
+    /// `sub_58F00_game_objectives` decrements this byte and skips that owner's
+    /// objective predicates for the same post-UpdateEntities visit.
+    pub(super) fn consume_objective_done_pause_for(&mut self, index: usize) {
+        let Some(objective) = self.objectives.get_mut(index) else {
+            return;
+        };
+        if objective.done == 0 {
+            return;
+        }
+        objective.done = objective.done.wrapping_sub(1);
+        self.bytes[304 + index * 11 + 2] = objective.done;
+    }
+
     #[cfg(test)]
     pub(super) fn set_level2_is_level_end(&mut self, state: u8) {
         if let Some(objective) = self.objectives.get_mut(0) {

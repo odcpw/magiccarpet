@@ -864,8 +864,8 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
     assert_eq!(session.level2_objective_pause(), 1);
     assert!(session.economy.entities()[32].drawing_disabled());
     assert_eq!(session.runtime().objectives[0].stage_selectors[3], 2);
-    assert_eq!(session.runtime().objectives[0].done, 1);
-    assert_eq!(session.runtime().bytes()[306], 1);
+    assert_eq!(session.runtime().objectives[0].done, 0);
+    assert_eq!(session.runtime().bytes()[306], 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
         Level2DispatchEvent::DynamicArena {
