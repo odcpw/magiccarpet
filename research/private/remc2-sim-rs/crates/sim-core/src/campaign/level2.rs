@@ -202,24 +202,25 @@ fn validate_semantic_item_dispatch(
 fn validate_semantic_switch_dispatch(
     source_slot: u16,
     switch_kind: Option<SwitchKind>,
+    raw_class: u8,
     raw_model: u8,
     raw_action: u8,
     handler: ExistingHandler,
 ) -> std::result::Result<(), String> {
-    match (switch_kind, raw_model, raw_action, handler) {
-        (Some(SwitchKind::AreaEntryTrigger), 0, 0, ExistingHandler::SwitchProducers)
-        | (Some(SwitchKind::AreaExitTrigger), 1, 1, ExistingHandler::SwitchProducers)
-        | (Some(SwitchKind::LevelExitGate), 4, 4, ExistingHandler::SwitchProducers)
-        | (Some(SwitchKind::ExitSequenceTrigger), 12, 12, ExistingHandler::SwitchProducers)
-        | (Some(SwitchKind::ObjectiveGate), 32, 32, ExistingHandler::ObjectiveSwitch) => Ok(()),
-        (Some(kind), _, _, actual) => Err(format!(
-            "switch source slot {source_slot} is semantic {}, but the MC2 selector resolved model {raw_model} action {raw_action} through {actual:?}",
+    match (switch_kind, raw_class, raw_model, raw_action, handler) {
+        (Some(SwitchKind::AreaEntryTrigger), 11, 0, 0, ExistingHandler::SwitchProducers)
+        | (Some(SwitchKind::AreaExitTrigger), 11, 1, 1, ExistingHandler::SwitchProducers)
+        | (Some(SwitchKind::LevelExitGate), 11, 4, 4, ExistingHandler::SwitchProducers)
+        | (Some(SwitchKind::ExitSequenceTrigger), 11, 12, 12, ExistingHandler::SwitchProducers)
+        | (Some(SwitchKind::ObjectiveGate), 11, 32, 32, ExistingHandler::ObjectiveSwitch) => Ok(()),
+        (Some(kind), _, _, _, actual) => Err(format!(
+            "switch source slot {source_slot} is semantic {}, but the MC2 selector resolved class {raw_class} model {raw_model} action {raw_action} through {actual:?}",
             kind.as_str()
         )),
-        (None, 32, 32, ExistingHandler::ObjectiveSwitch) => Err(format!(
+        (None, 11, 32, 32, ExistingHandler::ObjectiveSwitch) => Err(format!(
             "objective-gate source slot {source_slot} has no package-authored semantic identity"
         )),
-        (None, 0 | 1 | 4 | 12, _, _) => Err(format!(
+        (None, 11, 0 | 1 | 4 | 12, _, _) => Err(format!(
             "switch source slot {source_slot} has package-supported model {raw_model} action {raw_action} but no semantic identity"
         )),
         _ => Ok(()),
@@ -10589,7 +10590,7 @@ impl Level2ResetSession {
                     .economy
                     .entities
                     .get(usize::from(source_slot))
-                    .map(|source| (source.model, source.action)),
+                    .map(|source| (source.class, source.model, source.action)),
                 Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredSwitchProducer,
                     ..
@@ -10602,7 +10603,7 @@ impl Level2ResetSession {
                     .authored_switch_producers()
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
-                    .map(|source| (source.model, source.action)),
+                    .map(|source| (source.source_class, source.model, source.action)),
                 Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredModel32,
                     ..
@@ -10615,15 +10616,17 @@ impl Level2ResetSession {
                     .authored_model32()
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
-                    .map(|source| (source.model, source.action)),
+                    .map(|source| (source.source_class, source.model, source.action)),
                 _ => None,
             };
-            if let Some((raw_model, raw_action)) = raw_selector
-                && (semantic_switch.is_some() || matches!(raw_model, 0 | 1 | 4 | 12 | 32))
+            if let Some((raw_class, raw_model, raw_action)) = raw_selector
+                && (semantic_switch.is_some()
+                    || (raw_class == 11 && matches!(raw_model, 0 | 1 | 4 | 12 | 32)))
             {
                 validate_semantic_switch_dispatch(
                     source_slot,
                     semantic_switch,
+                    raw_class,
                     raw_model,
                     raw_action,
                     visit.handler,
@@ -11237,6 +11240,25 @@ impl Level2ResetSession {
                                 player_index: -1,
                                 sound_id,
                             });
+                        }
+                        if let Some(contact) = step.contact {
+                            let local_player = self.session.state.live.core.state.entity_index;
+                            if contact.target_entity_index != local_player {
+                                return Err(format!(
+                                    "Firefly source slot {source_slot} produced contact for unsupported nonlocal player {}",
+                                    contact.target_entity_index
+                                ));
+                            }
+                            if contact.attacker_entity_index != source_slot {
+                                return Err(format!(
+                                    "Firefly source slot {source_slot} produced mismatched attacker {}",
+                                    contact.attacker_entity_index
+                                ));
+                            }
+                            self.queue_level2_player_contact_damage(
+                                contact.damage,
+                                contact.attacker_entity_index,
+                            );
                         }
                         step.live
                     }
@@ -16812,6 +16834,39 @@ mod tests {
             "dispatch events: {:?}",
             session.dispatch_events()
         );
+    }
+
+    #[test]
+    fn package_stone_is_not_misclassified_as_an_area_exit_switch() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens");
+        let session = campaign.level2_compatibility_mut();
+        let stone_feature = session
+            .session
+            .state
+            .live
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| feature.index == 154)
+            .expect("package group 6 contains its authored Stone");
+        assert_eq!((stone_feature.kind, stone_feature.subtype), (2, 1));
+        let stone_slot = session
+            .allocate_authored_stone_feature(stone_feature)
+            .expect("the real package Stone materializes in the shared source arena");
+        let phase_before = session.entities()[usize::from(stone_slot)].phase;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == stone_slot
+        )));
+        let stone = &session.entities()[usize::from(stone_slot)];
+        assert_eq!((stone.class, stone.model, stone.action), (2, 1, 3));
+        assert_eq!(stone.phase, phase_before.wrapping_add(1));
     }
 
     #[test]

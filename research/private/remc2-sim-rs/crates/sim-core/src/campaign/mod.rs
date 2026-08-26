@@ -213,7 +213,7 @@ mod tests {
         },
         native_world::{
             EntitySpecialRelation, Level2AuthoredClass5Source, Level2DispatchEvent,
-            Level2NyphurDispatchCall, NativeWorld,
+            Level2EconomyEvent, Level2NyphurDispatchCall, NativeWorld,
         },
     };
     use std::{
@@ -1620,18 +1620,28 @@ mod tests {
             .find(|row| row.authored_index == 190)
             .expect("the package group-6 producer remains live")
             .source_entity_index;
-        let _ = firefly_route.step(PlayerCommand::default(), 0);
+        let firefly_birth_evidence = firefly_route.step(PlayerCommand::default(), 0);
         let firefly_session = firefly_route.level2_compatibility();
-        assert!(firefly_route.events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                source_slot,
-                group: 6,
-                authored_indices,
-                ..
-            } if *source_slot == row190_slot
-                && authored_indices.as_ref() == [108, 134, 135, 154, 189, 193]
-        )));
+        assert!(
+            firefly_route.events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot,
+                    group: 6,
+                    authored_indices,
+                    ..
+                } if *source_slot == row190_slot
+                    && authored_indices.as_ref() == [108, 134, 135, 154, 189, 193]
+            )),
+            "row 190 did not activate package group 6: evidence={firefly_birth_evidence:?}, events={:?}, row190={:?}, objective={:?}",
+            firefly_route.events(),
+            firefly_session
+                .economy()
+                .authored_model32()
+                .iter()
+                .find(|row| row.source_entity_index == row190_slot),
+            firefly_session.runtime().objectives[0],
+        );
         assert_eq!(
             firefly_session.runtime().objectives[0].stage_selectors[4],
             1
@@ -2360,6 +2370,183 @@ mod tests {
                 .events()
                 .iter()
                 .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        // Continue the same real package root from its proven charge state.
+        // Only proximity is staged; action, target, timer, RNG, movement,
+        // mailbox publication, player consumption, and source order remain
+        // production-owned.
+        let mut contact_route = charge_route.clone();
+        let contact_player = contact_route.level2_compatibility().state;
+        let player_life_before_contact = contact_route
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .player_life;
+        assert!(
+            contact_route
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_authored_firefly_contact_geometry_for_test(
+                    attack_slot,
+                    contact_player.position,
+                )
+        );
+        let staged_contact = *contact_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the real charging Firefly is staged at contact geometry");
+        let contact_motion = expected_motion(&contact_route, &staged_contact);
+        let mut expected_contact_position = contact_motion.position;
+        let contact_altitude = i32::from(contact_player.position.z)
+            .wrapping_sub(i32::from(expected_contact_position.z))
+            .clamp(-64, 64);
+        expected_contact_position.z = expected_contact_position
+            .z
+            .wrapping_add(contact_altitude as i16);
+        assert!(
+            crate::legacy_sqrt({
+                let dx = i32::from(
+                    contact_player
+                        .position
+                        .x
+                        .wrapping_sub(expected_contact_position.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    contact_player
+                        .position
+                        .y
+                        .wrapping_sub(expected_contact_position.y)
+                        .cast_signed(),
+                );
+                let dz = i32::from(contact_player.position.z)
+                    .wrapping_sub(i32::from(expected_contact_position.z));
+                dx.wrapping_mul(dx)
+                    .cast_unsigned()
+                    .wrapping_add(dy.wrapping_mul(dy).cast_unsigned())
+                    .wrapping_add(dz.wrapping_mul(dz).cast_unsigned())
+            }) < 768,
+            "post-movement and post-altitude geometry must cross the strict source contact radius"
+        );
+        let contact_cursor = contact_route.effect_cursor();
+        let _ = contact_route.step(PlayerCommand::default(), 0);
+        let contacted_player_state = contact_route.level2_compatibility().state;
+        let contact_altitude = i32::from(contacted_player_state.position.z)
+            .wrapping_sub(i32::from(contact_motion.position.z))
+            .clamp(-64, 64);
+        expected_contact_position.z = contact_motion
+            .position
+            .z
+            .wrapping_add(contact_altitude as i16);
+        let contacted = *contact_route
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == attack_slot)
+            .expect("the Firefly survives its charge contact");
+        assert_eq!(
+            (
+                contacted.action,
+                contacted.byte_0x46_70,
+                contacted.source_byte_3e,
+                contacted.entity_rng,
+                contacted.actual_speed,
+                contacted.dword_0x10,
+                contacted.position,
+            ),
+            (154, 9, 75, 3_581, 228, 22, expected_contact_position,),
+            "state 8 moves, decrements, clamps altitude, publishes one contact, then takes one common epilogue"
+        );
+        assert!(
+            contact_route
+                .effects_after(contact_cursor, 16_384)
+                .expect("bounded contact journal page")
+                .records
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        sound_id: 43 | 44,
+                        ..
+                    })
+                )),
+            "contact consumes no private RNG and emits no second charge sound"
+        );
+        if attack_slot > contact_player.entity_index {
+            let player_row = &contact_route.level2_compatibility().entities()
+                [usize::from(contact_player.entity_index)];
+            assert_eq!(
+                (
+                    contact_route
+                        .level2_compatibility()
+                        .session
+                        .state
+                        .live
+                        .player_life,
+                    i32::from_le_bytes(
+                        player_row.record_bytes()[98..102]
+                            .try_into()
+                            .expect("player damage payload bytes"),
+                    ),
+                    u16::from_le_bytes(
+                        player_row.record_bytes()[102..104]
+                            .try_into()
+                            .expect("player attacker bytes"),
+                    ),
+                ),
+                (player_life_before_contact, 300, attack_slot),
+                "a later Firefly slot leaves contact queued for the next player visit"
+            );
+            let _ = contact_route.step(PlayerCommand::default(), 0);
+        }
+        let contact_session = contact_route.level2_compatibility();
+        let damage_events = contact_route
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::Economy {
+                        event: Level2EconomyEvent::DamageApplied {
+                            target_entity_index,
+                            attacker_entity_index,
+                            damage: 300,
+                            lethal: false,
+                        },
+                        ..
+                    } if *target_entity_index == contact_player.entity_index
+                        && *attacker_entity_index == attack_slot
+                )
+            })
+            .count();
+        assert_eq!(damage_events, 1);
+        assert_eq!(
+            contact_session.session.state.live.player_life,
+            player_life_before_contact - 300
+        );
+        let contacted_player =
+            &contact_session.entities()[usize::from(contact_player.entity_index)];
+        let contacted_player_record = contact_session
+            .shared_spells()
+            .players()
+            .iter()
+            .find(|player| player.entity_index == contact_player.entity_index)
+            .expect("the shared local-player record survives Firefly contact");
+        assert_eq!(contacted_player_record.record_bytes()[406], 4);
+        assert_eq!(
+            u16::from_le_bytes(
+                contacted_player.record_bytes()[102..104]
+                    .try_into()
+                    .expect("cleared player attacker bytes"),
+            ),
+            0,
+            "the ordinary nonlethal player visit clears the attacker mailbox"
         );
 
         let mut allocation_failure = campaign.clone();

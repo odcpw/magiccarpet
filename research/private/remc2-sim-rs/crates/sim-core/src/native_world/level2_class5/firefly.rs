@@ -1,9 +1,9 @@
 //! Authored class-5/model-19 Firefly construction, patrol, roaming, and charge.
 //!
 //! The ordinary undamaged actions 159, 153, and 155 and action-154's orbit and
-//! charge branch are implemented here. Fireball emission, charge contact,
-//! Firefly damage, death conversion, and reclaim remain fail-closed until
-//! their source lifecycles are implemented.
+//! charge branch are implemented here. Fireball emission, Firefly damage,
+//! death conversion, and reclaim remain fail-closed until their source
+//! lifecycles are implemented.
 
 use super::super::*;
 use crate::goat::GoatPlayerTarget;
@@ -49,6 +49,14 @@ pub(crate) struct FireflyAttackTarget {
 pub(crate) struct FireflyAttackStep {
     pub(crate) live: bool,
     pub(crate) sound_id: Option<u16>,
+    pub(crate) contact: Option<FireflyContact>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FireflyContact {
+    pub(crate) target_entity_index: u16,
+    pub(crate) attacker_entity_index: u16,
+    pub(crate) damage: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -503,6 +511,7 @@ impl Level2EconomyState {
         };
 
         let mut sound_id = None;
+        let mut contact = None;
         loop {
             match source.byte_0x46_70 {
                 0 => {
@@ -639,9 +648,12 @@ impl Level2EconomyState {
                         && firefly_distance_3d(source.position, target.position)
                             < FIREFLY_CHARGE_CONTACT_RANGE
                     {
-                        return Err(format!(
-                            "Firefly source slot {source_slot} reached the unimplemented charge-contact path"
-                        ));
+                        contact = Some(FireflyContact {
+                            target_entity_index: target.entity_index,
+                            attacker_entity_index: source.source_entity_index,
+                            damage: i32::from(source.subspell_index),
+                        });
+                        source.byte_0x46_70 = 9;
                     }
                     if source.source_byte_3e % FIREFLY_DESCRIPTOR_CADENCE == 0
                         && firefly_distance_3d(source.position, target.position)
@@ -660,7 +672,11 @@ impl Level2EconomyState {
         }
 
         let live = self.commit_authored_firefly_step(source_index, state_index, source, state);
-        Ok(FireflyAttackStep { live, sound_id })
+        Ok(FireflyAttackStep {
+            live,
+            sound_id,
+            contact,
+        })
     }
 
     fn commit_authored_firefly_step(
@@ -786,7 +802,7 @@ impl Level2EconomyState {
     /// Stage only geometry, cadence, and private RNG for the real-package
     /// action-153 player acquisition -> action-154 charge test. The ordinary
     /// scheduler still owns target acquisition, every attack callback, sound,
-    /// charge-contact refusal and phase epilogues.
+    /// contact mailbox routing, and phase epilogues.
     #[cfg(test)]
     pub(crate) fn stage_authored_firefly_charge_prerequisite_for_test(
         &mut self,
@@ -855,6 +871,33 @@ impl Level2EconomyState {
         seeds
             .into_iter()
             .all(|seed| self.map_chains.sync_entity(seed).is_ok())
+    }
+
+    /// Stage only the real charging Firefly's geometry for the strict
+    /// action-154 contact boundary. The scheduler still owns movement, the
+    /// altitude clamp, mailbox publication, player consumption, and phase.
+    #[cfg(test)]
+    pub(crate) fn stage_authored_firefly_contact_geometry_for_test(
+        &mut self,
+        source_slot: u16,
+        target_position: Position,
+    ) -> bool {
+        let Some(source) = self.authored_class5.iter_mut().find(|source| {
+            source.source_entity_index == source_slot
+                && source.model == FIREFLY_MODEL
+                && source.action == FIREFLY_ATTACK_ACTION
+                && source.byte_0x46_70 == 8
+        }) else {
+            return false;
+        };
+        source.position = target_position;
+        let seed = RenderableMapSeed {
+            entity_index: source_slot,
+            active: source.active,
+            x: source.position.x,
+            y: source.position.y,
+        };
+        self.map_chains.sync_entity(seed).is_ok()
     }
 }
 
