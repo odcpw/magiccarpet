@@ -11,7 +11,14 @@ use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CreatureKind {
+    Dragon,
+    Goat,
+    Bee,
+    Worm,
     Archer,
+    Skeleton,
+    Villager,
+    Trader,
     Firefly,
 }
 
@@ -19,7 +26,14 @@ impl CreatureKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Dragon => "dragon",
+            Self::Goat => "goat",
+            Self::Bee => "bee",
+            Self::Worm => "worm",
             Self::Archer => "archer",
+            Self::Skeleton => "skeleton",
+            Self::Villager => "villager",
+            Self::Trader => "trader",
             Self::Firefly => "firefly",
         }
     }

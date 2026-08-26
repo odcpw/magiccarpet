@@ -113,10 +113,22 @@ fn validate_semantic_creature_dispatch(
     match (creature_kind, handler) {
         (Some(kind), actual) => {
             let expected = match kind {
-                CreatureKind::Archer => ExistingHandler::ArcherFamily,
-                CreatureKind::Firefly => ExistingHandler::FireflyFamily,
+                CreatureKind::Dragon => None,
+                CreatureKind::Goat => Some(&[ExistingHandler::GoatFamily][..]),
+                CreatureKind::Bee => Some(&[ExistingHandler::BeeFamily][..]),
+                CreatureKind::Worm => Some(&[ExistingHandler::MultipartFamily][..]),
+                CreatureKind::Archer => Some(&[ExistingHandler::ArcherFamily][..]),
+                CreatureKind::Skeleton => Some(&[ExistingHandler::Model9Family][..]),
+                CreatureKind::Villager => Some(
+                    &[
+                        ExistingHandler::VillagerFamily,
+                        ExistingHandler::BuilderVillagerPostBuild,
+                    ][..],
+                ),
+                CreatureKind::Trader => Some(&[ExistingHandler::TraderFamily][..]),
+                CreatureKind::Firefly => Some(&[ExistingHandler::FireflyFamily][..]),
             };
-            if actual == expected {
+            if expected.is_some_and(|handlers| handlers.contains(&actual)) {
                 Ok(())
             } else {
                 Err(format!(
@@ -125,7 +137,18 @@ fn validate_semantic_creature_dispatch(
                 ))
             }
         }
-        (None, ExistingHandler::ArcherFamily | ExistingHandler::FireflyFamily) => Err(format!(
+        (
+            None,
+            ExistingHandler::GoatFamily
+            | ExistingHandler::BeeFamily
+            | ExistingHandler::MultipartFamily
+            | ExistingHandler::ArcherFamily
+            | ExistingHandler::Model9Family
+            | ExistingHandler::VillagerFamily
+            | ExistingHandler::BuilderVillagerPostBuild
+            | ExistingHandler::TraderFamily
+            | ExistingHandler::FireflyFamily,
+        ) => Err(format!(
             "creature source slot {source_slot} has no package-authored semantic identity"
         )),
         _ => Ok(()),
@@ -4048,7 +4071,18 @@ impl Level2ResetSession {
             .authored_class5()
             .iter()
             .find(|source| source.source_entity_index == source_slot)
-            .map(|source| source.authored_index)?;
+            .map(|source| source.authored_index)
+            .or_else(|| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .authored_bees()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)
+                    .map(|source| source.authored_index)
+            })?;
         self.session
             .definition
             .creature_kind_for_authored_record(authored_record)
@@ -9983,7 +10017,7 @@ impl Level2ResetSession {
         if matches!(
             visit.route,
             Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
-                kind: Level2DynamicArenaKind::AuthoredClass5,
+                kind: Level2DynamicArenaKind::AuthoredClass5 | Level2DynamicArenaKind::AuthoredBee,
                 ..
             })
         ) {

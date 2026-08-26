@@ -30,7 +30,14 @@ impl Mc2LevelDefinition {
             let kind = match (feature.kind, feature.subtype) {
                 // `sub_4A310` constructor identities. These numbers remain
                 // private to the MC2 adapter; shared callers see only kinds.
+                (5, 0) => CreatureKind::Dragon,
+                (5, 1) => CreatureKind::Goat,
+                (5, 2) => CreatureKind::Bee,
+                (5, 3) => CreatureKind::Worm,
                 (5, 4) => CreatureKind::Archer,
+                (5, 9) => CreatureKind::Skeleton,
+                (5, 13) => CreatureKind::Villager,
+                (5, 14) => CreatureKind::Trader,
                 (5, 19) => CreatureKind::Firefly,
                 _ => continue,
             };

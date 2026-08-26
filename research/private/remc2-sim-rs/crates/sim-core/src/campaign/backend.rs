@@ -671,20 +671,62 @@ mod tests {
         )
     }
 
-    #[test]
-    fn cf15_level1_semantic_creatures_bind_neutral_campaign_open() {
-        let root = level_one_descriptor_fixture_path();
+    fn assert_package_creatures(root: &Path, expected: &[(CreatureKind, usize)]) -> GameDefinition {
         let catalog = default_catalog().unwrap();
-        let definition = load_mc2_campaign(&root, &catalog).unwrap();
+        let definition = load_mc2_campaign(root, &catalog).unwrap();
         let level = definition
             .level_definition()
             .expect("the campaign package exposes semantic level content");
-        assert_eq!(level.authored_creature_count(CreatureKind::Archer), 4);
-        assert_eq!(level.authored_creature_count(CreatureKind::Firefly), 6);
         assert_eq!(
             level.creature_kinds().collect::<Vec<_>>(),
-            [CreatureKind::Archer, CreatureKind::Firefly]
+            expected.iter().map(|(kind, _)| *kind).collect::<Vec<_>>()
         );
+        for (kind, count) in expected {
+            assert_eq!(level.authored_creature_count(*kind), *count);
+        }
+        definition
+    }
+
+    #[test]
+    fn semantic_creature_definitions_follow_level_one_two_and_three_packages() {
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = assert_package_creatures(
+            &root,
+            &[
+                (CreatureKind::Goat, 33),
+                (CreatureKind::Worm, 4),
+                (CreatureKind::Archer, 4),
+                (CreatureKind::Villager, 28),
+                (CreatureKind::Firefly, 6),
+            ],
+        );
+        assert_package_creatures(
+            &descriptor_fixture_path(),
+            &[
+                (CreatureKind::Goat, 36),
+                (CreatureKind::Bee, 12),
+                (CreatureKind::Worm, 6),
+                (CreatureKind::Archer, 4),
+                (CreatureKind::Skeleton, 6),
+                (CreatureKind::Villager, 29),
+                (CreatureKind::Trader, 27),
+            ],
+        );
+        assert_package_creatures(
+            &level_three_descriptor_fixture_path(),
+            &[
+                (CreatureKind::Dragon, 5),
+                (CreatureKind::Goat, 11),
+                (CreatureKind::Bee, 6),
+                (CreatureKind::Worm, 5),
+                (CreatureKind::Archer, 18),
+                (CreatureKind::Skeleton, 11),
+            ],
+        );
+        let level = definition
+            .level_definition()
+            .expect("the campaign package exposes semantic level content");
 
         let swapped = level
             .entities()
@@ -694,7 +736,7 @@ mod tests {
                 let LevelEntityKind::Creature(kind) = entity.kind();
                 let wrong_kind = match kind {
                     CreatureKind::Archer => CreatureKind::Firefly,
-                    CreatureKind::Firefly => CreatureKind::Archer,
+                    _ => CreatureKind::Archer,
                 };
                 LevelEntityDefinition::new(
                     LevelEntityId::creature(
