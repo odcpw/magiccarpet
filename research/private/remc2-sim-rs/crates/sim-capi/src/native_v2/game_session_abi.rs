@@ -775,6 +775,39 @@ mod tests {
         })
     }
 
+    fn level_one_autoplay_command(index: usize) -> Vec<u8> {
+        let flags = if index < 360 { 1_u8 } else { 0 };
+        let (roll_axis, pitch_axis) = if index < 145 {
+            (38, 0)
+        } else if (180..250).contains(&index) {
+            (-32, -22)
+        } else if (250..325).contains(&index) {
+            (0, 24)
+        } else {
+            (0, 0)
+        };
+        serde_json::to_vec(&serde_json::json!({
+            "longitudinal": if flags & 1 != 0 { "accelerate" } else { "coast" },
+            "lateral": if (325..365).contains(&index) { "positive" } else { "neutral" },
+            "roll_axis": roll_axis,
+            "pitch_axis": pitch_axis,
+            "cast_left": index == 160 || index == 300,
+            "cast_right": false,
+            "cast_selected": false,
+            "look_yaw": 0,
+            "look_pitch": 0,
+        }))
+        .expect("the bounded Level 1 command shape serializes")
+    }
+
+    fn common_gameplay_observation(snapshot: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "tick": snapshot["value"]["tick"],
+            "player_pose": snapshot["value"]["player_pose"],
+            "player_motion": snapshot["value"]["player_motion"],
+        })
+    }
+
     fn campaign_events(
         handle: u64,
         generation: u64,
@@ -1477,6 +1510,61 @@ mod tests {
             assert_eq!(reset["value"], initial["value"]);
             assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
         }
+    }
+
+    #[test]
+    fn level_one_descriptor_and_sealed_backends_match_the_public_autoplay_observation() {
+        let sealed = open_fixture();
+        let descriptor_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf15-level1-package-current");
+        let descriptor = open_campaign_path(&descriptor_package);
+        let sealed_initial = campaign_snapshot(sealed);
+        let descriptor_initial = campaign_snapshot(descriptor);
+        assert_eq!(
+            common_gameplay_observation(&descriptor_initial),
+            common_gameplay_observation(&sealed_initial),
+            "the two real Level 1 backends must start from the same public gameplay state"
+        );
+
+        for index in 0..440 {
+            let command = level_one_autoplay_command(index);
+            assert_eq!(
+                mc_game_session_step_json_v1(
+                    sealed,
+                    1,
+                    index as u64,
+                    command.as_ptr(),
+                    command.len() as u32,
+                ),
+                MC_STATUS_OK,
+                "sealed Level 1 step {index}"
+            );
+            assert_eq!(
+                mc_game_session_step_json_v1(
+                    descriptor,
+                    1,
+                    index as u64,
+                    command.as_ptr(),
+                    command.len() as u32,
+                ),
+                MC_STATUS_OK,
+                "descriptor Level 1 step {index}"
+            );
+            assert_eq!(
+                common_gameplay_observation(&campaign_snapshot(descriptor)),
+                common_gameplay_observation(&campaign_snapshot(sealed)),
+                "Level 1 public gameplay diverged after command {index}"
+            );
+        }
+
+        assert_eq!(mc_game_session_reset_v1(sealed, 1, 440), MC_STATUS_OK);
+        assert_eq!(mc_game_session_reset_v1(descriptor, 1, 440), MC_STATUS_OK);
+        assert_eq!(
+            common_gameplay_observation(&campaign_snapshot(descriptor)),
+            common_gameplay_observation(&campaign_snapshot(sealed))
+        );
+        assert_eq!(mc_game_session_destroy_v1(descriptor), MC_STATUS_OK);
+        assert_eq!(mc_game_session_destroy_v1(sealed), MC_STATUS_OK);
     }
 
     #[test]
