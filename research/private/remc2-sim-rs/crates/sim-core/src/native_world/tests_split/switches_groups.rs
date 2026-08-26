@@ -384,60 +384,148 @@ fn level_two_model_zero_one_switches_use_strict_xy_predicates() {
         .copied()
         .expect("model-one switch row");
 
+    let target_half_depth = i16::from_le_bytes(
+        session.economy.entities[111].record_bytes()[90..92]
+            .try_into()
+            .expect("live model-zero render half-depth"),
+    );
+    let row_65_half_depth = row_65.word_10.wrapping_shl(8).cast_signed();
+    let row_83_half_depth = row_83.word_10.wrapping_shl(8).cast_signed();
+    let row_65_strict_limit = u16::try_from(
+        i32::from(row_65_half_depth) + i32::from(target_half_depth),
+    )
+    .expect("positive row-65 strict overlap limit");
+    let row_83_strict_limit = u16::try_from(
+        i32::from(row_83_half_depth) + i32::from(target_half_depth),
+    )
+    .expect("positive row-83 strict overlap limit");
+
+    // Model 0 fires strictly inside the source-derived switch + player
+    // render extents, but not at the exact boundary or one unit outside.
     session
-        .set_level2_entity_position(111, row_65.world_position(0))
-        .expect("move live class-three model-zero target");
+        .set_level2_entity_position(
+            111,
+            Position {
+                x: row_65.world_position(0).x,
+                y: row_65
+                    .world_position(0)
+                    .y
+                    .wrapping_add(row_65_strict_limit - 1),
+                z: 0,
+            },
+        )
+        .expect("move model-zero target one unit inside row-65 limit");
     assert!(
         session
             .level2_authored_switch_matches(65)
-            .expect("model-zero overlap predicate")
+            .expect("model-zero strict inside predicate")
     );
-    assert!(
-        session
-            .level2_authored_switch_matches(83)
-            .expect("model-one non-overlap predicate")
-    );
-
-    // Row 83 is 512 units away in Y. Moving the live model-0 target to
-    // that center creates overlap and flips the model-1 predicate false.
     session
-        .set_level2_entity_position(111, row_83.world_position(0))
-        .expect("move live model-zero target");
-    assert!(
-        !session
-            .level2_authored_switch_matches(83)
-            .expect("model-one boundary predicate")
-    );
-
-    // Returning to the row-65 center restores strict interior overlap.
-    session
-        .set_level2_entity_position(111, row_65.world_position(0))
-        .expect("restore live model-zero target");
-    assert!(
-        session
-            .level2_authored_switch_matches(65)
-            .expect("model-zero strict overlap predicate")
-    );
-    let strict_boundary = Position {
-        x: row_65.world_position(0).x,
-        y: row_65.world_position(0).y.wrapping_add(242),
-        z: 0,
-    };
-    session
-        .set_level2_entity_position(111, strict_boundary)
-        .expect("move live model-zero target to strict boundary");
+        .set_level2_entity_position(
+            111,
+            Position {
+                x: row_65.world_position(0).x,
+                y: row_65
+                    .world_position(0)
+                    .y
+                    .wrapping_add(row_65_strict_limit),
+                z: 0,
+            },
+        )
+        .expect("move model-zero target to exact row-65 limit");
     assert!(
         !session
             .level2_authored_switch_matches(65)
             .expect("model-zero strict boundary predicate")
     );
+    session
+        .set_level2_entity_position(
+            111,
+            Position {
+                x: row_65.world_position(0).x,
+                y: row_65
+                    .world_position(0)
+                    .y
+                    .wrapping_add(row_65_strict_limit + 1),
+                z: 0,
+            },
+        )
+        .expect("move model-zero target one unit outside row-65 limit");
+    assert!(
+        !session
+            .level2_authored_switch_matches(65)
+            .expect("model-zero strict outside predicate")
+    );
+
+    // Model 1 is the inverse predicate over the same source-derived extents:
+    // false one unit inside, true at the exact boundary and outside it.
+    session
+        .set_level2_entity_position(
+            111,
+            Position {
+                x: row_83.world_position(0).x,
+                y: row_83
+                    .world_position(0)
+                    .y
+                    .wrapping_add(row_83_strict_limit - 1),
+                z: 0,
+            },
+        )
+        .expect("move model-zero target one unit inside row-83 limit");
+    assert!(
+        !session
+            .level2_authored_switch_matches(83)
+            .expect("model-one strict inside predicate")
+    );
+    session
+        .set_level2_entity_position(
+            111,
+            Position {
+                x: row_83.world_position(0).x,
+                y: row_83
+                    .world_position(0)
+                    .y
+                    .wrapping_add(row_83_strict_limit),
+                z: 0,
+            },
+        )
+        .expect("move model-zero target to exact row-83 limit");
+    assert!(
+        session
+            .level2_authored_switch_matches(83)
+            .expect("model-one strict boundary predicate")
+    );
+    session
+        .set_level2_entity_position(
+            111,
+            Position {
+                x: row_83.world_position(0).x,
+                y: row_83
+                    .world_position(0)
+                    .y
+                    .wrapping_add(row_83_strict_limit + 1),
+                z: 0,
+            },
+        )
+        .expect("move model-zero target one unit outside row-83 limit");
+    assert!(
+        session
+            .level2_authored_switch_matches(83)
+            .expect("model-one strict outside predicate")
+    );
+
+    session
+        .set_level2_entity_position(111, row_65.world_position(0))
+        .expect("restore overlap before dead-player check");
+    assert!(
+        session
+            .level2_authored_switch_matches(65)
+            .expect("restored model-zero overlap predicate")
+    );
 
     // A dead class-3/model-0 row is absent from remc2's linked player
     // chain, so it cannot satisfy an overlap switch even when its position
     // remains exactly at the authored center.
-    session
-        .set_level2_entity_position(111, row_65.world_position(0))
-        .expect("restore overlap before dead-player check");
     session.economy.entities[111].life = -1;
     assert!(
         !session

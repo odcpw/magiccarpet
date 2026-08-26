@@ -220,12 +220,116 @@ pub struct Level2SetSpellProfile {
     pub mana: i32,
 }
 
-/// Return the pinned `Spells.cpp` profile for a generic Level 2 family/tier.
+/// Return the pinned `Spells.cpp` profile for a physical spell family/tier.
 /// `max_mana` is the `GetSpellManaCost_6D710` result; the source then derives
 /// the initial `mana` by dividing it by `word_0x30` when that word is nonzero.
 #[must_use]
 pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
     let rows: &[[Level2SetSpellProfile; 3]] = &[
+        [
+            Level2SetSpellProfile {
+                subspell_index: 250,
+                word_0x30: 5,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 100,
+                mana: 20,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 160,
+                word_0x30: 11,
+                byte_0x3b: 0,
+                mana_regen: 0,
+                max_mana: 250,
+                mana: 22,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 80,
+                word_0x30: 15,
+                byte_0x3b: 1,
+                mana_regen: 2_500,
+                max_mana: 1_500,
+                mana: 100,
+            },
+        ],
+        [
+            Level2SetSpellProfile {
+                subspell_index: 10,
+                word_0x30: 3,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 100,
+                mana: 33,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 15,
+                word_0x30: 41,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 250,
+                mana: 6,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 20,
+                word_0x30: 51,
+                byte_0x3b: 1,
+                mana_regen: 1_000,
+                max_mana: 1_000,
+                mana: 19,
+            },
+        ],
+        [
+            Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 101,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 1_000,
+                mana: 9,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 101,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 1_250,
+                mana: 12,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 1,
+                word_0x30: 101,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 2_000,
+                mana: 19,
+            },
+        ],
+        [
+            Level2SetSpellProfile {
+                subspell_index: 2,
+                word_0x30: 301,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 1_000,
+                mana: 3,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 3,
+                word_0x30: 451,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 2_500,
+                mana: 5,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 4,
+                word_0x30: 501,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 5_000,
+                mana: 9,
+            },
+        ],
         [
             Level2SetSpellProfile {
                 subspell_index: 100,
@@ -306,9 +410,13 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
         ],
     ];
     let row = match family {
-        6 => 0,
-        11 => 1,
-        12 => 2,
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        3 => 3,
+        6 => 4,
+        11 => 5,
+        12 => 6,
         _ => return None,
     };
     if tier > 2 {
@@ -345,14 +453,12 @@ pub enum SpellHolderAcquisitionResult {
     Rejected(SpellHolderAcquisitionFailure),
 }
 
-/// Apply remc2's generic Level 2 physical holder acquisition transition.
+/// Apply remc2's generic physical holder acquisition transition.
 ///
-/// The source has no family-specific branches in `sub_68FF0`: family 6,
-/// 11, and 12 are admitted through the same relation/hand/timer writes as
-/// the existing four families. This seam intentionally admits only those
-/// three new Level 2 families and leaves the Level 1 paths untouched. The
-/// caller supplies the source overlap predicate because its collision helper
-/// (`sub_106C0`) belongs to the owning entity dispatcher.
+/// The source has no family-specific branches in `sub_68FF0`; every family
+/// admitted by the pinned profile table uses the same relation/hand/timer
+/// writes. The caller supplies the source overlap predicate because its
+/// collision helper (`sub_106C0`) belongs to the owning entity dispatcher.
 pub fn acquire_level2_spell_holder(
     state: &mut SpellHolderAcquisitionState,
     role: PhysicalSpellActionRole,
@@ -371,7 +477,7 @@ pub fn acquire_level2_spell_holder_with_return_side(
     overlaps: bool,
     return_side: i16,
 ) -> SpellHolderAcquisitionResult {
-    if !matches!(state.family, 6 | 11 | 12) {
+    if !matches!(state.family, 0..=3 | 6 | 11 | 12) {
         return SpellHolderAcquisitionResult::Rejected(
             SpellHolderAcquisitionFailure::UnsupportedFamily,
         );
@@ -1862,6 +1968,18 @@ mod tests {
     #[test]
     fn level_two_setspell_profiles_follow_pinned_spells_rows() {
         let expected = [
+            (0, 0, 250, 5, 1, 0, 100, 20),
+            (0, 1, 160, 11, 0, 0, 250, 22),
+            (0, 2, 80, 15, 1, 2_500, 1_500, 100),
+            (1, 0, 10, 3, 1, 0, 100, 33),
+            (1, 1, 15, 41, 1, 0, 250, 6),
+            (1, 2, 20, 51, 1, 1_000, 1_000, 19),
+            (2, 0, 0, 101, 1, 0, 1_000, 9),
+            (2, 1, 0, 101, 1, 0, 1_250, 12),
+            (2, 2, 1, 101, 1, 0, 2_000, 19),
+            (3, 0, 2, 301, 1, 0, 1_000, 3),
+            (3, 1, 3, 451, 1, 0, 2_500, 5),
+            (3, 2, 4, 501, 1, 0, 5_000, 9),
             (6, 0, 100, 101, 1, 0, 1_000, 9),
             (6, 1, 100, 201, 1, 0, 1_500, 7),
             (6, 2, 100, 301, 1, 0, 10_000, 33),
@@ -1888,7 +2006,7 @@ mod tests {
             );
         }
         assert_eq!(level2_set_spell_profile(6, 3), None);
-        assert_eq!(level2_set_spell_profile(3, 0), None);
+        assert_eq!(level2_set_spell_profile(4, 0), None);
     }
 
     #[test]

@@ -1311,44 +1311,61 @@ impl Level2SharedSpellResetSession {
         economy: &mut Level2EconomyState,
         authored: AuthoredFeature,
         terrain: &SessionTerrain,
-    ) -> Result<u16> {
+    ) -> Result<Option<u16>> {
         if let Some(source_slot) = self.authored_pickup_slots.get(&authored.index) {
-            return Ok(*source_slot);
+            return Ok(Some(*source_slot));
         }
         let family = match authored.subtype {
+            2 => 2,
             6 => 6,
             11 => 11,
             _ => {
                 return Err(NativeWorldError::new(format!(
-                    "unsupported authored Level 2 spell subtype {} at row {}",
+                    "unsupported authored spell subtype {} at row {}",
                     authored.subtype, authored.index
                 )));
             }
         };
         if authored.kind != 15 || authored.stage_tag != 1 {
             return Err(NativeWorldError::new(format!(
-                "authored Level 2 spell row {} is not a stage-1 class-15 source",
+                "authored spell row {} is not a stage-1 class-15 source",
                 authored.index
             )));
         }
         let action = physical_spell_action(family, PhysicalSpellActionRole::OrdinaryPickup)
-            .expect("validated authored Level 2 family has an ordinary action");
-        let position = authored.world_position(terrain.ground_height(authored.world_position(0)));
-        let source = economy
-            .allocate_spell_pickup(authored.index, family, action, position)
-            .ok_or_else(|| {
-                NativeWorldError::new(format!(
-                    "Level 2 authored spell row {} could not allocate a source slot",
-                    authored.index
-                ))
-            })?;
+            .expect("validated authored family has an ordinary action");
+        let profile = level2_set_spell_profile(family, 0).ok_or_else(|| {
+            NativeWorldError::new(format!(
+                "authored spell family {family} has no constructor profile"
+            ))
+        })?;
+        // Select the source-shaped record before consuming a NewEvent slot.
+        // Level 1 has no reset pickup, but its reset holders carry the same
+        // 168-byte entity record used by the generic class-15 constructor.
+        // A missing template is an adapter error, not source arena exhaustion.
         let template = self
             .pickups
             .first()
-            .ok_or_else(|| NativeWorldError::new("Level 2 shared spell template is absent"))?;
-        let mut entity = template.clone();
+            .or_else(|| self.holders.first())
+            .cloned()
+            .ok_or_else(|| NativeWorldError::new("shared spell source template is absent"))?;
+        if !template.active || template.class != 15 || template.record.len() != ENTITY_RECORD_BYTES
+        {
+            return Err(NativeWorldError::new(
+                "shared spell source template is not a live class-15 entity record",
+            ));
+        }
+        let position = authored.world_position(terrain.ground_height(authored.world_position(0)));
+        let Some(source) = economy.allocate_spell_pickup(authored.index, family, action, position)
+        else {
+            // `sub_4A1E0` consumes this authored row and continues when
+            // NewEvent returns null; callers distinguish that source result
+            // from semantic adapter errors carried by `Err`.
+            return Ok(None);
+        };
+        let mut entity = template;
         entity.index = source.source_entity_index;
-        entity.source_id = 0;
+        entity.source_id = source.source_entity_index;
         entity.authority = EntityAuthority::SpellActivationLive;
         entity.active = true;
         entity.max_life = 0;
@@ -1361,19 +1378,24 @@ impl Level2SharedSpellResetSession {
         entity.action_marker = 0;
         entity.level_gate = 0;
         entity.position = source.position;
+        entity.yaw = 0;
+        entity.pitch = 0;
+        entity.fov = 0;
         entity.phase = source.phase;
-        entity.subspell_index = 0;
-        entity.byte_3b = 0;
+        entity.subspell_index = profile.subspell_index;
+        entity.byte_3b = profile.byte_0x3b;
         entity.byte_3c = 0;
         entity.font_type_index = 0;
         entity.active_value = 0;
-        entity.activation_value = 0;
-        entity.mana_regen = 0;
-        entity.max_mana = 0;
-        entity.mana_cost = 0;
-        entity.mana = 0;
+        entity.activation_value = profile.word_0x30;
+        entity.mana_regen = profile.mana_regen;
+        entity.max_mana = profile.max_mana;
+        entity.mana_cost = profile.max_mana;
+        entity.mana = profile.mana;
+        entity.particle_parameter_index = Some(77);
+        entity.parameter_relation = Some(59);
         entity.next_relation = None;
-        entity.special_relation = EntitySpecialRelation::None;
+        entity.special_relation = EntitySpecialRelation::GlobalSpecialState;
         entity.record[0..2].copy_from_slice(&source.source_entity_index.to_le_bytes());
         entity.record[2] = 1;
         entity.record[4..8].fill(0);
@@ -1381,10 +1403,15 @@ impl Level2SharedSpellResetSession {
         entity.record[16..20].copy_from_slice(&4_u32.to_le_bytes());
         entity.record[24..26].copy_from_slice(&source.entity_rng.to_le_bytes());
         entity.record[26..30].fill(0);
-        entity.record[30..32].fill(0);
-        entity.record[46..54].fill(0);
+        entity.record[30..32].copy_from_slice(&source.source_entity_index.to_le_bytes());
+        entity.record[32..40].fill(0);
+        entity.record[44..46].fill(0);
+        entity.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+        entity.record[48..52].fill(0);
+        entity.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
         entity.record[58..60].fill(0);
-        entity.record[63..66].fill(0);
+        entity.record[63] = profile.byte_0x3b;
+        entity.record[64..66].fill(0);
         entity.record[66] = source.phase;
         entity.record[67] = 15;
         entity.record[68] = source.family;
@@ -1394,15 +1421,49 @@ impl Level2SharedSpellResetSession {
         entity.record[80..82].copy_from_slice(&source.position.x.to_le_bytes());
         entity.record[82..84].copy_from_slice(&source.position.y.to_le_bytes());
         entity.record[84..86].copy_from_slice(&source.position.z.to_le_bytes());
-        entity.record[140..152].fill(0);
+        entity.record[86..88].copy_from_slice(&75_i16.to_le_bytes());
+        entity.record[88..90].copy_from_slice(&768_i16.to_le_bytes());
+        entity.record[90..92].copy_from_slice(&768_i16.to_le_bytes());
+        entity.record[92..94].copy_from_slice(&1280_i16.to_le_bytes());
+        entity.record[94..96].copy_from_slice(&77_i16.to_le_bytes());
+        entity.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+        entity.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+        entity.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+        entity.record[164..168].copy_from_slice(&60_u32.to_le_bytes());
+        entity.record[168] = 2;
+        entity.record[169..172].fill(0);
+        entity.record[172..176].copy_from_slice(&1_u32.to_le_bytes());
         self.dynamic_pickups.push(entity.clone());
         self.authored_pickup_slots
             .insert(authored.index, source.source_entity_index);
-        let index = self
+        let index = if let Some(index) = self
             .acquisitions
             .iter()
             .position(|state| state.family == family)
-            .expect("authored Level 2 family has an acquisition state");
+        {
+            index
+        } else {
+            let family_index = usize::from(family);
+            let mut state = SpellHolderAcquisitionState::new(
+                family,
+                source.source_entity_index,
+                self.player_entity.index,
+                source.action,
+                self.local_player.family_selected_tiers[family_index],
+            );
+            state.holder_relation = self.local_player.enabled_spell_holders[family_index];
+            state.eligibility = self.local_player.spell_hand_eligibility[family_index];
+            state.learned = self.local_player.acquired_spell_flags[family_index];
+            state.left_spell_slot = self.local_player.left_spell_slot_raw;
+            state.right_spell_slot = self.local_player.right_spell_slot_raw;
+            state.left_subspell_index = self.local_player.left_subspell_index;
+            state.right_subspell_index = self.local_player.right_subspell_index;
+            let mut acquisitions = std::mem::take(&mut self.acquisitions).into_vec();
+            acquisitions.push(state);
+            let index = acquisitions.len() - 1;
+            self.acquisitions = acquisitions.into_boxed_slice();
+            index
+        };
         let state = &mut self.acquisitions[index];
         state.source_slot = source.source_entity_index;
         state.authored_source_index = authored.index;
@@ -1418,7 +1479,7 @@ impl Level2SharedSpellResetSession {
         state.max_mana = entity.max_mana;
         state.mana = entity.mana;
         state.return_side = entity.source_word_4a();
-        Ok(source.source_entity_index)
+        Ok(Some(source.source_entity_index))
     }
 
     /// Bind an economy-owned `sub_69250` replacement to the shared spell

@@ -2897,126 +2897,14 @@ fn level2_next_rng32(seed: u32) -> u32 {
     seed.wrapping_mul(9_377).wrapping_add(9_439)
 }
 
-/// The bounded direct-start profile used by Wizard 0's authored families.
-/// Families outside 0..3 remain intentionally unsupported in this slice;
-/// family 2 is the pinned Castle row consumed by `SetSpell_6D5E0`.
+/// Compatibility name for the shared physical-spell profile provider used by
+/// Wizard 0's direct-start path.
 #[must_use]
 const fn level2_direct_starting_spell_profile(
     family: u8,
     tier: u8,
 ) -> Option<Level2SetSpellProfile> {
-    let profile = match family {
-        0 => match tier {
-            0 => Level2SetSpellProfile {
-                subspell_index: 250,
-                word_0x30: 5,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 100,
-                mana: 20,
-            },
-            1 => Level2SetSpellProfile {
-                subspell_index: 160,
-                word_0x30: 11,
-                byte_0x3b: 0,
-                mana_regen: 0,
-                max_mana: 250,
-                mana: 22,
-            },
-            2 => Level2SetSpellProfile {
-                subspell_index: 80,
-                word_0x30: 15,
-                byte_0x3b: 1,
-                mana_regen: 2_500,
-                max_mana: 1_500,
-                mana: 100,
-            },
-            _ => return None,
-        },
-        1 => match tier {
-            0 => Level2SetSpellProfile {
-                subspell_index: 10,
-                word_0x30: 3,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 100,
-                mana: 33,
-            },
-            1 => Level2SetSpellProfile {
-                subspell_index: 15,
-                word_0x30: 41,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 250,
-                mana: 6,
-            },
-            2 => Level2SetSpellProfile {
-                subspell_index: 20,
-                word_0x30: 51,
-                byte_0x3b: 1,
-                mana_regen: 1_000,
-                max_mana: 1_000,
-                mana: 19,
-            },
-            _ => return None,
-        },
-        2 => match tier {
-            0 => Level2SetSpellProfile {
-                subspell_index: 0,
-                word_0x30: 101,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 1_000,
-                mana: 9,
-            },
-            1 => Level2SetSpellProfile {
-                subspell_index: 0,
-                word_0x30: 101,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 1_250,
-                mana: 12,
-            },
-            2 => Level2SetSpellProfile {
-                subspell_index: 1,
-                word_0x30: 101,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 2_000,
-                mana: 19,
-            },
-            _ => return None,
-        },
-        3 => match tier {
-            0 => Level2SetSpellProfile {
-                subspell_index: 2,
-                word_0x30: 301,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 1_000,
-                mana: 3,
-            },
-            1 => Level2SetSpellProfile {
-                subspell_index: 3,
-                word_0x30: 451,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 2_500,
-                mana: 5,
-            },
-            2 => Level2SetSpellProfile {
-                subspell_index: 4,
-                word_0x30: 501,
-                byte_0x3b: 1,
-                mana_regen: 0,
-                max_mana: 5_000,
-                mana: 9,
-            },
-            _ => return None,
-        },
-        _ => return None,
-    };
-    Some(profile)
+    level2_set_spell_profile(family, tier)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

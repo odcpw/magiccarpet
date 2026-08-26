@@ -204,13 +204,15 @@ impl CampaignSession {
 mod tests {
     use super::{CampaignOpenError, CampaignSelection, CampaignSession, Level2ResetSession};
     use crate::{
-        PlayerCommand,
+        FlightEvent, FlightWorld, PlayerCommand,
         campaign::{
             dispatch::CAMPAIGN_BEHAVIOR_REGISTRY,
             schedule::{ScheduleReceipt, SourcePass, VisitKind},
             spec::{BehaviorSelector, CampaignDefinition, ValidationStage},
         },
-        native_world::{Level2DispatchEvent, Level2NyphurDispatchCall, NativeWorld},
+        native_world::{
+            EntitySpecialRelation, Level2DispatchEvent, Level2NyphurDispatchCall, NativeWorld,
+        },
     };
     use std::{
         collections::BTreeMap,
@@ -526,6 +528,558 @@ mod tests {
                 .holders()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn cf15_level1_group1_materializes_castle_pickup_switches_and_trees_in_source_order() {
+        const GROUP_ROWS: [u16; 21] = [
+            31, 99, 104, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172,
+            173, 174, 175,
+        ];
+        const TREE_ROWS: [u16; 18] = [
+            155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172, 173, 174,
+            175,
+        ];
+        const PRODUCER_SLOT: u16 = 48;
+        const SPELL_SLOT: u16 = 178;
+        const FIRST_TREE_SLOT: u16 = 181;
+
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens through the shared engine");
+        let initial_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility();
+        let producer = &session.entities()[usize::from(PRODUCER_SLOT)];
+        assert_eq!(
+            (
+                producer.active,
+                producer.class,
+                producer.model,
+                producer.action,
+                producer.source_id,
+            ),
+            (true, 11, 1, 1, 1),
+            "the real package must drive group 1 through its ordinary switch producer"
+        );
+        let producer_feature = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|row| row.index == 2)
+            .expect("package row 2 is the reset producer source");
+        assert_eq!(
+            (
+                producer_feature.kind,
+                producer_feature.subtype,
+                producer_feature.activation_group,
+                producer_feature.stage_tag,
+                producer_feature.word_10,
+            ),
+            (11, 1, 0, 1, 64)
+        );
+        let producer_position = producer.position;
+        let producer_half_width = i16::from_le_bytes(
+            producer.record_bytes()[88..90]
+                .try_into()
+                .expect("producer render half-width extent"),
+        );
+        let producer_half_depth = i16::from_le_bytes(
+            producer.record_bytes()[90..92]
+                .try_into()
+                .expect("producer render half-depth extent"),
+        );
+        assert_eq!((producer_half_width, producer_half_depth), (16_384, 16_384));
+        let package_group_rows = session
+            .mission()
+            .authored_features()
+            .iter()
+            .filter(|row| row.activation_group == 1 && row.kind != 0)
+            .map(|row| row.index)
+            .collect::<Vec<_>>();
+        assert_eq!(package_group_rows, GROUP_ROWS);
+        assert!(session.economy().authored_trees().is_empty());
+        assert!(session.economy().spell_pickups().is_empty());
+
+        let player_entity_index = session.state.entity_index;
+        let player = &session.entities()[usize::from(player_entity_index)];
+        let player_half_width = i16::from_le_bytes(
+            player.record_bytes()[88..90]
+                .try_into()
+                .expect("player render half-width extent"),
+        );
+        let player_half_depth = i16::from_le_bytes(
+            player.record_bytes()[90..92]
+                .try_into()
+                .expect("player render half-depth extent"),
+        );
+        let mut inside_evidence = Vec::new();
+        for _ in 0..7 {
+            inside_evidence.push(campaign.step(PlayerCommand::default(), 0));
+            assert!(
+                campaign
+                    .level2_compatibility()
+                    .economy()
+                    .authored_trees()
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            campaign.level2_compatibility().entities()[usize::from(PRODUCER_SLOT)].phase,
+            56
+        );
+        let inside_due_evidence = campaign.step(PlayerCommand::default(), 0);
+        assert!(
+            campaign
+                .level2_compatibility()
+                .economy()
+                .authored_trees()
+                .is_empty()
+        );
+        assert!(campaign.events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+        )));
+        assert!(crate::level1_mission::source_entities_overlap_xy(
+            producer_position,
+            producer_half_width,
+            producer_half_depth,
+            campaign.level2_compatibility().state.position,
+            player_half_width,
+            player_half_depth,
+        ));
+
+        let travel_command = PlayerCommand {
+            flags: 1,
+            ..PlayerCommand::default()
+        };
+        let mut travel_evidence = Vec::new();
+        let mut global_before_producer = None;
+        let mut producer_evidence = None;
+        for _ in 0..256 {
+            let global_before = campaign.level2_compatibility().source_global_rng();
+            let evidence = campaign.step(travel_command, 0);
+            let fired = campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: PRODUCER_SLOT,
+                        group: 1,
+                        ..
+                    }
+                )
+            });
+            travel_evidence.push(evidence.clone());
+            if fired {
+                global_before_producer = Some(global_before);
+                producer_evidence = Some(evidence);
+                break;
+            }
+        }
+        let global_before_producer =
+            global_before_producer.expect("commanded flight reaches the producer non-overlap");
+        let producer_evidence = producer_evidence.expect("group 1 fires on a natural phase visit");
+        assert!(!crate::level1_mission::source_entities_overlap_xy(
+            producer_position,
+            producer_half_width,
+            producer_half_depth,
+            campaign.level2_compatibility().state.position,
+            player_half_width,
+            player_half_depth,
+        ));
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        assert!(campaign.events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                pass: 0,
+                source_slot: PRODUCER_SLOT,
+                group: 1,
+                authored_indices,
+            } if authored_indices.as_ref() == GROUP_ROWS
+        )));
+        assert!(campaign.events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::SpellAcquisition {
+                pass: 0,
+                source_slot: SPELL_SLOT,
+                family: 2,
+                result: None,
+            }
+        )));
+
+        let session = campaign.level2_compatibility();
+        let spell_source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|row| row.authored_index == 31)
+            .copied()
+            .expect("group-1 row 31 materializes through the shared spell arena");
+        assert_eq!(
+            (
+                spell_source.source_entity_index,
+                spell_source.family,
+                spell_source.action,
+                spell_source.active,
+            ),
+            (SPELL_SLOT, 2, 7, true)
+        );
+        let spell_projection = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == SPELL_SLOT)
+            .expect("row 31 has a shared class-15 callback projection");
+        assert_eq!(
+            (
+                spell_projection.active,
+                spell_projection.source_id,
+                spell_projection.class,
+                spell_projection.model,
+                spell_projection.action,
+                spell_projection.yaw,
+                spell_projection.pitch,
+                spell_projection.fov,
+                spell_projection.particle_parameter_index,
+                spell_projection.parameter_relation,
+                spell_projection.special_relation,
+            ),
+            (
+                true,
+                SPELL_SLOT,
+                15,
+                2,
+                7,
+                0,
+                0,
+                0,
+                Some(77),
+                Some(59),
+                EntitySpecialRelation::GlobalSpecialState,
+            )
+        );
+        assert_eq!(
+            (
+                spell_projection.subspell_index,
+                spell_projection.activation_value,
+                spell_projection.byte_3b,
+                spell_projection.mana_regen,
+                spell_projection.max_mana,
+                spell_projection.mana_cost,
+                spell_projection.mana,
+            ),
+            (0, 101, 1, 0, 1_000, 1_000, 9)
+        );
+        assert_eq!(
+            &spell_projection.record_bytes()[46..54],
+            &[0, 0, 0, 0, 0, 0, 101, 0]
+        );
+        assert_eq!(
+            &spell_projection.record_bytes()[140..152],
+            &[0, 0, 0, 0, 232, 3, 0, 0, 9, 0, 0, 0]
+        );
+        assert_eq!(
+            &spell_projection.record_bytes()[30..40],
+            &[178, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(&spell_projection.record_bytes()[44..46], &[0, 0]);
+        assert_eq!(
+            &spell_projection.record_bytes()[86..96],
+            &[75, 0, 0, 3, 0, 3, 0, 5, 77, 0]
+        );
+        assert_eq!(
+            &spell_projection.record_bytes()[164..168],
+            &60_u32.to_le_bytes()
+        );
+        assert_eq!(
+            &spell_projection.record_bytes()[168..176],
+            &[2, 0, 0, 0, 1, 0, 0, 0]
+        );
+
+        let trees = session.economy().authored_trees().to_vec();
+        assert_eq!(
+            trees
+                .iter()
+                .map(|row| row.authored_index)
+                .collect::<Vec<_>>(),
+            TREE_ROWS
+        );
+        assert!(trees.iter().all(|tree| {
+            session.mission().authored_features().iter().any(|feature| {
+                feature.index == tree.authored_index
+                    && feature.activation_group == 1
+                    && (feature.kind, feature.subtype) == (2, 0)
+            })
+        }));
+        let first_tree = trees
+            .iter()
+            .find(|row| row.authored_index == TREE_ROWS[0])
+            .expect("first source-ordered Level 1 tree");
+        assert_eq!(first_tree.source_entity_index, FIRST_TREE_SLOT);
+        let next_rng16 = |seed: u16| seed.wrapping_mul(9_377).wrapping_add(9_439);
+        let pass_global = global_before_producer
+            .wrapping_mul(9_377)
+            .wrapping_add(9_439);
+        let life_rng = next_rng16(
+            first_tree
+                .source_entity_index
+                .wrapping_add(pass_global as u16),
+        );
+        let x_rng = next_rng16(life_rng);
+        let y_rng = next_rng16(x_rng);
+        let particle_rng = next_rng16(y_rng);
+        let feature = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|row| row.index == TREE_ROWS[0])
+            .expect("row 155 remains in the package census");
+        let authored_position = feature.world_position(
+            session
+                .canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
+        let expected_x = authored_position
+            .x
+            .wrapping_add((x_rng & 0x3f).wrapping_sub(32));
+        let expected_y = authored_position
+            .y
+            .wrapping_add((y_rng & 0x3f).wrapping_sub(32));
+        assert_eq!(
+            (
+                first_tree.source_class,
+                first_tree.model,
+                first_tree.action,
+                first_tree.entity_rng,
+                first_tree.particle_index,
+                first_tree.control_flags,
+                first_tree.position.x,
+                first_tree.position.y,
+                first_tree.position.z,
+            ),
+            (
+                2,
+                0,
+                0,
+                particle_rng,
+                if particle_rng & 1 == 0 { 83 } else { 84 },
+                0x0002_000c,
+                expected_x,
+                expected_y,
+                session.canonical_terrain().ground_height(crate::Position {
+                    x: expected_x,
+                    y: expected_y,
+                    z: authored_position.z,
+                }),
+            )
+        );
+        assert!(
+            session
+                .economy()
+                .map_chains()
+                .entity_chain((expected_x >> 8) as u8, (expected_y >> 8) as u8)
+                .contains(&FIRST_TREE_SLOT)
+        );
+
+        let receipts = session.cf10_production_schedule_receipts();
+        for source_slot in
+            std::iter::once(SPELL_SLOT).chain(trees.iter().map(|row| row.source_entity_index))
+        {
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::SlotResolved {
+                    pass: SourcePass::UpdateEntities,
+                    scan: 0,
+                    slot,
+                    kind: VisitKind::Callback,
+                    ..
+                } if *slot == source_slot
+            )));
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    scan: 0,
+                    slot,
+                    ..
+                } if *slot == source_slot
+            )));
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::EpilogueCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    scan: 0,
+                    slot,
+                    ..
+                } if *slot == source_slot
+            )));
+        }
+
+        let producer_events = campaign.events().to_vec();
+        let pickup_position = spell_source.position;
+        campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity_index, pickup_position)
+            .expect("move the real local player through the production position carrier");
+        let mut acquisition_evidence = Vec::new();
+        let mut acquired = None;
+        for attempt in 0..4 {
+            acquisition_evidence.push(campaign.step(PlayerCommand::default(), 0));
+            assert!(
+                campaign
+                    .events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+            );
+            if attempt == 0 {
+                let reclaimed_producer =
+                    &campaign.level2_compatibility().entities()[usize::from(PRODUCER_SLOT)];
+                assert_eq!(
+                    (reclaimed_producer.active, reclaimed_producer.class),
+                    (false, 0),
+                    "the hidden producer is reclaimed on the following source pass"
+                );
+                assert!(campaign.events().iter().all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                )));
+            }
+            acquired = campaign.events().iter().find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot: SPELL_SLOT,
+                    family: 2,
+                    result: Some(outcome),
+                    ..
+                } => Some(*outcome),
+                _ => None,
+            });
+            if acquired.is_some() {
+                break;
+            }
+        }
+        let acquired = acquired.expect("the naturally phased family-2 source is acquired");
+        assert_eq!(
+            (
+                acquired.family,
+                acquired.source_slot,
+                acquired.holder_action,
+                acquired.parent_entity_index,
+                acquired.presentation_timer,
+            ),
+            (2, SPELL_SLOT, 6, player_entity_index, 64)
+        );
+        let session = campaign.level2_compatibility();
+        let acquired_projection = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == SPELL_SLOT)
+            .expect("acquired family-2 projection remains the source holder");
+        assert_eq!(acquired_projection.action, 6);
+        assert_eq!(
+            u16::from_le_bytes(
+                acquired_projection.record_bytes()[44..46]
+                    .try_into()
+                    .expect("source parent relation extent")
+            ),
+            player_entity_index
+        );
+        let local_player = &session.shared_spells().players()[0];
+        assert_eq!(local_player.enabled_spell_holders[2], SPELL_SLOT);
+        assert_eq!(local_player.acquired_spell_flags[2], 1);
+        assert_eq!(session.players()[0].enabled_spell_holders[2], SPELL_SLOT);
+        assert_eq!(session.players()[0].acquired_spell_flags[2], 1);
+        let pickup_sounds = session
+            .shared_spells()
+            .activation_events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    FlightEvent::PrepareSound {
+                        entity_index,
+                        player_index: -1,
+                        sound_id: 18,
+                        ..
+                    } if *entity_index == player_entity_index
+                )
+            })
+            .count();
+        assert_eq!(pickup_sounds, 1);
+
+        let first_final_hash = campaign.state_hash();
+        let first_events = campaign.events().to_vec();
+        let first_trees = campaign
+            .level2_compatibility()
+            .economy()
+            .authored_trees()
+            .to_vec();
+        let first_spell_projection = campaign
+            .level2_compatibility()
+            .shared_spells()
+            .dynamic_pickups()
+            .to_vec();
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), initial_hash);
+        assert!(
+            campaign
+                .level2_compatibility()
+                .economy()
+                .authored_trees()
+                .is_empty()
+        );
+        assert!(
+            campaign
+                .level2_compatibility()
+                .shared_spells()
+                .dynamic_pickups()
+                .is_empty()
+        );
+
+        let mut replay_inside = Vec::new();
+        for _ in 0..7 {
+            replay_inside.push(campaign.step(PlayerCommand::default(), 0));
+        }
+        let replay_inside_due_evidence = campaign.step(PlayerCommand::default(), 0);
+        assert_eq!(replay_inside, inside_evidence);
+        assert_eq!(replay_inside_due_evidence, inside_due_evidence);
+        let mut replay_travel_evidence = Vec::new();
+        for _ in 0..travel_evidence.len() {
+            replay_travel_evidence.push(campaign.step(travel_command, 0));
+        }
+        assert_eq!(replay_travel_evidence, travel_evidence);
+        assert_eq!(
+            replay_travel_evidence.last(),
+            Some(&producer_evidence),
+            "replay reaches the same source producer visit"
+        );
+        assert_eq!(campaign.events(), producer_events);
+        campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity_index, pickup_position)
+            .expect("replay uses the same production position carrier");
+        let mut replay_acquisition_evidence = Vec::new();
+        for _ in 0..acquisition_evidence.len() {
+            replay_acquisition_evidence.push(campaign.step(PlayerCommand::default(), 0));
+        }
+        assert_eq!(replay_acquisition_evidence, acquisition_evidence);
+        assert_eq!(campaign.events(), first_events);
+        assert_eq!(campaign.state_hash(), first_final_hash);
+        assert_eq!(
+            campaign.level2_compatibility().economy().authored_trees(),
+            first_trees
+        );
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .shared_spells()
+                .dynamic_pickups(),
+            first_spell_projection
         );
     }
 

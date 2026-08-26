@@ -4490,13 +4490,14 @@ impl Level2ResetSession {
     pub(super) fn level2_model0_overlap_matches<F>(
         &self,
         switch_position: Position,
+        switch_half_width: i16,
+        switch_half_depth: i16,
         expected_overlap: bool,
         mut entity_position: F,
     ) -> bool
     where
         F: FnMut(&EntitySnapshot) -> Position,
     {
-        const SWITCH_HALF_WIDTH: i16 = 121;
         let overlap = self
             .session
             .state
@@ -4511,11 +4512,19 @@ impl Level2ResetSession {
                     && entity.life >= 0
                     && crate::level1_mission::source_entities_overlap_xy(
                         switch_position,
-                        SWITCH_HALF_WIDTH,
-                        SWITCH_HALF_WIDTH,
+                        switch_half_width,
+                        switch_half_depth,
                         entity_position(entity),
-                        SWITCH_HALF_WIDTH,
-                        SWITCH_HALF_WIDTH,
+                        i16::from_le_bytes(
+                            entity.record_bytes()[88..90]
+                                .try_into()
+                                .expect("player render half-width extent"),
+                        ),
+                        i16::from_le_bytes(
+                            entity.record_bytes()[90..92]
+                                .try_into()
+                                .expect("player render half-depth extent"),
+                        ),
                     )
             });
         overlap == expected_overlap
@@ -4524,12 +4533,13 @@ impl Level2ResetSession {
     pub(super) fn level2_model0_overlap_owner<F>(
         &self,
         switch_position: Position,
+        switch_half_width: i16,
+        switch_half_depth: i16,
         mut entity_position: F,
     ) -> Option<u16>
     where
         F: FnMut(&EntitySnapshot) -> Position,
     {
-        const SWITCH_HALF_WIDTH: i16 = 121;
         self.session
             .state
             .live
@@ -4543,11 +4553,19 @@ impl Level2ResetSession {
                     && entity.life >= 0
                     && crate::level1_mission::source_entities_overlap_xy(
                         switch_position,
-                        SWITCH_HALF_WIDTH,
-                        SWITCH_HALF_WIDTH,
+                        switch_half_width,
+                        switch_half_depth,
                         entity_position(entity),
-                        SWITCH_HALF_WIDTH,
-                        SWITCH_HALF_WIDTH,
+                        i16::from_le_bytes(
+                            entity.record_bytes()[88..90]
+                                .try_into()
+                                .expect("player render half-width extent"),
+                        ),
+                        i16::from_le_bytes(
+                            entity.record_bytes()[90..92]
+                                .try_into()
+                                .expect("player render half-depth extent"),
+                        ),
                     )
             })
             .map(|entity| entity.index)
@@ -4584,11 +4602,14 @@ impl Level2ResetSession {
             }
         };
         let switch_position = feature.world_position(0);
-        Ok(
-            self.level2_model0_overlap_matches(switch_position, expected_overlap, |entity| {
-                entity.position
-            }),
-        )
+        let switch_extent = feature.word_10.wrapping_shl(8).cast_signed();
+        Ok(self.level2_model0_overlap_matches(
+            switch_position,
+            switch_extent,
+            switch_extent,
+            expected_overlap,
+            |entity| entity.position,
+        ))
     }
 
     /// Validate and expose the authored Level 2 Nyphur participant chain for
@@ -5036,9 +5057,9 @@ impl Level2ResetSession {
     }
 
     /// Materialize one authored class-2/model-0/action-0 tree through the
-    /// pinned `AddTree_4AC40` constructor.  Group-31 activation owns the
+    /// pinned `AddTree_4AC40` constructor. The authored-group scan owns the
     /// producer timing; this seam owns the exact authored position lookup and
-    /// shared arena/map allocation.
+    /// shared arena/map allocation for every package group.
     pub fn allocate_level2_authored_tree(
         &mut self,
         authored_index: u16,
@@ -5052,10 +5073,7 @@ impl Level2ResetSession {
             .iter()
             .copied()
             .find(|feature| {
-                feature.index == authored_index
-                    && feature.activation_group == 31
-                    && feature.kind == 2
-                    && feature.subtype == 0
+                feature.index == authored_index && feature.kind == 2 && feature.subtype == 0
             })?;
         let position = feature.world_position(
             self.canonical_terrain()
@@ -6728,17 +6746,18 @@ impl Level2ResetSession {
             return Ok(());
         }
 
-        // CF14 admits only constructors whose complete arena/map lifecycle is
+        // Admit only constructors whose complete arena/map lifecycle is
         // already shared. Keep this preflight exhaustive so a newly reached
         // authored family is a visible capability error, never a no-op.
         if let Some(feature) = rows.iter().find(|feature| {
             !matches!(
                 (feature.kind, feature.subtype),
-                (2, 1)
+                (2, 0 | 1)
                     | (5, 2 | 3 | 4 | 9 | 14)
                     | (10, 1 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 76)
                     | (11, 0 | 1 | 32)
                     | (14, 3 | 5)
+                    | (15, 2 | 6 | 11)
             )
         }) {
             return Err(format!(
@@ -6757,6 +6776,15 @@ impl Level2ResetSession {
                 .insert(feature.index);
             consumed.push(feature.index);
             match (feature.kind, feature.subtype) {
+                (2, 0) => {
+                    if self.allocate_level2_authored_tree(feature.index).is_some() {
+                        self.session
+                            .state
+                            .live
+                            .level2_tree_activated
+                            .insert(feature.index);
+                    }
+                }
                 (2, 1) => {
                     let _ = self.allocate_authored_stone_feature(feature);
                 }
@@ -7025,6 +7053,19 @@ impl Level2ResetSession {
                         );
                     }
                 }
+                (15, 2 | 6 | 11) => {
+                    let terrain = &self.session.state.live.terrain;
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .materialize_authored_spell_pickup(
+                            &mut self.session.state.live.economy,
+                            feature,
+                            terrain,
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
                 _ => unreachable!("authored group constructor was preflighted"),
             }
         }
@@ -7075,15 +7116,22 @@ impl Level2ResetSession {
             if !drawing_enabled {
                 continue;
             }
-            let overlap = self.level2_model0_overlap_matches(position, model == 0, |entity| {
-                if entity.index == self.session.state.live.core.state.entity_index {
-                    self.session.state.live.core.state.position
-                } else {
-                    entity.position
-                }
-            });
+            let switch_extent = root.word_10.cast_unsigned().wrapping_shl(8).cast_signed();
+            let overlap = self.level2_model0_overlap_matches(
+                position,
+                switch_extent,
+                switch_extent,
+                model == 0,
+                |entity| {
+                    if entity.index == self.session.state.live.core.state.entity_index {
+                        self.session.state.live.core.state.position
+                    } else {
+                        entity.position
+                    }
+                },
+            );
             let matched_owner = if model == 0 && overlap {
-                self.level2_model0_overlap_owner(position, |entity| {
+                self.level2_model0_overlap_owner(position, switch_extent, switch_extent, |entity| {
                     if entity.index == self.session.state.live.core.state.entity_index {
                         self.session.state.live.core.state.position
                     } else {
@@ -8277,7 +8325,20 @@ impl Level2ResetSession {
                 feature,
                 terrain,
             ) {
-            Ok(source_slot) => source_slot,
+            Ok(Some(source_slot)) => source_slot,
+            Ok(None) => {
+                self.session.state.live.economy = economy_before;
+                self.session.state.live.shared_spells = shared_before;
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: format!(
+                        "Level 2 producer group {target_group} row {} could not allocate",
+                        feature.index
+                    ),
+                });
+                return;
+            }
             Err(error) => {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.shared_spells = shared_before;
@@ -10865,6 +10926,16 @@ impl Level2ResetSession {
                 } else {
                     self.level2_model0_overlap_matches(
                         source.position,
+                        i16::from_le_bytes(
+                            source.record_bytes()[88..90]
+                                .try_into()
+                                .expect("switch render half-width extent"),
+                        ),
+                        i16::from_le_bytes(
+                            source.record_bytes()[90..92]
+                                .try_into()
+                                .expect("switch render half-depth extent"),
+                        ),
                         source.action == 0,
                         |entity| {
                             if entity.index == self.session.state.live.core.state.entity_index {
@@ -11158,11 +11229,21 @@ impl Level2ResetSession {
             pickup.phase = pickup.phase.wrapping_add(1);
             pickup.record[66] = pickup.phase;
         }
-        self.session
+        let remains_live = self
+            .session
             .state
             .live
             .economy
-            .step_spell_pickup_slot(source_slot)
+            .step_spell_pickup_slot(source_slot);
+        if let Err(error) = self.commit_imported_spell_source_projection(source_slot) {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: error.to_string(),
+            });
+            return false;
+        }
+        remains_live
     }
 
     pub(super) fn step_level2_dynamic_spell_replacement(
@@ -11411,7 +11492,7 @@ impl Level2ResetSession {
         pass: u8,
         source_slot: u16,
     ) -> bool {
-        let Some((position, model)) = self
+        let Some((position, model, word_10)) = self
             .session
             .state
             .live
@@ -11419,17 +11500,24 @@ impl Level2ResetSession {
             .authored_switch_producers()
             .iter()
             .find(|source| source.active && source.source_entity_index == source_slot)
-            .map(|source| (source.position, source.model))
+            .map(|source| (source.position, source.model, source.word_10))
         else {
             return false;
         };
-        let overlap = self.level2_model0_overlap_matches(position, model == 0, |entity| {
-            if entity.index == self.session.state.live.core.state.entity_index {
-                self.session.state.live.core.state.position
-            } else {
-                entity.position
-            }
-        });
+        let switch_extent = word_10.cast_unsigned().wrapping_shl(8).cast_signed();
+        let overlap = self.level2_model0_overlap_matches(
+            position,
+            switch_extent,
+            switch_extent,
+            model == 0,
+            |entity| {
+                if entity.index == self.session.state.live.core.state.entity_index {
+                    self.session.state.live.core.state.position
+                } else {
+                    entity.position
+                }
+            },
+        );
         let Some(target_group) = self
             .session
             .state
