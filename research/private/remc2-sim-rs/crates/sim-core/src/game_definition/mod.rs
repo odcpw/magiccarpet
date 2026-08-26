@@ -39,6 +39,8 @@ use std::{
     fmt,
 };
 
+use crate::level_definition::LevelDefinition;
+
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v1";
 pub const SEMANTIC_CONTRACT_VERSION: &str = "1.0";
@@ -166,6 +168,8 @@ pub struct GameDefinition {
     artifacts: Vec<ArtifactNode>,
     #[serde(default)]
     artifact_payloads: BTreeMap<String, Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    level_definition: Option<LevelDefinition>,
     provenance: PackageProvenance,
 }
 
@@ -218,6 +222,7 @@ impl GameDefinition {
             values,
             artifacts: package.artifacts,
             artifact_payloads: package.artifact_payloads,
+            level_definition: None,
             provenance: package.provenance,
         };
         definition.verify_bound_presentation_assets(catalog)?;
@@ -268,6 +273,19 @@ impl GameDefinition {
     #[must_use]
     pub fn artifacts(&self) -> &[ArtifactNode] {
         &self.artifacts
+    }
+
+    /// Package-authored semantic level content, when the package defines a
+    /// playable level rather than only reusable engine values or assets.
+    #[must_use]
+    pub const fn level_definition(&self) -> Option<&LevelDefinition> {
+        self.level_definition.as_ref()
+    }
+
+    pub(crate) fn with_level_definition(mut self, level_definition: LevelDefinition) -> Self {
+        self.level_definition = Some(level_definition);
+        self.definition_hash = self.compute_hash();
+        self
     }
 
     /// Resolve and validate one typed presentation asset bound by semantic ID.
@@ -325,6 +343,7 @@ impl GameDefinition {
             || self.required_capabilities != base.required_capabilities
             || self.artifacts != base.artifacts
             || self.artifact_payloads != base.artifact_payloads
+            || self.level_definition != base.level_definition
             || self.provenance != base.provenance
         {
             return Err(DefinitionError::new(
@@ -476,7 +495,7 @@ impl GameDefinition {
     }
 
     fn compute_hash(&self) -> String {
-        let definition_payload = json!({
+        let mut definition_payload = json!({
             "schema": self.schema,
             "revision": self.revision,
             "package_id": self.package_id,
@@ -486,6 +505,16 @@ impl GameDefinition {
             "required_capabilities": self.required_capabilities.iter().map(RequiredCapability::to_json).collect::<Vec<_>>(),
             "values": self.values.iter().map(|(id, value)| json!({"id": id.as_str(), "value": value.to_json()})).collect::<Vec<_>>(),
         });
+        if let Some(level_definition) = &self.level_definition {
+            definition_payload
+                .as_object_mut()
+                .expect("definition identity payload is an object")
+                .insert(
+                    "level_definition".to_owned(),
+                    serde_json::to_value(level_definition)
+                        .expect("semantic level definition is serializable"),
+                );
+        }
         format!(
             "sha256:{:x}",
             Sha256::digest(

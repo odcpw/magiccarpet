@@ -3710,7 +3710,12 @@ impl NativeWorldInspection {
         let mission = self
             .mission_content_template_from_definition(definition)?
             .session();
-        self.build_campaign_reset_session(definition, mission)
+        let mut session = self.build_campaign_reset_session(definition, mission)?;
+        session.bind_semantic_level_definition(
+            definition.level_definition().clone(),
+            definition.creature_bindings().clone(),
+        );
+        Ok(session)
     }
 
     fn build_campaign_reset_session(

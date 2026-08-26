@@ -6,7 +6,7 @@
 //! the source schedule. Remaining domains stay projections until their
 //! sequential cutover leaves land.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use sha2::{Digest as _, Sha256};
 
@@ -16,6 +16,7 @@ use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, SpellFireContext, SpellFireSource,
     TetherTarget,
     collision_mask::CollisionMaskBank,
+    level_definition::{CreatureKind, LevelDefinition},
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
         PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
@@ -67,6 +68,8 @@ pub struct CampaignDefinition {
     pub package_sha256: String,
     pub collision_masks_present: bool,
     pub identity_receipt: CanonicalDigest,
+    semantic_level: Option<LevelDefinition>,
+    authored_creature_kinds: BTreeMap<u16, CreatureKind>,
     pub(crate) collision_masks: Option<CollisionMaskBank>,
     pub(crate) presentation: PresentationSelectors,
 }
@@ -316,9 +319,32 @@ impl CampaignDefinition {
             package_sha256,
             collision_masks_present,
             identity_receipt,
+            semantic_level: None,
+            authored_creature_kinds: BTreeMap::new(),
             collision_masks,
             presentation,
         }
+    }
+
+    pub(crate) fn bind_semantic_level(
+        &mut self,
+        semantic_level: LevelDefinition,
+        authored_creature_kinds: BTreeMap<u16, CreatureKind>,
+    ) {
+        self.semantic_level = Some(semantic_level);
+        self.authored_creature_kinds = authored_creature_kinds;
+    }
+
+    #[must_use]
+    pub fn semantic_level(&self) -> Option<&LevelDefinition> {
+        self.semantic_level.as_ref()
+    }
+
+    pub(crate) fn creature_kind_for_authored_record(
+        &self,
+        authored_record: u16,
+    ) -> Option<CreatureKind> {
+        self.authored_creature_kinds.get(&authored_record).copied()
     }
 }
 

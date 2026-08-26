@@ -16,6 +16,7 @@ use crate::{
 pub mod backend;
 pub mod dispatch;
 pub mod journal;
+mod mc2_level_definition;
 pub mod objectives;
 pub mod schedule;
 #[doc(hidden)]
@@ -1093,6 +1094,15 @@ mod tests {
         let package = level_one_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens through the shared engine");
+        let semantic_level = campaign.definition().level_definition();
+        assert_eq!(
+            semantic_level.authored_creature_count(crate::level_definition::CreatureKind::Archer),
+            4
+        );
+        assert_eq!(
+            semantic_level.authored_creature_count(crate::level_definition::CreatureKind::Firefly),
+            6
+        );
         let reset_hash = campaign.state_hash();
         assert_eq!(
             campaign
@@ -1281,6 +1291,10 @@ mod tests {
         );
         assert!(archers.iter().all(|row| {
             row.active && row.drawing_enabled && row.life == 1_000 && row.max_life == 1_000
+        }));
+        assert!(archers.iter().all(|row| {
+            session.creature_kind_for_source_slot(row.source_entity_index)
+                == Some(crate::level_definition::CreatureKind::Archer)
         }));
         assert_eq!(
             archers.iter().map(|row| row.action).collect::<Vec<_>>(),
@@ -1637,6 +1651,10 @@ mod tests {
             [108, 134, 135, 189, 193]
         );
         assert_eq!(firefly_session.economy().authored_fireflies().len(), 5);
+        assert!(firefly_roots.iter().all(|root| {
+            firefly_session.creature_kind_for_source_slot(root.source_entity_index)
+                == Some(crate::level_definition::CreatureKind::Firefly)
+        }));
         let receipts = firefly_session.cf10_production_schedule_receipts();
         for (ordinal, root) in firefly_roots.iter().enumerate() {
             let callback_on_birth_pass = root.source_entity_index > row190_slot;

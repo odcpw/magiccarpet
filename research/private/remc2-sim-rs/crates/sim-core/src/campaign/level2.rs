@@ -1,6 +1,8 @@
 // Moved mechanically from native_world.rs for CF-01. This file is included as a child of native_world so its internal visibility and parent state access remain unchanged.
 use super::*;
 
+use std::{collections::BTreeMap, sync::Arc};
+
 use crate::campaign::source_arena::SourceArena;
 use crate::campaign::state::{
     CampaignDefinition, CampaignSession, CampaignState, CampaignStepError, CanonicalRuntimeState,
@@ -14,6 +16,7 @@ use crate::campaign::{
     },
     spec::{BehaviorKey, BehaviorSelector},
 };
+use crate::level_definition::{CreatureKind, LevelDefinition};
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
 /// Typed payload selected from the fixed numeric source slot at visit time.
@@ -100,6 +103,33 @@ enum Level2EpiloguePolicy {
         route: Level2SourceRoute,
         generation: Option<u32>,
     },
+}
+
+fn validate_semantic_creature_dispatch(
+    source_slot: u16,
+    creature_kind: Option<CreatureKind>,
+    handler: ExistingHandler,
+) -> std::result::Result<(), String> {
+    match (creature_kind, handler) {
+        (Some(kind), actual) => {
+            let expected = match kind {
+                CreatureKind::Archer => ExistingHandler::ArcherFamily,
+                CreatureKind::Firefly => ExistingHandler::FireflyFamily,
+            };
+            if actual == expected {
+                Ok(())
+            } else {
+                Err(format!(
+                    "creature source slot {source_slot} is semantic {}, but the MC2 selector resolved {actual:?}",
+                    kind.as_str()
+                ))
+            }
+        }
+        (None, ExistingHandler::ArcherFamily | ExistingHandler::FireflyFamily) => Err(format!(
+            "creature source slot {source_slot} has no package-authored semantic identity"
+        )),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3996,6 +4026,32 @@ impl Level2ResetSession {
         Self {
             session: CampaignSession::new(definition, live),
         }
+    }
+
+    pub(crate) fn bind_semantic_level_definition(
+        &mut self,
+        level_definition: LevelDefinition,
+        creature_bindings: BTreeMap<u16, CreatureKind>,
+    ) {
+        let mut definition = (*self.session.definition).clone();
+        definition.bind_semantic_level(level_definition, creature_bindings);
+        self.session.definition = Arc::new(definition);
+    }
+
+    pub(crate) fn creature_kind_for_source_slot(&self, source_slot: u16) -> Option<CreatureKind> {
+        let authored_record = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .map(|source| source.authored_index)?;
+        self.session
+            .definition
+            .creature_kind_for_authored_record(authored_record)
     }
 
     /// Borrow the canonical campaign carrier.
@@ -9924,6 +9980,19 @@ impl Level2ResetSession {
         pass_start_castle_root_slot: Option<u16>,
         goat_begin_events: &mut BTreeMap<u16, Vec<GoatStepEvent>>,
     ) -> std::result::Result<(), String> {
+        if matches!(
+            visit.route,
+            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                kind: Level2DynamicArenaKind::AuthoredClass5,
+                ..
+            })
+        ) {
+            validate_semantic_creature_dispatch(
+                source_slot,
+                self.creature_kind_for_source_slot(source_slot),
+                visit.handler,
+            )?;
+        }
         match (visit.handler, visit.route) {
             (ExistingHandler::BallisticScenery, Level2SourceRoute::Imported) => {
                 self.step_imported_ballistic_scenery(source_slot)?;
@@ -15033,6 +15102,58 @@ impl Level2ResetSession {
 mod tests {
     use super::*;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    fn level_one_descriptor_fixture_path() -> PathBuf {
+        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf15-level1-package-current")
+            },
+            PathBuf::from,
+        )
+    }
+
+    #[test]
+    fn semantic_creature_dispatch_rejects_raw_selector_divergence_in_source_pass() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens");
+        let session = campaign.level2_compatibility_mut();
+        session
+            .consume_authored_group(0, 0, 3)
+            .expect("real package group 3 materializes through the shared arena");
+        let archer = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 101)
+            .copied()
+            .expect("package-authored Archer is present in the shared arena");
+        {
+            let mut economy = session.economy_mut();
+            let source = economy
+                .authored_class5
+                .iter_mut()
+                .find(|source| source.source_entity_index == archer.source_entity_index)
+                .expect("allocated Archer remains in the shared arena");
+            source.model = 9;
+            source.action = 72;
+        }
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Error {
+                    source_slot,
+                    message,
+                    ..
+                } if *source_slot == archer.source_entity_index
+                    && message.contains("semantic archer")
+                    && message.contains("Model9Family")
+            )
+        }));
+    }
 
     fn level_three_descriptor_fixture_path() -> PathBuf {
         std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(

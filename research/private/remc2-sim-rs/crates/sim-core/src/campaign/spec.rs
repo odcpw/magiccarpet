@@ -4,9 +4,11 @@
 //! a session, install a scheduler, or allocate a handle; CF-11 consumes this
 //! receipt after the static registry work lands.
 
+use super::mc2_level_definition::Mc2LevelDefinition;
 use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
 };
+use crate::level_definition::{CreatureKind, LevelDefinition};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -357,6 +359,8 @@ pub struct CampaignDefinition {
     pub required_behaviors: Vec<BehaviorRequirement>,
     pub reset_state_receipt: ResetStatePreflightReceipt,
     pub completed_stage: ValidationStage,
+    level_definition: LevelDefinition,
+    creature_by_authored_record: BTreeMap<u16, CreatureKind>,
     member_hashes: BTreeMap<String, String>,
 }
 
@@ -798,6 +802,13 @@ impl CampaignDefinition {
             ValidationStage::TypedMembers,
         )?;
         let authored = &members[&authored_records.member];
+        let semantic_level =
+            Mc2LevelDefinition::from_authored_bytes(authored).map_err(|message| {
+                CampaignPackageError {
+                    stage: ValidationStage::TypedMembers,
+                    message: format!("cannot derive semantic level content: {message}"),
+                }
+            })?;
         let entities = &members[&entities_ref.member];
         let expected_rows = decode_behavior_rows(authored, entities, outer.map_type_id)?;
         let declared_rows = parse_behavior_rows(&spec_value["authored_behavior_rows"])?;
@@ -936,6 +947,8 @@ impl CampaignDefinition {
             required_behaviors: declared_requirements,
             reset_state_receipt,
             completed_stage: ValidationStage::ResetState,
+            level_definition: semantic_level.semantic,
+            creature_by_authored_record: semantic_level.creature_by_authored_record,
             member_hashes: files
                 .into_iter()
                 .map(|(name, (_, sha256))| (name, sha256))
@@ -947,6 +960,15 @@ impl CampaignDefinition {
         self.required_behaviors
             .iter()
             .map(|requirement| &requirement.key)
+    }
+
+    #[must_use]
+    pub const fn level_definition(&self) -> &LevelDefinition {
+        &self.level_definition
+    }
+
+    pub(crate) fn creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {
+        &self.creature_by_authored_record
     }
 
     /// Reconstruct the identity of the wrapped owner-level export.

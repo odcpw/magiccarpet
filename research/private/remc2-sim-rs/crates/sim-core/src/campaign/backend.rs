@@ -189,6 +189,7 @@ pub fn load_mc2_campaign(
         PackageProvenance::owner_derived(&descriptor.package_sha256)?,
     )?;
     GameDefinition::from_package(package, &engine_capabilities()?, catalog)
+        .map(|definition| definition.with_level_definition(descriptor.level_definition().clone()))
 }
 
 fn campaign_package_bytes(root: &Path) -> crate::game_definition::Result<(u64, u64)> {
@@ -299,6 +300,11 @@ impl GameAdapter for Mc2CampaignAdapter {
     ) -> Result<Self::Backend, Self::Error> {
         let catalog = default_catalog().map_err(CampaignBackendError::Definition)?;
         require_catalog_defaults(definition, &catalog)?;
+        let package_base = load_mc2_campaign(&input.package_root, &catalog)
+            .map_err(CampaignBackendError::Definition)?;
+        definition
+            .verify_semantic_variant_of(&package_base, &catalog)
+            .map_err(CampaignBackendError::Definition)?;
         let selection = CampaignDescriptor::declared_selection(&input.package_root)
             .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Preflight(error)))?;
         let mut campaign = match &input.owner_cache {
@@ -322,7 +328,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             campaign,
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
-            package_base: definition.clone(),
+            package_base,
         })
     }
 }
@@ -630,6 +636,9 @@ mod tests {
     use crate::campaign::state::{ResetState, encode_reset_v1};
     use crate::game_definition::SemanticValue;
     use crate::game_session::{GameSession, SessionGuard};
+    use crate::level_definition::{
+        CreatureKind, LevelDefinition, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
+    };
     use std::{path::PathBuf, sync::Arc};
 
     fn descriptor_fixture_path() -> PathBuf {
@@ -650,6 +659,84 @@ mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    fn level_one_descriptor_fixture_path() -> PathBuf {
+        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf15-level1-package-current")
+            },
+            PathBuf::from,
+        )
+    }
+
+    #[test]
+    fn cf15_level1_semantic_creatures_bind_neutral_campaign_open() {
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = load_mc2_campaign(&root, &catalog).unwrap();
+        let level = definition
+            .level_definition()
+            .expect("the campaign package exposes semantic level content");
+        assert_eq!(level.authored_creature_count(CreatureKind::Archer), 4);
+        assert_eq!(level.authored_creature_count(CreatureKind::Firefly), 6);
+        assert_eq!(
+            level.creature_kinds().collect::<Vec<_>>(),
+            [CreatureKind::Archer, CreatureKind::Firefly]
+        );
+
+        let swapped = level
+            .entities()
+            .iter()
+            .enumerate()
+            .map(|(ordinal, entity)| {
+                let LevelEntityKind::Creature(kind) = entity.kind();
+                let wrong_kind = match kind {
+                    CreatureKind::Archer => CreatureKind::Firefly,
+                    CreatureKind::Firefly => CreatureKind::Archer,
+                };
+                LevelEntityDefinition::new(
+                    LevelEntityId::creature(
+                        wrong_kind,
+                        u16::try_from(ordinal).expect("Level 1 semantic entity ordinal fits u16"),
+                    ),
+                    LevelEntityKind::Creature(wrong_kind),
+                    entity.position(),
+                    entity.activation_group(),
+                )
+            })
+            .collect();
+        let tampered = definition
+            .clone()
+            .with_level_definition(LevelDefinition::new(swapped).unwrap());
+        let error = Mc2CampaignAdapter
+            .open_backend(&tampered, Mc2CampaignInputs::new(&root))
+            .expect_err("raw and semantic creature identities must not diverge");
+        assert!(matches!(error, CampaignBackendError::Definition(_)));
+
+        let alias_package = GamePackage::materialize(
+            "mc2.campaign.alias",
+            definition.package_version(),
+            definition.required_capabilities().to_vec(),
+            definition.artifacts().to_vec(),
+            Vec::new(),
+            definition.provenance().clone(),
+        )
+        .unwrap();
+        let alias_definition =
+            GameDefinition::from_package(alias_package, &engine_capabilities().unwrap(), &catalog)
+                .unwrap()
+                .with_level_definition(level.clone());
+        assert_eq!(alias_definition.level_definition(), Some(level));
+        let error = Mc2CampaignAdapter
+            .open_backend(&alias_definition, Mc2CampaignInputs::new(&root))
+            .expect_err("matching semantic content must not bypass package identity");
+        assert!(matches!(error, CampaignBackendError::Definition(_)));
+
+        Mc2CampaignAdapter
+            .open_backend(&definition, Mc2CampaignInputs::new(&root))
+            .expect("the package-derived semantic definition opens the shared campaign engine");
     }
 
     fn guard(session: &GameSession<Mc2CampaignBackend>) -> SessionGuard {
