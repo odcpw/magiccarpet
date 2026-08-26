@@ -243,6 +243,22 @@ impl CampaignLevel2Authority {
         }
     }
 
+    fn exposed_player_count(&self, inspection: &NativeWorldInspection) -> usize {
+        match self {
+            Self::Legacy(_) => inspection.players().len(),
+            Self::Descriptor(session) => {
+                usize::from(session.level2_compatibility().runtime().player_count)
+            }
+        }
+    }
+
+    fn exposed_objective_count(&self, inspection: &NativeWorldInspection) -> usize {
+        match self {
+            Self::Legacy(_) => inspection.runtime().objectives.len(),
+            Self::Descriptor(session) => session.definition().level_definition().objectives().len(),
+        }
+    }
+
     fn step_authority(&mut self, command: PlayerCommand, speed_index: u8) -> Vec<StepEvidence> {
         match self {
             Self::Legacy(session) => session.step_outer_turn(command, speed_index),
@@ -2246,8 +2262,8 @@ pub extern "C" fn mc_native_campaign_world_info(
                             .iter()
                             .filter(|entity| entity.active)
                             .count(),
-                        inspection.players().len(),
-                        inspection.runtime().objectives.len(),
+                        reset.exposed_player_count(inspection),
+                        reset.exposed_objective_count(inspection),
                         reset.campaign_state_hash(),
                     ),
                 };
@@ -2584,7 +2600,9 @@ pub extern "C" fn mc_native_campaign_player_count(handle: u64, out_count: *mut u
         with_campaign_session(handle, |session| {
             let count = match &session.kind {
                 CampaignSessionKind::Level1 { world } => world.players().len(),
-                CampaignSessionKind::Level2 { inspection, .. } => inspection.players().len(),
+                CampaignSessionKind::Level2 {
+                    inspection, reset, ..
+                } => reset.exposed_player_count(inspection),
             };
             u32::try_from(count)
                 .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "player count exceeds u32"))
@@ -2598,9 +2616,9 @@ pub extern "C" fn mc_native_campaign_objective_count(handle: u64, out_count: *mu
         with_campaign_session(handle, |session| {
             let count = match &session.kind {
                 CampaignSessionKind::Level1 { world } => world.runtime().objectives.len(),
-                CampaignSessionKind::Level2 { inspection, .. } => {
-                    inspection.runtime().objectives.len()
-                }
+                CampaignSessionKind::Level2 {
+                    inspection, reset, ..
+                } => reset.exposed_objective_count(inspection),
             };
             u32::try_from(count)
                 .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "objective count exceeds u32"))
@@ -2640,7 +2658,7 @@ pub extern "C" fn mc_native_campaign_players_copy(
         with_campaign_session(handle, |session| {
             let (players, participant_count) = match &session.kind {
                 CampaignSessionKind::Level1 { world } => {
-                    (world.players(), world.runtime().player_count)
+                    (world.players(), usize::from(world.runtime().player_count))
                 }
                 CampaignSessionKind::Level2 {
                     inspection, reset, ..
@@ -2651,20 +2669,21 @@ pub extern "C" fn mc_native_campaign_players_copy(
                     // immutable owner-package inspection snapshot.
                     (
                         reset.shared_spells().players(),
-                        inspection.runtime().player_count,
+                        reset.exposed_player_count(inspection),
                     )
                 }
             };
             let start = usize::try_from(start_slot).map_err(|_| {
                 AbiError::new(MC_STATUS_BOUNDS, "campaign player start exceeds usize")
             })?;
-            if start > players.len() {
+            let player_count = players.len().min(participant_count);
+            if start > player_count {
                 return Err(AbiError::new(
                     MC_STATUS_BOUNDS,
                     "campaign player start out of bounds",
                 ));
             }
-            let count = (players.len() - start).min(usize::try_from(capacity).map_err(|_| {
+            let count = (player_count - start).min(usize::try_from(capacity).map_err(|_| {
                 AbiError::new(MC_STATUS_BOUNDS, "campaign player capacity exceeds usize")
             })?);
             if count > 0 && buffer.is_null() {
@@ -2674,7 +2693,8 @@ pub extern "C" fn mc_native_campaign_players_copy(
                 ));
             }
             for (offset, player) in players.iter().skip(start).take(count).enumerate() {
-                let value = campaign_player_snapshot(player, player.slot < participant_count);
+                let value =
+                    campaign_player_snapshot(player, usize::from(player.slot) < participant_count);
                 unsafe { buffer.add(offset).write_unaligned(value) };
             }
             write_output(
@@ -2700,8 +2720,19 @@ pub extern "C" fn mc_native_campaign_objectives_copy(
         require_element_size::<McObjectiveSnapshotV2>(element_size, "campaign objective element")?;
         with_campaign_session(handle, |session| {
             let objectives = match &session.kind {
-                CampaignSessionKind::Level1 { world } => &world.runtime().objectives,
-                CampaignSessionKind::Level2 { inspection, .. } => &inspection.runtime().objectives,
+                CampaignSessionKind::Level1 { world } => &world.runtime().objectives[..],
+                CampaignSessionKind::Level2 {
+                    inspection, reset, ..
+                } => reset
+                    .runtime()
+                    .objectives
+                    .get(..reset.exposed_objective_count(inspection))
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_BOUNDS,
+                            "campaign objective definition exceeds runtime capacity",
+                        )
+                    })?,
             };
             let start = usize::try_from(start_slot).map_err(|_| {
                 AbiError::new(MC_STATUS_BOUNDS, "campaign objective start exceeds usize")

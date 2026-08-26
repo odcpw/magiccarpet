@@ -23,6 +23,10 @@ namespace MagicCarpet.Native.Tests
         private static string Level1Package =>
             Path.Combine(PrivateRoot, "generated/level1-export-m");
 
+        private static string Level1CampaignPackage =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_LEVEL1_V1") ??
+            Path.Combine(PrivateRoot, "generated/mc-cf15-level1-package-current");
+
         private static string Level3Package =>
             Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_LEVEL3_V1") ??
             Path.Combine(
@@ -852,6 +856,97 @@ namespace MagicCarpet.Native.Tests
             {
                 crossBoundSession?.Dispose();
             }
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void GenericCampaignConsumerOpensStepsAndResetsLevel1Descriptor()
+        {
+            var selection = NativeSim.CampaignSelection.Create(1, 0, 1);
+            ulong firstStateHash;
+            ulong firstTerrainHash;
+            byte[] firstDispatchHash;
+            NativeSim.CampaignEvent[] firstEvents;
+            NativeSim.NativeEvent[] firstEffects;
+
+            using (var session = NativeCampaignSession.Open(
+                       Level1CampaignPackage,
+                       selection))
+            {
+                var identity = session.PackageIdentity;
+                Assert.That(
+                    identity.PackagePath,
+                    Is.EqualTo(Path.GetFullPath(Level1CampaignPackage)));
+                Assert.That(
+                    (identity.Selection.externalLevel,
+                     identity.Selection.internalLevel,
+                     identity.Selection.mapType),
+                    Is.EqualTo(((ushort)1, (ushort)0, (byte)1)));
+
+                var initial = session.InitialWorldInfo;
+                Assert.That(
+                    (initial.externalLevel,
+                     initial.internalLevel,
+                     initial.mapType,
+                     initial.entityCount,
+                     initial.activeEntityCount,
+                     initial.playerCount,
+                     initial.objectiveCount),
+                    Is.EqualTo(((ushort)1, (ushort)0, (byte)1, 1000u, 177u, 1u, 5u)));
+                Assert.That(initial.resetStateHash, Is.Not.Zero);
+                Assert.That(session.DrainEffects(), Is.Empty);
+
+                var localPlayer = session.Players()
+                    .Single(player =>
+                        player.slot == 0 && player.active != 0 && player.isAi == 0);
+                var localEntity = session.Entities()
+                    .Single(entity => entity.entityIndex == localPlayer.entityIndex);
+                var first = session.Step(localEntity.x, localEntity.y, localEntity.z);
+                firstStateHash = first.snapshot.stateHash;
+                firstTerrainHash = first.snapshot.terrainHash;
+                firstDispatchHash = first.snapshot.dispatchHash.ToArray();
+                firstEvents = first.events;
+                firstEffects = session.DrainEffects();
+
+                Assert.That(first.snapshot.revision, Is.EqualTo(1));
+                Assert.That(first.snapshot.stateHash, Is.Not.EqualTo(initial.resetStateHash));
+                Assert.That(first.events, Is.Not.Empty);
+                Assert.That(firstEffects, Is.Not.Empty);
+
+                session.Reset();
+                Assert.That((session.Generation, session.Tick), Is.EqualTo((1ul, 0ul)));
+                Assert.That(session.EffectCursor, Is.Zero);
+                Assert.That(session.DrainEffects(), Is.Empty);
+                Assert.That(
+                    session.WorldInfo().resetStateHash,
+                    Is.EqualTo(initial.resetStateHash));
+
+                var resetPlayer = session.Players()
+                    .Single(player => player.slot == 0 && player.active != 0);
+                var resetEntity = session.Entities()
+                    .Single(entity => entity.entityIndex == resetPlayer.entityIndex);
+                var replay = session.Step(resetEntity.x, resetEntity.y, resetEntity.z);
+                var replayEffects = session.DrainEffects();
+                Assert.That(replay.snapshot.generation, Is.EqualTo(1));
+                Assert.That(replay.snapshot.stateHash, Is.EqualTo(firstStateHash));
+                Assert.That(replay.snapshot.terrainHash, Is.EqualTo(firstTerrainHash));
+                Assert.That(replay.snapshot.dispatchHash, Is.EqualTo(firstDispatchHash));
+                Assert.That(
+                    replay.events.Select(row =>
+                        (row.ordinal, row.pass, row.kind, row.family,
+                         row.flags, row.sourceSlot)),
+                    Is.EqualTo(firstEvents.Select(row =>
+                        (row.ordinal, row.pass, row.kind, row.family,
+                         row.flags, row.sourceSlot))));
+                Assert.That(
+                    replayEffects.Select(row =>
+                        (row.sequence, row.stateHash, row.kind, row.code,
+                         row.entityIndex, row.playerIndex, row.value0, row.value1)),
+                    Is.EqualTo(firstEffects.Select(row =>
+                        (row.sequence, row.stateHash, row.kind, row.code,
+                         row.entityIndex, row.playerIndex, row.value0, row.value1))));
+            }
+
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
         }
 

@@ -947,6 +947,102 @@ fn campaign_goat_snapshot_maps_all_typed_variants() {
 }
 
 #[test]
+fn descriptor_campaign_counts_follow_the_level_definition() {
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-cf15-level1-package-current");
+    let package = package.to_string_lossy();
+    let selection = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 1,
+        internal_level: 0,
+        map_type: 1,
+        ..McCampaignSelectionV2::default()
+    };
+    let mut handle = 0;
+    assert_eq!(
+        mc_native_campaign_session_open(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            &raw const selection,
+            &raw mut handle,
+        ),
+        MC_STATUS_OK
+    );
+
+    let mut info = McCampaignWorldInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_world_info(
+            handle,
+            &raw mut info,
+            struct_size::<McCampaignWorldInfoV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(
+        (
+            info.external_level,
+            info.internal_level,
+            info.map_type,
+            info.entity_count,
+            info.active_entity_count,
+            info.player_count,
+            info.objective_count,
+        ),
+        (1, 0, 1, 1_000, 177, 1, 5)
+    );
+
+    let mut player_count = 0;
+    assert_eq!(
+        mc_native_campaign_player_count(handle, &raw mut player_count),
+        MC_STATUS_OK
+    );
+    assert_eq!(player_count, 1);
+    let mut players = [McCampaignPlayerSnapshotV2::default(); 8];
+    let mut players_written = 0;
+    assert_eq!(
+        mc_native_campaign_players_copy(
+            handle,
+            0,
+            players.as_mut_ptr(),
+            players.len() as u32,
+            struct_size::<McCampaignPlayerSnapshotV2>(),
+            &raw mut players_written,
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(players_written, 1);
+    assert_eq!((players[0].slot, players[0].active, players[0].is_ai), (0, 1, 0));
+
+    let mut objective_count = 0;
+    assert_eq!(
+        mc_native_campaign_objective_count(handle, &raw mut objective_count),
+        MC_STATUS_OK
+    );
+    assert_eq!(objective_count, 5);
+    let mut objectives = [McObjectiveSnapshotV2::default(); 8];
+    let mut objectives_written = 0;
+    assert_eq!(
+        mc_native_campaign_objectives_copy(
+            handle,
+            0,
+            objectives.as_mut_ptr(),
+            objectives.len() as u32,
+            struct_size::<McObjectiveSnapshotV2>(),
+            &raw mut objectives_written,
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(objectives_written, 5);
+    assert_eq!(
+        mc_native_campaign_session_destroy(handle),
+        MC_STATUS_OK
+    );
+}
+
+#[test]
 fn campaign_api_selects_level_profiles_and_preserves_old_level1_values() {
     let (level1_package, level1_closure) = fixture_paths();
     let package = level1_package.to_string_lossy();
