@@ -1704,11 +1704,10 @@ mod tests {
                 .contains(&100)
         );
 
-        // Continue the real row-100 route only as far as ordinary pickup.
-        // Speed casting and the nonzero action-9 lifecycle are a separate
-        // capability: this assertion proves that public flight, collision,
-        // and source cadence convert the same NewEvent row into the player's
-        // holder without substituting the legacy reset-time Speed pickup.
+        // Continue the real row-100 route through ordinary pickup. Public
+        // flight, collision, and source cadence must convert the same NewEvent
+        // row into the player's holder without substituting the legacy
+        // reset-time Speed pickup.
         let acquisition_cursor = campaign.effect_cursor();
         let mut saw_overlapping_off_cadence_refusal = false;
         let mut acquired = None;
@@ -1949,6 +1948,358 @@ mod tests {
             )
         );
 
+        // Exercise exactly one real tier-0 GetScroll_69DB0 pulse. The player
+        // command arms the acquired row during the player visit at source
+        // slot 152; Speed behavior is allowed only when the numeric scheduler
+        // subsequently reaches the holder's own action-9 slot. Align that visit with the
+        // source's phase&3 trail cadence using ordinary no-input turns.
+        let player_entity_index = session.state.entity_index;
+        let player = session
+            .players()
+            .iter()
+            .find(|player| player.entity_index == player_entity_index)
+            .expect("local Level 1 player remains live")
+            .clone();
+        let (cast_flag, cast_source, cast_direction_mask) = if player.left_spell_slot == 3 {
+            (0x10, crate::SpellFireSource::Left, 256)
+        } else if player.right_spell_slot == 3 {
+            (0x20, crate::SpellFireSource::Right, 512)
+        } else {
+            panic!("ordinary Speed acquisition must assign the real holder to one hand");
+        };
+
+        let no_cast_cursor = campaign.effect_cursor();
+        let no_cast_target_speed = session.state.target_speed;
+        let no_cast_experience = session.shared_spells().spell_experience()[3];
+        let no_cast_trail_count = session.economy().speed_trails().len();
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let session = campaign.level2_compatibility();
+        let holder = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == jar_slot)
+            .expect("no-input turn retains the inactive Speed holder");
+        assert_eq!(holder.active_value, 0);
+        assert_eq!(session.state.target_speed, no_cast_target_speed);
+        assert_eq!(
+            session.shared_spells().spell_experience()[3],
+            no_cast_experience
+        );
+        assert_eq!(session.economy().speed_trails().len(), no_cast_trail_count);
+        assert!(
+            campaign
+                .effects_after(no_cast_cursor, 16_384)
+                .expect("complete no-cast journal page")
+                .records
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        sound_id: 19,
+                        ..
+                    })
+                )),
+            "an idle action-9 visit must not run the Speed pulse"
+        );
+
+        let desired_precast_phase = if jar_slot > player_entity_index { 0 } else { 3 };
+        for _ in 0..3 {
+            let phase = campaign
+                .level2_compatibility()
+                .shared_spells()
+                .dynamic_pickups()
+                .iter()
+                .find(|row| row.index == jar_slot)
+                .expect("Speed holder remains live while aligning cadence")
+                .phase;
+            if phase & 3 == desired_precast_phase {
+                break;
+            }
+            let before_trails = campaign
+                .level2_compatibility()
+                .economy()
+                .speed_trails()
+                .len();
+            let before_experience = campaign
+                .level2_compatibility()
+                .shared_spells()
+                .spell_experience()[3];
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            let session = campaign.level2_compatibility();
+            assert_eq!(
+                session
+                    .shared_spells()
+                    .dynamic_pickups()
+                    .iter()
+                    .find(|row| row.index == jar_slot)
+                    .expect("aligned Speed holder")
+                    .active_value,
+                0
+            );
+            assert_eq!(session.economy().speed_trails().len(), before_trails);
+            assert_eq!(
+                session.shared_spells().spell_experience()[3],
+                before_experience
+            );
+        }
+
+        let session = campaign.level2_compatibility();
+        let pre_cast_holder = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == jar_slot)
+            .expect("cadence-aligned Speed holder")
+            .clone();
+        assert_eq!(pre_cast_holder.phase & 3, desired_precast_phase);
+        assert_eq!(pre_cast_holder.active_value, 0);
+        let pre_cast_target_speed = session.state.target_speed;
+        let speed_direction = if pre_cast_target_speed < 0 { -1 } else { 1 };
+        let expected_launch_speed = speed_direction * 240;
+        let pre_cast_player = session
+            .entities()
+            .get(usize::from(player_entity_index))
+            .expect("local player source row before Speed cast")
+            .clone();
+        assert_eq!(
+            (pre_cast_player.mana, pre_cast_player.mana_regen),
+            (1_000, 100)
+        );
+        let pre_cast_experience = session.shared_spells().spell_experience()[3];
+        let pre_cast_trail_slots = session
+            .economy()
+            .speed_trails()
+            .iter()
+            .map(|trail| trail.source_entity_index)
+            .collect::<Vec<_>>();
+        let cast_cursor = campaign.effect_cursor();
+        let _ = campaign.step(
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 3,
+                flags: cast_flag,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+
+        let holder_runs_on_cast_turn = jar_slot > player_entity_index;
+        if !holder_runs_on_cast_turn {
+            let session = campaign.level2_compatibility();
+            let armed = session
+                .shared_spells()
+                .dynamic_pickups()
+                .iter()
+                .find(|row| row.index == jar_slot)
+                .expect("lower-slot Speed holder remains armed after the player visit");
+            assert_eq!(armed.active_value, 301);
+            assert_eq!(session.state.target_speed, pre_cast_target_speed);
+            assert_eq!(
+                session
+                    .economy()
+                    .speed_trails()
+                    .iter()
+                    .map(|trail| trail.source_entity_index)
+                    .collect::<Vec<_>>(),
+                pre_cast_trail_slots
+            );
+            assert!(campaign.events().iter().all(|event| !matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: crate::native_world::Level2DynamicArenaKind::SpeedTrail,
+                    ..
+                } if *source_slot != 0
+            )));
+            let _ = campaign.step(PlayerCommand::default(), 0);
+        }
+
+        let session = campaign.level2_compatibility();
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        let holder = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == jar_slot)
+            .expect("first Speed pulse retains the acquired holder");
+        let arena_holder = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|row| row.source_entity_index == jar_slot)
+            .expect("first Speed pulse retains its source-arena projection");
+        let holder_visits = 1 + usize::from(!holder_runs_on_cast_turn);
+        assert_eq!(holder.active_value, 300);
+        assert_eq!(arena_holder.action, 9);
+        assert_eq!(holder.control_flags & 0x80, 0x80);
+        assert_eq!(
+            holder.phase,
+            pre_cast_holder
+                .phase
+                .wrapping_add(u8::try_from(holder_visits).expect("at most two holder visits"))
+        );
+        assert_eq!(arena_holder.phase, holder.phase);
+        assert_eq!(session.state.target_speed, expected_launch_speed);
+        assert_eq!(session.state.actual_speed, expected_launch_speed);
+        assert_eq!(
+            session.shared_spells().spell_experience()[3],
+            pre_cast_experience + 1
+        );
+        assert_eq!(
+            session.players()[0].runtime_spell_experience[3],
+            pre_cast_experience + 1
+        );
+        let player_entity = session
+            .entities()
+            .get(usize::from(player_entity_index))
+            .expect("local player source row after first Speed pulse");
+        assert_eq!(player_entity.mana, 1_000);
+        assert_eq!(player_entity.mana_regen, -1_000);
+
+        let new_trails = session
+            .economy()
+            .speed_trails()
+            .iter()
+            .filter(|trail| !pre_cast_trail_slots.contains(&trail.source_entity_index))
+            .collect::<Vec<_>>();
+        assert_eq!(new_trails.len(), 1);
+        let trail = new_trails[0];
+        let trail_slot = trail.source_entity_index;
+        assert_eq!(trail.source_id, pre_cast_player.source_id);
+        assert_eq!(
+            (
+                trail.class,
+                trail.model,
+                trail.action,
+                trail.max_life,
+                trail.control_flags
+            ),
+            (10, 2, 2, 8, 0x0002_0001)
+        );
+        assert_eq!(trail.position, session.state.position);
+        assert_eq!(trail.life, if trail_slot > jar_slot { 31 } else { 32 });
+
+        let cast_effects = campaign
+            .effects_after(cast_cursor, 16_384)
+            .expect("complete first Speed pulse journal page");
+        assert!(cast_effects.records.iter().any(|record| matches!(
+            record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(
+                FlightEvent::RequestSpellActivation {
+                    source,
+                    holder_entity_index,
+                    direction_mask,
+                }
+            ) if source == cast_source
+                && holder_entity_index == jar_slot
+                && direction_mask == cast_direction_mask
+        )));
+        let speed_sound_sequence = cast_effects
+            .records
+            .iter()
+            .find_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    entity_index,
+                    player_index: -1,
+                    sound_id: 19,
+                    ..
+                }) if entity_index == player_entity_index => Some(record.sequence),
+                _ => None,
+            })
+            .expect("first Speed pulse sound 19");
+        let holder_receipt_sequence = cast_effects
+            .records
+            .iter()
+            .find_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::Dispatch(
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: crate::native_world::Level2DynamicArenaKind::SpellPickup,
+                        ..
+                    },
+                ) if source_slot == jar_slot => Some(record.sequence),
+                _ => None,
+            })
+            .expect("first Speed holder dispatch receipt");
+        assert!(speed_sound_sequence < holder_receipt_sequence);
+
+        let receipts = session.cf10_production_schedule_receipts();
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            ScheduleReceipt::CallbackCompleted {
+                pass: SourcePass::UpdateEntities,
+                slot,
+                ..
+            } if *slot == jar_slot
+        )));
+        assert_eq!(
+            receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    slot,
+                    ..
+                } if *slot == trail_slot
+            )),
+            trail_slot > jar_slot
+        );
+
+        // Every real trail receives its class-10/action-2 callback on the
+        // following numeric pass, independent of which side of the holder's
+        // cursor its allocated slot occupied.
+        let trail_life_after_launch = trail.life;
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let session = campaign.level2_compatibility();
+        let trail = session
+            .economy()
+            .speed_trails()
+            .iter()
+            .find(|trail| trail.source_entity_index == trail_slot)
+            .expect("Speed trail remains live after its following callback");
+        assert_eq!(trail.life, trail_life_after_launch - 1);
+        assert!(
+            session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| {
+                    matches!(
+                        receipt,
+                        ScheduleReceipt::SlotResolved {
+                            pass: SourcePass::UpdateEntities,
+                            slot,
+                            selector,
+                            ..
+                        } if *slot == trail_slot
+                            && selector.registry_key().selector
+                                == crate::campaign::spec::BehaviorSelector::ClassAction {
+                                    class: 10,
+                                    action: 2,
+                                }
+                    )
+                })
+        );
+        assert!(
+            session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| {
+                    matches!(
+                        receipt,
+                        ScheduleReceipt::CallbackCompleted {
+                            pass: SourcePass::UpdateEntities,
+                            slot,
+                            ..
+                        } if *slot == trail_slot
+                    )
+                })
+        );
+
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
         assert_eq!(
@@ -1960,6 +2311,13 @@ mod tests {
                 .level2_compatibility()
                 .shared_spells()
                 .dynamic_pickups()
+                .is_empty()
+        );
+        assert!(
+            campaign
+                .level2_compatibility()
+                .economy()
+                .speed_trails()
                 .is_empty()
         );
     }

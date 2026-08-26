@@ -1980,7 +1980,7 @@ impl Level2SharedSpellResetSession {
         std::mem::take(&mut self.pending_effects)
     }
 
-    fn emit_flight_effect(&mut self, event: FlightEvent) {
+    pub(super) fn emit_flight_effect(&mut self, event: FlightEvent) {
         self.pending_effects
             .push(crate::campaign::journal::CampaignEffect::Flight(event));
         Vec::push(&mut self.events, event);
@@ -2052,6 +2052,60 @@ impl Level2SharedSpellResetSession {
             mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
             self.emit_shared_spell_effect(Level2SharedSpellEvent::AbilityImproved {
                 source_family: BEYOND_SIGHT_FAMILY,
+                tier: unlocked,
+            });
+            self.emit_flight_effect(FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::AbilityImproved,
+                entity_index: 0,
+                player_index: -1,
+                sound_id: 61,
+            });
+        }
+    }
+
+    /// Apply `sub_6D8B0(parent, 3, 1)` for the active Speed holder.
+    pub(super) fn award_speed_experience(&mut self, parent_entity_index: u16, amount: i32) {
+        const FAMILY: usize = 3;
+        let owner_index = self
+            .players
+            .iter()
+            .position(|player| player.entity_index == parent_entity_index)
+            .expect("Speed holder parent remains in the source player rows");
+        let mut owner = self.players[owner_index].clone();
+        let previous_unlocked = owner.spell_unlocked_levels[FAMILY];
+        let runtime = owner.runtime_spell_experience[FAMILY].wrapping_add(amount);
+        let total = owner.persistent_spell_experience[FAMILY].wrapping_add(runtime);
+        let unlocked = if total >= 1_200 {
+            2
+        } else if total >= 400 {
+            1
+        } else {
+            0
+        };
+        owner.runtime_spell_experience[FAMILY] = runtime;
+        owner.spell_unlocked_levels[FAMILY] = unlocked;
+        owner.record[164 + FAMILY * std::mem::size_of::<i32>()
+            ..164 + (FAMILY + 1) * std::mem::size_of::<i32>()]
+            .copy_from_slice(&runtime.to_le_bytes());
+        owner.record[502 + FAMILY] = unlocked.cast_unsigned();
+        if owner.family_selected_tiers[FAMILY] > unlocked {
+            owner.family_selected_tiers[FAMILY] = unlocked;
+            owner.record[528 + FAMILY] = unlocked.cast_unsigned();
+        }
+        let family_enabled =
+            owner.spell_enabled_flags[FAMILY] != 0 || owner.enabled_spell_holders[FAMILY] != 0;
+        let owner_is_local = owner.entity_index == self.local_player.entity_index;
+        self.players[owner_index] = owner.clone();
+        if owner_is_local {
+            self.spell_experience[FAMILY] = runtime;
+            self.spell_levels[FAMILY] = unlocked;
+            self.local_player = owner;
+        }
+        if unlocked != previous_unlocked && family_enabled {
+            mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
+            self.emit_shared_spell_effect(Level2SharedSpellEvent::AbilityImproved {
+                source_family: FAMILY as u8,
                 tier: unlocked,
             });
             self.emit_flight_effect(FlightEvent::PrepareSound {

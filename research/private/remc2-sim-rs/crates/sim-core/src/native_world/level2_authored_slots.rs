@@ -154,6 +154,8 @@ impl Level2EconomyState {
 
             spell_pickups: Vec::new(),
 
+            speed_trails: Vec::new(),
+
             authored_model45: Vec::new(),
 
             authored_model1: Vec::new(),
@@ -572,6 +574,11 @@ impl Level2EconomyState {
     }
 
     #[must_use]
+    pub fn speed_trails(&self) -> &[SpeedTrailEffect] {
+        &self.speed_trails
+    }
+
+    #[must_use]
     pub fn authored_model45(&self) -> &[Level2AuthoredModel45Source] {
         &self.authored_model45
     }
@@ -922,6 +929,52 @@ impl Level2EconomyState {
         self.source_rng.insert(source_entity_index, entity_rng);
         self.spell_pickups.push(source);
         Some(source)
+    }
+
+    /// Allocate `NewAdd0A02_4E430` and apply `GetScroll_69DB0`'s immediate
+    /// life/owner writes. The constructor does not insert this effect into the
+    /// renderable map chain.
+    pub(super) fn allocate_speed_trail(
+        &mut self,
+        position: Position,
+        source_id: u16,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        self.speed_trails.push(SpeedTrailEffect {
+            source_entity_index,
+            entity_rng,
+            source_id,
+            class: 10,
+            model: 2,
+            action: 2,
+            position,
+            phase: source_entity_index as u8,
+            max_life: 8,
+            life: 32,
+            control_flags: 0x0002_0001,
+            active: true,
+        });
+        self.source_rng.insert(source_entity_index, entity_rng);
+        Some(source_entity_index)
+    }
+
+    /// Dispatch `CastSpeedSpell_31100`. The disabled row remains reserved for
+    /// the rest of this pass and is reclaimed by the next source boundary.
+    pub(super) fn step_speed_trail(&mut self, source_entity_index: u16) -> bool {
+        let Some(trail) = self
+            .speed_trails
+            .iter_mut()
+            .find(|trail| trail.active && trail.source_entity_index == source_entity_index)
+        else {
+            return false;
+        };
+        trail.life = trail.life.wrapping_sub(1);
+        if trail.life < -1 {
+            trail.active = false;
+        }
+        trail.phase = trail.phase.wrapping_add(1);
+        trail.active
     }
 
     /// Allocate the class-15 holder made by `AddSpellXX_XX_51120` during the
@@ -4801,6 +4854,12 @@ impl Level2EconomyState {
                 Level2DynamicArenaKind::SpellPickup,
             );
         }
+        for trail in self.speed_trails.iter().filter(|trail| trail.active) {
+            visit(
+                trail.source_entity_index,
+                Level2DynamicArenaKind::SpeedTrail,
+            );
+        }
         for source in self.authored_model1.iter().filter(|source| source.active) {
             visit(
                 source.source_entity_index,
@@ -5116,6 +5175,11 @@ impl Level2EconomyState {
                 selector!(self.spell_replacements, 15)
             }
             Level2DynamicArenaKind::SpellPickup => selector!(self.spell_pickups, 15),
+            Level2DynamicArenaKind::SpeedTrail => self
+                .speed_trails
+                .iter()
+                .find(|row| row.active && row.source_entity_index == source_slot)
+                .map(|row| (row.class, row.action)),
             Level2DynamicArenaKind::AuthoredModel1 => selector!(self.authored_model1, 10),
             Level2DynamicArenaKind::AuthoredModel45 => selector!(self.authored_model45),
             Level2DynamicArenaKind::AuthoredModel13 => selector!(self.authored_model13),
@@ -5672,6 +5736,16 @@ impl Level2EconomyState {
                 x: 0,
                 y: 0,
             });
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_speed_trails = self
+            .speed_trails
+            .iter()
+            .filter(|trail| !trail.active)
+            .map(|trail| (trail.source_entity_index, trail.entity_rng))
+            .collect::<Vec<_>>();
+        self.speed_trails.retain(|trail| trail.active);
+        for (slot, entity_rng) in reclaimed_speed_trails {
             self.release_slot(slot, Some(entity_rng));
         }
         let reclaimed_model1 = self
@@ -6321,6 +6395,21 @@ impl Level2EconomyState {
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
+        }
+        hasher.update(b"speed-trails-v1");
+        for trail in &self.speed_trails {
+            hasher.update(trail.source_entity_index.to_le_bytes());
+            hasher.update(trail.entity_rng.to_le_bytes());
+            hasher.update(trail.source_id.to_le_bytes());
+            hasher.update([trail.class, trail.model, trail.action]);
+            hasher.update(trail.position.x.to_le_bytes());
+            hasher.update(trail.position.y.to_le_bytes());
+            hasher.update(trail.position.z.to_le_bytes());
+            hasher.update([trail.phase]);
+            hasher.update(trail.max_life.to_le_bytes());
+            hasher.update(trail.life.to_le_bytes());
+            hasher.update(trail.control_flags.to_le_bytes());
+            hasher.update([u8::from(trail.active)]);
         }
         hasher.update(b"authored-model1-v1");
         for source in &self.authored_model1 {

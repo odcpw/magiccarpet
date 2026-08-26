@@ -1356,6 +1356,27 @@ pub struct Level2SpellPickupSource {
     pub active: bool,
 }
 
+/// The short-lived class-10/model-2/action-2 source-arena row created by
+/// `NewAdd0A02_4E430` for a Speed pulse.
+/// The constructor deliberately does not map-link this effect; its mutable
+/// source state is the NewEvent identity, owner, position, phase, and signed
+/// life consumed by `CastSpeedSpell_31100`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpeedTrailEffect {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub source_id: u16,
+    pub class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub position: Position,
+    pub phase: u8,
+    pub max_life: i32,
+    pub life: i32,
+    pub control_flags: u32,
+    pub active: bool,
+}
+
 /// The class-15 holder row created by the isolated direct-starting-spell
 /// `sub_5CF40` path.  Holders consume source slots and map-chain links, but
 /// they are inventory rows in the shared-spell arena, not world spell
@@ -2743,6 +2764,8 @@ pub struct Level2EconomyState {
 
     spell_pickups: Vec<Level2SpellPickupSource>,
 
+    speed_trails: Vec<SpeedTrailEffect>,
+
     authored_model45: Vec<Level2AuthoredModel45Source>,
 
     authored_model1: Vec<Level2AuthoredModel1Source>,
@@ -3178,6 +3201,7 @@ pub enum Level2DynamicArenaKind {
     PlayerDeathMarker,
     SpellReplacement,
     SpellPickup,
+    SpeedTrail,
     AuthoredModel1,
     AuthoredModel45,
     AuthoredModel13,
@@ -3329,6 +3353,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::PlayerDeathMarker => 43,
         Level2DynamicArenaKind::SpellReplacement => 9,
         Level2DynamicArenaKind::SpellPickup => 10,
+        Level2DynamicArenaKind::SpeedTrail => 44,
         Level2DynamicArenaKind::AuthoredModel1 => 31,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
         Level2DynamicArenaKind::AuthoredModel13 => 21,

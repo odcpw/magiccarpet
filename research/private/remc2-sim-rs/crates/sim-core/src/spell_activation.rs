@@ -39,6 +39,127 @@ pub struct SpellActivationHolder {
     pub action_marker: i8,
 }
 
+/// Renderer-free input for one `GetScroll_69DB0` Speed-holder visit.
+///
+/// The caller owns source-slot scheduling, player lookup, experience, audio,
+/// and `NewEvent` allocation. This kernel owns only the ordered scalar writes
+/// shared by the sealed Level 1 adapter and descriptor campaign sessions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpeedSpellStepInput {
+    pub active_value: i16,
+    pub activation_value: i16,
+    pub holder_phase: u8,
+    pub holder_control_flags: u32,
+    pub presentation_timer: u16,
+    pub parent_valid: bool,
+    pub source_gate_passed: bool,
+    pub speed_changed: bool,
+    pub direction: i16,
+    pub minimum_speed: i16,
+    pub first_multiplier: i16,
+    pub sustain_multiplier: i16,
+    pub parent_mana_regen: i32,
+    pub mana_cost: i32,
+    /// Model-0 players clear the sound latch two active visits after launch;
+    /// model-1 players use the source's 64-visit offset.
+    pub latch_clear_offset: i16,
+}
+
+/// Ordered scalar result from one Speed-holder visit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpeedSpellStepOutcome {
+    pub active_value: i16,
+    pub holder_control_flags: u32,
+    pub presentation_timer: u16,
+    pub requested_speed: Option<i16>,
+    pub actual_speed: Option<i16>,
+    pub parent_mana_regen: Option<i32>,
+    pub prepare_sound_19: bool,
+    pub award_experience: bool,
+    pub request_trail: bool,
+    pub expired: bool,
+}
+
+const SPEED_SOUND_LATCH: u32 = 0x80;
+
+/// Apply the source `GetScroll_69DB0` scalar transition for one numeric
+/// holder visit.
+///
+/// Allocation failure is intentionally outside this function: the source
+/// still applies sound, speed, mana-regeneration, and countdown writes when
+/// the optional class-10/model-2 constructor returns null.
+#[must_use]
+pub fn step_speed_spell(input: SpeedSpellStepInput) -> SpeedSpellStepOutcome {
+    let mut outcome = SpeedSpellStepOutcome {
+        active_value: input.active_value,
+        holder_control_flags: input.holder_control_flags,
+        presentation_timer: input.presentation_timer.saturating_sub(1),
+        requested_speed: None,
+        actual_speed: None,
+        parent_mana_regen: None,
+        prepare_sound_19: false,
+        award_experience: false,
+        request_trail: false,
+        expired: false,
+    };
+    if input.active_value <= 0 || !input.parent_valid {
+        return outcome;
+    }
+
+    if input.speed_changed {
+        outcome.active_value = 1;
+    } else if input.source_gate_passed {
+        let first_active_tick = input.active_value == input.activation_value;
+        if first_active_tick {
+            if outcome.holder_control_flags & SPEED_SOUND_LATCH == 0 {
+                outcome.holder_control_flags |= SPEED_SOUND_LATCH;
+                outcome.prepare_sound_19 = true;
+            }
+            outcome.award_experience = true;
+        }
+        if input.active_value
+            == input
+                .activation_value
+                .wrapping_sub(input.latch_clear_offset)
+        {
+            outcome.holder_control_flags &= !SPEED_SOUND_LATCH;
+        }
+        let multiplier = if first_active_tick {
+            input.first_multiplier
+        } else {
+            input.sustain_multiplier
+        };
+        let speed = input
+            .direction
+            .wrapping_mul(input.minimum_speed)
+            .wrapping_mul(multiplier);
+        outcome.requested_speed = Some(speed);
+        outcome.actual_speed = Some(speed);
+        outcome.request_trail = input.holder_phase & 3 == 0;
+        outcome.parent_mana_regen = if first_active_tick {
+            Some(if input.parent_mana_regen >= 0 {
+                input.mana_cost.wrapping_neg()
+            } else {
+                input.parent_mana_regen.wrapping_sub(input.mana_cost)
+            })
+        } else if input.parent_mana_regen > 0 {
+            Some(0)
+        } else {
+            None
+        };
+    }
+
+    outcome.active_value = outcome.active_value.wrapping_sub(1);
+    if outcome.active_value == 0 {
+        let speed = input.direction.wrapping_mul(input.minimum_speed);
+        outcome.requested_speed = Some(speed);
+        outcome.actual_speed = Some(speed);
+        outcome.holder_control_flags &= !SPEED_SOUND_LATCH;
+        outcome.expired = true;
+    }
+    outcome
+}
+
 /// The four source action roles used by the 26-family physical spell table.
 ///
 /// `sub_692A0` passes `action - 1` to the common acquisition helper, while

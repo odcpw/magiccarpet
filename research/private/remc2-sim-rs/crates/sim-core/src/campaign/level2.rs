@@ -14,6 +14,7 @@ use crate::campaign::{
     },
     spec::{BehaviorKey, BehaviorSelector},
 };
+use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
 /// Typed payload selected from the fixed numeric source slot at visit time.
 ///
@@ -3730,6 +3731,17 @@ impl Level2ResetSession {
         let caster = self.session.state.live.shared_spells.caster;
         let spell_experience = self.session.state.live.shared_spells.spell_experience;
         let spell_levels = self.session.state.live.shared_spells.spell_levels;
+        let speed_holder_index = enabled_holder_indices[3];
+        let speed_holder = holders
+            .iter()
+            .find(|holder| holder.entity_index == speed_holder_index && holder.model == 3)
+            .map(|holder| SpellHolder {
+                entity_index: holder.entity_index,
+                active_value: holder.active_value,
+            });
+        self.session.state.live.core.state.speed_spell_holder_index =
+            speed_holder.map_or(0, |holder| holder.entity_index);
+        self.session.state.live.core.context.speed_spell_holder = speed_holder;
         let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() else {
             return;
         };
@@ -8996,6 +9008,9 @@ impl Level2ResetSession {
                     Level2DynamicArenaKind::SpellPickup => {
                         row_phase!(economy.spell_pickups, phase)
                     }
+                    Level2DynamicArenaKind::SpeedTrail => {
+                        row_phase!(economy.speed_trails, phase)
+                    }
                     Level2DynamicArenaKind::AuthoredModel1 => {
                         row_phase!(economy.authored_model1, phase)
                     }
@@ -9206,6 +9221,9 @@ impl Level2ResetSession {
                     }
                     Level2DynamicArenaKind::SpellPickup => {
                         retained_phase!(economy.spell_pickups, phase)
+                    }
+                    Level2DynamicArenaKind::SpeedTrail => {
+                        retained_phase!(economy.speed_trails, phase)
                     }
                     Level2DynamicArenaKind::AuthoredModel1 => {
                         retained_phase!(economy.authored_model1, phase)
@@ -9424,6 +9442,9 @@ impl Level2ResetSession {
                     }
                     Level2DynamicArenaKind::SpellPickup => {
                         dynamic_phase_mut!(live.economy.economy.spell_pickups, phase)
+                    }
+                    Level2DynamicArenaKind::SpeedTrail => {
+                        dynamic_phase_mut!(live.economy.economy.speed_trails, phase)
                     }
                     Level2DynamicArenaKind::AuthoredModel1 => {
                         dynamic_phase_mut!(live.economy.economy.authored_model1, phase)
@@ -9713,6 +9734,7 @@ impl Level2ResetSession {
                 | Level2DynamicArenaKind::ManaAttraction => {
                     handler == ExistingHandler::Class10Effects
                 }
+                Level2DynamicArenaKind::SpeedTrail => handler == ExistingHandler::Class10Effects,
                 Level2DynamicArenaKind::CastleRoot => handler == ExistingHandler::CastleRoot,
                 Level2DynamicArenaKind::CastleAuxiliary => {
                     handler == ExistingHandler::CastleAuxiliary
@@ -10313,13 +10335,31 @@ impl Level2ResetSession {
                     }
                 }
                 let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
-                    self.step_level2_dynamic_spell_pickup(
-                        pass,
-                        source_slot,
-                        player_entity_index,
-                        *player_position,
-                        source_player_order,
-                    )
+                    let is_active_speed_holder = self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .pickup(source_slot)
+                        .is_some_and(|holder| holder.model == 3 && holder.action == 9);
+                    if is_active_speed_holder {
+                        self.step_dynamic_speed_holder(pass, source_slot)
+                    } else {
+                        self.step_level2_dynamic_spell_pickup(
+                            pass,
+                            source_slot,
+                            player_entity_index,
+                            *player_position,
+                            source_player_order,
+                        )
+                    }
+                } else if row.kind == Level2DynamicArenaKind::SpeedTrail {
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .step_speed_trail(source_slot)
                 } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
                     self.step_level2_dynamic_spell_replacement(
                         pass,
@@ -11509,6 +11549,287 @@ impl Level2ResetSession {
         remains_live
     }
 
+    /// Dispatch the acquired family-3 holder through `GetScroll_69DB0` at
+    /// its real numeric source slot.
+    fn step_speed_holder_source_slot(&mut self, source_slot: u16) -> bool {
+        let Some(holder) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup(source_slot)
+            .filter(|holder| holder.active && holder.model == 3 && holder.action == 9)
+            .cloned()
+        else {
+            return false;
+        };
+        let parent_entity_index = u16::from_le_bytes([holder.record[44], holder.record[45]]);
+        let parent = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .player_entities
+            .iter()
+            .find(|entity| entity.index == parent_entity_index && entity.active)
+            .cloned();
+        let first_active_tick = holder.active_value == holder.activation_value.cast_signed();
+        let castle_mana = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .castle
+            .filter(|castle| castle.active && castle.owner_entity_index == parent_entity_index)
+            .map(|castle| castle.mana);
+        let source_gate_passed = parent.as_ref().is_some_and(|parent| {
+            parent.life >= 0
+                && parent.mana >= 0
+                && (holder.mana_regen == 0
+                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
+                && (!first_active_tick || parent.mana >= holder.max_mana)
+        });
+        let presentation_timer = u16::from_le_bytes([holder.record[58], holder.record[59]]);
+        let parent_mana_regen = parent.as_ref().map_or(0, |parent| parent.mana_regen);
+        let minimum_speed = parent
+            .as_ref()
+            .map_or(PLAYER_MIN_SPEED, EntitySnapshot::minimum_speed);
+        let transition = crate::spell_activation::step_speed_spell(
+            crate::spell_activation::SpeedSpellStepInput {
+                active_value: holder.active_value,
+                activation_value: holder.activation_value.cast_signed(),
+                holder_phase: holder.phase,
+                holder_control_flags: holder.control_flags,
+                presentation_timer,
+                parent_valid: parent.is_some(),
+                source_gate_passed,
+                speed_changed: self.session.state.live.core.state.speed_changed_flag != 0,
+                direction: if self.session.state.live.core.state.target_speed < 0 {
+                    -1
+                } else {
+                    1
+                },
+                minimum_speed,
+                first_multiplier: i16::try_from(holder.subspell_index)
+                    .unwrap_or(i16::MAX)
+                    .wrapping_add(1),
+                sustain_multiplier: i16::try_from(holder.subspell_index).unwrap_or(i16::MAX),
+                parent_mana_regen,
+                mana_cost: holder.max_mana,
+                latch_clear_offset: if parent.as_ref().is_some_and(|parent| parent.model == 1) {
+                    64
+                } else {
+                    2
+                },
+            },
+        );
+
+        if transition.prepare_sound_19 {
+            mark_source_audio_call(SourceAudioCallTag::SpeedSpellActivation);
+            self.session
+                .state
+                .live
+                .shared_spells
+                .emit_flight_effect(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: crate::MissionAudioSite::SpeedSpellActivation,
+                    entity_index: parent_entity_index,
+                    player_index: -1,
+                    sound_id: 19,
+                });
+        }
+        if transition.award_experience {
+            self.session
+                .state
+                .live
+                .shared_spells
+                .award_speed_experience(parent_entity_index, 1);
+            if let Some(source_player) = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .players
+                .iter()
+                .find(|player| player.entity_index == parent_entity_index)
+                .cloned()
+                && let Some(player) = self
+                    .session
+                    .state
+                    .live
+                    .core
+                    .players
+                    .iter_mut()
+                    .find(|player| player.entity_index == parent_entity_index)
+            {
+                player.sync_spell_progression_family_from(&source_player, 3);
+            }
+            if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() {
+                fire.spell_experience[3] =
+                    self.session.state.live.shared_spells.spell_experience[3];
+                fire.spell_levels[3] = self.session.state.live.shared_spells.spell_levels[3];
+            }
+        }
+        if let Some(speed) = transition.requested_speed {
+            self.session.state.live.core.state.target_speed = speed;
+        }
+        if let Some(speed) = transition.actual_speed {
+            self.session.state.live.core.state.actual_speed = speed;
+            if let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .iter_mut()
+                .find(|entity| entity.index == parent_entity_index)
+            {
+                entity.set_actual_speed(speed);
+            }
+        }
+        if transition.request_trail
+            && let Some(parent) = parent.as_ref()
+        {
+            let position = self.session.state.live.core.state.position;
+            let _ = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .allocate_speed_trail(position, parent.source_id);
+        }
+        if let Some(mana_regen) = transition.parent_mana_regen {
+            self.session
+                .state
+                .live
+                .shared_spells
+                .player_entity
+                .set_mana_regen(mana_regen);
+            for entity in &mut self.session.state.live.shared_spells.player_entities {
+                if entity.index == parent_entity_index {
+                    entity.set_mana_regen(mana_regen);
+                }
+            }
+            if let Some(entity) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .iter_mut()
+                .find(|entity| entity.index == parent_entity_index)
+            {
+                entity.set_mana_regen(mana_regen);
+            }
+        }
+        if let Some(authoritative) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(source_slot)
+        {
+            authoritative.active_value = transition.active_value;
+            authoritative.record[50..52].copy_from_slice(&transition.active_value.to_le_bytes());
+            authoritative.set_control_flags(transition.holder_control_flags);
+            authoritative.record[58..60]
+                .copy_from_slice(&transition.presentation_timer.to_le_bytes());
+            if transition.expired {
+                let queued_tier =
+                    u16::from_le_bytes([authoritative.record[48], authoritative.record[49]]);
+                if queued_tier != 0
+                    && let Some(profile) = level2_set_spell_profile(3, (queued_tier - 1) as u8)
+                {
+                    authoritative.record[48..50].fill(0);
+                    authoritative.apply_nyphur_spell_profile(profile, (queued_tier - 1) as u8);
+                }
+            }
+        }
+        if let Some(speed_holder) = self
+            .session
+            .state
+            .live
+            .core
+            .context
+            .speed_spell_holder
+            .as_mut()
+            .filter(|holder| holder.entity_index == source_slot)
+        {
+            speed_holder.active_value = transition.active_value;
+        }
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
+            && let Some(holder) = fire
+                .holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == source_slot)
+        {
+            holder.active_value = transition.active_value;
+        }
+        true
+    }
+
+    fn step_dynamic_speed_holder(&mut self, pass: u8, source_slot: u16) -> bool {
+        if !self.step_speed_holder_source_slot(source_slot) {
+            return false;
+        }
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(source_slot)
+        {
+            holder.phase = holder.phase.wrapping_add(1);
+            holder.record[66] = holder.phase;
+        }
+        let Some((action, position)) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup(source_slot)
+            .map(|holder| (holder.action, holder.position))
+        else {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: "dynamic Speed holder lost its shared entity projection".to_owned(),
+            });
+            return false;
+        };
+        if !self
+            .session
+            .state
+            .live
+            .economy
+            .sync_spell_pickup_projection(source_slot, action, position)
+        {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: "dynamic Speed holder lost its source-arena projection".to_owned(),
+            });
+            return false;
+        }
+        let remains_live = self
+            .session
+            .state
+            .live
+            .economy
+            .step_spell_pickup_slot(source_slot);
+        if let Err(error) = self.commit_imported_spell_source_projection(source_slot) {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: error.to_string(),
+            });
+            return false;
+        }
+        remains_live
+    }
+
     pub(super) fn step_level2_dynamic_spell_replacement(
         &mut self,
         pass: u8,
@@ -12671,6 +12992,12 @@ impl Level2ResetSession {
                 .live
                 .economy
                 .step_spell_pickup_slot(source_slot),
+            Level2DynamicArenaKind::SpeedTrail => self
+                .session
+                .state
+                .live
+                .economy
+                .step_speed_trail(source_slot),
             Level2DynamicArenaKind::AuthoredModel1 => self
                 .session
                 .state

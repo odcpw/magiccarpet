@@ -1741,6 +1741,23 @@ impl PlayerSnapshot {
         self.record[554..560].copy_from_slice(&source.record[554..560]);
     }
 
+    /// Commit the three player fields owned by one `sub_6D8B0`/
+    /// `sub_6D9C0` spell-experience update without replaying unrelated
+    /// movement or objective state from the shared spell projection.
+    pub(crate) fn sync_spell_progression_family_from(&mut self, source: &Self, family: usize) {
+        debug_assert_eq!(self.entity_index, source.entity_index);
+        self.runtime_spell_experience[family] = source.runtime_spell_experience[family];
+        self.spell_unlocked_levels[family] = source.spell_unlocked_levels[family];
+        self.family_selected_tiers[family] = source.family_selected_tiers[family];
+        let experience_offset = 164 + family * std::mem::size_of::<i32>();
+        self.record[experience_offset..experience_offset + std::mem::size_of::<i32>()]
+            .copy_from_slice(
+                &source.record[experience_offset..experience_offset + std::mem::size_of::<i32>()],
+            );
+        self.record[502 + family] = source.record[502 + family];
+        self.record[528 + family] = source.record[528 + family];
+    }
+
     /// Apply the linked player-state writes made by the human banished
     /// camera: clear moveBoost, roll feedback, and pitch feedback.
     pub(super) fn clear_banished_camera_feedback(&mut self) {

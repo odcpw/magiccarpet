@@ -11,6 +11,7 @@ use crate::native_world::{
 };
 #[cfg(test)]
 use crate::source_sprite_tmap::SourceSpritePaletteOwner;
+use crate::spell_activation::{SpeedSpellStepInput, step_speed_spell};
 use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, FlightWorld, MovementResolution,
     Position, SIN_16_16, SourceAudioCallTag, SpellActivationHolder, SpellFireSource, SpellHolder,
@@ -2344,9 +2345,10 @@ pub const SPEED_SPELL_MANA_COST: i32 = 1_000;
 pub const SPEED_TIER_THRESHOLDS_SINGLE_PLAYER: [i32; 3] = [0, 400, 1_200];
 pub const SPEED_SPELL_ACTIVATION_TICKS: u16 = 301;
 pub const SPEED_SPELL_TIER_MULTIPLIER: i16 = 2;
+#[cfg(test)]
+const SPEED_SOUND_LATCH_FLAG: u32 = 0x80;
 const SPEED_SPELL_PROFILE_COUNT: usize = 3;
 const SPEED_SPELL_MAX_TIER: i8 = 2;
-const SPEED_SOUND_LATCH_FLAG: u32 = 0x80;
 pub const SPEED_TRAIL_CLASS: u8 = 10;
 pub const SPEED_TRAIL_MODEL: u8 = 2;
 pub const SPEED_TRAIL_ACTION: u8 = 2;
@@ -10957,86 +10959,79 @@ impl Level1MissionState {
             .get_or_insert_with(|| speed_spell_profile(holder.level_gate));
         let first_active_tick =
             self.actors[actor_index].state_value == i32::from(profile.activation_ticks);
-        if state.speed_changed_flag != 0 {
-            // The source takes this branch instead of the normal Speed branch,
-            // so manual cancellation never creates an action-2 trail.
-            self.actors[actor_index].state_value = 1;
-        } else if self.player_life >= 0
+        let source_gate_passed = self.player_life >= 0
             && self.player_mana >= 0
             && (profile.max_mana_requirement == 0
                 || (self.castle_exists && self.castle_mana >= profile.max_mana_requirement))
-            && (!first_active_tick || self.player_mana >= profile.mana_cost)
+            && (!first_active_tick || self.player_mana >= profile.mana_cost);
+        let transition = step_speed_spell(SpeedSpellStepInput {
+            active_value: i16::try_from(self.actors[actor_index].state_value)
+                .expect("Speed holder active value fits i16"),
+            activation_value: profile.activation_ticks.cast_signed(),
+            holder_phase: self.actors[actor_index].phase,
+            holder_control_flags: self.source_slots[usize::from(source_slot)].control_flags,
+            presentation_timer: 0,
+            parent_valid: true,
+            source_gate_passed,
+            speed_changed: state.speed_changed_flag != 0,
+            direction: if state.target_speed < 0 { -1 } else { 1 },
+            minimum_speed: crate::PLAYER_MIN_SPEED,
+            first_multiplier: profile.selector + 1,
+            sustain_multiplier: profile.selector,
+            parent_mana_regen: self.player_mana_regen,
+            mana_cost: profile.mana_cost,
+            latch_clear_offset: 2,
+        });
+        self.source_slots[usize::from(source_slot)].control_flags = transition.holder_control_flags;
+        if transition.prepare_sound_19 {
+            mark_source_audio_call(SourceAudioCallTag::SpeedSpellActivation);
+            context.events.push(crate::FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::SpeedSpellActivation,
+                entity_index: state.entity_index,
+                player_index: -1,
+                sound_id: EXIT_ACCELERATION_SOUND,
+            });
+        }
+        if transition.award_experience
+            && let Some(improved_family) = self.award_spell_experience(SPEED_SPELL_FAMILY, 1)
         {
-            let direction = if state.target_speed < 0 { -1 } else { 1 };
-            let multiplier = if first_active_tick {
-                let source_record = &mut self.source_slots[usize::from(source_slot)];
-                if source_record.control_flags & SPEED_SOUND_LATCH_FLAG == 0 {
-                    source_record.control_flags |= SPEED_SOUND_LATCH_FLAG;
-                    mark_source_audio_call(SourceAudioCallTag::SpeedSpellActivation);
-                    context.events.push(crate::FlightEvent::PrepareSound {
-                        #[cfg(test)]
-                        audio_site: crate::MissionAudioSite::SpeedSpellActivation,
-                        entity_index: state.entity_index,
-                        player_index: -1,
-                        sound_id: EXIT_ACCELERATION_SOUND,
-                    });
-                }
-                if let Some(improved_family) = self.award_spell_experience(SPEED_SPELL_FAMILY, 1) {
-                    self.emit_ability_improved(improved_family, state.position);
-                }
-                profile.selector + 1
-            } else {
-                profile.selector
-            };
-            if self.actors[actor_index].state_value
-                == i32::from(profile.activation_ticks.saturating_sub(2))
+            self.emit_ability_improved(improved_family, state.position);
+        }
+        if let Some(speed) = transition.requested_speed {
+            state.target_speed = speed;
+        }
+        if let Some(speed) = transition.actual_speed {
+            state.actual_speed = speed;
+        }
+        if transition.request_trail {
+            // `GetScroll_69DB0` allocates a class-10/model-2 source entity
+            // before decrementing the holder. Allocation failure does not
+            // skip the remaining transition writes.
+            if let Some((id, source_entity_index)) =
+                self.allocate_effect_source(SourceOccupant::SpeedTrail)
             {
-                self.source_slots[usize::from(source_slot)].control_flags &=
-                    !SPEED_SOUND_LATCH_FLAG;
-            }
-            state.target_speed = direction * crate::PLAYER_MIN_SPEED * multiplier;
-            state.actual_speed = state.target_speed;
-            if self.actors[actor_index].phase & 3 == 0 {
-                // `GetScroll_69DB0` allocates a class-10/model-2 source
-                // entity here, before decrementing the holder. Allocation
-                // failure does not skip the later countdown/reset.
-                if let Some((id, source_entity_index)) =
-                    self.allocate_effect_source(SourceOccupant::SpeedTrail)
-                {
-                    // `NewEvent_4A050` seeds byte 0x3E from the allocated
-                    // source index before the class-10/model-2 constructor.
-                    self.source_slots[usize::from(source_entity_index)].phase =
-                        source_entity_index.to_le_bytes()[0];
-                    self.speed_trails.push(Level1SpeedTrail {
-                        id,
-                        source_entity_index,
-                        position: state.position,
-                        owner_entity_index: state.entity_index,
-                        class: SPEED_TRAIL_CLASS,
-                        model: SPEED_TRAIL_MODEL,
-                        action: SPEED_TRAIL_ACTION,
-                        life: SPEED_TRAIL_LIFE,
-                        active: true,
-                    });
-                }
-            }
-            if first_active_tick {
-                if self.player_mana_regen >= 0 {
-                    self.player_mana_regen = -profile.mana_cost;
-                } else {
-                    self.player_mana_regen = self.player_mana_regen.wrapping_sub(profile.mana_cost);
-                }
-            } else if self.actors[actor_index].state_value != 0 && self.player_mana_regen > 0 {
-                self.player_mana_regen = 0;
+                self.source_slots[usize::from(source_entity_index)].phase =
+                    source_entity_index.to_le_bytes()[0];
+                self.speed_trails.push(Level1SpeedTrail {
+                    id,
+                    source_entity_index,
+                    position: state.position,
+                    owner_entity_index: state.entity_index,
+                    class: SPEED_TRAIL_CLASS,
+                    model: SPEED_TRAIL_MODEL,
+                    action: SPEED_TRAIL_ACTION,
+                    life: SPEED_TRAIL_LIFE,
+                    active: true,
+                });
             }
         }
-        self.actors[actor_index].state_value -= 1;
-        if self.actors[actor_index].state_value == 0 {
-            let direction = if state.target_speed < 0 { -1 } else { 1 };
-            state.target_speed = direction * crate::PLAYER_MIN_SPEED;
-            state.actual_speed = state.target_speed;
+        if let Some(mana_regen) = transition.parent_mana_regen {
+            self.player_mana_regen = mana_regen;
+        }
+        self.actors[actor_index].state_value = i32::from(transition.active_value);
+        if transition.expired {
             self.active_speed_profile = None;
-            self.source_slots[usize::from(source_slot)].control_flags &= !SPEED_SOUND_LATCH_FLAG;
         }
         fire.holders[holder_index].active_value =
             i16::try_from(self.actors[actor_index].state_value)
