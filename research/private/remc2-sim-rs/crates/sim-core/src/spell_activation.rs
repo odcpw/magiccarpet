@@ -160,6 +160,26 @@ pub fn step_speed_spell(input: SpeedSpellStepInput) -> SpeedSpellStepOutcome {
     outcome
 }
 
+/// Result of one `CastSpeedSpell_31100` trail visit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpeedTrailStepOutcome {
+    pub life: i32,
+    pub disable_drawing: bool,
+}
+
+/// Apply the signed class-10/model-2 trail lifetime transition.
+///
+/// The row is hidden only after the decrement crosses below `-1`; its owner
+/// retains the disabled row until the following source-boundary reclaim.
+#[must_use]
+pub const fn step_speed_trail(life: i32) -> SpeedTrailStepOutcome {
+    let life = life.wrapping_sub(1);
+    SpeedTrailStepOutcome {
+        life,
+        disable_drawing: life < -1,
+    }
+}
+
 /// The four source action roles used by the 26-family physical spell table.
 ///
 /// `sub_692A0` passes `action - 1` to the common acquisition helper, while

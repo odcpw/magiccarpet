@@ -11,7 +11,7 @@ use crate::native_world::{
 };
 #[cfg(test)]
 use crate::source_sprite_tmap::SourceSpritePaletteOwner;
-use crate::spell_activation::{SpeedSpellStepInput, step_speed_spell};
+use crate::spell_activation::{SpeedSpellStepInput, step_speed_spell, step_speed_trail};
 use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, FlightWorld, MovementResolution,
     Position, SIN_16_16, SourceAudioCallTag, SpellActivationHolder, SpellFireSource, SpellHolder,
@@ -19105,8 +19105,12 @@ impl Level1MissionState {
         else {
             return;
         };
-        trail.life -= 1;
-        if trail.life < -1 {
+        let transition = step_speed_trail(i32::from(trail.life));
+        trail.life = transition
+            .life
+            .try_into()
+            .expect("Speed trail source life remains i16-sized");
+        if transition.disable_drawing {
             trail.active = false;
             self.source_pool
                 .disable_occupant(SourceOccupant::SpeedTrail(trail.id));

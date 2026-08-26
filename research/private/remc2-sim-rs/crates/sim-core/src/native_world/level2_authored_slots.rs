@@ -969,10 +969,7 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        trail.life = trail.life.wrapping_sub(1);
-        if trail.life < -1 {
-            trail.active = false;
-        }
+        step_speed_trail_effect(trail);
         trail.phase = trail.phase.wrapping_add(1);
         trail.active
     }
@@ -7590,5 +7587,45 @@ impl Level2EconomyState {
             );
         }
         format!("{:x}", hasher.finalize())
+    }
+}
+
+fn step_speed_trail_effect(trail: &mut SpeedTrailEffect) {
+    let transition = crate::spell_activation::step_speed_trail(trail.life);
+    trail.life = transition.life;
+    if transition.disable_drawing {
+        trail.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        trail.active = false;
+    }
+}
+
+#[cfg(test)]
+mod speed_trail_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_visit_disables_drawing_but_retains_new_event_identity() {
+        let mut trail = SpeedTrailEffect {
+            source_entity_index: 178,
+            entity_rng: 0x4321,
+            source_id: 152,
+            class: 10,
+            model: 2,
+            action: 2,
+            position: Position::default(),
+            phase: 178,
+            max_life: 8,
+            life: -1,
+            control_flags: 0x0002_0001,
+            active: true,
+        };
+
+        step_speed_trail_effect(&mut trail);
+
+        assert_eq!(trail.life, -2);
+        assert_eq!(trail.control_flags, 0x0002_0401);
+        assert!(!trail.active);
+        assert_eq!((trail.class, trail.model, trail.action), (10, 2, 2));
+        assert_eq!((trail.source_entity_index, trail.source_id), (178, 152));
     }
 }
