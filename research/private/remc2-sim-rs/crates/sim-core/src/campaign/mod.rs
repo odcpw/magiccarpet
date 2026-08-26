@@ -1304,12 +1304,26 @@ mod tests {
             ),
             (17, 17, 11, 16, true, true)
         );
+        let archer_objective_switch = session
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|row| row.authored_index == 153)
+            .copied()
+            .expect("group-3 row 153 waits for the Archer-absence objective");
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[2],
+            1,
+            "live package Archers keep the model-4 absence objective open"
+        );
+        assert_eq!(session.runtime().objectives[0].text_selector, 2);
+        assert!(!archer_objective_switch.fired);
         assert!(
             session
                 .economy()
                 .authored_model32()
                 .iter()
-                .any(|row| row.authored_index == 153)
+                .all(|row| row.authored_index != 190)
         );
 
         let receipts = session.cf10_production_schedule_receipts();
@@ -1363,6 +1377,9 @@ mod tests {
             ARCHER_ROWS.len()
         );
         let countdown_slot = countdown.source_entity_index;
+        let archer_objective_switch_slot = archer_objective_switch.source_entity_index;
+        let mut castle_objective_switch_slot = None;
+        let mut archer_objective_switch_phase_before_fire = None;
 
         for expected_timer in (1..=15).rev() {
             let evidence = campaign.step(PlayerCommand::default(), 0);
@@ -1386,6 +1403,145 @@ mod tests {
                 event,
                 Level2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
             )));
+            match expected_timer {
+                15 => {
+                    assert_eq!(session.runtime().objectives[0].stage_selectors[2], 2);
+                    assert_eq!(session.runtime().objectives[0].text_selector, 3);
+                    let row153 = session
+                        .economy()
+                        .authored_model32()
+                        .iter()
+                        .find(|row| row.authored_index == 153)
+                        .expect("objective completion happens after row 153's callback");
+                    assert!(row153.active && row153.drawing_enabled && !row153.fired);
+                    archer_objective_switch_phase_before_fire = Some(row153.source_byte_3e);
+                    assert!(campaign.events().iter().all(|event| !matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated { group: 5, .. }
+                    )));
+                    assert!(
+                        session
+                            .economy()
+                            .authored_model32()
+                            .iter()
+                            .all(|row| row.authored_index != 190)
+                    );
+                }
+                14 => {
+                    assert!(campaign.events().iter().any(|event| matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot,
+                            group: 5,
+                            authored_indices,
+                            ..
+                        } if *source_slot == archer_objective_switch_slot
+                            && authored_indices.as_ref() == [190]
+                    )));
+                    let row153 = session
+                        .economy()
+                        .authored_model32()
+                        .iter()
+                        .find(|row| row.authored_index == 153)
+                        .expect("fired row 153 is retained through its callback pass");
+                    assert_eq!(
+                        (
+                            row153.fired,
+                            row153.drawing_enabled,
+                            row153.active,
+                            row153.control_flags,
+                        ),
+                        (true, false, false, 0x401)
+                    );
+                    assert_eq!(
+                        row153.source_byte_3e,
+                        archer_objective_switch_phase_before_fire
+                            .expect("the preceding pass observed row 153")
+                            .wrapping_add(1)
+                    );
+                    let row190 = session
+                        .economy()
+                        .authored_model32()
+                        .iter()
+                        .find(|row| row.authored_index == 190)
+                        .copied()
+                        .expect("group 5 materializes the package castle-objective switch");
+                    assert_eq!(
+                        (
+                            row190.source_class,
+                            row190.model,
+                            row190.action,
+                            row190.stage_tag,
+                            row190.objective_stage_index,
+                            row190.max_life,
+                            row190.life,
+                            row190.control_flags,
+                            row190.active,
+                            row190.drawing_enabled,
+                            row190.fired,
+                        ),
+                        (11, 32, 32, 6, 3, 300, 300, 1, true, true, false)
+                    );
+                    assert!(row190.source_entity_index < archer_objective_switch_slot);
+                    assert_eq!(row190.source_byte_3e, row190.source_entity_index as u8);
+                    assert!(session.cf10_production_schedule_receipts().iter().any(
+                        |receipt| matches!(
+                            receipt,
+                            ScheduleReceipt::EpilogueCompleted {
+                                pass: SourcePass::UpdateEntities,
+                                slot,
+                                ..
+                            } if *slot == archer_objective_switch_slot
+                        )
+                    ));
+                    assert!(session.cf10_production_schedule_receipts().iter().all(
+                        |receipt| !matches!(
+                            receipt,
+                            ScheduleReceipt::CallbackCompleted { slot, .. }
+                                if *slot == row190.source_entity_index
+                        )
+                    ));
+                    assert!(campaign.events().iter().all(|event| !matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+                    )));
+                    castle_objective_switch_slot = Some(row190.source_entity_index);
+                }
+                13 => {
+                    assert!(
+                        session
+                            .economy()
+                            .authored_model32()
+                            .iter()
+                            .all(|row| row.authored_index != 153)
+                    );
+                    let row190_slot = castle_objective_switch_slot
+                        .expect("the preceding pass materialized row 190");
+                    assert!(session.cf10_production_schedule_receipts().iter().any(
+                        |receipt| matches!(
+                            receipt,
+                            ScheduleReceipt::CallbackCompleted {
+                                pass: SourcePass::UpdateEntities,
+                                slot,
+                                ..
+                            } if *slot == row190_slot
+                        )
+                    ));
+                    let row190 = session
+                        .economy()
+                        .authored_model32()
+                        .iter()
+                        .find(|row| row.source_entity_index == row190_slot)
+                        .expect("row 190 remains inert while objective stage 3 is open");
+                    assert!(row190.active && row190.drawing_enabled && !row190.fired);
+                    assert_eq!(row190.source_byte_3e, (row190_slot as u8).wrapping_add(1));
+                    assert!(campaign.events().iter().all(|event| !matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+                    )));
+                }
+                _ => {}
+            }
         }
 
         let mut allocation_failure = campaign.clone();

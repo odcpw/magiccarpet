@@ -8,6 +8,7 @@
 use crate::native_world::{
     EntitySnapshot, Level2DynamicArenaKind, Level2EconomyState, level2_nyphur_source_identity_parts,
 };
+use std::collections::BTreeSet;
 use std::ops::{Deref, DerefMut};
 
 use super::state::{SourceLink, SourceTopology, digest_topology};
@@ -153,6 +154,74 @@ impl SourceArena {
                 kind,
             })
             .collect()
+    }
+
+    /// Rebuild remc2's class-5 model presence from every live carrier in the
+    /// shared source arena. The result is frozen for one UpdateEntities pass;
+    /// callbacks and the following objective service consume the same census.
+    #[must_use]
+    pub(crate) fn rebuilt_class5_model_presence(&self) -> [bool; 29] {
+        let dynamic_slots = self
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .map(|(source_slot, _)| source_slot)
+            .collect::<BTreeSet<_>>();
+        let mut present = [false; 29];
+        let mut include = |model: u8, action: u8, life: i32| {
+            if life < 0 || matches!(action, 180 | 232 | 234) {
+                return;
+            }
+            if let Some(value) = present.get_mut(usize::from(model)) {
+                *value = true;
+            }
+        };
+
+        for entity in self.entities.iter().filter(|entity| {
+            entity.active
+                && !dynamic_slots.contains(&entity.index)
+                && entity.class == 5
+                && !entity.drawing_disabled()
+        }) {
+            include(entity.model, entity.action, entity.life);
+        }
+        for source in self
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|source| source.active && source.drawing_enabled)
+        {
+            include(source.model, source.action, source.life);
+        }
+        for source in self
+            .economy
+            .authored_class5_model3_children()
+            .iter()
+            .filter(|source| source.active && source.drawing_enabled)
+        {
+            include(source.model, source.action, source.life);
+        }
+        for source in self
+            .economy
+            .house_residents()
+            .iter()
+            .filter(|source| source.active && source.drawing_enabled)
+        {
+            include(source.model, source.action, source.life);
+        }
+        for source in
+            self.economy.authored_bees().iter().filter(|source| {
+                source.active && source.drawing_enabled && source.source_class == 5
+            })
+        {
+            include(source.model, source.action, i32::from(source.life));
+        }
+        for source in self.economy.castle_children().iter().filter(|source| {
+            source.active && source.source_class == 5 && !source.drawing_disabled()
+        }) {
+            include(source.model, source.action, source.life);
+        }
+        present
     }
 }
 

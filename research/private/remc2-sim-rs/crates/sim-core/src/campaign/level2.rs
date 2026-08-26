@@ -438,6 +438,10 @@ struct Level2SourceSchedulerWorld<'session, 'evidence> {
     /// Fixed UpdateEntities class-5 model buckets. Membership is rebuilt once
     /// before the numeric scan; callbacks read member fields live.
     pass_start_class5_model_slots: [Vec<u16>; 29],
+    /// The same pass-start census across imported and typed class-5 carriers.
+    /// Post-pass objectives consume this frozen presence rather than rescanning
+    /// rows after callbacks may have hidden or created them.
+    pass_start_class5_model_present: [bool; 29],
     pass_start_castle_auxiliary_membership: level2_dynamic_economy::Level2CastleAuxiliaryMembership,
     pass_start_castle_root_slot: Option<u16>,
     goat_begin_events: BTreeMap<u16, Vec<GoatStepEvent>>,
@@ -617,58 +621,9 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     .clone();
                 economy.rebuild_owner_max_mana_projection(&reset_owner_max_mana);
 
-                let typed_slots = economy
-                    .live_arena_slots()
-                    .into_iter()
-                    .map(|(slot, _)| slot)
-                    .collect::<BTreeSet<_>>();
-                let imported_present = economy.entities.iter().any(|entity| {
-                    entity.active
-                        && !typed_slots.contains(&entity.index)
-                        && entity.class == 5
-                        && entity.model == 3
-                        && entity.life >= 0
-                        && !matches!(entity.action, 180 | 232 | 234)
-                });
-                let typed_root_present = economy.economy.authored_class5().iter().any(|source| {
-                    source.active
-                        && source.model == 3
-                        && source.life >= 0
-                        && !matches!(source.action, 180 | 232 | 234)
-                });
-                let typed_child_present = economy
-                    .economy
-                    .authored_class5_model3_children()
-                    .iter()
-                    .any(|source| {
-                        source.active
-                            && source.model == 3
-                            && source.life >= 0
-                            && !matches!(source.action, 180 | 232 | 234)
-                    });
-                self.pass_start_class5_model3_present =
-                    imported_present || typed_root_present || typed_child_present;
-                self.pass_start_class5_model4_present =
-                    economy.entities.iter().any(|entity| {
-                        entity.active
-                            && entity.class == 5
-                            && entity.model == 4
-                            && entity.life >= 0
-                            && !entity.drawing_disabled()
-                            && !matches!(entity.action, 180 | 232 | 234)
-                    }) || economy.economy.authored_class5().iter().any(|source| {
-                        source.active
-                            && source.model == 4
-                            && source.life >= 0
-                            && source.drawing_enabled
-                            && !matches!(source.action, 180 | 232 | 234)
-                    }) || economy.economy.house_residents().iter().any(|source| {
-                        source.active
-                            && source.model == 4
-                            && source.life >= 0
-                            && source.drawing_enabled
-                            && !matches!(source.action, 180 | 232 | 234)
-                    });
+                self.pass_start_class5_model_present = economy.rebuilt_class5_model_presence();
+                self.pass_start_class5_model3_present = self.pass_start_class5_model_present[3];
+                self.pass_start_class5_model4_present = self.pass_start_class5_model_present[4];
                 self.pass_start_class5_model_slots = std::array::from_fn(|_| Vec::new());
                 for entity in economy.entities.iter().filter(|entity| {
                     entity.active
@@ -4225,7 +4180,10 @@ impl Level2ResetSession {
     /// the next objective-text selector (or sets `IsLevelEnd` when none remain).
     /// Type 9 is deliberately deferred because the compact runtime does not
     /// yet expose the exact active BUILD-chain relation used by remc2.
-    pub(super) fn advance_level2_objectives(&mut self) {
+    pub(super) fn advance_level2_objectives(
+        &mut self,
+        pass_start_class5_model_present: &[bool; 29],
+    ) {
         let owner_colors = self
             .session
             .state
@@ -4311,26 +4269,24 @@ impl Level2ResetSession {
                         }
                     }
                     7 => {
-                        if objective.text_selector as usize != stage_index
-                            || stage.relation != RuntimeRelation::Scalar(2)
-                        {
-                            false
-                        } else {
-                            let target_is_live =
-                                self.session.state.live.economy.authored_bees().iter().any(
-                                    |source| {
-                                        source.active
-                                            && source.authored_index
-                                                == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX
-                                    },
-                                );
-                            self.session
-                                .state
-                                .live
-                                .level2_bees_activated
-                                .contains(&LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
-                                && !target_is_live
-                        }
+                        objective.text_selector as usize == stage_index
+                            && match stage.relation {
+                                // Model 2 Bees and model 4 Archers have
+                                // complete producer/carrier/cleanup paths in
+                                // the shared arena. Keep later model families
+                                // fail-closed until their constructors join
+                                // that same lifecycle; an absent carrier must
+                                // not counterfeit an extinction objective.
+                                RuntimeRelation::Scalar(model) if matches!(model, 2 | 4) => {
+                                    usize::try_from(model)
+                                        .ok()
+                                        .and_then(|model| {
+                                            pass_start_class5_model_present.get(model)
+                                        })
+                                        .is_some_and(|present| !present)
+                                }
+                                _ => false,
+                            }
                     }
                     // The source scans BLDGPRM/BUILD chains here. Until the
                     // runtime exports those chain links, do not infer success
@@ -9072,7 +9028,7 @@ impl Level2ResetSession {
                         row_phase!(economy.authored_trees, phase)
                     }
                     Level2DynamicArenaKind::AuthoredModel32 => {
-                        row_phase!(economy.authored_model32, phase)
+                        row_phase!(economy.authored_model32, source_byte_3e)
                     }
                     Level2DynamicArenaKind::AuthoredModel59 => {
                         row_phase!(economy.authored_model59, phase)
@@ -9286,7 +9242,7 @@ impl Level2ResetSession {
                         retained_phase!(economy.authored_trees, phase)
                     }
                     Level2DynamicArenaKind::AuthoredModel32 => {
-                        retained_phase!(economy.authored_model32, phase)
+                        retained_phase!(economy.authored_model32, source_byte_3e)
                     }
                     Level2DynamicArenaKind::AuthoredModel59 => {
                         retained_phase!(economy.authored_model59, phase)
@@ -9516,7 +9472,10 @@ impl Level2ResetSession {
                         dynamic_phase_mut!(live.economy.economy.authored_trees, phase)
                     }
                     Level2DynamicArenaKind::AuthoredModel32 => {
-                        dynamic_phase_mut!(live.economy.economy.authored_model32, phase)
+                        dynamic_phase_mut!(
+                            live.economy.economy.authored_model32,
+                            source_byte_3e
+                        )
                     }
                     Level2DynamicArenaKind::AuthoredModel59 => {
                         dynamic_phase_mut!(live.economy.economy.authored_model59, phase)
@@ -11409,7 +11368,7 @@ impl Level2ResetSession {
         pass: u8,
         latched_command: crate::LatchedCommand,
         evidence: &mut Vec<crate::StepEvidence>,
-    ) -> std::result::Result<(), (u16, String)> {
+    ) -> std::result::Result<[bool; 29], (u16, String)> {
         let player_entity_index = self.session.state.live.core.state.entity_index;
         let player_position = self.session.state.live.core.state.position;
         let mut world = Level2SourceSchedulerWorld {
@@ -11425,12 +11384,13 @@ impl Level2ResetSession {
             pass_start_class5_model3_present: false,
             pass_start_class5_model4_present: false,
             pass_start_class5_model_slots: std::array::from_fn(|_| Vec::new()),
+            pass_start_class5_model_present: [false; 29],
             pass_start_castle_auxiliary_membership: Default::default(),
             pass_start_castle_root_slot: None,
             goat_begin_events: BTreeMap::new(),
         };
         run_update_entities(&mut world)
-            .map(|_| ())
+            .map(|_| world.pass_start_class5_model_present)
             .map_err(|error| match error {
                 ScheduleError::UnknownDispatch { slot, selector, .. } => {
                     let message = match selector {
@@ -12844,20 +12804,11 @@ impl Level2ResetSession {
         else {
             return true;
         };
-        let Some(fired_source) = self
-            .session
-            .state
-            .live
-            .economy
-            .complete_authored_model32(source_slot)
-        else {
-            return true;
-        };
         self.session
             .state
             .live
             .level2_model32_activated
-            .insert(fired_source.authored_index);
+            .insert(source.authored_index);
         self.session.state.live.level2_objective_pause = 1;
         self.session.state.live.level2_objective_done = true;
         self.session
@@ -12866,7 +12817,17 @@ impl Level2ResetSession {
             .core
             .runtime
             .mark_level2_objective_done_for(completed_owner_color);
-        if let Err(error) = self.consume_authored_group(pass, source_slot, fired_source.stage_tag) {
+        let consume_result = self.consume_authored_group(pass, source_slot, source.stage_tag);
+        let Some(_fired_source) = self
+            .session
+            .state
+            .live
+            .economy
+            .complete_authored_model32(source_slot)
+        else {
+            return true;
+        };
+        if let Err(error) = consume_result {
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot,
@@ -14616,6 +14577,7 @@ impl Level2ResetSession {
             crate::LatchedCommand::default(),
             &mut evidence,
         )
+        .map(|_| ())
         .expect("test source pass has only admitted selectors");
     }
 
@@ -14693,6 +14655,16 @@ impl Level2ResetSession {
             return Vec::new();
         }
         let mut evidence = Vec::new();
+        // Unsupported speed bytes skip UpdateEntities but the following
+        // objective service still observes the extant class-5 lists. Seed the
+        // snapshot from current source rows, then replace it with each real
+        // pass-start rebuild for the supported 1/4/8-pass modes.
+        let mut pass_start_class5_model_present = self
+            .session
+            .state
+            .live
+            .economy
+            .rebuilt_class5_model_presence();
         for pass in 0..crate::entity_passes_for_speed_index(speed_index) {
             // UpdateEntities performs the source 57F20 reclaim prologue
             // immediately before each entity pass. A landed 10/43/45
@@ -14703,24 +14675,27 @@ impl Level2ResetSession {
                 .live
                 .economy
                 .reclaim_castle_upgrade_products_at_source_boundary();
-            if let Err((source_slot, message)) = self.step_level2_source_pass_with_player(
+            match self.step_level2_source_pass_with_player(
                 u8::try_from(pass).unwrap_or(u8::MAX),
                 latched_command,
                 &mut evidence,
             ) {
-                self.session.state = state_before;
-                self.session.state.scratch.dispatch_events.clear();
-                self.session.state.scratch.nyphur_dispatch_traces.clear();
-                self.session
-                    .state
-                    .scratch
-                    .dispatch_events
-                    .push(Level2DispatchEvent::Error {
-                        pass: u8::try_from(pass).unwrap_or(u8::MAX),
-                        source_slot,
-                        message,
-                    });
-                return Vec::new();
+                Ok(present) => pass_start_class5_model_present = present,
+                Err((source_slot, message)) => {
+                    self.session.state = state_before;
+                    self.session.state.scratch.dispatch_events.clear();
+                    self.session.state.scratch.nyphur_dispatch_traces.clear();
+                    self.session
+                        .state
+                        .scratch
+                        .dispatch_events
+                        .push(Level2DispatchEvent::Error {
+                            pass: u8::try_from(pass).unwrap_or(u8::MAX),
+                            source_slot,
+                            message,
+                        });
+                    return Vec::new();
+                }
             }
         }
         self.finish_level2_day_hud_frame();
@@ -14728,7 +14703,7 @@ impl Level2ResetSession {
         // before the next outer turn's authored switch pass.  Keep that
         // ordering so model-32 sees the newly completed stage only on the
         // following turn, exactly as the source does.
-        self.advance_level2_objectives();
+        self.advance_level2_objectives(&pass_start_class5_model_present);
         self.flush_shared_effects();
         evidence
     }

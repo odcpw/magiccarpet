@@ -1147,6 +1147,13 @@ pub struct Level2CastleChild {
     pub active: bool,
 }
 
+impl Level2CastleChild {
+    #[must_use]
+    pub(crate) const fn drawing_disabled(&self) -> bool {
+        self.control_flags & ENTITY_DRAW_DISABLED_BIT != 0
+    }
+}
+
 /// One row consumed by remc2's `sub_60F00` owner-mana rebuild.  The source
 /// scans the active entity arena and applies an explicit class/model filter;
 /// retaining that projection keeps the aggregate independent from the
@@ -1867,7 +1874,6 @@ pub struct Level2AuthoredModel32Source {
     pub control_flags: u32,
     pub source_byte_3e: u8,
     pub position: Position,
-    pub phase: u8,
     pub fired: bool,
     pub drawing_enabled: bool,
     pub active: bool,

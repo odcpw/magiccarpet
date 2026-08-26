@@ -1576,7 +1576,6 @@ impl Level2EconomyState {
             control_flags: 1,
             source_byte_3e: source_entity_index as u8,
             position,
-            phase: 0,
             fired: false,
             drawing_enabled: true,
             active: true,
@@ -1598,6 +1597,8 @@ impl Level2EconomyState {
         })?;
         source.fired = true;
         source.drawing_enabled = false;
+        source.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        source.active = false;
         Some(*source)
     }
 
@@ -6612,7 +6613,6 @@ impl Level2EconomyState {
                 source.model,
                 source.action,
                 source.objective_stage_index,
-                source.phase,
                 source.source_byte_3e,
                 u8::from(source.fired),
                 u8::from(source.drawing_enabled),
