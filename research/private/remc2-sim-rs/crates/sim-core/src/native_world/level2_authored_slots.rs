@@ -742,6 +742,32 @@ impl Level2EconomyState {
         hidden
     }
 
+    /// Stage the disappearance of one already-proven authored multipart
+    /// family for a downstream countdown test. Combat is deliberately not
+    /// claimed here; the next production source boundary still owns unlink,
+    /// slot release, membership rebuild, and all subsequent callbacks.
+    #[cfg(test)]
+    pub(super) fn retire_authored_multipart_prerequisite_for_test(
+        &mut self,
+        authored_index: u16,
+    ) -> bool {
+        let Some(root) = self.authored_class5.iter_mut().find(|source| {
+            source.active && source.authored_index == authored_index && source.model == 3
+        }) else {
+            return false;
+        };
+        let root_slot = root.source_entity_index;
+        root.active = false;
+        root.drawing_enabled = false;
+        for child in &mut self.authored_class5_model3_children {
+            if child.active && child.parent_entity_index == root_slot {
+                child.active = false;
+                child.drawing_enabled = false;
+            }
+        }
+        true
+    }
+
     /// Remove every currently modeled `NewEvent` allocation candidate for a
     /// production failure-path test. The group callback still owns authored
     /// row consumption, producer hiding, and following-pass cleanup.

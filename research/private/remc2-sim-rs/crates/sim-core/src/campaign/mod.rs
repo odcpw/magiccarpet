@@ -4053,6 +4053,172 @@ mod tests {
         assert_eq!(campaign.state_hash(), reset_hash);
     }
 
+    #[test]
+    fn cf15_level1_group4_worm_absence_countdown_releases_group34() {
+        const GROUP34_ROWS: [u16; 3] = [309, 310, 311];
+
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens through the shared engine");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+        session
+            .activate_authored_group_prerequisite_for_test(4)
+            .expect("real package group 4 materializes through the shared arena");
+
+        let first_worm = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 307)
+            .copied()
+            .expect("package row 307 is the first Worm root");
+        let countdown = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 308)
+            .copied()
+            .expect("package row 308 is the Worm-absence countdown");
+        assert_eq!((first_worm.model, first_worm.action), (3, 25));
+        assert_eq!(
+            (countdown.model, countdown.action, countdown.stage_tag),
+            (16, 16, 34)
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5_model3_children()
+                .iter()
+                .filter(|child| child.parent_entity_index == first_worm.source_entity_index)
+                .count(),
+            16
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.source_entity_index == countdown.source_entity_index)
+                .expect("live Worm family keeps its countdown")
+                .dword_0x10,
+            0
+        );
+
+        assert!(
+            session
+                .economy_mut()
+                .retire_authored_multipart_prerequisite_for_test(307)
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.source_entity_index == countdown.source_entity_index)
+                .expect("absence arms the package countdown")
+                .dword_0x10,
+            16
+        );
+
+        for expected in (1..16).rev() {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let source = session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.source_entity_index == countdown.source_entity_index)
+                .expect("countdown remains live before its fire visit");
+            assert_eq!(source.dword_0x10, expected);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated { group: 34, .. }
+            )));
+        }
+
+        let journal_start = session.effect_journal().records().len();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let new_records = &session.effect_journal().records()[journal_start..];
+        let sound = new_records
+            .iter()
+            .position(|record| {
+                matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::PrepareSound {
+                            entity_index,
+                            sound_id: 41,
+                            ..
+                        }
+                    ) if entity_index == countdown.source_entity_index
+                )
+            })
+            .expect("the countdown emits source sound 41");
+        let activation = new_records
+            .iter()
+            .position(|record| {
+                matches!(
+                    &record.effect,
+                    crate::campaign::journal::CampaignEffect::Dispatch(
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot,
+                            group: 34,
+                            authored_indices,
+                            ..
+                        }
+                    ) if *source_slot == countdown.source_entity_index
+                        && authored_indices.as_ref() == GROUP34_ROWS
+                )
+            })
+            .expect("the countdown releases exact package group 34");
+        assert!(sound < activation);
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .filter(|source| GROUP34_ROWS.contains(&source.authored_index))
+                .count(),
+            GROUP34_ROWS.len()
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5_model3_children()
+                .iter()
+                .filter(|child| {
+                    session.economy().authored_class5().iter().any(|root| {
+                        GROUP34_ROWS.contains(&root.authored_index)
+                            && root.source_entity_index == child.parent_entity_index
+                    })
+                })
+                .count(),
+            48
+        );
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.source_entity_index != countdown.source_entity_index)
+        );
+        // No-Claim: the staging seam does not prove Worm combat/death. This
+        // gate proves the real absence countdown and group-34 construction.
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+    }
+
     /// mc-iol7n census receipt: the fifteen live Level 3 reset selectors.
     const CF14_LEVEL3_LIVE_PAIRS: [(u8, u8); 15] = [
         (2, 0),

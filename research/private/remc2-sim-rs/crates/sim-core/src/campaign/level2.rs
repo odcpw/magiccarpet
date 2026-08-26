@@ -6301,6 +6301,19 @@ impl Level2EconomyTestView<'_> {
             .hide_authored_class5_rows_for_test(authored_indices)
     }
 
+    pub(crate) fn retire_authored_multipart_prerequisite_for_test(
+        &mut self,
+        authored_index: u16,
+    ) -> bool {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .retire_authored_multipart_prerequisite_for_test(authored_index)
+    }
+
     pub(crate) fn exhaust_new_event_capacity_for_test(&mut self) -> Option<u16> {
         let baseline_slot = std::sync::Arc::make_mut(&mut self.session.session.baseline)
             .economy
