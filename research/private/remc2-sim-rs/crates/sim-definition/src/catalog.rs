@@ -291,6 +291,7 @@ pub struct SemanticBinding {
 }
 
 impl SemanticBinding {
+    #[cfg(test)]
     fn read_only(id: &str) -> Result<Self> {
         Ok(Self {
             id: SemanticId::parse(id)?,

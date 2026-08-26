@@ -5,11 +5,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use sim_definition::adapter::{
+    activation_group_id, build_level_definition, entity_definition, entity_id, objective_definition,
+};
+
 use crate::{
     level_definition::{
-        ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelDefinition,
-        LevelEntityDefinition, LevelEntityId, LevelEntityKind, LevelObjectiveDefinition,
-        MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
+        BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityKind, MechanicKind,
+        ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
     },
     level1_mission::parse_authored_features,
 };
@@ -113,7 +116,7 @@ impl Mc2LevelDefinition {
             .filter(|feature| feature.kind != 0)
             .filter_map(|feature| u16::try_from(feature.activation_group).ok())
             .filter(|group| !matches!(*group, 0 | u16::MAX))
-            .map(ActivationGroupId::new)
+            .map(activation_group_id)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -136,7 +139,7 @@ impl Mc2LevelDefinition {
             let activation_group = u16::try_from(feature.activation_group)
                 .ok()
                 .filter(|group| !matches!(*group, 0 | u16::MAX))
-                .map(ActivationGroupId::new);
+                .map(activation_group_id);
             let position = TilePosition {
                 x: feature.tile_x,
                 y: feature.tile_y,
@@ -155,11 +158,11 @@ impl Mc2LevelDefinition {
                     ));
                 }
                 let ordinal = creature_ordinals.entry(kind).or_default();
-                let id = LevelEntityId::creature(kind, *ordinal);
+                let id = entity_id(LevelEntityKind::Creature(kind), *ordinal);
                 *ordinal = ordinal
                     .checked_add(1)
                     .ok_or_else(|| format!("too many authored {} creatures", kind.as_str()))?;
-                entities.push(LevelEntityDefinition::new(
+                entities.push(entity_definition(
                     id,
                     LevelEntityKind::Creature(kind),
                     position,
@@ -179,11 +182,11 @@ impl Mc2LevelDefinition {
             };
             if let Some(kind) = scenery_kind {
                 let ordinal = scenery_ordinals.entry(kind).or_default();
-                let id = LevelEntityId::scenery(kind, *ordinal);
+                let id = entity_id(LevelEntityKind::Scenery(kind), *ordinal);
                 *ordinal = ordinal
                     .checked_add(1)
                     .ok_or_else(|| format!("too many authored {} rows", kind.as_str()))?;
-                entities.push(LevelEntityDefinition::new(
+                entities.push(entity_definition(
                     id,
                     LevelEntityKind::Scenery(kind),
                     position,
@@ -201,11 +204,11 @@ impl Mc2LevelDefinition {
             };
             if let Some(kind) = building_kind {
                 let ordinal = building_ordinals.entry(kind).or_default();
-                let id = LevelEntityId::building(kind, *ordinal);
+                let id = entity_id(LevelEntityKind::Building(kind), *ordinal);
                 *ordinal = ordinal
                     .checked_add(1)
                     .ok_or_else(|| format!("too many authored {} buildings", kind.as_str()))?;
-                entities.push(LevelEntityDefinition::new(
+                entities.push(entity_definition(
                     id,
                     LevelEntityKind::Building(kind),
                     position,
@@ -224,11 +227,11 @@ impl Mc2LevelDefinition {
             };
             if let Some(kind) = item_kind {
                 let ordinal = item_ordinals.entry(kind).or_default();
-                let id = LevelEntityId::item(kind, *ordinal);
+                let id = entity_id(LevelEntityKind::Item(kind), *ordinal);
                 *ordinal = ordinal
                     .checked_add(1)
                     .ok_or_else(|| format!("too many authored {} items", kind.as_str()))?;
-                entities.push(LevelEntityDefinition::new(
+                entities.push(entity_definition(
                     id,
                     LevelEntityKind::Item(kind),
                     position,
@@ -255,11 +258,11 @@ impl Mc2LevelDefinition {
             };
             if let Some(kind) = switch_kind {
                 let ordinal = switch_ordinals.entry(kind).or_default();
-                let id = LevelEntityId::switch(kind, *ordinal);
+                let id = entity_id(LevelEntityKind::Switch(kind), *ordinal);
                 *ordinal = ordinal
                     .checked_add(1)
                     .ok_or_else(|| format!("too many authored {} switches", kind.as_str()))?;
-                entities.push(LevelEntityDefinition::new(
+                entities.push(entity_definition(
                     id,
                     LevelEntityKind::Switch(kind),
                     position,
@@ -293,11 +296,11 @@ impl Mc2LevelDefinition {
                     ));
                 }
                 let ordinal = spell_ordinals.entry(kind).or_default();
-                let id = LevelEntityId::spell_pickup(kind, *ordinal);
+                let id = entity_id(LevelEntityKind::SpellPickup(kind), *ordinal);
                 *ordinal = ordinal
                     .checked_add(1)
                     .ok_or_else(|| format!("too many authored {} spell pickups", kind.as_str()))?;
-                entities.push(LevelEntityDefinition::new(
+                entities.push(entity_definition(
                     id,
                     LevelEntityKind::SpellPickup(kind),
                     position,
@@ -320,11 +323,11 @@ impl Mc2LevelDefinition {
                 _ => continue,
             };
             let ordinal = mechanic_ordinals.entry(mechanic_kind).or_default();
-            let id = LevelEntityId::mechanic(mechanic_kind, *ordinal);
+            let id = entity_id(LevelEntityKind::Mechanic(mechanic_kind), *ordinal);
             *ordinal = ordinal
                 .checked_add(1)
                 .ok_or_else(|| format!("too many authored {} mechanics", mechanic_kind.as_str()))?;
-            entities.push(LevelEntityDefinition::new(
+            entities.push(entity_definition(
                 id,
                 LevelEntityKind::Mechanic(mechanic_kind),
                 position,
@@ -419,12 +422,12 @@ impl Mc2LevelDefinition {
                         ));
                     }
                 };
-                Ok(LevelObjectiveDefinition::new(condition))
+                Ok(objective_definition(condition))
             })
             .collect::<Result<Vec<_>, String>>()?;
 
         Ok(Self {
-            semantic: LevelDefinition::new(entities, objectives, activation_groups)?,
+            semantic: build_level_definition(entities, objectives, activation_groups)?,
             creature_by_authored_record,
             creature_model_by_kind,
             spell_by_authored_record,

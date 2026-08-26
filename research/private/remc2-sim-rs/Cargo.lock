@@ -198,7 +198,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sim-definition",
  "sim-voxel",
+]
+
+[[package]]
+name = "sim-definition"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

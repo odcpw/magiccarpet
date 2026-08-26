@@ -16,6 +16,9 @@ use std::{
 };
 
 use sha2::{Digest, Sha256};
+use sim_definition::adapter::{
+    artifact_node, definition_error, game_package, owner_provenance, with_level_definition,
+};
 
 use crate::{
     FlightEvent, PlayerCommand,
@@ -26,9 +29,8 @@ use crate::{
         spec::{CampaignDefinition as CampaignDescriptor, CampaignSelection},
     },
     game_definition::{
-        ArtifactKind, ArtifactNode, DefinitionError, DefinitionErrorCode, GameDefinition,
-        GamePackage, PackageProvenance, RequiredCapability, SemanticCatalog, SemanticId,
-        default_catalog, engine_capabilities,
+        ArtifactKind, DefinitionError, DefinitionErrorCode, GameDefinition, RequiredCapability,
+        SemanticCatalog, SemanticId, default_catalog, engine_capabilities,
     },
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAudioCommand, GameCommand, GameEvent,
@@ -126,7 +128,7 @@ pub fn load_mc2_campaign(
 ) -> crate::game_definition::Result<GameDefinition> {
     let package_root = package_root.as_ref();
     let selection = CampaignDescriptor::declared_selection(package_root).map_err(|error| {
-        DefinitionError::new(
+        definition_error(
             DefinitionErrorCode::InvalidSchema,
             "mc2_campaign.package",
             format!("cannot read campaign selection: {error}"),
@@ -135,14 +137,14 @@ pub fn load_mc2_campaign(
     let descriptor =
         CampaignDescriptor::preflight(package_root, selection, &CAMPAIGN_BEHAVIOR_REGISTRY)
             .map_err(|error| {
-                DefinitionError::new(
+                definition_error(
                     DefinitionErrorCode::InvalidSchema,
                     "mc2_campaign.package",
                     format!("campaign descriptor preflight failed: {error}"),
                 )
             })?;
     let export_sha256 = descriptor.owner_export_package_sha256().map_err(|error| {
-        DefinitionError::new(
+        definition_error(
             DefinitionErrorCode::HashMismatch,
             "mc2_campaign.owner_export",
             format!("cannot reconstruct wrapped owner export identity: {error}"),
@@ -150,7 +152,7 @@ pub fn load_mc2_campaign(
     })?;
     let (package_bytes, envelope_bytes) = campaign_package_bytes(package_root)?;
     let artifacts = vec![
-        ArtifactNode::adapter(
+        artifact_node(
             "campaign.owner_export",
             ArtifactKind::World,
             "campaign/owner-export",
@@ -158,7 +160,7 @@ pub fn load_mc2_campaign(
             package_bytes - envelope_bytes,
             &[],
         )?,
-        ArtifactNode::adapter(
+        artifact_node(
             "campaign.package",
             ArtifactKind::Definition,
             "campaign/package",
@@ -180,58 +182,58 @@ pub fn load_mc2_campaign(
         })
     })
     .collect::<crate::game_definition::Result<Vec<_>>>()?;
-    let package = GamePackage::materialize(
+    let package = game_package(
         "mc2.campaign",
         1,
         requirements,
         artifacts,
         Vec::new(),
-        PackageProvenance::owner_derived(&descriptor.package_sha256)?,
+        owner_provenance(&descriptor.package_sha256)?,
     )?;
     GameDefinition::from_package(package, &engine_capabilities()?, catalog)
-        .map(|definition| definition.with_level_definition(descriptor.level_definition().clone()))
+        .map(|definition| with_level_definition(definition, descriptor.level_definition().clone()))
 }
 
 fn campaign_package_bytes(root: &Path) -> crate::game_definition::Result<(u64, u64)> {
     let mut total = 0_u64;
     let mut envelope = 0_u64;
     for entry in fs::read_dir(root).map_err(|error| {
-        DefinitionError::new(
+        definition_error(
             DefinitionErrorCode::Io,
             "mc2_campaign.package",
             format!("cannot enumerate campaign package: {error}"),
         )
     })? {
         let entry = entry.map_err(|error| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::Io,
                 "mc2_campaign.package",
                 format!("cannot inspect campaign package: {error}"),
             )
         })?;
         let metadata = entry.metadata().map_err(|error| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::Io,
                 "mc2_campaign.package",
                 format!("cannot inspect campaign package member: {error}"),
             )
         })?;
         let file_type = entry.file_type().map_err(|error| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::Io,
                 "mc2_campaign.package",
                 error.to_string(),
             )
         })?;
         if !metadata.is_file() || file_type.is_symlink() {
-            return Err(DefinitionError::new(
+            return Err(definition_error(
                 DefinitionErrorCode::PathEscape,
                 entry.path().display().to_string(),
                 "campaign package contains a non-regular or symlink member",
             ));
         }
         total = total.checked_add(metadata.len()).ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::OutOfRange,
                 "mc2_campaign.package",
                 "campaign package byte total overflows u64",
@@ -634,12 +636,16 @@ fn hex_digest(bytes: [u8; 32]) -> String {
 mod tests {
     use super::*;
     use crate::campaign::state::{ResetState, encode_reset_v1};
+    use crate::game_definition::GamePackage;
     use crate::game_definition::SemanticValue;
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
-        ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelDefinition,
-        LevelEntityDefinition, LevelEntityId, LevelEntityKind, LevelObjectiveDefinition,
-        MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
+        ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind, MechanicKind,
+        ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
+    };
+    use sim_definition::adapter::{
+        build_level_definition, entity_definition, entity_id, objective_definition,
+        reissue_at_revision, with_replacement,
     };
     use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
@@ -987,9 +993,9 @@ mod tests {
                         CreatureKind::Archer => CreatureKind::Firefly,
                         _ => CreatureKind::Archer,
                     };
-                    LevelEntityDefinition::new(
-                        LevelEntityId::creature(
-                            wrong_kind,
+                    entity_definition(
+                        entity_id(
+                            LevelEntityKind::Creature(wrong_kind),
                             u16::try_from(ordinal)
                                 .expect("Level 1 semantic entity ordinal fits u16"),
                         ),
@@ -1007,8 +1013,9 @@ mod tests {
             })
             .collect();
         let activation_groups = level.activation_groups().collect::<Vec<_>>();
-        let tampered = definition.clone().with_level_definition(
-            LevelDefinition::new(
+        let tampered = with_level_definition(
+            definition.clone(),
+            build_level_definition(
                 swapped,
                 level.objectives().to_vec(),
                 activation_groups.clone(),
@@ -1021,10 +1028,10 @@ mod tests {
         assert!(matches!(error, CampaignBackendError::Definition(_)));
 
         let mut wrong_objectives = level.objectives().to_vec();
-        wrong_objectives[0] =
-            LevelObjectiveDefinition::new(ObjectiveCondition::CastleManaPercent(99));
-        let tampered = definition.clone().with_level_definition(
-            LevelDefinition::new(
+        wrong_objectives[0] = objective_definition(ObjectiveCondition::CastleManaPercent(99));
+        let tampered = with_level_definition(
+            definition.clone(),
+            build_level_definition(
                 level.entities().to_vec(),
                 wrong_objectives,
                 activation_groups,
@@ -1036,7 +1043,7 @@ mod tests {
             .expect_err("raw and semantic objective conditions must not diverge");
         assert!(matches!(error, CampaignBackendError::Definition(_)));
 
-        let alias_package = GamePackage::materialize(
+        let alias_package = game_package(
             "mc2.campaign.alias",
             definition.package_version(),
             definition.required_capabilities().to_vec(),
@@ -1045,10 +1052,11 @@ mod tests {
             definition.provenance().clone(),
         )
         .unwrap();
-        let alias_definition =
+        let alias_definition = with_level_definition(
             GameDefinition::from_package(alias_package, &engine_capabilities().unwrap(), &catalog)
-                .unwrap()
-                .with_level_definition(level.clone());
+                .unwrap(),
+            level.clone(),
+        );
         assert_eq!(alias_definition.level_definition(), Some(level));
         let error = Mc2CampaignAdapter
             .open_backend(&alias_definition, Mc2CampaignInputs::new(&root))
@@ -1231,9 +1239,7 @@ mod tests {
         let catalog = default_catalog().unwrap();
         let base = load_mc2_campaign(&root, &catalog).unwrap();
         let speed_id = SemanticId::parse("flight.player.max_forward_speed").unwrap();
-        let deviated = base
-            .with_replacement(&speed_id, SemanticValue::Integer(16), 2)
-            .unwrap();
+        let deviated = with_replacement(&base, &speed_id, SemanticValue::Integer(16), 2).unwrap();
 
         let error = GameSession::open(
             &Mc2CampaignAdapter,
@@ -1303,7 +1309,7 @@ mod tests {
         ));
         assert_eq!(neutral.snapshot(), before);
 
-        let reissued = base.reissue_at_revision(2).unwrap();
+        let reissued = reissue_at_revision(&base, 2).unwrap();
         let reopened = neutral
             .reopen(guard(&neutral), Arc::new(reissued.clone()))
             .unwrap();

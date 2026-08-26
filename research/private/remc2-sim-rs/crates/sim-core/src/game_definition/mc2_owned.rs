@@ -4,13 +4,16 @@
 //! only semantic IDs and content identities.
 
 use super::{
-    ArtifactKind, ArtifactNode, DefinitionError, DefinitionErrorCode, GameDefinition, GamePackage,
-    PackageProvenance, RequiredCapability, Result, SemanticCatalog, SemanticId, SemanticValue,
-    engine_capabilities,
+    ArtifactKind, DefinitionErrorCode, GameDefinition, RequiredCapability, Result, SemanticCatalog,
+    SemanticId, SemanticValue, engine_capabilities,
 };
 use crate::{SPEED_LIMIT, goat::GoatBehaviorConfig, native_world::NativeWorld};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use sim_definition::adapter::{
+    artifact_node, definition_error, game_package, owner_provenance, read_confined_file,
+    validate_lower_sha256,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -56,14 +59,14 @@ pub fn load_mc2_owned(
         &inputs.cache_root,
     )
     .map_err(|error| {
-        DefinitionError::new(
+        definition_error(
             DefinitionErrorCode::InvalidSchema,
             "mc2_owned.inputs",
             format!("owner package/closure/cache validation failed: {error}"),
         )
     })?;
     if world.goat_config() != GoatBehaviorConfig::LEVEL_ONE {
-        return Err(DefinitionError::new(
+        return Err(definition_error(
             DefinitionErrorCode::HashMismatch,
             "ai.enemy.default.policy",
             "validated owner route does not carry the accepted creature policy",
@@ -71,7 +74,7 @@ pub fn load_mc2_owned(
     }
     let context = world.session_context();
     let spell_context = context.spell_fire.as_ref().ok_or_else(|| {
-        DefinitionError::new(
+        definition_error(
             DefinitionErrorCode::HashMismatch,
             "spell.fireball.mana_cost",
             "validated owner route has no spell-holder context",
@@ -83,14 +86,14 @@ pub fn load_mc2_owned(
         .find(|holder| holder.model == 0)
         .map(|holder| holder.mana_cost)
         .ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::HashMismatch,
                 "spell.fireball.mana_cost",
                 "validated owner route has no family-zero spell holder",
             )
         })?;
     if holder_cost != 100 {
-        return Err(DefinitionError::new(
+        return Err(definition_error(
             DefinitionErrorCode::HashMismatch,
             "spell.fireball.mana_cost",
             format!("owner spell-holder cost changed: {holder_cost}"),
@@ -105,7 +108,7 @@ pub fn load_mc2_owned(
     let export_bytes = regular_file_bytes(&inputs.export_root)?;
     let closure_bytes = fs::metadata(&inputs.closure_path)
         .map_err(|error| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::Io,
                 "mc2_owned.closure",
                 format!("cannot inspect closure: {error}"),
@@ -122,7 +125,7 @@ pub fn load_mc2_owned(
         .expect("owner semantic binding identity is serializable");
     let binding_hash = format!("{:x}", Sha256::digest(&binding_bytes));
     let artifacts = vec![
-        ArtifactNode::adapter(
+        artifact_node(
             "owner.export_graph",
             ArtifactKind::World,
             "owner/export-graph",
@@ -130,7 +133,7 @@ pub fn load_mc2_owned(
             export_bytes,
             &[],
         )?,
-        ArtifactNode::adapter(
+        artifact_node(
             "owner.asset_closure",
             ArtifactKind::Presentation,
             "owner/asset-closure",
@@ -138,7 +141,7 @@ pub fn load_mc2_owned(
             closure_bytes,
             &["owner.export_graph"],
         )?,
-        ArtifactNode::adapter(
+        artifact_node(
             "owner.presentation_cache",
             ArtifactKind::Asset,
             "owner/presentation-cache",
@@ -146,7 +149,7 @@ pub fn load_mc2_owned(
             cache.declared_bytes,
             &["owner.asset_closure"],
         )?,
-        ArtifactNode::adapter(
+        artifact_node(
             "owner.projectile_asset",
             ArtifactKind::Asset,
             "owner/presentation-cache/projectile-asset",
@@ -154,7 +157,7 @@ pub fn load_mc2_owned(
             1_190,
             &["owner.presentation_cache"],
         )?,
-        ArtifactNode::adapter(
+        artifact_node(
             "definition.semantic_bindings",
             ArtifactKind::Definition,
             "definition/semantic-bindings",
@@ -195,13 +198,13 @@ pub fn load_mc2_owned(
             SemanticValue::Integer(i64::from(holder_cost)),
         ),
     ];
-    let package = GamePackage::materialize(
+    let package = game_package(
         "mc2.owned",
         1,
         requirements,
         artifacts,
         bindings,
-        PackageProvenance::owner_derived(world.package_sha256())?,
+        owner_provenance(world.package_sha256())?,
     )?;
     GameDefinition::from_package(package, &engine_capabilities()?, catalog)
 }
@@ -217,16 +220,16 @@ fn read_selected_cache_binding(
     package_sha256: &str,
     closure_sha256: &str,
 ) -> Result<SelectedCacheBinding> {
-    let manifest_bytes = super::package::read_confined_file(root, "manifest.json")?;
+    let manifest_bytes = read_confined_file(root, "manifest.json")?;
     let manifest: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
-        DefinitionError::new(
+        definition_error(
             DefinitionErrorCode::InvalidSchema,
             "owner_cache.manifest",
             format!("cannot parse qualified owner cache manifest: {error}"),
         )
     })?;
     let object = manifest.as_object().ok_or_else(|| {
-        DefinitionError::new(
+        definition_error(
             DefinitionErrorCode::InvalidSchema,
             "owner_cache.manifest",
             "owner cache manifest is not an object",
@@ -235,7 +238,7 @@ fn read_selected_cache_binding(
     if object.get("schema").and_then(Value::as_str) != Some("mc2-owner-unity-asset-cache/v1")
         || object.get("scope").and_then(Value::as_str) != Some("PRIVATE_TRACK_P_OWNER_DATA")
     {
-        return Err(DefinitionError::new(
+        return Err(definition_error(
             DefinitionErrorCode::InvalidProvenance,
             "owner_cache.manifest",
             "owner cache schema or private scope mismatch",
@@ -245,18 +248,18 @@ fn read_selected_cache_binding(
         .get("cache_content_sha256")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::HashMismatch,
                 "owner_cache.cache_content_sha256",
                 "owner cache content identity is absent",
             )
         })?;
-    super::lower_sha256(content_sha256, "owner_cache.cache_content_sha256")?;
+    validate_lower_sha256(content_sha256, "owner_cache.cache_content_sha256")?;
     let bindings = object
         .get("bindings")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::InvalidSchema,
                 "owner_cache.bindings",
                 "owner cache binding object is absent",
@@ -271,7 +274,7 @@ fn read_selected_cache_binding(
             .and_then(Value::as_str)
             != Some(closure_sha256)
     {
-        return Err(DefinitionError::new(
+        return Err(definition_error(
             DefinitionErrorCode::HashMismatch,
             "owner_cache.bindings",
             "owner cache does not bind the validated export and closure",
@@ -281,7 +284,7 @@ fn read_selected_cache_binding(
         .get("outputs")
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::InvalidSchema,
                 "owner_cache.outputs",
                 "owner cache outputs are absent",
@@ -295,7 +298,7 @@ fn read_selected_cache_binding(
         })
         .collect::<Vec<_>>();
     if selected.len() != 1 {
-        return Err(DefinitionError::new(
+        return Err(definition_error(
             DefinitionErrorCode::ArtifactCollision,
             "owner_cache.outputs",
             "selected projectile asset must have exactly one indexed-image output",
@@ -308,7 +311,7 @@ fn read_selected_cache_binding(
         .get("path")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::InvalidSchema,
                 "owner_cache.outputs.path",
                 "selected asset path is absent",
@@ -318,18 +321,18 @@ fn read_selected_cache_binding(
         .get("sha256")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::HashMismatch,
                 "owner_cache.outputs.sha256",
                 "selected asset hash is absent",
             )
         })?;
-    super::lower_sha256(asset_sha256, "owner_cache.outputs.sha256")?;
+    validate_lower_sha256(asset_sha256, "owner_cache.outputs.sha256")?;
     let bytes = selected
         .get("bytes")
         .and_then(Value::as_u64)
         .ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::InvalidSchema,
                 "owner_cache.outputs.bytes",
                 "selected asset byte count is absent",
@@ -339,15 +342,15 @@ fn read_selected_cache_binding(
         || selected.get("height").and_then(Value::as_u64) != Some(35)
         || bytes != 1_190
     {
-        return Err(DefinitionError::new(
+        return Err(definition_error(
             DefinitionErrorCode::HashMismatch,
             "owner_cache.outputs",
             "selected projectile asset signature changed",
         ));
     }
-    let asset = super::package::read_confined_file(root, path)?;
+    let asset = read_confined_file(root, path)?;
     if asset.len() as u64 != bytes || format!("{:x}", Sha256::digest(&asset)) != asset_sha256 {
-        return Err(DefinitionError::new(
+        return Err(definition_error(
             DefinitionErrorCode::HashMismatch,
             path,
             "selected projectile asset bytes differ from the qualified cache manifest",
@@ -355,14 +358,14 @@ fn read_selected_cache_binding(
     }
     let declared_bytes = outputs.iter().try_fold(0_u64, |total, output| {
         let bytes = output.get("bytes").and_then(Value::as_u64).ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::InvalidSchema,
                 "owner_cache.outputs.bytes",
                 "owner cache output byte count is absent",
             )
         })?;
         total.checked_add(bytes).ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::OutOfRange,
                 "owner_cache.outputs.bytes",
                 "owner cache declared byte total overflows u64",
@@ -379,21 +382,21 @@ fn read_selected_cache_binding(
 fn regular_file_bytes(root: &Path) -> Result<u64> {
     let mut total = 0_u64;
     for entry in fs::read_dir(root).map_err(|error| {
-        DefinitionError::new(
+        definition_error(
             DefinitionErrorCode::Io,
             "mc2_owned.export",
             format!("cannot enumerate owner export: {error}"),
         )
     })? {
         let entry = entry.map_err(|error| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::Io,
                 "mc2_owned.export",
                 format!("cannot inspect owner export: {error}"),
             )
         })?;
         let metadata = entry.metadata().map_err(|error| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::Io,
                 "mc2_owned.export",
                 format!("cannot inspect owner export member: {error}"),
@@ -403,7 +406,7 @@ fn regular_file_bytes(root: &Path) -> Result<u64> {
             || entry
                 .file_type()
                 .map_err(|error| {
-                    DefinitionError::new(
+                    definition_error(
                         DefinitionErrorCode::Io,
                         "mc2_owned.export",
                         error.to_string(),
@@ -411,14 +414,14 @@ fn regular_file_bytes(root: &Path) -> Result<u64> {
                 })?
                 .is_symlink()
         {
-            return Err(DefinitionError::new(
+            return Err(definition_error(
                 DefinitionErrorCode::PathEscape,
                 entry.path().display().to_string(),
                 "owner export contains a non-regular or symlink member",
             ));
         }
         total = total.checked_add(metadata.len()).ok_or_else(|| {
-            DefinitionError::new(
+            definition_error(
                 DefinitionErrorCode::OutOfRange,
                 "mc2_owned.export",
                 "owner export byte total overflows u64",

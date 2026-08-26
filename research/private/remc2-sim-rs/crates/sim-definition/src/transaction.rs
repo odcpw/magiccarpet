@@ -1438,8 +1438,10 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game_definition::{GamePackage, Result as DefinitionResult};
-    use crate::game_definition::{SemanticBinding, default_catalog, engine_capabilities};
+    use crate::{
+        GamePackage, Result as DefinitionResult, SemanticBinding, default_catalog,
+        engine_capabilities,
+    };
 
     fn apply_value(
         definition: &GameDefinition,
@@ -1457,8 +1459,8 @@ mod tests {
     ) -> DefinitionResult<()> {
         match value {
             SemanticValue::Integer(value) if value.trailing_zeros() > 0 => Ok(()),
-            _ => Err(super::super::DefinitionError::new(
-                super::super::DefinitionErrorCode::OutOfRange,
+            _ => Err(crate::DefinitionError::new(
+                crate::DefinitionErrorCode::OutOfRange,
                 "flight.player.max_forward_speed",
                 "conformance validator requires an even value",
             )),
@@ -1471,8 +1473,8 @@ mod tests {
 
     fn read_value(definition: &GameDefinition, id: &SemanticId) -> DefinitionResult<SemanticValue> {
         definition.value(id).cloned().ok_or_else(|| {
-            super::super::DefinitionError::new(
-                super::super::DefinitionErrorCode::UnknownSemanticId,
+            crate::DefinitionError::new(
+                crate::DefinitionErrorCode::UnknownSemanticId,
                 id.as_str(),
                 "missing value",
             )
@@ -1534,8 +1536,8 @@ mod tests {
             {
                 Ok(())
             }
-            _ => Err(super::super::DefinitionError::new(
-                super::super::DefinitionErrorCode::DependencyFailed,
+            _ => Err(crate::DefinitionError::new(
+                crate::DefinitionErrorCode::DependencyFailed,
                 id.as_str(),
                 "conformance cross-field rule requires speed not to exceed mana",
             )),
@@ -1580,8 +1582,8 @@ mod tests {
     }
 
     fn fixture_definition() -> GameDefinition {
-        let root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/custom-synthetic-v1");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../sim-core/tests/fixtures/custom-synthetic-v1");
         GameDefinition::from_package(
             GamePackage::load(root).expect("load fixture"),
             &engine_capabilities().expect("capabilities"),

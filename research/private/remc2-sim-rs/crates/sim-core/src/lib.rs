@@ -34,7 +34,7 @@ pub mod indexed_postprocess;
 pub mod legacy_terrain;
 pub mod level1_mission;
 pub mod level1_parity;
-pub mod level_definition;
+pub use sim_definition::level_definition;
 pub mod level_exit;
 pub mod mission_content;
 pub mod mode26_raster;
