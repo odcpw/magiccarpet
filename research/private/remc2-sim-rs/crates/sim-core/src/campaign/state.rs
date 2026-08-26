@@ -16,7 +16,7 @@ use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, SpellFireContext, SpellFireSource,
     TetherTarget,
     collision_mask::CollisionMaskBank,
-    level_definition::{CreatureKind, LevelDefinition, MechanicKind},
+    level_definition::{CreatureKind, LevelDefinition, MechanicKind, SceneryKind},
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
         PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
@@ -71,6 +71,8 @@ pub struct CampaignDefinition {
     semantic_level: Option<LevelDefinition>,
     authored_creature_kinds: BTreeMap<u16, CreatureKind>,
     creature_models: BTreeMap<CreatureKind, u8>,
+    authored_scenery: BTreeMap<u16, SceneryKind>,
+    initial_source_scenery: BTreeMap<u16, SceneryKind>,
     authored_mechanics: BTreeMap<u16, MechanicKind>,
     initial_source_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) collision_masks: Option<CollisionMaskBank>,
@@ -325,6 +327,8 @@ impl CampaignDefinition {
             semantic_level: None,
             authored_creature_kinds: BTreeMap::new(),
             creature_models: BTreeMap::new(),
+            authored_scenery: BTreeMap::new(),
+            initial_source_scenery: BTreeMap::new(),
             authored_mechanics: BTreeMap::new(),
             initial_source_mechanics: BTreeMap::new(),
             collision_masks,
@@ -337,12 +341,16 @@ impl CampaignDefinition {
         semantic_level: LevelDefinition,
         authored_creature_kinds: BTreeMap<u16, CreatureKind>,
         creature_models: BTreeMap<CreatureKind, u8>,
+        authored_scenery: BTreeMap<u16, SceneryKind>,
+        initial_source_scenery: BTreeMap<u16, SceneryKind>,
         authored_mechanics: BTreeMap<u16, MechanicKind>,
         initial_source_mechanics: BTreeMap<u16, MechanicKind>,
     ) {
         self.semantic_level = Some(semantic_level);
         self.authored_creature_kinds = authored_creature_kinds;
         self.creature_models = creature_models;
+        self.authored_scenery = authored_scenery;
+        self.initial_source_scenery = initial_source_scenery;
         self.authored_mechanics = authored_mechanics;
         self.initial_source_mechanics = initial_source_mechanics;
     }
@@ -361,6 +369,14 @@ impl CampaignDefinition {
 
     pub(crate) fn creature_model(&self, kind: CreatureKind) -> Option<u8> {
         self.creature_models.get(&kind).copied()
+    }
+
+    pub(crate) fn scenery_for_authored_record(&self, authored_record: u16) -> Option<SceneryKind> {
+        self.authored_scenery.get(&authored_record).copied()
+    }
+
+    pub(crate) fn scenery_for_initial_source_slot(&self, source_slot: u16) -> Option<SceneryKind> {
+        self.initial_source_scenery.get(&source_slot).copied()
     }
 
     pub(crate) fn mechanic_for_authored_record(

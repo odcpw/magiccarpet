@@ -16,7 +16,9 @@ use crate::campaign::{
     },
     spec::{BehaviorKey, BehaviorSelector},
 };
-use crate::level_definition::{CreatureKind, LevelDefinition, MechanicKind, ObjectiveCondition};
+use crate::level_definition::{
+    CreatureKind, LevelDefinition, MechanicKind, ObjectiveCondition, SceneryKind,
+};
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
 /// Typed payload selected from the fixed numeric source slot at visit time.
@@ -150,6 +152,25 @@ fn validate_semantic_creature_dispatch(
             | ExistingHandler::FireflyFamily,
         ) => Err(format!(
             "creature source slot {source_slot} has no package-authored semantic identity"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_semantic_scenery_dispatch(
+    source_slot: u16,
+    scenery_kind: Option<SceneryKind>,
+    handler: ExistingHandler,
+) -> std::result::Result<(), String> {
+    match (scenery_kind, handler) {
+        (Some(SceneryKind::Tree), ExistingHandler::TreeLifecycle)
+        | (Some(SceneryKind::Stone), ExistingHandler::Stone) => Ok(()),
+        (Some(kind), actual) => Err(format!(
+            "scenery source slot {source_slot} is semantic {}, but the MC2 selector resolved {actual:?}",
+            kind.as_str()
+        )),
+        (None, ExistingHandler::TreeLifecycle) => Err(format!(
+            "tree source slot {source_slot} has no package-authored semantic identity"
         )),
         _ => Ok(()),
     }
@@ -757,9 +778,19 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
         else {
             return SlotResolution::Inactive;
         };
+        let semantic_error = match &plan {
+            Level2ResolvedSourcePlan::Callback(visit) => {
+                self.owner.validate_semantic_source_visit(slot, visit).err()
+            }
+            _ => None,
+        };
         match plan {
             Level2ResolvedSourcePlan::Callback(ref visit)
-                if Level2ResetSession::level2_route_accepts_handler(visit.route, visit.handler) =>
+                if semantic_error.is_none()
+                    && Level2ResetSession::level2_route_accepts_handler(
+                        visit.route,
+                        visit.handler,
+                    ) =>
             {
                 let Some(before) = visit.phase else {
                     let message = format!(
@@ -840,10 +871,12 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 })
             }
             Level2ResolvedSourcePlan::Callback(visit) => {
-                let message = format!(
-                    "registry handler {:?} cannot consume {:?} for {:?}",
-                    visit.handler, visit.route, visit.key.selector
-                );
+                let message = semantic_error.unwrap_or_else(|| {
+                    format!(
+                        "registry handler {:?} cannot consume {:?} for {:?}",
+                        visit.handler, visit.route, visit.key.selector
+                    )
+                });
                 SlotResolution::Unknown {
                     selector: Level2ResolvedSourcePlan::Unknown {
                         key: visit.key,
@@ -4044,6 +4077,8 @@ impl Level2ResetSession {
         level_definition: LevelDefinition,
         creature_bindings: BTreeMap<u16, CreatureKind>,
         creature_models: BTreeMap<CreatureKind, u8>,
+        scenery_bindings: BTreeMap<u16, SceneryKind>,
+        initial_scenery_bindings: BTreeMap<u16, SceneryKind>,
         mechanic_bindings: BTreeMap<u16, MechanicKind>,
         initial_mechanic_bindings: BTreeMap<u16, MechanicKind>,
     ) {
@@ -4052,6 +4087,8 @@ impl Level2ResetSession {
             level_definition,
             creature_bindings,
             creature_models,
+            scenery_bindings,
+            initial_scenery_bindings,
             mechanic_bindings,
             initial_mechanic_bindings,
         );
@@ -4083,6 +4120,26 @@ impl Level2ResetSession {
         self.session
             .definition
             .creature_kind_for_authored_record(authored_record)
+    }
+
+    fn scenery_kind_for_source_slot(&self, source_slot: u16) -> Option<SceneryKind> {
+        self.session
+            .state
+            .live
+            .economy
+            .authored_trees()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .and_then(|source| {
+                self.session
+                    .definition
+                    .scenery_for_authored_record(source.authored_index)
+            })
+            .or_else(|| {
+                self.session
+                    .definition
+                    .scenery_for_initial_source_slot(source_slot)
+            })
     }
 
     fn mechanic_kind_for_source_slot(&self, source_slot: u16) -> Option<MechanicKind> {
@@ -10170,6 +10227,40 @@ impl Level2ResetSession {
         }
     }
 
+    fn validate_semantic_source_visit(
+        &self,
+        source_slot: u16,
+        visit: &Level2ResolvedSourceVisit,
+    ) -> std::result::Result<(), String> {
+        if matches!(
+            visit.route,
+            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                kind: Level2DynamicArenaKind::AuthoredClass5 | Level2DynamicArenaKind::AuthoredBee,
+                ..
+            })
+        ) {
+            validate_semantic_creature_dispatch(
+                source_slot,
+                self.creature_kind_for_source_slot(source_slot),
+                visit.handler,
+            )?;
+        }
+        let semantic_scenery = self.scenery_kind_for_source_slot(source_slot);
+        if semantic_scenery.is_some()
+            || matches!(
+                visit.route,
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::AuthoredTree,
+                    ..
+                })
+            )
+            || visit.handler == ExistingHandler::TreeLifecycle
+        {
+            validate_semantic_scenery_dispatch(source_slot, semantic_scenery, visit.handler)?;
+        }
+        Ok(())
+    }
+
     fn dispatch_level2_source_visit(
         &mut self,
         pass: u8,
@@ -10188,19 +10279,6 @@ impl Level2ResetSession {
         pass_start_castle_root_slot: Option<u16>,
         goat_begin_events: &mut BTreeMap<u16, Vec<GoatStepEvent>>,
     ) -> std::result::Result<(), String> {
-        if matches!(
-            visit.route,
-            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
-                kind: Level2DynamicArenaKind::AuthoredClass5 | Level2DynamicArenaKind::AuthoredBee,
-                ..
-            })
-        ) {
-            validate_semantic_creature_dispatch(
-                source_slot,
-                self.creature_kind_for_source_slot(source_slot),
-                visit.handler,
-            )?;
-        }
         match (visit.handler, visit.route) {
             (ExistingHandler::BallisticScenery, Level2SourceRoute::Imported) => {
                 self.step_imported_ballistic_scenery(source_slot)?;
@@ -15357,6 +15435,51 @@ mod tests {
                     && message.contains("Model9Family")
             )
         }));
+    }
+
+    #[test]
+    fn semantic_tree_dispatch_rejects_raw_stone_selector_in_source_pass() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens");
+        let session = campaign.level2_compatibility_mut();
+        session
+            .consume_authored_group(0, 0, 1)
+            .expect("real package group 1 materializes through the shared arena");
+        let tree = session
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.authored_index == 155)
+            .copied()
+            .expect("package-authored Tree is present in the shared arena");
+        {
+            let mut economy = session.economy_mut();
+            let source = economy
+                .authored_trees
+                .iter_mut()
+                .find(|source| source.source_entity_index == tree.source_entity_index)
+                .expect("allocated Tree remains in the shared arena");
+            source.action = 3;
+        }
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot,
+                        message,
+                        ..
+                    } if *source_slot == tree.source_entity_index
+                        && message.contains("semantic tree")
+                        && message.contains("Stone")
+                )
+            }),
+            "dispatch events: {:?}",
+            session.dispatch_events()
+        );
     }
 
     fn level_three_descriptor_fixture_path() -> PathBuf {

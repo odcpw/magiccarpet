@@ -8,7 +8,7 @@ use super::mc2_level_definition::Mc2LevelDefinition;
 use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
 };
-use crate::level_definition::{CreatureKind, LevelDefinition, MechanicKind};
+use crate::level_definition::{CreatureKind, LevelDefinition, MechanicKind, SceneryKind};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -362,6 +362,8 @@ pub struct CampaignDefinition {
     level_definition: LevelDefinition,
     creature_by_authored_record: BTreeMap<u16, CreatureKind>,
     creature_model_by_kind: BTreeMap<CreatureKind, u8>,
+    scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
+    scenery_by_initial_source_slot: BTreeMap<u16, SceneryKind>,
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
     member_hashes: BTreeMap<String, String>,
@@ -891,6 +893,30 @@ impl CampaignDefinition {
                 ))
             })
             .collect::<BTreeMap<_, _>>();
+        let scenery_by_initial_source_slot = expected_rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.initial_source_slot?,
+                    Mc2LevelDefinition::scenery_for_reset_selector(
+                        row.class, row.model, row.action,
+                    )?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for scenery in scenery_by_initial_source_slot.values() {
+            if !semantic_level.semantic.entities().iter().any(|entity| {
+                entity.kind() == crate::level_definition::LevelEntityKind::Scenery(*scenery)
+            }) {
+                return fail(
+                    ValidationStage::TypedOperations,
+                    format!(
+                        "reset {} has no matching authored semantic scenery",
+                        scenery.as_str()
+                    ),
+                );
+            }
+        }
         for mechanic in mechanic_by_initial_source_slot.values() {
             if !semantic_level.semantic.entities().iter().any(|entity| {
                 entity.kind() == crate::level_definition::LevelEntityKind::Mechanic(*mechanic)
@@ -975,6 +1001,8 @@ impl CampaignDefinition {
             level_definition: semantic_level.semantic,
             creature_by_authored_record: semantic_level.creature_by_authored_record,
             creature_model_by_kind: semantic_level.creature_model_by_kind,
+            scenery_by_authored_record: semantic_level.scenery_by_authored_record,
+            scenery_by_initial_source_slot,
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
             mechanic_by_initial_source_slot,
             member_hashes: files
@@ -1001,6 +1029,14 @@ impl CampaignDefinition {
 
     pub(crate) fn creature_models(&self) -> &BTreeMap<CreatureKind, u8> {
         &self.creature_model_by_kind
+    }
+
+    pub(crate) fn scenery_bindings(&self) -> &BTreeMap<u16, SceneryKind> {
+        &self.scenery_by_authored_record
+    }
+
+    pub(crate) fn initial_scenery_bindings(&self) -> &BTreeMap<u16, SceneryKind> {
+        &self.scenery_by_initial_source_slot
     }
 
     pub(crate) fn mechanic_bindings(&self) -> &BTreeMap<u16, MechanicKind> {

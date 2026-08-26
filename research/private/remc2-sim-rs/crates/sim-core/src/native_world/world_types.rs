@@ -3715,6 +3715,8 @@ impl NativeWorldInspection {
             definition.level_definition().clone(),
             definition.creature_bindings().clone(),
             definition.creature_models().clone(),
+            definition.scenery_bindings().clone(),
+            definition.initial_scenery_bindings().clone(),
             definition.mechanic_bindings().clone(),
             definition.initial_mechanic_bindings().clone(),
         );

@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     level_definition::{
         ActivationGroupId, CreatureKind, LevelDefinition, LevelEntityDefinition, LevelEntityId,
-        LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition, SpellKind,
-        TilePosition,
+        LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition, SceneryKind,
+        SpellKind, TilePosition,
     },
     level1_mission::parse_authored_features,
 };
@@ -21,6 +21,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) semantic: LevelDefinition,
     pub(crate) creature_by_authored_record: BTreeMap<u16, CreatureKind>,
     pub(crate) creature_model_by_kind: BTreeMap<CreatureKind, u8>,
+    pub(crate) scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
 }
 
@@ -41,6 +42,18 @@ impl Mc2LevelDefinition {
         }
     }
 
+    pub(crate) const fn scenery_for_reset_selector(
+        class: u8,
+        model: u8,
+        action: u8,
+    ) -> Option<SceneryKind> {
+        match (class, model, action) {
+            (2, 0, 0) => Some(SceneryKind::Tree),
+            (2, 1, 3) => Some(SceneryKind::Stone),
+            _ => None,
+        }
+    }
+
     pub(crate) fn from_authored_bytes(
         bytes: &[u8],
         objective_operations: &[ObjectiveOperation],
@@ -48,9 +61,11 @@ impl Mc2LevelDefinition {
         let features = parse_authored_features(bytes)?;
         let mut creature_ordinals = BTreeMap::<CreatureKind, u16>::new();
         let mut spell_ordinals = BTreeMap::<SpellKind, u16>::new();
+        let mut scenery_ordinals = BTreeMap::<SceneryKind, u16>::new();
         let mut mechanic_ordinals = BTreeMap::<MechanicKind, u16>::new();
         let mut creature_by_authored_record = BTreeMap::new();
         let mut creature_model_by_kind = BTreeMap::new();
+        let mut scenery_by_authored_record = BTreeMap::new();
         let mut mechanic_by_authored_record = BTreeMap::new();
         let mut entities = Vec::new();
         let activation_groups = features
@@ -111,6 +126,27 @@ impl Mc2LevelDefinition {
                     activation_group,
                 ));
                 creature_by_authored_record.insert(feature.index, kind);
+                continue;
+            }
+
+            let scenery_kind = match (feature.kind, feature.subtype) {
+                (2, 0) => Some(SceneryKind::Tree),
+                (2, 1) => Some(SceneryKind::Stone),
+                _ => None,
+            };
+            if let Some(kind) = scenery_kind {
+                let ordinal = scenery_ordinals.entry(kind).or_default();
+                let id = LevelEntityId::scenery(kind, *ordinal);
+                *ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| format!("too many authored {} rows", kind.as_str()))?;
+                entities.push(LevelEntityDefinition::new(
+                    id,
+                    LevelEntityKind::Scenery(kind),
+                    position,
+                    activation_group,
+                ));
+                scenery_by_authored_record.insert(feature.index, kind);
                 continue;
             }
 
@@ -260,6 +296,7 @@ impl Mc2LevelDefinition {
             semantic: LevelDefinition::new(entities, objectives, activation_groups)?,
             creature_by_authored_record,
             creature_model_by_kind,
+            scenery_by_authored_record,
             mechanic_by_authored_record,
         })
     }
