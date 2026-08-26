@@ -3,31 +3,67 @@
 //! Raw class/model identities terminate in this module. Runtime code consumes
 //! semantic kinds and the immutable authored-record binding emitted here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     level_definition::{
         ActivationGroupId, CreatureKind, LevelDefinition, LevelEntityDefinition, LevelEntityId,
-        LevelEntityKind, SpellKind, TilePosition,
+        LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition, SpellKind,
+        TilePosition,
     },
     level1_mission::parse_authored_features,
 };
+
+use super::spec::ObjectiveOperation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Mc2LevelDefinition {
     pub(crate) semantic: LevelDefinition,
     pub(crate) creature_by_authored_record: BTreeMap<u16, CreatureKind>,
+    pub(crate) creature_model_by_kind: BTreeMap<CreatureKind, u8>,
+    pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
 }
 
 impl Mc2LevelDefinition {
-    pub(crate) fn from_authored_bytes(bytes: &[u8]) -> Result<Self, String> {
+    pub(crate) const fn mechanic_for_reset_selector(
+        class: u8,
+        model: u8,
+        action: u8,
+    ) -> Option<MechanicKind> {
+        match (class, model, action) {
+            (11, 16, 16) => Some(MechanicKind::AbsenceCountdown {
+                creature: CreatureKind::Worm,
+            }),
+            (11, 17, 17) => Some(MechanicKind::AbsenceCountdown {
+                creature: CreatureKind::Archer,
+            }),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn from_authored_bytes(
+        bytes: &[u8],
+        objective_operations: &[ObjectiveOperation],
+    ) -> Result<Self, String> {
         let features = parse_authored_features(bytes)?;
         let mut creature_ordinals = BTreeMap::<CreatureKind, u16>::new();
         let mut spell_ordinals = BTreeMap::<SpellKind, u16>::new();
+        let mut mechanic_ordinals = BTreeMap::<MechanicKind, u16>::new();
         let mut creature_by_authored_record = BTreeMap::new();
+        let mut creature_model_by_kind = BTreeMap::new();
+        let mut mechanic_by_authored_record = BTreeMap::new();
         let mut entities = Vec::new();
+        let activation_groups = features
+            .iter()
+            .filter(|feature| feature.kind != 0)
+            .filter_map(|feature| u16::try_from(feature.activation_group).ok())
+            .filter(|group| !matches!(*group, 0 | u16::MAX))
+            .map(ActivationGroupId::new)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
 
-        for feature in features {
+        for feature in &features {
             let creature_kind = match (feature.kind, feature.subtype) {
                 // `sub_4A310` constructor identities. These numbers remain
                 // private to the MC2 adapter; shared callers see only kinds.
@@ -44,7 +80,7 @@ impl Mc2LevelDefinition {
             };
             let activation_group = u16::try_from(feature.activation_group)
                 .ok()
-                .filter(|group| *group != 0)
+                .filter(|group| !matches!(*group, 0 | u16::MAX))
                 .map(ActivationGroupId::new);
             let position = TilePosition {
                 x: feature.tile_x,
@@ -52,6 +88,17 @@ impl Mc2LevelDefinition {
             };
 
             if let Some(kind) = creature_kind {
+                let model = u8::try_from(feature.subtype)
+                    .map_err(|_| format!("authored {} model does not fit u8", kind.as_str()))?;
+                if creature_model_by_kind
+                    .insert(kind, model)
+                    .is_some_and(|prior| prior != model)
+                {
+                    return Err(format!(
+                        "authored {} maps to more than one MC2 creature model",
+                        kind.as_str()
+                    ));
+                }
                 let ordinal = creature_ordinals.entry(kind).or_default();
                 let id = LevelEntityId::creature(kind, *ordinal);
                 *ordinal = ordinal
@@ -70,30 +117,150 @@ impl Mc2LevelDefinition {
             let spell_kind = match (feature.kind, feature.subtype) {
                 // `AddSpellXX_XX_51120` receives these spell identities. Keep
                 // the numeric selectors inside the private MC2 adapter.
-                (15, 2) => SpellKind::Speed,
-                (15, 3) => SpellKind::Possession,
-                (15, 4) => SpellKind::Shield,
-                (15, 6) => SpellKind::Earthquake,
-                (15, 11) => SpellKind::RubberBand,
-                (15, 12) => SpellKind::Invisibility,
+                (15, 2) => Some(SpellKind::Speed),
+                (15, 3) => Some(SpellKind::Possession),
+                (15, 4) => Some(SpellKind::Shield),
+                (15, 6) => Some(SpellKind::Earthquake),
+                (15, 11) => Some(SpellKind::RubberBand),
+                (15, 12) => Some(SpellKind::Invisibility),
+                _ => None,
+            };
+            if let Some(kind) = spell_kind {
+                let ordinal = spell_ordinals.entry(kind).or_default();
+                let id = LevelEntityId::spell_pickup(kind, *ordinal);
+                *ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| format!("too many authored {} spell pickups", kind.as_str()))?;
+                entities.push(LevelEntityDefinition::new(
+                    id,
+                    LevelEntityKind::SpellPickup(kind),
+                    position,
+                    activation_group,
+                ));
+                continue;
+            }
+
+            let mechanic_kind = match (feature.kind, feature.subtype) {
+                // The two source callbacks observe the rebuilt class-5 model
+                // lists for Worms and Archers respectively. Shared callers
+                // see the creature being observed, never those selectors.
+                (11, 16) => MechanicKind::AbsenceCountdown {
+                    creature: CreatureKind::Worm,
+                },
+                (11, 17) => MechanicKind::AbsenceCountdown {
+                    creature: CreatureKind::Archer,
+                },
                 _ => continue,
             };
-            let ordinal = spell_ordinals.entry(spell_kind).or_default();
-            let id = LevelEntityId::spell_pickup(spell_kind, *ordinal);
-            *ordinal = ordinal.checked_add(1).ok_or_else(|| {
-                format!("too many authored {} spell pickups", spell_kind.as_str())
-            })?;
+            let ordinal = mechanic_ordinals.entry(mechanic_kind).or_default();
+            let id = LevelEntityId::mechanic(mechanic_kind, *ordinal);
+            *ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| format!("too many authored {} mechanics", mechanic_kind.as_str()))?;
             entities.push(LevelEntityDefinition::new(
                 id,
-                LevelEntityKind::SpellPickup(spell_kind),
+                LevelEntityKind::Mechanic(mechanic_kind),
                 position,
                 activation_group,
             ));
+            mechanic_by_authored_record.insert(feature.index, mechanic_kind);
         }
 
+        let objectives = objective_operations
+            .iter()
+            .map(|operation| {
+                let condition = match operation.stage_index {
+                    0 => ObjectiveCondition::CastleManaPercent(
+                        u16::try_from(operation.objective_selector).map_err(|_| {
+                            format!(
+                                "castle-mana objective {} has invalid percentage {}",
+                                operation.objective_slot, operation.objective_selector
+                            )
+                        })?,
+                    ),
+                    3 => {
+                        if operation.objective_selector <= 0 {
+                            return Err(format!(
+                                "rival-wizard objective {} has invalid target {}",
+                                operation.objective_slot, operation.objective_selector
+                            ));
+                        }
+                        ObjectiveCondition::DefeatRivalWizard
+                    }
+                    5 => ObjectiveCondition::ReachLocation(TilePosition {
+                        x: u16::try_from(operation.axis_x).map_err(|_| {
+                            format!(
+                                "location objective {} has invalid x {}",
+                                operation.objective_slot, operation.axis_x
+                            )
+                        })?,
+                        y: u16::try_from(operation.axis_y).map_err(|_| {
+                            format!(
+                                "location objective {} has invalid y {}",
+                                operation.objective_slot, operation.axis_y
+                            )
+                        })?,
+                    }),
+                    7 => {
+                        let authored_record =
+                            u16::try_from(operation.objective_selector).map_err(|_| {
+                                format!(
+                                    "creature objective {} has invalid authored selector {}",
+                                    operation.objective_slot, operation.objective_selector
+                                )
+                            })?;
+                        let kind = creature_by_authored_record
+                            .get(&authored_record)
+                            .copied()
+                            .ok_or_else(|| {
+                                format!(
+                                    "creature objective {} targets non-creature authored record {}",
+                                    operation.objective_slot, authored_record
+                                )
+                            })?;
+                        ObjectiveCondition::NoLivingCreatures(kind)
+                    }
+                    9 => {
+                        let authored_record =
+                            u16::try_from(operation.objective_selector).map_err(|_| {
+                                format!(
+                                    "building objective {} has invalid authored selector {}",
+                                    operation.objective_slot, operation.objective_selector
+                                )
+                            })?;
+                        let building = features
+                            .iter()
+                            .find(|feature| feature.index == authored_record)
+                            .ok_or_else(|| {
+                                format!(
+                                    "building objective {} targets missing authored record {}",
+                                    operation.objective_slot, authored_record
+                                )
+                            })?;
+                        if (building.kind, building.subtype) != (10, 45) {
+                            return Err(format!(
+                                "building objective {} targets unsupported authored kind {}/{}",
+                                operation.objective_slot, building.kind, building.subtype
+                            ));
+                        }
+                        ObjectiveCondition::NoStandingBuildings
+                    }
+                    kind => {
+                        return Err(format!(
+                            "objective {} has unsupported MC2 condition kind {}",
+                            operation.objective_slot, kind
+                        ));
+                    }
+                };
+                Ok(LevelObjectiveDefinition::new(condition))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
         Ok(Self {
-            semantic: LevelDefinition::new(entities)?,
+            semantic: LevelDefinition::new(entities, objectives, activation_groups)?,
             creature_by_authored_record,
+            creature_model_by_kind,
+            mechanic_by_authored_record,
         })
     }
 }

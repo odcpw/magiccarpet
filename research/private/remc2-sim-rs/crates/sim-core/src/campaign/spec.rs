@@ -8,7 +8,7 @@ use super::mc2_level_definition::Mc2LevelDefinition;
 use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
 };
-use crate::level_definition::{CreatureKind, LevelDefinition};
+use crate::level_definition::{CreatureKind, LevelDefinition, MechanicKind};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -361,6 +361,9 @@ pub struct CampaignDefinition {
     pub completed_stage: ValidationStage,
     level_definition: LevelDefinition,
     creature_by_authored_record: BTreeMap<u16, CreatureKind>,
+    creature_model_by_kind: BTreeMap<CreatureKind, u8>,
+    mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
+    mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
     member_hashes: BTreeMap<String, String>,
 }
 
@@ -802,13 +805,6 @@ impl CampaignDefinition {
             ValidationStage::TypedMembers,
         )?;
         let authored = &members[&authored_records.member];
-        let semantic_level =
-            Mc2LevelDefinition::from_authored_bytes(authored).map_err(|message| {
-                CampaignPackageError {
-                    stage: ValidationStage::TypedMembers,
-                    message: format!("cannot derive semantic level content: {message}"),
-                }
-            })?;
         let entities = &members[&entities_ref.member];
         let expected_rows = decode_behavior_rows(authored, entities, outer.map_type_id)?;
         let declared_rows = parse_behavior_rows(&spec_value["authored_behavior_rows"])?;
@@ -879,6 +875,35 @@ impl CampaignDefinition {
         // Stage 7: closed census-proven operations and RNG source fields.
         let (initial_rng, objectives) =
             validate_operations(spec_value, authored, &files, &members)?;
+        let semantic_level = Mc2LevelDefinition::from_authored_bytes(authored, &objectives)
+            .map_err(|message| CampaignPackageError {
+                stage: ValidationStage::TypedOperations,
+                message: format!("cannot derive semantic level content: {message}"),
+            })?;
+        let mechanic_by_initial_source_slot = expected_rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.initial_source_slot?,
+                    Mc2LevelDefinition::mechanic_for_reset_selector(
+                        row.class, row.model, row.action,
+                    )?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for mechanic in mechanic_by_initial_source_slot.values() {
+            if !semantic_level.semantic.entities().iter().any(|entity| {
+                entity.kind() == crate::level_definition::LevelEntityKind::Mechanic(*mechanic)
+            }) {
+                return fail(
+                    ValidationStage::TypedOperations,
+                    format!(
+                        "reset {} has no matching authored semantic mechanic",
+                        mechanic.as_str()
+                    ),
+                );
+            }
+        }
 
         // Stage 8: source-derived post-GenerateEvents runtime roots, exact
         // declaration, and compiled keys. Any later selector is independently
@@ -949,6 +974,9 @@ impl CampaignDefinition {
             completed_stage: ValidationStage::ResetState,
             level_definition: semantic_level.semantic,
             creature_by_authored_record: semantic_level.creature_by_authored_record,
+            creature_model_by_kind: semantic_level.creature_model_by_kind,
+            mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
+            mechanic_by_initial_source_slot,
             member_hashes: files
                 .into_iter()
                 .map(|(name, (_, sha256))| (name, sha256))
@@ -969,6 +997,18 @@ impl CampaignDefinition {
 
     pub(crate) fn creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {
         &self.creature_by_authored_record
+    }
+
+    pub(crate) fn creature_models(&self) -> &BTreeMap<CreatureKind, u8> {
+        &self.creature_model_by_kind
+    }
+
+    pub(crate) fn mechanic_bindings(&self) -> &BTreeMap<u16, MechanicKind> {
+        &self.mechanic_by_authored_record
+    }
+
+    pub(crate) fn initial_mechanic_bindings(&self) -> &BTreeMap<u16, MechanicKind> {
+        &self.mechanic_by_initial_source_slot
     }
 
     /// Reconstruct the identity of the wrapped owner-level export.

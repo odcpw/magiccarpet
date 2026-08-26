@@ -3714,6 +3714,9 @@ impl NativeWorldInspection {
         session.bind_semantic_level_definition(
             definition.level_definition().clone(),
             definition.creature_bindings().clone(),
+            definition.creature_models().clone(),
+            definition.mechanic_bindings().clone(),
+            definition.initial_mechanic_bindings().clone(),
         );
         Ok(session)
     }

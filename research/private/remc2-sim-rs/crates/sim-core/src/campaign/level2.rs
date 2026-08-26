@@ -16,7 +16,7 @@ use crate::campaign::{
     },
     spec::{BehaviorKey, BehaviorSelector},
 };
-use crate::level_definition::{CreatureKind, LevelDefinition};
+use crate::level_definition::{CreatureKind, LevelDefinition, MechanicKind, ObjectiveCondition};
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
 /// Typed payload selected from the fixed numeric source slot at visit time.
@@ -480,14 +480,6 @@ struct Level2SourceSchedulerWorld<'session, 'evidence> {
     player_position: Position,
     goat_players: Vec<GoatPlayerTarget>,
     pass_start_mana_sphere_slots: BTreeSet<u16>,
-    /// `UpdateEntities_57730` rebuilds the class-5/model-3 membership before
-    /// any numeric-slot callback. Class-11/action-16 observes that fixed
-    /// membership for the complete pass even if an earlier callback creates
-    /// or retires a matching row.
-    pass_start_class5_model3_present: bool,
-    /// The corresponding fixed class-5/model-4 Archer membership consumed
-    /// by class-11/action-17.
-    pass_start_class5_model4_present: bool,
     /// Fixed UpdateEntities class-5 model buckets. Membership is rebuilt once
     /// before the numeric scan; callbacks read member fields live.
     pass_start_class5_model_slots: [Vec<u16>; 29],
@@ -678,8 +670,6 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 self.pass_start_class5_model_present = std::array::from_fn(|model| {
                     !self.pass_start_class5_model_slots[model].is_empty()
                 });
-                self.pass_start_class5_model3_present = self.pass_start_class5_model_present[3];
-                self.pass_start_class5_model4_present = self.pass_start_class5_model_present[4];
             }
             PassPhase::PreDispatch => {
                 self.owner
@@ -902,8 +892,6 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             &self.source_player_order,
             &self.goat_players,
             &self.pass_start_mana_sphere_slots,
-            self.pass_start_class5_model3_present,
-            self.pass_start_class5_model4_present,
             &self.pass_start_class5_model_slots,
             &self.pass_start_castle_auxiliary_membership,
             self.pass_start_castle_root_slot,
@@ -4055,9 +4043,18 @@ impl Level2ResetSession {
         &mut self,
         level_definition: LevelDefinition,
         creature_bindings: BTreeMap<u16, CreatureKind>,
+        creature_models: BTreeMap<CreatureKind, u8>,
+        mechanic_bindings: BTreeMap<u16, MechanicKind>,
+        initial_mechanic_bindings: BTreeMap<u16, MechanicKind>,
     ) {
         let mut definition = (*self.session.definition).clone();
-        definition.bind_semantic_level(level_definition, creature_bindings);
+        definition.bind_semantic_level(
+            level_definition,
+            creature_bindings,
+            creature_models,
+            mechanic_bindings,
+            initial_mechanic_bindings,
+        );
         self.session.definition = Arc::new(definition);
     }
 
@@ -4086,6 +4083,95 @@ impl Level2ResetSession {
         self.session
             .definition
             .creature_kind_for_authored_record(authored_record)
+    }
+
+    fn mechanic_kind_for_source_slot(&self, source_slot: u16) -> Option<MechanicKind> {
+        self.session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_switch_producers
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .and_then(|source| {
+                self.session
+                    .definition
+                    .mechanic_for_authored_record(source.authored_index)
+            })
+            .or_else(|| {
+                self.session
+                    .definition
+                    .mechanic_for_initial_source_slot(source_slot)
+            })
+    }
+
+    fn countdown_observed_creature_present(
+        &self,
+        source_slot: u16,
+        pass_start_class5_model_slots: &[Vec<u16>; 29],
+    ) -> std::result::Result<bool, String> {
+        if self.session.definition.semantic_level().is_none() {
+            // The pre-descriptor owner-export adapter has no semantic
+            // definition to bind. Preserve its two private source selectors
+            // until those compatibility callers move to the campaign package.
+            let legacy_model = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(source_slot))
+                .filter(|source| {
+                    source.active && source.class == 11 && source.model == 16 && source.action == 16
+                })
+                .map(|_| 3_usize)
+                .or_else(|| {
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .authored_switch_producers
+                        .iter()
+                        .find(|source| {
+                            source.active
+                                && source.source_entity_index == source_slot
+                                && source.source_class == 11
+                                && source.model == 17
+                                && source.action == 17
+                        })
+                        .map(|_| 4_usize)
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "legacy countdown source slot {source_slot} has no accepted MC2 selector"
+                    )
+                })?;
+            return Ok(pass_start_class5_model_slots
+                .get(legacy_model)
+                .is_some_and(|slots| !slots.is_empty()));
+        }
+        let MechanicKind::AbsenceCountdown { creature } = self
+            .mechanic_kind_for_source_slot(source_slot)
+            .ok_or_else(|| {
+                format!(
+                    "countdown source slot {source_slot} has no package-derived semantic mechanic"
+                )
+            })?;
+        let model = self
+            .session
+            .definition
+            .creature_model(creature)
+            .ok_or_else(|| {
+                format!(
+                    "countdown source slot {source_slot} observes {}, but the package has no creature-model binding",
+                    creature.as_str()
+                )
+            })?;
+        Ok(pass_start_class5_model_slots
+            .get(usize::from(model))
+            .is_some_and(|slots| !slots.is_empty()))
     }
 
     /// Borrow the canonical campaign carrier.
@@ -4353,98 +4439,188 @@ impl Level2ResetSession {
                 else {
                     continue;
                 };
-                let achieved = match stage.kind {
-                    0 => {
-                        let RuntimeRelation::Scalar(required_percent) = stage.relation else {
-                            continue;
-                        };
-                        let Ok(required_percent) = i32::try_from(required_percent) else {
-                            continue;
-                        };
-                        let player_entity_index = self
-                            .session
-                            .state
-                            .live
-                            .core
-                            .players
-                            .iter()
-                            .find(|player| {
-                                usize::from(player.player_color_index()) == objective_index
-                            })
-                            .map_or(0, |player| player.entity_index);
-                        let economy = &self.session.state.live.economy.economy;
-                        let castle_slot = economy.player_castle_entity_index();
-                        let denominator = economy.owner_mana_global();
-                        castle_slot != 0
-                            && denominator > 0
-                            && economy.castle().is_some_and(|castle| {
-                                castle.active
-                                    && castle.source_entity_index == castle_slot
-                                    && castle.owner_entity_index == player_entity_index
-                                    && 100_i32
-                                        * economy
-                                            .owner_mana_aggregate(player_entity_index)
-                                            .saturating_add(castle.mana)
-                                        / denominator
-                                        >= required_percent
-                            })
-                    }
-                    3 => {
-                        // The source type-3 predicate is independent of
-                        // ObjectiveText and reads the bound player's
-                        // Type_str_0x2BDE byte, not the compact
-                        // ActPlayerIndex bytes or linked entity life/drawing
-                        // fields.
-                        if stage.flags & 1 == 0 {
-                            false
-                        } else if let RuntimeRelation::LiveEntity(target_index) = stage.relation {
-                            self.session
+                let condition = self
+                    .session
+                    .definition
+                    .semantic_level()
+                    .and_then(|level| level.objectives().get(stage_index))
+                    .map(|objective| objective.condition());
+                let achieved = if let Some(condition) = condition {
+                    match condition {
+                        ObjectiveCondition::CastleManaPercent(required_percent) => {
+                            let required_percent = i32::from(required_percent);
+                            let player_entity_index = self
+                                .session
                                 .state
                                 .live
                                 .core
                                 .players
                                 .iter()
-                                .find(|player| player.entity_index == target_index)
-                                .is_some_and(|player| player.objective_player_state() == Some(0))
-                        } else {
-                            false
+                                .find(|player| {
+                                    usize::from(player.player_color_index()) == objective_index
+                                })
+                                .map_or(0, |player| player.entity_index);
+                            let economy = &self.session.state.live.economy.economy;
+                            let castle_slot = economy.player_castle_entity_index();
+                            let denominator = economy.owner_mana_global();
+                            castle_slot != 0
+                                && denominator > 0
+                                && economy.castle().is_some_and(|castle| {
+                                    castle.active
+                                        && castle.source_entity_index == castle_slot
+                                        && castle.owner_entity_index == player_entity_index
+                                        && 100_i32
+                                            * economy
+                                                .owner_mana_aggregate(player_entity_index)
+                                                .saturating_add(castle.mana)
+                                            / denominator
+                                            >= required_percent
+                                })
                         }
-                    }
-                    5 => {
-                        if objective.text_selector as usize != stage_index {
-                            false
-                        } else {
-                            let stage_x = i32::from(stage.axis_x);
-                            let stage_y = i32::from(stage.axis_y);
-                            (stage_x - player_x).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
-                                && (stage_y - player_y).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
-                        }
-                    }
-                    7 => {
-                        objective.text_selector as usize == stage_index
-                            && match stage.relation {
-                                // Model 2 Bees and model 4 Archers have
-                                // complete producer/carrier/cleanup paths in
-                                // the shared arena. Keep later model families
-                                // fail-closed until their constructors join
-                                // that same lifecycle; an absent carrier must
-                                // not counterfeit an extinction objective.
-                                RuntimeRelation::Scalar(model) if matches!(model, 2 | 4) => {
-                                    usize::try_from(model)
-                                        .ok()
-                                        .and_then(|model| {
-                                            pass_start_class5_model_present.get(model)
-                                        })
-                                        .is_some_and(|present| !present)
-                                }
-                                _ => false,
+                        ObjectiveCondition::DefeatRivalWizard => {
+                            // The source type-3 predicate is independent of
+                            // ObjectiveText and reads the bound player's
+                            // Type_str_0x2BDE byte, not the compact
+                            // ActPlayerIndex bytes or linked entity life/drawing
+                            // fields.
+                            if stage.flags & 1 == 0 {
+                                false
+                            } else if let RuntimeRelation::LiveEntity(target_index) = stage.relation
+                            {
+                                self.session
+                                    .state
+                                    .live
+                                    .core
+                                    .players
+                                    .iter()
+                                    .find(|player| player.entity_index == target_index)
+                                    .is_some_and(|player| {
+                                        player.objective_player_state() == Some(0)
+                                    })
+                            } else {
+                                false
                             }
+                        }
+                        ObjectiveCondition::ReachLocation(location) => {
+                            if objective.text_selector as usize != stage_index {
+                                false
+                            } else {
+                                let stage_x = i32::from(i16::from_le_bytes(
+                                    location.x.wrapping_mul(256).to_le_bytes(),
+                                ));
+                                let stage_y = i32::from(i16::from_le_bytes(
+                                    location.y.wrapping_mul(256).to_le_bytes(),
+                                ));
+                                (stage_x - player_x).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
+                                    && (stage_y - player_y).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
+                            }
+                        }
+                        ObjectiveCondition::NoLivingCreatures(kind) => {
+                            objective.text_selector as usize == stage_index
+                            // Only Bee and Archer currently have complete
+                            // production, damage, hide, and following-pass
+                            // cleanup paths in the shared arena. Semantic
+                            // objectives for later creatures remain visible
+                            // in the definition but fail closed at runtime.
+                            && matches!(kind, CreatureKind::Bee | CreatureKind::Archer)
+                            && self
+                                .session
+                                .definition
+                                .creature_model(kind)
+                                .and_then(|model| {
+                                    pass_start_class5_model_present.get(usize::from(model))
+                                })
+                                .is_some_and(|present| !present)
+                        }
+                        // The source scans BLDGPRM/BUILD chains here. Until the
+                        // runtime exports those chain links, do not infer success
+                        // from the temporary model-45 producer row.
+                        ObjectiveCondition::NoStandingBuildings => false,
                     }
-                    // The source scans BLDGPRM/BUILD chains here. Until the
-                    // runtime exports those chain links, do not infer success
-                    // from the temporary model-45 producer row.
-                    9 => false,
-                    _ => false,
+                } else {
+                    // Legacy owner-export sessions predate the campaign
+                    // definition envelope. Keep their private MC2 objective
+                    // adapter until those compatibility callers are retired;
+                    // descriptor sessions above always use semantic input.
+                    match stage.kind {
+                        0 => {
+                            let RuntimeRelation::Scalar(required_percent) = stage.relation else {
+                                continue;
+                            };
+                            let Ok(required_percent) = i32::try_from(required_percent) else {
+                                continue;
+                            };
+                            let player_entity_index = self
+                                .session
+                                .state
+                                .live
+                                .core
+                                .players
+                                .iter()
+                                .find(|player| {
+                                    usize::from(player.player_color_index()) == objective_index
+                                })
+                                .map_or(0, |player| player.entity_index);
+                            let economy = &self.session.state.live.economy.economy;
+                            let castle_slot = economy.player_castle_entity_index();
+                            let denominator = economy.owner_mana_global();
+                            castle_slot != 0
+                                && denominator > 0
+                                && economy.castle().is_some_and(|castle| {
+                                    castle.active
+                                        && castle.source_entity_index == castle_slot
+                                        && castle.owner_entity_index == player_entity_index
+                                        && 100_i32
+                                            * economy
+                                                .owner_mana_aggregate(player_entity_index)
+                                                .saturating_add(castle.mana)
+                                            / denominator
+                                            >= required_percent
+                                })
+                        }
+                        3 => {
+                            if stage.flags & 1 == 0 {
+                                false
+                            } else if let RuntimeRelation::LiveEntity(target_index) = stage.relation
+                            {
+                                self.session
+                                    .state
+                                    .live
+                                    .core
+                                    .players
+                                    .iter()
+                                    .find(|player| player.entity_index == target_index)
+                                    .is_some_and(|player| {
+                                        player.objective_player_state() == Some(0)
+                                    })
+                            } else {
+                                false
+                            }
+                        }
+                        5 => {
+                            objective.text_selector as usize == stage_index
+                                && (i32::from(stage.axis_x) - player_x).abs()
+                                    <= LEVEL2_OBJECTIVE_POINT_RADIUS
+                                && (i32::from(stage.axis_y) - player_y).abs()
+                                    <= LEVEL2_OBJECTIVE_POINT_RADIUS
+                        }
+                        7 => {
+                            objective.text_selector as usize == stage_index
+                                && match stage.relation {
+                                    RuntimeRelation::Scalar(model) if matches!(model, 2 | 4) => {
+                                        usize::try_from(model)
+                                            .ok()
+                                            .and_then(|model| {
+                                                pass_start_class5_model_present.get(model)
+                                            })
+                                            .is_some_and(|present| !present)
+                                    }
+                                    _ => false,
+                                }
+                        }
+                        9 => false,
+                        _ => false,
+                    }
                 };
                 if achieved {
                     completed.push(stage_index);
@@ -10006,8 +10182,6 @@ impl Level2ResetSession {
         source_player_order: &[usize],
         goat_players: &[GoatPlayerTarget],
         pass_start_mana_sphere_slots: &BTreeSet<u16>,
-        pass_start_class5_model3_present: bool,
-        pass_start_class5_model4_present: bool,
         pass_start_class5_model_slots: &[Vec<u16>; 29],
         pass_start_castle_auxiliary_membership:
             &level2_dynamic_economy::Level2CastleAuxiliaryMembership,
@@ -10032,11 +10206,11 @@ impl Level2ResetSession {
                 self.step_imported_ballistic_scenery(source_slot)?;
             }
             (ExistingHandler::CountdownSwitch, Level2SourceRoute::Imported) => {
-                self.step_imported_countdown_switch(
-                    pass,
+                let observed_creature_present = self.countdown_observed_creature_present(
                     source_slot,
-                    pass_start_class5_model3_present,
+                    pass_start_class5_model_slots,
                 )?;
+                self.step_imported_countdown_switch(pass, source_slot, observed_creature_present)?;
             }
             (
                 ExistingHandler::CountdownSwitch,
@@ -10045,11 +10219,11 @@ impl Level2ResetSession {
                     ..
                 }),
             ) => {
-                self.step_authored_countdown_switch(
-                    pass,
+                let observed_creature_present = self.countdown_observed_creature_present(
                     source_slot,
-                    pass_start_class5_model4_present,
+                    pass_start_class5_model_slots,
                 )?;
+                self.step_authored_countdown_switch(pass, source_slot, observed_creature_present)?;
             }
             (ExistingHandler::TerrainStripController, Level2SourceRoute::Imported) => {
                 self.step_imported_terrain_strip(source_slot)?;
@@ -11352,7 +11526,7 @@ impl Level2ResetSession {
         &mut self,
         pass: u8,
         source_slot: u16,
-        pass_start_class5_model3_present: bool,
+        observed_creature_present: bool,
     ) -> std::result::Result<(), String> {
         let (target_group, outcome) = {
             let source = self
@@ -11376,10 +11550,8 @@ impl Level2ResetSession {
                 })?;
             let target_group = source.source_id;
             let mut timer = source.source_dword_10();
-            let outcome = countdown_switch::step_absence_countdown(
-                &mut timer,
-                pass_start_class5_model3_present,
-            );
+            let outcome =
+                countdown_switch::step_absence_countdown(&mut timer, observed_creature_present);
             source.set_source_dword_10(timer);
             (target_group, outcome)
         };
@@ -11408,7 +11580,7 @@ impl Level2ResetSession {
         &mut self,
         pass: u8,
         source_slot: u16,
-        pass_start_archer_present: bool,
+        observed_creature_present: bool,
     ) -> std::result::Result<(), String> {
         let (target_group, outcome) = {
             let source = self
@@ -11433,7 +11605,7 @@ impl Level2ResetSession {
                 })?;
             let outcome = countdown_switch::step_absence_countdown(
                 &mut source.dword_0x10,
-                pass_start_archer_present,
+                observed_creature_present,
             );
             (source.stage_tag, outcome)
         };
@@ -11752,8 +11924,6 @@ impl Level2ResetSession {
             player_position,
             goat_players: Vec::new(),
             pass_start_mana_sphere_slots: BTreeSet::new(),
-            pass_start_class5_model3_present: false,
-            pass_start_class5_model4_present: false,
             pass_start_class5_model_slots: std::array::from_fn(|_| Vec::new()),
             pass_start_class5_model_present: [false; 29],
             pass_start_castle_auxiliary_membership: Default::default(),

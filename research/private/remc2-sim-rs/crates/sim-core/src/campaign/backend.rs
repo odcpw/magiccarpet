@@ -638,7 +638,8 @@ mod tests {
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
         ActivationGroupId, CreatureKind, LevelDefinition, LevelEntityDefinition, LevelEntityId,
-        LevelEntityKind, SpellKind, TilePosition,
+        LevelEntityKind, LevelObjectiveDefinition, MechanicKind, ObjectiveCondition, SpellKind,
+        TilePosition,
     };
     use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
@@ -676,6 +677,9 @@ mod tests {
         root: &Path,
         expected_creatures: &[(CreatureKind, usize)],
         expected_spells: &[(SpellKind, TilePosition, Option<u16>)],
+        expected_mechanics: &[(MechanicKind, TilePosition, Option<u16>)],
+        expected_objectives: &[ObjectiveCondition],
+        expected_activation_groups: &[u16],
     ) -> GameDefinition {
         let catalog = default_catalog().unwrap();
         let definition = load_mc2_campaign(root, &catalog).unwrap();
@@ -715,7 +719,7 @@ mod tests {
                 .entities()
                 .iter()
                 .filter_map(|entity| match entity.kind() {
-                    LevelEntityKind::Creature(_) => None,
+                    LevelEntityKind::Creature(_) | LevelEntityKind::Mechanic(_) => None,
                     LevelEntityKind::SpellPickup(kind) => Some((
                         kind,
                         entity.position(),
@@ -724,6 +728,50 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
             expected_spells
+        );
+        assert_eq!(
+            level.mechanic_kinds().collect::<Vec<_>>(),
+            expected_mechanics
+                .iter()
+                .map(|(kind, _, _)| *kind)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        for kind in level.mechanic_kinds() {
+            assert_eq!(
+                level.authored_mechanic_count(kind),
+                expected_mechanics
+                    .iter()
+                    .filter(|(expected_kind, _, _)| *expected_kind == kind)
+                    .count()
+            );
+        }
+        assert_eq!(
+            level
+                .entities()
+                .iter()
+                .filter_map(|entity| match entity.kind() {
+                    LevelEntityKind::Creature(_) | LevelEntityKind::SpellPickup(_) => None,
+                    LevelEntityKind::Mechanic(kind) => Some((
+                        kind,
+                        entity.position(),
+                        entity.activation_group().map(ActivationGroupId::get),
+                    )),
+                })
+                .collect::<Vec<_>>(),
+            expected_mechanics
+        );
+        assert_eq!(
+            level.objective_conditions().collect::<Vec<_>>(),
+            expected_objectives
+        );
+        assert_eq!(
+            level
+                .activation_groups()
+                .map(ActivationGroupId::get)
+                .collect::<Vec<_>>(),
+            expected_activation_groups
         );
         definition
     }
@@ -748,6 +796,33 @@ mod tests {
                     TilePosition { x: 202, y: 212 },
                     Some(11),
                 ),
+            ],
+            &[
+                (
+                    MechanicKind::AbsenceCountdown {
+                        creature: CreatureKind::Archer,
+                    },
+                    TilePosition { x: 144, y: 255 },
+                    Some(3),
+                ),
+                (
+                    MechanicKind::AbsenceCountdown {
+                        creature: CreatureKind::Worm,
+                    },
+                    TilePosition { x: 134, y: 98 },
+                    Some(4),
+                ),
+            ],
+            &[
+                ObjectiveCondition::ReachLocation(TilePosition { x: 115, y: 212 }),
+                ObjectiveCondition::ReachLocation(TilePosition { x: 194, y: 213 }),
+                ObjectiveCondition::NoLivingCreatures(CreatureKind::Archer),
+                ObjectiveCondition::CastleManaPercent(15),
+                ObjectiveCondition::NoLivingCreatures(CreatureKind::Firefly),
+            ],
+            &[
+                1, 2, 3, 4, 5, 6, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+                26, 27, 28, 29, 30, 31, 32, 33, 34,
             ],
         );
         assert_package_content(
@@ -775,6 +850,18 @@ mod tests {
                 (SpellKind::Invisibility, TilePosition { x: 1, y: 152 }, None),
                 (SpellKind::Possession, TilePosition { x: 167, y: 59 }, None),
             ],
+            &[],
+            &[
+                ObjectiveCondition::ReachLocation(TilePosition { x: 2, y: 152 }),
+                ObjectiveCondition::DefeatRivalWizard,
+                ObjectiveCondition::NoLivingCreatures(CreatureKind::Bee),
+                ObjectiveCondition::ReachLocation(TilePosition { x: 154, y: 229 }),
+                ObjectiveCondition::NoStandingBuildings,
+            ],
+            &[
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 25, 26, 27, 28, 29, 31,
+            ],
         );
         assert_package_content(
             &level_three_descriptor_fixture_path(),
@@ -791,6 +878,21 @@ mod tests {
                 (SpellKind::RubberBand, TilePosition { x: 136, y: 85 }, None),
                 (SpellKind::Shield, TilePosition { x: 110, y: 109 }, Some(4)),
             ],
+            &[(
+                MechanicKind::AbsenceCountdown {
+                    creature: CreatureKind::Worm,
+                },
+                TilePosition { x: 160, y: 106 },
+                None,
+            )],
+            &[
+                ObjectiveCondition::NoLivingCreatures(CreatureKind::Skeleton),
+                ObjectiveCondition::NoLivingCreatures(CreatureKind::Dragon),
+                ObjectiveCondition::CastleManaPercent(30),
+                ObjectiveCondition::ReachLocation(TilePosition { x: 110, y: 110 }),
+                ObjectiveCondition::NoLivingCreatures(CreatureKind::Bee),
+            ],
+            &[1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12],
         );
         let level = definition
             .level_definition()
@@ -817,15 +919,37 @@ mod tests {
                         entity.activation_group(),
                     )
                 }
-                LevelEntityKind::SpellPickup(_) => entity.clone(),
+                LevelEntityKind::SpellPickup(_) | LevelEntityKind::Mechanic(_) => entity.clone(),
             })
             .collect();
-        let tampered = definition
-            .clone()
-            .with_level_definition(LevelDefinition::new(swapped).unwrap());
+        let activation_groups = level.activation_groups().collect::<Vec<_>>();
+        let tampered = definition.clone().with_level_definition(
+            LevelDefinition::new(
+                swapped,
+                level.objectives().to_vec(),
+                activation_groups.clone(),
+            )
+            .unwrap(),
+        );
         let error = Mc2CampaignAdapter
             .open_backend(&tampered, Mc2CampaignInputs::new(&root))
             .expect_err("raw and semantic creature identities must not diverge");
+        assert!(matches!(error, CampaignBackendError::Definition(_)));
+
+        let mut wrong_objectives = level.objectives().to_vec();
+        wrong_objectives[0] =
+            LevelObjectiveDefinition::new(ObjectiveCondition::CastleManaPercent(99));
+        let tampered = definition.clone().with_level_definition(
+            LevelDefinition::new(
+                level.entities().to_vec(),
+                wrong_objectives,
+                activation_groups,
+            )
+            .unwrap(),
+        );
+        let error = Mc2CampaignAdapter
+            .open_backend(&tampered, Mc2CampaignInputs::new(&root))
+            .expect_err("raw and semantic objective conditions must not diverge");
         assert!(matches!(error, CampaignBackendError::Definition(_)));
 
         let alias_package = GamePackage::materialize(
