@@ -712,6 +712,71 @@ impl Level2EconomyState {
         &self.authored_class5
     }
 
+    /// Stage an already-proven class-5 root as hidden for a downstream
+    /// scheduler test. This is test-only prerequisite injection: the next
+    /// production prepass still owns unlinking, slot release, and rebuilt
+    /// family membership.
+    #[cfg(test)]
+    pub(super) fn hide_authored_class5_rows_for_test(&mut self, authored_indices: &[u16]) -> usize {
+        let mut hidden = 0;
+        for source in &mut self.authored_class5 {
+            if source.active
+                && source.drawing_enabled
+                && authored_indices.contains(&source.authored_index)
+            {
+                source.drawing_enabled = false;
+                hidden += 1;
+            }
+        }
+        hidden
+    }
+
+    /// Remove every currently modeled `NewEvent` allocation candidate for a
+    /// production failure-path test. The group callback still owns authored
+    /// row consumption, producer hiding, and following-pass cleanup.
+    #[cfg(test)]
+    pub(super) fn exhaust_new_event_capacity_for_test(&mut self) -> Option<u16> {
+        let removed_free_slot = self.free_slots.last().copied();
+        self.free_slots.clear();
+        for child in &mut self.castle_children {
+            child.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        macro_rules! make_nonreplaceable {
+            ($rows:expr) => {
+                for row in &mut $rows {
+                    row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+                }
+            };
+        }
+        make_nonreplaceable!(self.spheres);
+        make_nonreplaceable!(self.death_bursts);
+        make_nonreplaceable!(self.authored_model1);
+        make_nonreplaceable!(self.model59_smoke_children);
+        make_nonreplaceable!(self.authored_model5_water_splashes);
+        make_nonreplaceable!(self.authored_model13);
+        make_nonreplaceable!(self.authored_model6);
+        make_nonreplaceable!(self.model13_spawned_children);
+        make_nonreplaceable!(self.model17_spawned_children);
+        make_nonreplaceable!(self.model76_tail_spawns);
+        removed_free_slot
+    }
+
+    #[cfg(test)]
+    pub(super) fn restore_new_event_slot_for_test(&mut self, source_slot: u16) -> bool {
+        if source_slot == 0
+            || self
+                .live_arena_cursor_rows()
+                .iter()
+                .any(|row| row.source_slot == source_slot)
+        {
+            return false;
+        }
+        if !self.free_slots.contains(&source_slot) {
+            self.free_slots.push(source_slot);
+        }
+        true
+    }
+
     #[must_use]
     pub fn authored_class5_runtime(&self) -> &[Level2AuthoredClass5RuntimeState] {
         &self.authored_class5_runtime

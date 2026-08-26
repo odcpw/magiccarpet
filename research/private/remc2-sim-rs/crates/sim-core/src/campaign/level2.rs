@@ -5635,6 +5635,42 @@ impl Level2EconomyTestView<'_> {
         self.session.reset();
     }
 
+    pub(crate) fn hide_authored_class5_rows_for_test(&mut self, authored_indices: &[u16]) -> usize {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .hide_authored_class5_rows_for_test(authored_indices)
+    }
+
+    pub(crate) fn exhaust_new_event_capacity_for_test(&mut self) -> Option<u16> {
+        let baseline_slot = std::sync::Arc::make_mut(&mut self.session.session.baseline)
+            .economy
+            .economy
+            .exhaust_new_event_capacity_for_test();
+        let live_slot = self
+            .session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .exhaust_new_event_capacity_for_test();
+        live_slot.or(baseline_slot)
+    }
+
+    pub(crate) fn restore_new_event_slot_for_test(&mut self, source_slot: u16) -> bool {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .restore_new_event_slot_for_test(source_slot)
+    }
+
     pub(crate) fn step_castle_action(&mut self, castle_slot: u16) -> bool {
         let reset_free_slots = self
             .session
@@ -6791,7 +6827,7 @@ impl Level2ResetSession {
                     | (10, 1 | 5 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 76)
                     | (11, 0 | 1 | 17 | 32)
                     | (14, 3 | 5)
-                    | (15, 2 | 6 | 11)
+                    | (15, 2 | 3 | 6 | 11)
             )
         }) {
             return Err(format!(
@@ -7174,7 +7210,7 @@ impl Level2ResetSession {
                         );
                     }
                 }
-                (15, 2 | 6 | 11) => {
+                (15, 2 | 3 | 6 | 11) => {
                     let terrain = &self.session.state.live.terrain;
                     self.session
                         .state
@@ -8555,16 +8591,6 @@ impl Level2ResetSession {
                 .get(usize::from(source_slot))
                 .filter(|row| row.active && row.index == source_slot)
                 .map(|row| (Level2SourceRoute::Player, row.class, row.action))
-        } else if let Some(pickup) = live
-            .shared_spells
-            .pickups()
-            .iter()
-            .chain(live.shared_spells.dynamic_pickups())
-            .find(|row| {
-                row.active && row.index == source_slot && row.class == 15 && row.action == 10
-            })
-        {
-            Some((Level2SourceRoute::SpeedPickup, pickup.class, pickup.action))
         } else if let Some(row) = live
             .economy
             .live_arena_cursor_rows()
@@ -8587,6 +8613,19 @@ impl Level2ResetSession {
                 .economy
                 .live_arena_class_action(source_slot, row.kind)
                 .map(|(class, action)| (Level2SourceRoute::Dynamic(row), class, action))
+        } else if let Some(pickup) = live
+            .shared_spells
+            .pickups()
+            .iter()
+            .chain(live.shared_spells.dynamic_pickups())
+            .find(|row| {
+                row.active && row.index == source_slot && row.class == 15 && row.action == 10
+            })
+        {
+            // Reset-imported family-3 pickups retain the legacy shared row.
+            // NewEvent-backed family-3 rows were resolved above through the
+            // dynamic arena and therefore use the generic acquisition path.
+            Some((Level2SourceRoute::SpeedPickup, pickup.class, pickup.action))
         } else if let Some(pickup) = live
             .shared_spells
             .pickups()

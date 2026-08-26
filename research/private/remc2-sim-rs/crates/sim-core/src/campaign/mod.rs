@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn cf15_level1_group3_materializes_archers_and_freezes_countdown_from_real_flight() {
+    fn cf15_level1_group3_reaches_archer_countdown_and_speed_jar_from_real_flight() {
         const GROUP_ROWS: [u16; 6] = [101, 102, 103, 106, 109, 153];
         const ARCHER_ROWS: [u16; 4] = [101, 102, 103, 106];
         const GROUP13_MODEL5_ROWS: [u16; 9] = [295, 296, 297, 298, 299, 300, 301, 302, 303];
@@ -1350,6 +1350,359 @@ mod tests {
             Level2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
         )));
 
+        // Archer damage and death are not under test here. The real-package
+        // route above already proved these exact four roots and the frozen
+        // model-4 membership. Stage only their source hide state, then leave
+        // cleanup, membership rebuild, countdown, construction, dispatch,
+        // epilogue, and reclaim to the ordinary production scheduler.
+        assert_eq!(
+            campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .hide_authored_class5_rows_for_test(&ARCHER_ROWS),
+            ARCHER_ROWS.len()
+        );
+        let countdown_slot = countdown.source_entity_index;
+
+        for expected_timer in (1..=15).rev() {
+            let evidence = campaign.step(PlayerCommand::default(), 0);
+            assert!(!evidence.is_empty());
+            let session = campaign.level2_compatibility();
+            let countdown = session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|row| row.authored_index == 109)
+                .expect("Archer-absence countdown remains live before its fire visit");
+            assert_eq!(countdown.dword_0x10, expected_timer);
+            assert!(
+                session
+                    .shared_spells()
+                    .authored_pickup_slots()
+                    .get(&100)
+                    .is_none()
+            );
+            assert!(campaign.events().iter().all(|event| !matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
+            )));
+        }
+
+        let mut allocation_failure = campaign.clone();
+        let restored_slot = allocation_failure
+            .level2_compatibility_mut()
+            .economy_mut()
+            .exhaust_new_event_capacity_for_test()
+            .expect("the real Level 1 source arena has ordinary NewEvent capacity");
+
+        let before_fire_cursor = campaign.effect_cursor();
+        let fire_evidence = campaign.step(PlayerCommand::default(), 0);
+        assert!(!fire_evidence.is_empty());
+        let session = campaign.level2_compatibility();
+        assert!(campaign.events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 11,
+                authored_indices,
+                ..
+            } if *source_slot == countdown_slot && authored_indices.as_ref() == [100]
+        )));
+        let jar_slot = *session
+            .shared_spells()
+            .authored_pickup_slots()
+            .get(&100)
+            .expect("group 11 materializes the package Speed jar");
+        assert_ne!(jar_slot, countdown_slot);
+        let jar_initial_phase = jar_slot.to_le_bytes()[0];
+        let jar_callbacks_on_fire_turn = jar_slot > countdown_slot;
+        let fire_receipts = session.cf10_production_schedule_receipts();
+        assert_eq!(
+            fire_receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    slot,
+                    ..
+                } if *slot == jar_slot
+            )),
+            jar_callbacks_on_fire_turn,
+            "a newly allocated row is visible in the current numeric scan exactly when its slot is still ahead of the producer"
+        );
+        assert_eq!(
+            fire_receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::EpilogueCompleted {
+                    pass: SourcePass::UpdateEntities,
+                    slot,
+                    ..
+                } if *slot == jar_slot
+            )),
+            jar_callbacks_on_fire_turn
+        );
+        let jar = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == jar_slot)
+            .expect("authored Speed jar has a shared dynamic projection");
+        let authored = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|row| row.index == 100)
+            .expect("package Speed row 100");
+        let expected_xy = authored.world_position(0);
+        let expected_position = authored.world_position(
+            session
+                .session
+                .state
+                .live
+                .terrain
+                .ground_height(expected_xy),
+        );
+        assert_eq!(
+            (
+                jar.class,
+                jar.model,
+                jar.action,
+                jar.position,
+                jar.subspell_index,
+                jar.activation_value,
+                jar.byte_3b,
+                jar.mana_regen,
+                jar.max_mana,
+                jar.mana,
+                jar.phase,
+                jar.active,
+            ),
+            (
+                15,
+                3,
+                10,
+                expected_position,
+                2,
+                301,
+                1,
+                0,
+                1_000,
+                3,
+                jar_initial_phase.wrapping_add(u8::from(jar_callbacks_on_fire_turn)),
+                true
+            )
+        );
+        assert!(session.economy().spell_pickups().iter().any(|row| {
+            (
+                row.source_entity_index,
+                row.authored_index,
+                row.family,
+                row.action,
+                row.phase,
+            ) == (
+                jar_slot,
+                100,
+                3,
+                10,
+                jar_initial_phase.wrapping_add(u8::from(jar_callbacks_on_fire_turn)),
+            )
+        }));
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        assert_eq!(
+            campaign
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot,
+                        family: 3,
+                        result: None,
+                        ..
+                    } if *source_slot == jar_slot
+                ))
+                .count(),
+            usize::from(jar_callbacks_on_fire_turn)
+        );
+
+        let effects = campaign
+            .effects_after(before_fire_cursor, 16_384)
+            .expect("complete Level 1 countdown journal page");
+        let sound_sequence = effects
+            .records
+            .iter()
+            .find_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    entity_index,
+                    player_index: -1,
+                    sound_id: 41,
+                    ..
+                }) if entity_index == countdown_slot => Some(record.sequence),
+                _ => None,
+            })
+            .expect("action-17 sound 41");
+        let activation_sequence = effects
+            .records
+            .iter()
+            .find_map(|record| match &record.effect {
+                crate::campaign::journal::CampaignEffect::Dispatch(
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group: 11,
+                        authored_indices,
+                        ..
+                    },
+                ) if *source_slot == countdown_slot && authored_indices.as_ref() == [100] => {
+                    Some(record.sequence)
+                }
+                _ => None,
+            })
+            .expect("group-11 activation receipt");
+        assert!(sound_sequence < activation_sequence);
+
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let session = campaign.level2_compatibility();
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        assert_eq!(
+            campaign
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot,
+                        family: 3,
+                        result: None,
+                        ..
+                    } if *source_slot == jar_slot
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|row| row.authored_index != 109),
+            "the following prepass reclaims the hidden countdown producer"
+        );
+        let receipts = session.cf10_production_schedule_receipts();
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            ScheduleReceipt::CallbackCompleted {
+                pass: SourcePass::UpdateEntities,
+                slot,
+                ..
+            } if *slot == jar_slot
+        )));
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            ScheduleReceipt::EpilogueCompleted {
+                pass: SourcePass::UpdateEntities,
+                slot,
+                ..
+            } if *slot == jar_slot
+        )));
+        let jar = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|row| row.index == jar_slot)
+            .expect("uncollected Speed jar remains live after its following-pass callback");
+        assert_eq!(
+            jar.phase,
+            jar_initial_phase
+                .wrapping_add(1)
+                .wrapping_add(u8::from(jar_callbacks_on_fire_turn))
+        );
+
+        let failure_evidence = allocation_failure.step(PlayerCommand::default(), 0);
+        assert!(!failure_evidence.is_empty());
+        let failure_session = allocation_failure.level2_compatibility();
+        assert!(
+            allocation_failure
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        assert!(allocation_failure.events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 11,
+                authored_indices,
+                ..
+            } if *source_slot == countdown_slot && authored_indices.as_ref() == [100]
+        )));
+        assert!(
+            failure_session
+                .session
+                .state
+                .live
+                .authored_features_consumed
+                .contains(&100)
+        );
+        assert!(
+            failure_session
+                .shared_spells()
+                .authored_pickup_slots()
+                .get(&100)
+                .is_none()
+        );
+        assert!(
+            failure_session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|row| row.authored_index == 109 && !row.drawing_enabled)
+        );
+        assert!(
+            allocation_failure
+                .level2_compatibility_mut()
+                .economy_mut()
+                .restore_new_event_slot_for_test(restored_slot),
+            "the retry discriminator restores one real NewEvent slot after the failed group scan"
+        );
+
+        let _ = allocation_failure.step(PlayerCommand::default(), 0);
+        let failure_session = allocation_failure.level2_compatibility();
+        assert!(allocation_failure.events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error { .. }
+                | Level2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
+        )));
+        assert!(
+            failure_session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|row| row.authored_index != 109)
+        );
+        assert!(
+            failure_session
+                .shared_spells()
+                .authored_pickup_slots()
+                .get(&100)
+                .is_none()
+        );
+        assert!(
+            failure_session
+                .session
+                .state
+                .live
+                .authored_features_consumed
+                .contains(&100)
+        );
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
     }
