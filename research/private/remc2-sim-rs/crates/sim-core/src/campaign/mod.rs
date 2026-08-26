@@ -3958,6 +3958,101 @@ mod tests {
         assert_eq!(campaign.state_hash(), reset_hash);
     }
 
+    #[test]
+    fn cf15_level1_group4_area_trigger_releases_only_its_package_firefly() {
+        let package = level_one_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("real Level 1 descriptor opens through the shared engine");
+        let reset_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+
+        // The level-end objective and gate are proven separately. Stage only
+        // their real group-4 boundary; the row-305 trigger and row-306
+        // Firefly remain package-authored shared-arena behavior.
+        session
+            .activate_authored_group_prerequisite_for_test(4)
+            .expect("real package group 4 materializes through the shared arena");
+        let trigger = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 305)
+            .copied()
+            .expect("package row 305 is the group-33 area trigger");
+        assert_eq!(
+            (trigger.model, trigger.action, trigger.stage_tag),
+            (0, 0, 33)
+        );
+        assert!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .all(|source| source.authored_index != 306)
+        );
+
+        let player_entity_index = session.state.entity_index;
+        session
+            .set_level2_entity_position(player_entity_index, trigger.position)
+            .expect("move the real player into the real package trigger");
+        let turns_until_cadence = usize::from((8_u8.wrapping_sub(trigger.phase & 7)) & 7) + 1;
+        for _ in 1..turns_until_cadence {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated { group: 33, .. }
+            )));
+        }
+
+        let journal_start = session.effect_journal().records().len();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 33,
+                authored_indices,
+                ..
+            } if *source_slot == trigger.source_entity_index
+                && authored_indices.as_ref() == [306]
+        )));
+        let firefly = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 306)
+            .copied()
+            .expect("package row 306 is allocated as the sixth Firefly");
+        assert_eq!((firefly.model, firefly.action), (19, 159));
+        assert!(
+            session.effect_journal().records()[journal_start..]
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::PrepareSound { entity_index, .. }
+                    ) if entity_index == trigger.source_entity_index
+                ))
+        );
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.source_entity_index != trigger.source_entity_index)
+        );
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+    }
+
     /// mc-iol7n census receipt: the fifteen live Level 3 reset selectors.
     const CF14_LEVEL3_LIVE_PAIRS: [(u8, u8); 15] = [
         (2, 0),
