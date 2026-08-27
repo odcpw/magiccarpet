@@ -19,6 +19,8 @@ const MODEL9_CLASS: u8 = 5;
 const MODEL9_MODEL: u8 = 9;
 const MODEL9_ACTION_COUNTDOWN: u8 = 72;
 const MODEL9_ACTION_MOVEMENT: u8 = 73;
+const MODEL9_ACTION_REACTION: u8 = 74;
+const MODEL9_ACTION_PRE_KILL: u8 = 76;
 const MODEL9_ACTION_RAW_MOVEMENT: u8 = 79;
 const MODEL9_MOVEMENT_COUNTDOWN: i32 = 400;
 const MODEL9_MOVEMENT_PARTICLE: u16 = 201;
@@ -177,7 +179,7 @@ fn require_selector(
     }
 }
 
-fn next_source_rng16(seed: u16) -> u16 {
+pub(super) fn next_source_rng16(seed: u16) -> u16 {
     seed.wrapping_mul(9_377).wrapping_add(9_439)
 }
 
@@ -386,14 +388,21 @@ pub(super) struct Model9Action79Outcome {
     pub steered: bool,
     pub rng_draws: u8,
     pub peer_avoidance_slot: Option<u16>,
+    pub damage_transition: Option<Model9DamageTransition>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Model9DamageTransition {
+    Reaction { attacker_slot: u16 },
+    PreKill { attacker_slot: u16 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Model9Action79Error {
     Selector(CampaignSharedFamilyError),
     InvalidChildChain { source_slot: u16, child_slot: u16 },
-    UnsupportedLiveDamageReaction { source_slot: u16, damage_owner: u16 },
-    UnsupportedDeathTransition { source_slot: u16, damage_owner: u16 },
+    InvalidDamageTarget { source_slot: u16, target_slot: u16 },
+    UnsupportedReactionIdle { source_slot: u16 },
     UnsupportedAllCandidatesBlocked { source_slot: u16 },
 }
 
@@ -408,19 +417,16 @@ impl fmt::Display for Model9Action79Error {
                 formatter,
                 "model-9 source slot {source_slot} has invalid child-chain slot {child_slot}"
             ),
-            Self::UnsupportedLiveDamageReaction {
+            Self::InvalidDamageTarget {
                 source_slot,
-                damage_owner,
+                target_slot,
             } => write!(
                 formatter,
-                "model-9 source slot {source_slot} received live damage from {damage_owner}; remc2 sub_1EEE0 is not admitted"
+                "model-9 source slot {source_slot} has invalid damage target slot {target_slot}"
             ),
-            Self::UnsupportedDeathTransition {
-                source_slot,
-                damage_owner,
-            } => write!(
+            Self::UnsupportedReactionIdle { source_slot } => write!(
                 formatter,
-                "model-9 source slot {source_slot} would enter action 76 after damage from {damage_owner}"
+                "model-9 source slot {source_slot} reached the unimplemented action-74 target scan"
             ),
             Self::UnsupportedAllCandidatesBlocked { source_slot } => write!(
                 formatter,
@@ -428,6 +434,114 @@ impl fmt::Display for Model9Action79Error {
             ),
         }
     }
+}
+
+fn settle_model9_after_damage<W: FlightWorld>(entity: &mut EntitySnapshot, world: &W) {
+    let ground = world.ground_height(entity.position);
+    if entity.position.z > ground {
+        entity.position.z = entity.position.z.wrapping_sub(128);
+    }
+    if entity.position.z <= ground {
+        entity.position.z = ground;
+    }
+    entity.set_position(entity.position);
+}
+
+fn apply_model9_reaction_pose(
+    entity: &mut EntitySnapshot,
+    target: &EntitySnapshot,
+    reaction_pose: ParticlePose,
+) {
+    if entity.source_id == target.source_id {
+        entity.set_source_action(MODEL9_ACTION_MOVEMENT);
+        return;
+    }
+    entity.set_actual_speed(0);
+    entity.particle_parameter_index = Some(202);
+    entity.record[94..96].copy_from_slice(&202_u16.to_le_bytes());
+    entity.record[96] = 0;
+    entity.record[97] = reaction_pose.animation_limit;
+    entity.record[86..88].copy_from_slice(&reaction_pose.array_yaw.to_le_bytes());
+    entity.record[88..90].copy_from_slice(&reaction_pose.array_pitch.to_le_bytes());
+    entity.record[90..92].copy_from_slice(&reaction_pose.array_roll.to_le_bytes());
+    entity.record[92..94].copy_from_slice(&reaction_pose.array_fov.to_le_bytes());
+    entity.record[69] = target.class;
+    entity.record[70] = target.model;
+}
+
+fn consume_model9_damage<W: FlightWorld>(
+    entity: &mut EntitySnapshot,
+    world: &W,
+    entities: &[EntitySnapshot],
+    reaction_pose: ParticlePose,
+) -> std::result::Result<Option<Model9DamageTransition>, Model9Action79Error> {
+    let mut damage_owner = entity.source_upkeep_word_62();
+    let mut damage_seen = damage_owner != 0;
+    if damage_seen {
+        entity.set_life(entity.life.wrapping_sub(entity.source_upkeep_payload()));
+        entity.clear_source_upkeep_owner();
+    } else {
+        damage_owner = 0;
+    }
+    entity.set_damage_result_words(0, damage_owner);
+
+    let mut child_slot = entity.word_34();
+    let mut visited = 0_usize;
+    while child_slot != 0 {
+        let child = entities
+            .get(usize::from(child_slot))
+            .filter(|child| child.active && child.index == child_slot)
+            .ok_or(Model9Action79Error::InvalidChildChain {
+                source_slot: entity.index,
+                child_slot,
+            })?;
+        if child.life < entity.life {
+            entity.set_life(child.life);
+            damage_owner = child.word_26();
+            entity.set_damage_result_words(0, damage_owner);
+            damage_seen = true;
+            break;
+        }
+        child_slot = child.word_34();
+        visited += 1;
+        if visited >= entities.len() {
+            return Err(Model9Action79Error::InvalidChildChain {
+                source_slot: entity.index,
+                child_slot,
+            });
+        }
+    }
+
+    let transition = if entity.life < 0 {
+        entity.set_damage_result_words(damage_owner, damage_owner);
+        entity.set_source_action(MODEL9_ACTION_PRE_KILL);
+        Some(Model9DamageTransition::PreKill {
+            attacker_slot: damage_owner,
+        })
+    } else if damage_seen {
+        entity.record[154..156].copy_from_slice(&damage_owner.to_le_bytes());
+        entity.set_source_action(MODEL9_ACTION_REACTION);
+        Some(Model9DamageTransition::Reaction {
+            attacker_slot: damage_owner,
+        })
+    } else {
+        None
+    };
+
+    if transition.is_some() {
+        settle_model9_after_damage(entity, world);
+    }
+    if matches!(transition, Some(Model9DamageTransition::Reaction { .. })) {
+        let target = entities
+            .get(usize::from(damage_owner))
+            .filter(|target| target.active && target.index == damage_owner)
+            .ok_or(Model9Action79Error::InvalidDamageTarget {
+                source_slot: entity.index,
+                target_slot: damage_owner,
+            })?;
+        apply_model9_reaction_pose(entity, target, reaction_pose);
+    }
+    Ok(transition)
 }
 
 impl std::error::Error for Model9Action79Error {}
@@ -544,68 +658,26 @@ fn step_model9_source_movement<W: FlightWorld>(
 ///
 /// `entities` is the immutable callback-start snapshot. It supplies the
 /// source child chain and the ascending model list used by the peer-avoidance
-/// overwrite. The numeric scheduler still owns the phase epilogue. Live
-/// damage and all-candidates-blocked paths fail after their source prelude
-/// because their downstream `sub_1EEE0`/global bookkeeping is not admitted.
+/// overwrite. The numeric scheduler still owns the phase epilogue. Damage
+/// enters the real reaction/pre-kill selector before movement; only the
+/// all-candidates-blocked global bookkeeping remains fail-closed.
 pub(super) fn step_model9_action79<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
     stage_target: Position,
     entities: &[EntitySnapshot],
+    reaction_pose: ParticlePose,
 ) -> std::result::Result<Model9Action79Outcome, Model9Action79Error> {
     require_selector(
         entity,
         (MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_RAW_MOVEMENT),
     )?;
 
-    let mut damage_owner = entity.source_upkeep_word_62();
-    let mut damage_seen = damage_owner != 0;
-    if damage_seen {
-        entity.set_life(entity.life.wrapping_sub(entity.source_upkeep_payload()));
-        entity.clear_source_upkeep_owner();
-    } else {
-        damage_owner = 0;
-    }
-    entity.record[42..44].copy_from_slice(&damage_owner.to_le_bytes());
-
-    let mut child_slot = entity.word_34();
-    let mut visited = 0_usize;
-    while child_slot != 0 {
-        let child = entities
-            .get(usize::from(child_slot))
-            .filter(|child| child.active && child.index == child_slot)
-            .ok_or(Model9Action79Error::InvalidChildChain {
-                source_slot: entity.index,
-                child_slot,
-            })?;
-        if child.life < entity.life {
-            entity.set_life(child.life);
-            damage_owner = child.word_26();
-            entity.record[42..44].copy_from_slice(&damage_owner.to_le_bytes());
-            damage_seen = true;
-            break;
-        }
-        child_slot = child.word_34();
-        visited += 1;
-        if visited >= entities.len() {
-            return Err(Model9Action79Error::InvalidChildChain {
-                source_slot: entity.index,
-                child_slot,
-            });
-        }
-    }
-
-    if entity.life < 0 {
-        entity.record[40..42].copy_from_slice(&damage_owner.to_le_bytes());
-        return Err(Model9Action79Error::UnsupportedDeathTransition {
-            source_slot: entity.index,
-            damage_owner,
-        });
-    }
-    if damage_seen {
-        return Err(Model9Action79Error::UnsupportedLiveDamageReaction {
-            source_slot: entity.index,
-            damage_owner,
+    if let Some(damage_transition) = consume_model9_damage(entity, world, entities, reaction_pose)?
+    {
+        return Ok(Model9Action79Outcome {
+            damage_transition: Some(damage_transition),
+            ..Model9Action79Outcome::default()
         });
     }
 
@@ -664,6 +736,48 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         }
     }
     Ok(outcome)
+}
+
+/// Port the package-reachable prefix of remc2 `sub_20940`: consume another
+/// hit while the Skeleton is reacting, or preserve the exact initial
+/// awareness/cooldown branch. The later target-family scan remains visibly
+/// fail-closed until its downstream creature-consumption behavior is shared.
+pub(super) fn step_model9_action74<W: FlightWorld>(
+    entity: &mut EntitySnapshot,
+    world: &W,
+    entities: &[EntitySnapshot],
+    movement_pose: ParticlePose,
+    reaction_pose: ParticlePose,
+) -> std::result::Result<Option<Model9DamageTransition>, Model9Action79Error> {
+    require_selector(entity, (MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_REACTION))?;
+    if let Some(transition) = consume_model9_damage(entity, world, entities, reaction_pose)? {
+        return Ok(Some(transition));
+    }
+
+    let timer = entity.source_dword_10();
+    if timer < 0 {
+        entity.set_source_dword_10(timer.wrapping_add(1));
+        if timer == -1 {
+            entity.particle_parameter_index = Some(MODEL9_MOVEMENT_PARTICLE);
+            entity.record[94..96].copy_from_slice(&MODEL9_MOVEMENT_PARTICLE.to_le_bytes());
+            entity.record[96] = 0;
+            entity.record[97] = movement_pose.animation_limit;
+            entity.record[86..88].copy_from_slice(&movement_pose.array_yaw.to_le_bytes());
+            entity.record[88..90].copy_from_slice(&movement_pose.array_pitch.to_le_bytes());
+            entity.record[90..92].copy_from_slice(&movement_pose.array_roll.to_le_bytes());
+            entity.record[92..94].copy_from_slice(&movement_pose.array_fov.to_le_bytes());
+            entity.record[74] = 0;
+            entity.set_source_dword_10(MODEL9_MOVEMENT_COUNTDOWN);
+        }
+        return Ok(None);
+    }
+    if entity.record[61] != 0 {
+        entity.set_source_dword_10(-50);
+        return Ok(None);
+    }
+    Err(Model9Action79Error::UnsupportedReactionIdle {
+        source_slot: entity.index,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -984,6 +1098,10 @@ mod tests {
         let mut entities = vec![entity(0, 0, 0); 95];
         entities[usize::from(source.index)] = source.clone();
         entities[usize::from(peer_index)] = peer;
+        let mut attacker = entity(3, 0, 0);
+        attacker.index = 44;
+        attacker.source_id = 44;
+        entities[44] = attacker;
 
         let outcome = step_model9_action79(
             &mut source,
@@ -994,6 +1112,13 @@ mod tests {
                 z: moved.z,
             },
             &entities,
+            ParticlePose {
+                animation_limit: 1,
+                array_yaw: 0,
+                array_pitch: 0,
+                array_roll: 0,
+                array_fov: 0,
+            },
         )
         .unwrap();
         assert_eq!(source.position, moved);
@@ -1008,29 +1133,35 @@ mod tests {
                 steered: true,
                 rng_draws: 2,
                 peer_avoidance_slot: Some(94),
+                damage_transition: None,
             }
         );
 
         let mut damaged = entities[usize::from(source.index)].clone();
         damaged.record[98..102].copy_from_slice(&7_i32.to_le_bytes());
         damaged.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
-        let error = step_model9_action79(
+        let outcome = step_model9_action79(
             &mut damaged,
             &Model9World,
             Position { x: 0, y: 0, z: 0 },
             &entities,
+            ParticlePose {
+                animation_limit: 1,
+                array_yaw: 0,
+                array_pitch: 0,
+                array_roll: 0,
+                array_fov: 0,
+            },
         )
-        .unwrap_err();
+        .unwrap();
         assert_eq!(
-            error,
-            Model9Action79Error::UnsupportedLiveDamageReaction {
-                source_slot: 93,
-                damage_owner: 44,
-            }
+            outcome.damage_transition,
+            Some(Model9DamageTransition::Reaction { attacker_slot: 44 })
         );
         assert_eq!(damaged.life, 293);
         assert_eq!(damaged.source_upkeep_word_62(), 0);
         assert_eq!(damaged.word_26(), 44);
+        assert_eq!(damaged.action, MODEL9_ACTION_REACTION);
     }
 
     #[test]

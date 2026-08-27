@@ -9520,7 +9520,7 @@ impl Level2ResetSession {
                         && matches!(
                             (entity.class, entity.action),
                             (2, 0 | 3 | 21)
-                                | (5, 31 | 72 | 79 | 232)
+                                | (5, 31 | 72 | 74 | 76 | 77 | 79 | 232)
                                 | (10, 68 | 69)
                                 | (11, 0 | 1 | 16 | 32)
                                 | (14, 6)
@@ -11728,42 +11728,20 @@ impl Level2ResetSession {
             })
             .map(|source| source.action)
             .ok_or_else(|| format!("model-9 callback lost source slot {source_slot}"))?;
-        if action == 79 {
-            return self.step_imported_model9_action79(source_slot);
+        match action {
+            79 => return self.step_imported_model9_action79(source_slot),
+            74 => return self.step_imported_model9_action74(source_slot),
+            76 => return self.step_imported_model9_pre_kill(source_slot),
+            77 => return self.step_imported_model9_kill(source_slot),
+            72 => {}
+            _ => {
+                return Err(format!(
+                    "model-9 handler rejects action {action} at source slot {source_slot}"
+                ));
+            }
         }
-        if action != 72 {
-            return Err(format!(
-                "model-9 handler rejects action {action} at source slot {source_slot}"
-            ));
-        }
-        let particle = self
-            .session
-            .definition
-            .presentation
-            .particles
-            .get(201)
-            .copied()
-            .ok_or_else(|| "model-9 transition needs presentation particle 201".to_owned())?;
-        let animation_limit = campaign_shared_families::particle_animation_limit(
-            particle.render_mode,
-        )
-        .ok_or_else(|| {
-            format!(
-                "model-9 particle 201 render mode {} has no remc2 animation limit",
-                particle.render_mode
-            )
-        })?;
-        let pose = campaign_shared_families::ParticlePose {
-            animation_limit,
-            array_yaw: i16::try_from(particle.rotation_speed / 2)
-                .map_err(|_| "model-9 particle 201 yaw exceeds i16".to_owned())?,
-            array_pitch: i16::try_from(particle.speed / 2)
-                .map_err(|_| "model-9 particle 201 pitch exceeds i16".to_owned())?,
-            array_roll: i16::try_from(particle.speed / 2)
-                .map_err(|_| "model-9 particle 201 roll exceeds i16".to_owned())?,
-            array_fov: i16::try_from(particle.rotation_speed / 2)
-                .map_err(|_| "model-9 particle 201 fov exceeds i16".to_owned())?,
-        };
+
+        let pose = self.model9_particle_pose(201)?;
         let _source = self
             .session
             .state
@@ -11842,10 +11820,47 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    fn model9_particle_pose(
+        &self,
+        particle_index: usize,
+    ) -> std::result::Result<campaign_shared_families::ParticlePose, String> {
+        let particle = self
+            .session
+            .definition
+            .presentation
+            .particles
+            .get(particle_index)
+            .copied()
+            .ok_or_else(|| {
+                format!("model-9 transition needs presentation particle {particle_index}")
+            })?;
+        let animation_limit = campaign_shared_families::particle_animation_limit(
+            particle.render_mode,
+        )
+        .ok_or_else(|| {
+            format!(
+                "model-9 particle {particle_index} render mode {} has no remc2 animation limit",
+                particle.render_mode,
+            )
+        })?;
+        Ok(campaign_shared_families::ParticlePose {
+            animation_limit,
+            array_yaw: i16::try_from(particle.rotation_speed / 2)
+                .map_err(|_| format!("model-9 particle {particle_index} yaw exceeds i16"))?,
+            array_pitch: i16::try_from(particle.speed / 2)
+                .map_err(|_| format!("model-9 particle {particle_index} pitch exceeds i16"))?,
+            array_roll: i16::try_from(particle.speed / 2)
+                .map_err(|_| format!("model-9 particle {particle_index} roll exceeds i16"))?,
+            array_fov: i16::try_from(particle.rotation_speed / 2)
+                .map_err(|_| format!("model-9 particle {particle_index} fov exceeds i16"))?,
+        })
+    }
+
     fn step_imported_model9_action79(
         &mut self,
         source_slot: u16,
     ) -> std::result::Result<(), String> {
+        let reaction_pose = self.model9_particle_pose(202)?;
         let (stage_index, callback_start_entities) = {
             let live = &self.session.state.live;
             let source = &live.economy.entities[usize::from(source_slot)];
@@ -11883,6 +11898,7 @@ impl Level2ResetSession {
                 &live.terrain,
                 stage_target,
                 &callback_start_entities,
+                reaction_pose,
             )
             .map_err(|error| error.to_string())?;
             source.position
@@ -11902,6 +11918,142 @@ impl Level2ResetSession {
             .map_err(|error| {
                 format!("model-9 source slot {source_slot} map sync failed: {error}")
             })?;
+        Ok(())
+    }
+
+    fn step_imported_model9_action74(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
+        let movement_pose = self.model9_particle_pose(201)?;
+        let reaction_pose = self.model9_particle_pose(202)?;
+        let callback_start_entities = self.session.state.live.economy.entities.clone();
+        let position = {
+            let live = &mut self.session.state.live;
+            let source = &mut live.economy.entities[usize::from(source_slot)];
+            campaign_shared_families::step_model9_action74(
+                source,
+                &live.terrain,
+                &callback_start_entities,
+                movement_pose,
+                reaction_pose,
+            )
+            .map_err(|error| error.to_string())?;
+            source.position
+        };
+        self.session
+            .state
+            .live
+            .economy
+            .economy
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .map_err(|error| {
+                format!("model-9 source slot {source_slot} map sync failed: {error}")
+            })?;
+        Ok(())
+    }
+
+    fn step_imported_model9_pre_kill(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
+        let mut child_slot =
+            self.session.state.live.economy.entities[usize::from(source_slot)].word_34();
+        let mut visited = 0_usize;
+        while child_slot != 0 {
+            let child = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get_mut(usize::from(child_slot))
+                .filter(|child| child.active && child.index == child_slot)
+                .ok_or_else(|| {
+                    format!(
+                        "model-9 source slot {source_slot} has invalid pre-kill child {child_slot}"
+                    )
+                })?;
+            child.set_source_action(77);
+            child_slot = child.word_34();
+            visited += 1;
+            if visited >= self.session.state.live.economy.entities.len() {
+                return Err(format!(
+                    "model-9 source slot {source_slot} has a cyclic pre-kill child chain"
+                ));
+            }
+        }
+        self.session.state.live.economy.entities[usize::from(source_slot)].set_source_action(77);
+        Ok(())
+    }
+
+    fn step_imported_model9_kill(&mut self, source_slot: u16) -> std::result::Result<(), String> {
+        let source = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(source_slot))
+            .filter(|source| {
+                source.active
+                    && source.index == source_slot
+                    && source.class == 5
+                    && source.model == 9
+                    && source.action == 77
+            })
+            .cloned()
+            .ok_or_else(|| format!("model-9 kill callback lost source slot {source_slot}"))?;
+        if source.phase & 7 != 0 {
+            return Ok(());
+        }
+
+        let source_rng = if source.mana > 0 {
+            campaign_shared_families::next_source_rng16(source.entity_rng)
+        } else {
+            source.entity_rng
+        };
+        if source.mana > 0 {
+            let terrain = &self.session.state.live.terrain;
+            let _ = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .spawn_mana_sphere_from_death(
+                    source_slot,
+                    source.position,
+                    source.yaw,
+                    source_rng,
+                    source.mana,
+                    source.source_player_entity_index(),
+                    terrain,
+                );
+        }
+        if source.control_flags & 0x0010_0000 == 0 {
+            let _ = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .spawn_death_burst_from_death_with_id(
+                    source_slot,
+                    source.source_id,
+                    source.position,
+                );
+        }
+        let source = &mut self.session.state.live.economy.entities[usize::from(source_slot)];
+        source.set_entity_rng(source_rng);
+        source.set_source_player_entity_index(0);
+        source.disable_drawing();
         Ok(())
     }
 
@@ -17476,6 +17628,253 @@ mod tests {
                 baseline_player.record_bytes()
             );
         }
+    }
+
+    #[test]
+    fn cf14_level3_skeleton_damage_death_and_reclaim_follow_source_boundaries() {
+        const SKELETON_SLOT: u16 = 93;
+        const FIREBALL_DAMAGE: u16 = 500;
+
+        fn skeleton(campaign: &CampaignSession) -> &EntitySnapshot {
+            &campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .entities[usize::from(SKELETON_SLOT)]
+        }
+
+        fn apply_hit(campaign: &mut CampaignSession, owner_entity_index: u16) {
+            let position = skeleton(campaign).position;
+            campaign
+                .level2_compatibility_mut()
+                .apply_level2_class10_model0_damage(
+                    level2_dynamic_economy::Level2Class10Model0Step {
+                        live: true,
+                        first_impact: true,
+                        damage_pulse: true,
+                        owner_entity_index,
+                        payload: FIREBALL_DAMAGE,
+                        position,
+                    },
+                );
+            assert_eq!(
+                skeleton(campaign).source_upkeep_word_62(),
+                owner_entity_index
+            );
+            assert_eq!(skeleton(campaign).source_upkeep_payload(), 500);
+        }
+
+        fn step(campaign: &mut CampaignSession) {
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            assert!(
+                campaign
+                    .level2_compatibility()
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "Skeleton lifecycle dispatch errors: {:?}",
+                campaign.level2_compatibility().dispatch_events()
+            );
+        }
+
+        let package = level_three_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("qualified Level 3 descriptor opens");
+        let baseline_hash = campaign.state_hash();
+        let player_entity_index = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .entity_index;
+        assert_eq!(
+            (skeleton(&campaign).class, skeleton(&campaign).model),
+            (5, 9)
+        );
+        assert_eq!(skeleton(&campaign).life, 1_000);
+        assert_eq!(skeleton(&campaign).mana, 500);
+
+        for _ in 0..24 {
+            if skeleton(&campaign).action == 79 {
+                break;
+            }
+            step(&mut campaign);
+        }
+        assert_eq!(
+            skeleton(&campaign).action,
+            79,
+            "the real Level 3 countdown reaches its source movement callback"
+        );
+
+        let first_phase = skeleton(&campaign).phase;
+        let sphere_count = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .spheres()
+            .len();
+        let burst_count = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .death_bursts()
+            .len();
+        apply_hit(&mut campaign, player_entity_index);
+        step(&mut campaign);
+        let first_hit = skeleton(&campaign);
+        assert_eq!(first_hit.life, 500);
+        assert_eq!(first_hit.action, 74);
+        assert_eq!(first_hit.word_26(), player_entity_index);
+        assert_eq!(first_hit.particle_parameter_index, Some(202));
+        assert_eq!(first_hit.phase, first_phase.wrapping_add(1));
+        assert_eq!(first_hit.source_upkeep_word_62(), 0);
+        assert!(!first_hit.drawing_disabled());
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .spheres()
+                .len(),
+            sphere_count,
+            "a nonlethal hit must not create death outputs"
+        );
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .death_bursts()
+                .len(),
+            burst_count
+        );
+
+        apply_hit(&mut campaign, player_entity_index);
+        let second_phase = skeleton(&campaign).phase;
+        step(&mut campaign);
+        assert_eq!(
+            (
+                skeleton(&campaign).life,
+                skeleton(&campaign).action,
+                skeleton(&campaign).source_upkeep_word_62(),
+                skeleton(&campaign).source_upkeep_payload(),
+                skeleton(&campaign).phase,
+            ),
+            (0, 74, 0, 500, second_phase.wrapping_add(1))
+        );
+        assert!(!skeleton(&campaign).drawing_disabled());
+
+        apply_hit(&mut campaign, player_entity_index);
+        let lethal_phase = skeleton(&campaign).phase;
+        step(&mut campaign);
+        assert_eq!(skeleton(&campaign).life, -500);
+        assert_eq!(skeleton(&campaign).action, 76);
+        assert_eq!(skeleton(&campaign).word_24(), player_entity_index);
+        assert_eq!(skeleton(&campaign).word_26(), player_entity_index);
+        assert_eq!(skeleton(&campaign).phase, lethal_phase.wrapping_add(1));
+        assert!(!skeleton(&campaign).drawing_disabled());
+
+        let pre_kill_phase = skeleton(&campaign).phase;
+        step(&mut campaign);
+        assert_eq!(skeleton(&campaign).action, 77);
+        assert_eq!(skeleton(&campaign).phase, pre_kill_phase.wrapping_add(1));
+
+        let source_rng_before_kill = skeleton(&campaign).entity_rng;
+        let mut kill_phase = None;
+        for _ in 0..8 {
+            let phase_before = skeleton(&campaign).phase;
+            step(&mut campaign);
+            if skeleton(&campaign).drawing_disabled() {
+                kill_phase = Some(phase_before);
+                break;
+            }
+            assert_eq!(skeleton(&campaign).action, 77);
+            assert_eq!(skeleton(&campaign).phase, phase_before.wrapping_add(1));
+            assert_eq!(
+                campaign
+                    .level2_compatibility()
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .spheres()
+                    .len(),
+                sphere_count
+            );
+        }
+        let kill_phase = kill_phase.expect("action 77 reaches its eight-phase kill cadence");
+        assert_eq!(kill_phase & 7, 0);
+        let hidden = skeleton(&campaign);
+        assert!(
+            hidden.active,
+            "hide is retained for the rest of the source pass"
+        );
+        assert_eq!(hidden.action, 77);
+        assert_eq!(hidden.phase, kill_phase.wrapping_add(1));
+        assert_eq!(
+            hidden.entity_rng,
+            campaign_shared_families::next_source_rng16(source_rng_before_kill)
+        );
+        assert_eq!(hidden.source_player_entity_index(), 0);
+
+        let economy = &campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy;
+        assert_eq!(economy.spheres().len(), sphere_count + 1);
+        let sphere = economy.spheres().last().expect("Skeleton mana sphere");
+        assert_eq!(sphere.mana, 500);
+        assert_eq!(sphere.owner_entity_index, 0);
+        assert_eq!(economy.death_bursts().len(), burst_count + 1);
+        let burst = economy.death_bursts().last().expect("Skeleton death burst");
+        assert_eq!(burst.parent_entity_index, SKELETON_SLOT);
+        assert_eq!(burst.id_entity_index, SKELETON_SLOT);
+
+        step(&mut campaign);
+        let reclaimed = skeleton(&campaign);
+        assert!(!reclaimed.active);
+        assert_eq!(reclaimed.class, 0);
+        assert!(
+            !campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&SKELETON_SLOT)
+        );
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), baseline_hash);
+        assert_eq!(
+            (skeleton(&campaign).class, skeleton(&campaign).model),
+            (5, 9)
+        );
+        assert_eq!(skeleton(&campaign).life, 1_000);
+        assert_eq!(skeleton(&campaign).action, 72);
     }
 
     #[test]

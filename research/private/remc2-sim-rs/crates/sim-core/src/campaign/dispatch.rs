@@ -318,7 +318,7 @@ compiled_registry! {
         (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
         (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
         (ArcherFamily, 5, [33, 34, 35, 36, 37, 38, 39]);
-        (Model9Family, 5, [72, 73]);
+        (Model9Family, 5, [72, 73, 74, 76, 77]);
         (BuilderFamily, 5, [96, 97, 98, 99, 100, 101, 102, 103]);
         (VillagerFamily, 5, [104]);
         (BuilderVillagerPostBuild, 5, [105]);
