@@ -235,6 +235,7 @@ impl Level2EconomyState {
             }
             let part = AuthoredDragonPart {
                 source_entity_index: part_slot,
+                root_authored_index: source.authored_index,
                 entity_id: source_entity_index,
                 entity_rng,
                 // The body row is a raw root copy. `sub_4B240` uses

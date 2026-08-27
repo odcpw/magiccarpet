@@ -34,6 +34,43 @@ pub(crate) struct Mc2LevelDefinition {
 }
 
 impl Mc2LevelDefinition {
+    pub(crate) const fn creature_for_model(model: u8) -> Option<CreatureKind> {
+        match model {
+            0 => Some(CreatureKind::Dragon),
+            1 => Some(CreatureKind::Goat),
+            2 => Some(CreatureKind::Bee),
+            3 => Some(CreatureKind::Worm),
+            4 => Some(CreatureKind::Archer),
+            9 => Some(CreatureKind::Skeleton),
+            12 => Some(CreatureKind::Builder),
+            13 => Some(CreatureKind::Villager),
+            14 => Some(CreatureKind::Trader),
+            19 => Some(CreatureKind::Firefly),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn creature_for_reset_selector(
+        class: u8,
+        model: u8,
+        action: u8,
+    ) -> Option<CreatureKind> {
+        if class != 5 || matches!(action, 180 | 232 | 234) {
+            return None;
+        }
+        Self::creature_for_model(model)
+    }
+
+    pub(crate) const fn creature_for_house_resident(model: u8, action: u8) -> Option<CreatureKind> {
+        match (model, action) {
+            (4, 33) => Some(CreatureKind::Archer),
+            (12, 97) => Some(CreatureKind::Builder),
+            (13, 105) => Some(CreatureKind::Villager),
+            (14, 113) => Some(CreatureKind::Trader),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn mechanic_for_reset_selector(
         class: u8,
         model: u8,
@@ -131,6 +168,7 @@ impl Mc2LevelDefinition {
                 (5, 3) => Some(CreatureKind::Worm),
                 (5, 4) => Some(CreatureKind::Archer),
                 (5, 9) => Some(CreatureKind::Skeleton),
+                (5, 12) => Some(CreatureKind::Builder),
                 (5, 13) => Some(CreatureKind::Villager),
                 (5, 14) => Some(CreatureKind::Trader),
                 (5, 19) => Some(CreatureKind::Firefly),

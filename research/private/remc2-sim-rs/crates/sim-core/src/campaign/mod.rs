@@ -16,7 +16,7 @@ use crate::{
 pub mod backend;
 pub mod dispatch;
 pub mod journal;
-mod mc2_level_definition;
+pub(crate) mod mc2_level_definition;
 pub mod objectives;
 pub mod schedule;
 #[doc(hidden)]

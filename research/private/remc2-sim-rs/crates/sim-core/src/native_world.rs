@@ -49,6 +49,7 @@ use crate::{
     legacy_terrain::{
         LEGACY_MAP_CELLS, LegacyTerrain, interpolate_cave, interpolate_ground, material_mask,
     },
+    level_definition::CreatureKind,
     level1_mission::{
         ARCHER_BASE_TMAP, ARCHER_LOGICAL_HEIGHT, ARCHER_RENDER_INDEX, ARCHER_RENDER_MODE,
         AuthoredFeature, CASTLE_SPELL_FAMILY, CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH,
@@ -2493,6 +2494,10 @@ pub struct AuthoredDragonRuntime {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthoredDragonPart {
     pub source_entity_index: u16,
+    /// Immutable package record which constructed the Dragon root. The root
+    /// slot may be reclaimed before every body row finishes its own kill
+    /// cadence, so multipart semantic identity cannot depend on a live root.
+    pub root_authored_index: u16,
     pub entity_id: u16,
     pub entity_rng: u16,
     pub parent_entity_index: u16,
@@ -2554,6 +2559,10 @@ pub struct Level2AuthoredClass5Model3State {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredClass5Model3Child {
     pub source_entity_index: u16,
+    /// Immutable package record which constructed the model-3 root. Linked
+    /// children remain scheduled after the root can enter its hide/reclaim
+    /// tail, so this provenance belongs to each child at construction.
+    pub root_authored_index: u16,
     pub entity_rng: u16,
     pub parent_entity_index: u16,
     pub word_0x32: u16,
@@ -2665,6 +2674,10 @@ pub struct Level2HouseResidentSource {
     pub parent_house_entity_index: u16,
     pub owner_entity_index: u16,
     pub attacker_entity_index: u16,
+    /// Immutable semantic identity fixed by the house constructor. The raw
+    /// model/action fields remain the MC2 dispatch selectors and may evolve
+    /// independently during the resident lifecycle.
+    pub semantic_kind: CreatureKind,
     pub position: Position,
     pub model: u8,
     pub action: u8,

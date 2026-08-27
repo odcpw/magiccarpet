@@ -196,6 +196,7 @@ impl Level2EconomyState {
             }
             let child = Level2AuthoredClass5Model3Child {
                 source_entity_index: child_slot,
+                root_authored_index: source.authored_index,
                 entity_rng,
                 parent_entity_index: source.source_entity_index,
                 // qmemcpy copies the root's word 0x32; the constructor then

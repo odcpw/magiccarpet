@@ -2962,12 +2962,11 @@ impl Level2EconomyState {
         owner_entity_index: u16,
         request: HouseResidentRequest,
     ) -> Option<u16> {
-        if !matches!(
-            (request.model, request.action),
-            (4, 33) | (12, 97) | (13, 105) | (14, 113)
-        ) {
-            return None;
-        }
+        let semantic_kind =
+            crate::campaign::mc2_level_definition::Mc2LevelDefinition::creature_for_house_resident(
+                request.model,
+                request.action,
+            )?;
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
@@ -2989,6 +2988,7 @@ impl Level2EconomyState {
             parent_house_entity_index,
             owner_entity_index,
             attacker_entity_index: request.attacker_entity_index,
+            semantic_kind,
             position: request.position,
             model: request.model,
             action: request.action,
@@ -7507,6 +7507,7 @@ impl Level2EconomyState {
         }
         for part in &self.authored_dragon_parts {
             hasher.update(part.source_entity_index.to_le_bytes());
+            hasher.update(part.root_authored_index.to_le_bytes());
             hasher.update(part.entity_id.to_le_bytes());
             hasher.update(part.entity_rng.to_le_bytes());
             hasher.update(part.parent_entity_index.to_le_bytes());
@@ -7555,6 +7556,7 @@ impl Level2EconomyState {
         }
         for child in &self.authored_class5_model3_children {
             hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.root_authored_index.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
             hasher.update(child.parent_entity_index.to_le_bytes());
             hasher.update(child.word_0x32.to_le_bytes());
@@ -7666,6 +7668,11 @@ impl Level2EconomyState {
             hasher.update(source.parent_house_entity_index.to_le_bytes());
             hasher.update(source.owner_entity_index.to_le_bytes());
             hasher.update(source.attacker_entity_index.to_le_bytes());
+            let semantic_kind = source.semantic_kind.as_str().as_bytes();
+            hasher.update(b"semantic-creature-v1");
+            hasher.update([u8::try_from(semantic_kind.len())
+                .expect("semantic creature name fits one source byte")]);
+            hasher.update(semantic_kind);
             hasher.update([
                 source.model,
                 source.action,

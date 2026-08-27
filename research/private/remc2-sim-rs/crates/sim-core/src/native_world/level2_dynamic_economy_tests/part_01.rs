@@ -3838,6 +3838,28 @@
             .copied()
             .expect("resident constructor reaches shared Level 2 arena");
         assert_eq!((resident.model, resident.action), (4, 33));
+        assert_eq!(resident.semantic_kind, CreatureKind::Archer);
+        let resident_hash = session.economy().reset_hash();
+        {
+            let resident = session
+                .economy
+                .economy
+                .house_residents
+                .iter_mut()
+                .find(|candidate| candidate.source_entity_index == resident.source_entity_index)
+                .expect("resident semantic identity remains authoritative");
+            resident.semantic_kind = CreatureKind::Builder;
+        }
+        assert_ne!(session.economy().reset_hash(), resident_hash);
+        session
+            .economy
+            .economy
+            .house_residents
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == resident.source_entity_index)
+            .expect("resident semantic identity remains restorable")
+            .semantic_kind = CreatureKind::Archer;
+        assert_eq!(session.economy().reset_hash(), resident_hash);
         assert_eq!(
             session.economy().source_owner(resident.source_entity_index),
             resident.owner_entity_index

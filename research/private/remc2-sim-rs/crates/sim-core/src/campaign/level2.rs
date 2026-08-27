@@ -111,33 +111,62 @@ enum Level2EpiloguePolicy {
 
 fn validate_semantic_creature_dispatch(
     source_slot: u16,
-    creature_kind: Option<CreatureKind>,
+    creature_identity: Option<crate::campaign::source_arena::CreatureRuntimeIdentity>,
     handler: ExistingHandler,
 ) -> std::result::Result<(), String> {
-    match (creature_kind, handler) {
-        (Some(kind), actual) => {
-            let expected = match kind {
-                CreatureKind::Dragon => Some(&[ExistingHandler::DragonFamily][..]),
-                CreatureKind::Goat => Some(&[ExistingHandler::GoatFamily][..]),
-                CreatureKind::Bee => Some(&[ExistingHandler::BeeFamily][..]),
-                CreatureKind::Worm => Some(&[ExistingHandler::MultipartFamily][..]),
-                CreatureKind::Archer => Some(&[ExistingHandler::ArcherFamily][..]),
-                CreatureKind::Skeleton => Some(&[ExistingHandler::Model9Family][..]),
-                CreatureKind::Villager => Some(
+    match (creature_identity, handler) {
+        (Some(identity), actual) => {
+            if identity.role == crate::campaign::source_arena::CreatureRuntimeRole::Root
+                && identity.raw_model.and_then(
+                    crate::campaign::mc2_level_definition::Mc2LevelDefinition::creature_for_model,
+                ) != Some(identity.kind)
+            {
+                return Err(format!(
+                    "creature source slot {source_slot} is semantic {}, but the MC2 row carries raw model {:?}",
+                    identity.kind.as_str(),
+                    identity.raw_model
+                ));
+            }
+            let expected = match (identity.kind, identity.role) {
+                (
+                    CreatureKind::Dragon,
+                    crate::campaign::source_arena::CreatureRuntimeRole::MultipartPart,
+                ) => Some(
+                    &[
+                        ExistingHandler::MultipartFamily,
+                        ExistingHandler::DragonFamily,
+                    ][..],
+                ),
+                (_, crate::campaign::source_arena::CreatureRuntimeRole::MultipartPart) => {
+                    Some(&[ExistingHandler::MultipartFamily][..])
+                }
+                (CreatureKind::Dragon, _) => Some(&[ExistingHandler::DragonFamily][..]),
+                (CreatureKind::Goat, _) => Some(&[ExistingHandler::GoatFamily][..]),
+                (CreatureKind::Bee, _) => Some(&[ExistingHandler::BeeFamily][..]),
+                (CreatureKind::Worm, _) => Some(&[ExistingHandler::MultipartFamily][..]),
+                (CreatureKind::Archer, _) => Some(&[ExistingHandler::ArcherFamily][..]),
+                (CreatureKind::Skeleton, _) => Some(&[ExistingHandler::Model9Family][..]),
+                (CreatureKind::Builder, _) => Some(
+                    &[
+                        ExistingHandler::BuilderFamily,
+                        ExistingHandler::BuilderVillagerPostBuild,
+                    ][..],
+                ),
+                (CreatureKind::Villager, _) => Some(
                     &[
                         ExistingHandler::VillagerFamily,
                         ExistingHandler::BuilderVillagerPostBuild,
                     ][..],
                 ),
-                CreatureKind::Trader => Some(&[ExistingHandler::TraderFamily][..]),
-                CreatureKind::Firefly => Some(&[ExistingHandler::FireflyFamily][..]),
+                (CreatureKind::Trader, _) => Some(&[ExistingHandler::TraderFamily][..]),
+                (CreatureKind::Firefly, _) => Some(&[ExistingHandler::FireflyFamily][..]),
             };
             if expected.is_some_and(|handlers| handlers.contains(&actual)) {
                 Ok(())
             } else {
                 Err(format!(
                     "creature source slot {source_slot} is semantic {}, but the MC2 selector resolved {actual:?}",
-                    kind.as_str()
+                    identity.kind.as_str()
                 ))
             }
         }
@@ -149,6 +178,7 @@ fn validate_semantic_creature_dispatch(
             | ExistingHandler::MultipartFamily
             | ExistingHandler::ArcherFamily
             | ExistingHandler::Model9Family
+            | ExistingHandler::BuilderFamily
             | ExistingHandler::VillagerFamily
             | ExistingHandler::BuilderVillagerPostBuild
             | ExistingHandler::TraderFamily
@@ -4198,33 +4228,19 @@ impl Level2ResetSession {
         self.session.definition = Arc::new(definition);
     }
 
-    pub(crate) fn creature_kind_for_source_slot(&self, source_slot: u16) -> Option<CreatureKind> {
-        let authored_record = self
-            .session
-            .state
-            .live
-            .economy
-            .economy
-            .authored_class5()
-            .iter()
-            .find(|source| source.source_entity_index == source_slot)
-            .map(|source| source.authored_index)
-            .or_else(|| {
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .economy
-                    .bee_creatures()
-                    .iter()
-                    .find(|source| source.source_entity_index == source_slot)
-                    .and_then(|source| source.authored_index())
-            });
-        if let Some(authored_record) = authored_record {
-            self.session
-                .definition
-                .creature_kind_for_authored_record(authored_record)
-        } else {
+    pub(crate) fn creature_identity_for_source_slot(
+        &self,
+        source_slot: u16,
+    ) -> Option<crate::campaign::source_arena::CreatureRuntimeIdentity> {
+        let identity = self.session.state.live.economy.creature_runtime_identity(
+            source_slot,
+            self.session.definition.initial_creature_bindings(),
+            self.session.definition.authored_creature_bindings(),
+        )?;
+
+        if let crate::campaign::source_arena::CreatureRootOrigin::MorphSpell { holder_slot } =
+            identity.origin
+        {
             let source = self
                 .session
                 .state
@@ -4233,13 +4249,7 @@ impl Level2ResetSession {
                 .economy
                 .bee_creatures()
                 .iter()
-                .find(|source| {
-                    source.source_entity_index == source_slot
-                        && matches!(source.origin, BeeCreatureOrigin::MorphSpell { .. })
-                })?;
-            let BeeCreatureOrigin::MorphSpell { holder_slot } = source.origin else {
-                return None;
-            };
+                .find(|source| source.source_entity_index == source_slot)?;
             if source.active
                 && !source.drawing_enabled
                 && self
@@ -4250,13 +4260,10 @@ impl Level2ResetSession {
                     .economy
                     .is_deferred_bee_reclaim(source_slot)
             {
-                // DisableEntityDrawing clears the holder relation before a
-                // higher numeric Bee slot can receive its final same-pass
-                // callback. The typed Morph origin remains authoritative only
-                // for this already-queued terminal row.
-                return Some(CreatureKind::Bee);
+                return Some(identity);
             }
-            self.session
+            return self
+                .session
                 .state
                 .live
                 .shared_spells
@@ -4268,8 +4275,26 @@ impl Level2ResetSession {
                         && holder.source_word_96() == source_slot
                         && holder.source_spell_parent_entity_index() == source.parent_entity_index
                 })
-                .map(|_| CreatureKind::Bee)
+                .map(|_| identity);
         }
+
+        Some(identity)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn creature_kind_for_source_slot(&self, source_slot: u16) -> Option<CreatureKind> {
+        self.creature_identity_for_source_slot(source_slot)
+            .map(|identity| identity.kind)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn creature_runtime_census(
+        &self,
+    ) -> crate::campaign::source_arena::CreatureRuntimeCensus {
+        self.session.state.live.economy.creature_runtime_census(
+            self.session.definition.initial_creature_bindings(),
+            self.session.definition.authored_creature_bindings(),
+        )
     }
 
     fn scenery_kind_for_source_slot(&self, source_slot: u16) -> Option<SceneryKind> {
@@ -10654,7 +10679,42 @@ impl Level2ResetSession {
         if self.session.definition.semantic_level().is_none() {
             return Ok(());
         }
-        let semantic_creature = self.creature_kind_for_source_slot(source_slot);
+        let creature_handler = matches!(
+            visit.handler,
+            ExistingHandler::GoatFamily
+                | ExistingHandler::DragonFamily
+                | ExistingHandler::BeeFamily
+                | ExistingHandler::MultipartFamily
+                | ExistingHandler::ArcherFamily
+                | ExistingHandler::Model9Family
+                | ExistingHandler::BuilderFamily
+                | ExistingHandler::VillagerFamily
+                | ExistingHandler::BuilderVillagerPostBuild
+                | ExistingHandler::TraderFamily
+                | ExistingHandler::FireflyFamily
+        );
+        let semantic_creature = match visit.route {
+            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                kind:
+                    Level2DynamicArenaKind::AuthoredClass5
+                    | Level2DynamicArenaKind::BeeCreature
+                    | Level2DynamicArenaKind::HouseResident
+                    | Level2DynamicArenaKind::AuthoredClass5Model3Child
+                    | Level2DynamicArenaKind::AuthoredDragonPart,
+                ..
+            }) => self.creature_identity_for_source_slot(source_slot),
+            Level2SourceRoute::Goat => self.creature_identity_for_source_slot(source_slot),
+            Level2SourceRoute::Imported | Level2SourceRoute::Villager => self
+                .session
+                .state
+                .live
+                .economy
+                .imported_creature_runtime_identity(
+                    source_slot,
+                    self.session.definition.initial_creature_bindings(),
+                ),
+            _ => None,
+        };
         if semantic_creature.is_some()
             || matches!(
                 visit.route,
@@ -10664,6 +10724,7 @@ impl Level2ResetSession {
                     ..
                 })
             )
+            || creature_handler
         {
             validate_semantic_creature_dispatch(source_slot, semantic_creature, visit.handler)?;
         }
@@ -17323,7 +17384,37 @@ mod tests {
                     ..
                 } if *source_slot == archer.source_entity_index
                     && message.contains("semantic archer")
-                    && message.contains("Model9Family")
+                    && message.contains("raw model")
+            )
+        }));
+    }
+
+    #[test]
+    fn semantic_imported_creature_dispatch_rejects_raw_selector_divergence() {
+        let package = level_three_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("real Level 3 descriptor opens");
+        let session = campaign.level2_compatibility_mut();
+        let worm = session
+            .creature_runtime_census()
+            .roots_of_kind(CreatureKind::Worm)
+            .next()
+            .expect("package-imported Worm root has semantic identity");
+        let source =
+            &mut session.session.state.live.economy.entities[usize::from(worm.handle.source_slot)];
+        source.model = 9;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Error {
+                    source_slot,
+                    message,
+                    ..
+                } if *source_slot == worm.handle.source_slot
+                    && message.contains("semantic worm")
+                    && message.contains("raw model")
             )
         }));
     }

@@ -7,12 +7,13 @@
 
 use crate::{
     Position,
+    level_definition::CreatureKind,
     native_world::{
-        EntitySnapshot, Level2DynamicArenaKind, Level2EconomyState,
+        BeeCreatureOrigin, EntitySnapshot, Level2DynamicArenaKind, Level2EconomyState,
         level2_nyphur_source_identity_parts,
     },
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 
 use super::state::{SourceLink, SourceTopology, digest_topology};
@@ -34,6 +35,72 @@ pub(crate) enum SourceEntityView<'a> {
 pub(crate) struct SourceCursorRow {
     pub(crate) handle: SourceEntityHandle,
     pub(crate) kind: Level2DynamicArenaKind,
+}
+
+/// The production boundary which created one live creature root.
+///
+/// This is a read-only semantic view over the existing source arena. It does
+/// not own mutable creature state and therefore cannot drift from the numeric
+/// scheduler, allocator, map chains, or source records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CreatureRootOrigin {
+    InitialPackage,
+    AuthoredRecord {
+        authored_record: u16,
+    },
+    /// Historical producer provenance. This deliberately is not a live
+    /// handle: the producer slot may be reclaimed and reused while the child
+    /// still exists.
+    MorphSpell {
+        holder_slot: u16,
+    },
+    HouseSpawn {
+        house_slot: u16,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CreatureRuntimeRole {
+    Root,
+    MultipartPart,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CreatureRuntimeIdentity {
+    pub(crate) handle: SourceEntityHandle,
+    pub(crate) kind: CreatureKind,
+    pub(crate) root_slot: u16,
+    pub(crate) role: CreatureRuntimeRole,
+    pub(crate) origin: CreatureRootOrigin,
+    /// Current raw MC2 model selector for a root. Multipart rows use their
+    /// root's semantic identity and therefore have no independent model.
+    pub(crate) raw_model: Option<u8>,
+    pub(crate) living: bool,
+}
+
+/// Source-ordered creature roots frozen by a caller for one observation or
+/// UpdateEntities pass. Multipart limbs and projectile children remain owned
+/// by their roots and are deliberately not counted as additional creatures.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(test)]
+pub(crate) struct CreatureRuntimeCensus {
+    entries: Box<[CreatureRuntimeIdentity]>,
+}
+
+#[cfg(test)]
+impl CreatureRuntimeCensus {
+    pub(crate) fn entries(&self) -> &[CreatureRuntimeIdentity] {
+        &self.entries
+    }
+
+    pub(crate) fn roots_of_kind(
+        &self,
+        kind: CreatureKind,
+    ) -> impl Iterator<Item = CreatureRuntimeIdentity> + '_ {
+        self.entries.iter().copied().filter(move |identity| {
+            identity.role == CreatureRuntimeRole::Root && identity.kind == kind
+        })
+    }
 }
 
 /// The single owner of imported source records and dynamic slot sidecars.
@@ -111,6 +178,279 @@ impl SourceArena {
             .get(usize::from(handle.source_slot))
             .filter(|entity| entity.active)
             .map(SourceEntityView::Imported)
+    }
+
+    /// Rebuild the semantic creature-root view from the authoritative live
+    /// carriers. Package selectors are supplied by the immutable MC2 adapter;
+    /// mutable identity and generation always come from this arena.
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn creature_runtime_census(
+        &self,
+        initial_bindings: &BTreeMap<u16, CreatureKind>,
+        authored_bindings: &BTreeMap<u16, CreatureKind>,
+    ) -> CreatureRuntimeCensus {
+        let mut slots = initial_bindings.keys().copied().collect::<BTreeSet<_>>();
+        slots.extend(
+            self.economy
+                .authored_class5()
+                .iter()
+                .map(|source| source.source_entity_index),
+        );
+        slots.extend(
+            self.economy
+                .bee_creatures()
+                .iter()
+                .map(|source| source.source_entity_index),
+        );
+        slots.extend(
+            self.economy
+                .house_residents()
+                .iter()
+                .map(|source| source.source_entity_index),
+        );
+        slots.extend(
+            self.entities
+                .iter()
+                .filter(|source| source.active && source.class == 5 && source.action == 232)
+                .map(|source| source.index),
+        );
+        slots.extend(
+            self.economy
+                .authored_class5_model3_children()
+                .iter()
+                .map(|source| source.source_entity_index),
+        );
+        slots.extend(
+            self.economy
+                .authored_dragon_parts()
+                .iter()
+                .map(|source| source.source_entity_index),
+        );
+
+        CreatureRuntimeCensus {
+            entries: slots
+                .into_iter()
+                .filter_map(|source_slot| {
+                    self.creature_runtime_identity_inner(
+                        source_slot,
+                        initial_bindings,
+                        authored_bindings,
+                        true,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        }
+    }
+
+    /// Resolve one live creature identity without rebuilding the full census.
+    /// Dynamic occupants win over a package row that previously used the same
+    /// numeric slot; the returned handle binds that identity to its generation.
+    #[must_use]
+    pub(crate) fn creature_runtime_identity(
+        &self,
+        source_slot: u16,
+        initial_bindings: &BTreeMap<u16, CreatureKind>,
+        authored_bindings: &BTreeMap<u16, CreatureKind>,
+    ) -> Option<CreatureRuntimeIdentity> {
+        self.creature_runtime_identity_inner(source_slot, initial_bindings, authored_bindings, true)
+    }
+
+    /// Resolve identity after the scheduler has already selected an imported
+    /// source route. Route resolution proves that no dynamic occupant shadows
+    /// this numeric slot, so this path avoids rebuilding the dynamic arena.
+    #[must_use]
+    pub(crate) fn imported_creature_runtime_identity(
+        &self,
+        source_slot: u16,
+        initial_bindings: &BTreeMap<u16, CreatureKind>,
+    ) -> Option<CreatureRuntimeIdentity> {
+        let source = self.entities.get(usize::from(source_slot))?;
+        if !source.active {
+            return None;
+        }
+        let handle = SourceEntityHandle {
+            source_slot,
+            generation: self.economy.slot_generation(source_slot),
+        };
+        if source.class == 5 && source.action == 232 {
+            let root_slot = source.source_id;
+            let &kind = initial_bindings.get(&root_slot)?;
+            return Some(CreatureRuntimeIdentity {
+                handle,
+                kind,
+                root_slot,
+                role: CreatureRuntimeRole::MultipartPart,
+                origin: CreatureRootOrigin::InitialPackage,
+                raw_model: None,
+                living: false,
+            });
+        }
+        let &kind = initial_bindings.get(&source_slot)?;
+        Some(CreatureRuntimeIdentity {
+            handle,
+            kind,
+            root_slot: source_slot,
+            role: CreatureRuntimeRole::Root,
+            origin: CreatureRootOrigin::InitialPackage,
+            raw_model: Some(source.model),
+            living: !source.drawing_disabled()
+                && source.life >= 0
+                && !matches!(source.action, 180 | 232 | 234),
+        })
+    }
+
+    fn creature_runtime_identity_inner(
+        &self,
+        source_slot: u16,
+        initial_bindings: &BTreeMap<u16, CreatureKind>,
+        authored_bindings: &BTreeMap<u16, CreatureKind>,
+        include_retained: bool,
+    ) -> Option<CreatureRuntimeIdentity> {
+        let dynamic_handle = SourceEntityHandle {
+            source_slot,
+            generation: self.economy.slot_generation(source_slot),
+        };
+
+        if let Some(source) = self.economy.authored_class5().iter().find(|source| {
+            (include_retained || source.active) && source.source_entity_index == source_slot
+        }) {
+            let &kind = authored_bindings.get(&source.authored_index)?;
+            return Some(CreatureRuntimeIdentity {
+                handle: dynamic_handle,
+                kind,
+                root_slot: source_slot,
+                role: CreatureRuntimeRole::Root,
+                origin: CreatureRootOrigin::AuthoredRecord {
+                    authored_record: source.authored_index,
+                },
+                raw_model: Some(source.model),
+                living: source.active
+                    && source.drawing_enabled
+                    && source.life >= 0
+                    && !matches!(source.action, 180 | 232 | 234),
+            });
+        }
+
+        if let Some(source) = self.economy.bee_creatures().iter().find(|source| {
+            (include_retained || source.active) && source.source_entity_index == source_slot
+        }) {
+            let origin = match source.origin {
+                BeeCreatureOrigin::AuthoredRecord { authored_index } => {
+                    if authored_bindings.get(&authored_index) != Some(&CreatureKind::Bee) {
+                        return None;
+                    }
+                    CreatureRootOrigin::AuthoredRecord {
+                        authored_record: authored_index,
+                    }
+                }
+                BeeCreatureOrigin::MorphSpell { holder_slot } => {
+                    CreatureRootOrigin::MorphSpell { holder_slot }
+                }
+            };
+            return Some(CreatureRuntimeIdentity {
+                handle: dynamic_handle,
+                kind: CreatureKind::Bee,
+                root_slot: source_slot,
+                role: CreatureRuntimeRole::Root,
+                origin,
+                raw_model: Some(source.model),
+                living: source.active
+                    && source.drawing_enabled
+                    && source.life >= 0
+                    && !matches!(source.action, 180 | 232 | 234),
+            });
+        }
+
+        if let Some(source) = self.economy.house_residents().iter().find(|source| {
+            (include_retained || source.active) && source.source_entity_index == source_slot
+        }) {
+            return Some(CreatureRuntimeIdentity {
+                handle: dynamic_handle,
+                kind: source.semantic_kind,
+                root_slot: source_slot,
+                role: CreatureRuntimeRole::Root,
+                origin: CreatureRootOrigin::HouseSpawn {
+                    house_slot: source.parent_house_entity_index,
+                },
+                raw_model: Some(source.model),
+                living: source.active
+                    && source.drawing_enabled
+                    && source.life >= 0
+                    && !matches!(source.action, 180 | 232 | 234),
+            });
+        }
+
+        if let Some(source) = self
+            .economy
+            .authored_class5_model3_children()
+            .iter()
+            .find(|source| {
+                (include_retained || source.active) && source.source_entity_index == source_slot
+            })
+        {
+            let &kind = authored_bindings.get(&source.root_authored_index)?;
+            return Some(CreatureRuntimeIdentity {
+                handle: dynamic_handle,
+                kind,
+                root_slot: source.parent_entity_index,
+                role: CreatureRuntimeRole::MultipartPart,
+                origin: CreatureRootOrigin::AuthoredRecord {
+                    authored_record: source.root_authored_index,
+                },
+                raw_model: None,
+                living: false,
+            });
+        }
+
+        if let Some(source) = self.economy.authored_dragon_parts().iter().find(|source| {
+            (include_retained || source.active) && source.source_entity_index == source_slot
+        }) {
+            let &kind = authored_bindings.get(&source.root_authored_index)?;
+            return Some(CreatureRuntimeIdentity {
+                handle: dynamic_handle,
+                kind,
+                root_slot: source.entity_id,
+                role: CreatureRuntimeRole::MultipartPart,
+                origin: CreatureRootOrigin::AuthoredRecord {
+                    authored_record: source.root_authored_index,
+                },
+                raw_model: None,
+                living: false,
+            });
+        }
+
+        let handle = self.handle(source_slot)?;
+        let source = self.entities.get(usize::from(source_slot))?;
+        if !source.active || !matches!(self.resolve(handle), Some(SourceEntityView::Imported(_))) {
+            return None;
+        }
+        if source.class == 5 && source.action == 232 {
+            let root_slot = source.source_id;
+            let &kind = initial_bindings.get(&root_slot)?;
+            return Some(CreatureRuntimeIdentity {
+                handle,
+                kind,
+                root_slot,
+                role: CreatureRuntimeRole::MultipartPart,
+                origin: CreatureRootOrigin::InitialPackage,
+                raw_model: None,
+                living: false,
+            });
+        }
+        let &kind = initial_bindings.get(&source_slot)?;
+        Some(CreatureRuntimeIdentity {
+            handle,
+            kind,
+            root_slot: source_slot,
+            role: CreatureRuntimeRole::Root,
+            origin: CreatureRootOrigin::InitialPackage,
+            raw_model: Some(source.model),
+            living: !source.drawing_disabled()
+                && source.life >= 0
+                && !matches!(source.action, 180 | 232 | 234),
+        })
     }
 
     /// Resolve the source-width identity stored by Nyphur's target relation
@@ -336,7 +676,11 @@ impl DerefMut for SourceArena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PlayerCommand, native_world::NativeWorld};
+    use crate::{
+        PlayerCommand,
+        campaign::{CampaignSession, spec::CampaignSelection},
+        native_world::NativeWorld,
+    };
     use std::path::PathBuf;
 
     fn level_two_session() -> crate::native_world::Level2ResetSession {
@@ -353,6 +697,65 @@ mod tests {
             .expect("qualified Level 2 gameplay component")
             .level2_reset_session()
             .expect("qualified Level 2 source arena session")
+    }
+
+    #[test]
+    fn creature_runtime_census_binds_level_one_two_and_three_roots_and_parts() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let cases = [
+            (
+                manifest_dir.join("../../../generated/mc-cf15-level1-package-current"),
+                CampaignSelection::LEVEL1,
+                vec![(CreatureKind::Goat, 33), (CreatureKind::Villager, 28)],
+            ),
+            (
+                manifest_dir
+                    .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2"),
+                CampaignSelection::LEVEL2,
+                vec![(CreatureKind::Goat, 36), (CreatureKind::Villager, 29)],
+            ),
+            (
+                manifest_dir
+                    .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3"),
+                CampaignSelection::LEVEL3,
+                vec![(CreatureKind::Worm, 5), (CreatureKind::Skeleton, 11)],
+            ),
+        ];
+
+        for (package, selection, expected_roots) in cases {
+            let campaign = CampaignSession::open(package, selection)
+                .expect("qualified campaign opens through the shared engine");
+            let census = campaign.level2_compatibility().creature_runtime_census();
+            assert!(
+                census
+                    .entries()
+                    .windows(2)
+                    .all(|pair| { pair[0].handle.source_slot < pair[1].handle.source_slot })
+            );
+            for (kind, count) in expected_roots {
+                assert_eq!(
+                    census.roots_of_kind(kind).count(),
+                    count,
+                    "{selection:?} {kind:?} root count"
+                );
+            }
+            assert!(census.roots_of_kind(CreatureKind::Builder).next().is_none());
+
+            if selection == CampaignSelection::LEVEL3 {
+                let worm_parts = census
+                    .entries()
+                    .iter()
+                    .filter(|identity| {
+                        identity.kind == CreatureKind::Worm
+                            && identity.role == CreatureRuntimeRole::MultipartPart
+                    })
+                    .count();
+                assert_eq!(worm_parts, 80);
+                assert!(census.entries().iter().all(|identity| {
+                    identity.role != CreatureRuntimeRole::MultipartPart || !identity.living
+                }));
+            }
+        }
     }
 
     #[test]

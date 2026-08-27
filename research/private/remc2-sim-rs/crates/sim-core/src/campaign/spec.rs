@@ -364,6 +364,7 @@ pub struct CampaignDefinition {
     pub completed_stage: ValidationStage,
     level_definition: LevelDefinition,
     creature_by_authored_record: BTreeMap<u16, CreatureKind>,
+    creature_by_initial_source_slot: BTreeMap<u16, CreatureKind>,
     creature_model_by_kind: BTreeMap<CreatureKind, u8>,
     spell_by_authored_record: BTreeMap<u16, SpellKind>,
     spell_family_by_kind: BTreeMap<SpellKind, u8>,
@@ -892,6 +893,17 @@ impl CampaignDefinition {
                 stage: ValidationStage::TypedOperations,
                 message: format!("cannot derive semantic level content: {message}"),
             })?;
+        let creature_by_initial_source_slot = expected_rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.initial_source_slot?,
+                    Mc2LevelDefinition::creature_for_reset_selector(
+                        row.class, row.model, row.action,
+                    )?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
         let mechanic_by_initial_source_slot = expected_rows
             .iter()
             .filter_map(|row| {
@@ -1058,6 +1070,7 @@ impl CampaignDefinition {
             completed_stage: ValidationStage::ResetState,
             level_definition: semantic_level.semantic,
             creature_by_authored_record: semantic_level.creature_by_authored_record,
+            creature_by_initial_source_slot,
             creature_model_by_kind: semantic_level.creature_model_by_kind,
             spell_by_authored_record: semantic_level.spell_by_authored_record,
             spell_family_by_kind: semantic_level.spell_family_by_kind,
@@ -1090,6 +1103,10 @@ impl CampaignDefinition {
 
     pub(crate) fn creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {
         &self.creature_by_authored_record
+    }
+
+    pub(crate) fn initial_creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {
+        &self.creature_by_initial_source_slot
     }
 
     pub(crate) fn creature_models(&self) -> &BTreeMap<CreatureKind, u8> {
@@ -2940,10 +2957,97 @@ mod tests {
     }
 
     fn level1_fixture() -> PathBuf {
-        PathBuf::from(
-            std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1")
-                .expect("set MC_CAMPAIGN_LEVEL1_PACKAGE_V1 to a real Level 1 campaign envelope"),
+        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf15-level1-package-current")
+            },
+            PathBuf::from,
         )
+    }
+
+    fn level3_fixture() -> PathBuf {
+        std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
+            },
+            PathBuf::from,
+        )
+    }
+
+    #[test]
+    fn semantic_initial_creature_bindings_cover_level_one_two_and_three_roots() {
+        use crate::level_definition::CreatureKind;
+
+        let accept = |_: &super::BehaviorKey| true;
+        let cases = [
+            (
+                level1_fixture(),
+                CampaignSelection::LEVEL1,
+                vec![(CreatureKind::Goat, 33), (CreatureKind::Villager, 28)],
+            ),
+            (
+                fixture(),
+                CampaignSelection::LEVEL2,
+                vec![(CreatureKind::Goat, 36), (CreatureKind::Villager, 29)],
+            ),
+            (
+                level3_fixture(),
+                CampaignSelection::LEVEL3,
+                vec![(CreatureKind::Worm, 5), (CreatureKind::Skeleton, 11)],
+            ),
+        ];
+
+        for (root, selection, expected) in cases {
+            let definition = CampaignDefinition::preflight(root, selection, &accept)
+                .expect("qualified package preflights");
+            let bindings = definition.initial_creature_bindings();
+            for (kind, count) in expected {
+                assert_eq!(
+                    bindings
+                        .values()
+                        .filter(|candidate| **candidate == kind)
+                        .count(),
+                    count,
+                    "{selection:?} {kind:?} root count"
+                );
+            }
+            assert!(
+                definition
+                    .campaign_spec
+                    .authored_behavior_rows
+                    .iter()
+                    .all(|row| {
+                        row.initial_source_slot
+                            .is_none_or(|slot| row.action != 232 || !bindings.contains_key(&slot))
+                    })
+            );
+        }
+    }
+
+    #[test]
+    fn mc2_reset_creature_selector_includes_house_builder_and_excludes_parts() {
+        use crate::{
+            campaign::mc2_level_definition::Mc2LevelDefinition, level_definition::CreatureKind,
+        };
+
+        assert_eq!(
+            Mc2LevelDefinition::creature_for_reset_selector(5, 12, 97),
+            Some(CreatureKind::Builder)
+        );
+        assert_eq!(
+            Mc2LevelDefinition::creature_for_reset_selector(5, 3, 232),
+            None
+        );
+        assert_eq!(
+            Mc2LevelDefinition::creature_for_house_resident(12, 97),
+            Some(CreatureKind::Builder)
+        );
+        assert_eq!(
+            Mc2LevelDefinition::creature_for_house_resident(12, 105),
+            None
+        );
     }
 
     #[test]

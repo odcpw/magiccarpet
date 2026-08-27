@@ -3726,6 +3726,7 @@ impl NativeWorldInspection {
         session.bind_semantic_level_definition(crate::campaign::state::SemanticLevelBindings {
             level: definition.level_definition().clone(),
             authored_creature_kinds: definition.creature_bindings().clone(),
+            initial_source_creatures: definition.initial_creature_bindings().clone(),
             creature_models: definition.creature_models().clone(),
             authored_spells: definition.spell_bindings().clone(),
             spell_families: definition.spell_families().clone(),

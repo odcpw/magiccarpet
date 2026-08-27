@@ -73,6 +73,7 @@ pub struct CampaignDefinition {
     pub identity_receipt: CanonicalDigest,
     semantic_level: Option<LevelDefinition>,
     authored_creature_kinds: BTreeMap<u16, CreatureKind>,
+    initial_source_creatures: BTreeMap<u16, CreatureKind>,
     creature_models: BTreeMap<CreatureKind, u8>,
     authored_spells: BTreeMap<u16, SpellKind>,
     spell_families: BTreeMap<SpellKind, u8>,
@@ -96,6 +97,7 @@ pub struct CampaignDefinition {
 pub(crate) struct SemanticLevelBindings {
     pub(crate) level: LevelDefinition,
     pub(crate) authored_creature_kinds: BTreeMap<u16, CreatureKind>,
+    pub(crate) initial_source_creatures: BTreeMap<u16, CreatureKind>,
     pub(crate) creature_models: BTreeMap<CreatureKind, u8>,
     pub(crate) authored_spells: BTreeMap<u16, SpellKind>,
     pub(crate) spell_families: BTreeMap<SpellKind, u8>,
@@ -357,6 +359,7 @@ impl CampaignDefinition {
             identity_receipt,
             semantic_level: None,
             authored_creature_kinds: BTreeMap::new(),
+            initial_source_creatures: BTreeMap::new(),
             creature_models: BTreeMap::new(),
             authored_spells: BTreeMap::new(),
             spell_families: BTreeMap::new(),
@@ -377,6 +380,7 @@ impl CampaignDefinition {
     pub(crate) fn bind_semantic_level(&mut self, bindings: SemanticLevelBindings) {
         self.semantic_level = Some(bindings.level);
         self.authored_creature_kinds = bindings.authored_creature_kinds;
+        self.initial_source_creatures = bindings.initial_source_creatures;
         self.creature_models = bindings.creature_models;
         self.authored_spells = bindings.authored_spells;
         self.spell_families = bindings.spell_families;
@@ -396,11 +400,12 @@ impl CampaignDefinition {
         self.semantic_level.as_ref()
     }
 
-    pub(crate) fn creature_kind_for_authored_record(
-        &self,
-        authored_record: u16,
-    ) -> Option<CreatureKind> {
-        self.authored_creature_kinds.get(&authored_record).copied()
+    pub(crate) fn authored_creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {
+        &self.authored_creature_kinds
+    }
+
+    pub(crate) fn initial_creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {
+        &self.initial_source_creatures
     }
 
     pub(crate) fn creature_model(&self, kind: CreatureKind) -> Option<u8> {
