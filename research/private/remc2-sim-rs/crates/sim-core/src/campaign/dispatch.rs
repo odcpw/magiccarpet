@@ -86,6 +86,7 @@ pub enum ExistingHandler {
     BallisticScenery = 27,
     CountdownSwitch = 28,
     TerrainStripController = 29,
+    DragonFamily = 30,
 }
 
 impl ExistingHandler {
@@ -122,6 +123,7 @@ impl ExistingHandler {
             Self::TerrainStripController => {
                 "authored terrain-strip controller and open/close triggers"
             }
+            Self::DragonFamily => "accepted Dragon constructor and ordinary action-1 roam",
         }
     }
 
@@ -157,6 +159,7 @@ impl ExistingHandler {
             Self::BallisticScenery => "ballistic-scenery",
             Self::CountdownSwitch => "absence-countdown-switch",
             Self::TerrainStripController => "terrain-strip-controller",
+            Self::DragonFamily => "dragon-family",
         }
     }
 }
@@ -314,6 +317,7 @@ compiled_registry! {
         (PlayerFlight, 3, [2, 3, 12]);
         (CastleRoot, 3, [4, 5, 6]);
         (ManaCarrier, 3, [9]);
+        (DragonFamily, 5, [1]);
         (GoatFamily, 5, [9, 10, 11, 12, 13, 14, 15]);
         (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
         (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
@@ -353,6 +357,7 @@ compiled_registry! {
         (NyphurPlayer, 3, [1]);
         (CastleRoot, 3, [2]);
         (ManaCarrier, 3, [3]);
+        (DragonFamily, 5, [0]);
         (GoatFamily, 5, [1]);
         (BeeFamily, 5, [2]);
         (MultipartFamily, 5, [3]);

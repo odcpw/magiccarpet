@@ -265,6 +265,19 @@ impl SourceArena {
         }
         for source in self
             .economy
+            .authored_dragon_parts()
+            .iter()
+            .filter(|source| source.active && source.drawing_enabled)
+        {
+            include(
+                source.source_entity_index,
+                source.model,
+                source.action,
+                source.life,
+            );
+        }
+        for source in self
+            .economy
             .house_residents()
             .iter()
             .filter(|source| source.active && source.drawing_enabled)

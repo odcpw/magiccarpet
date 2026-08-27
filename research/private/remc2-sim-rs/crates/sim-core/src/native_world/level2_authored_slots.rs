@@ -211,6 +211,10 @@ impl Level2EconomyState {
 
             authored_fireflies: Vec::new(),
 
+            authored_dragons: Vec::new(),
+
+            authored_dragon_parts: Vec::new(),
+
             authored_class5_model3: Vec::new(),
 
             authored_class5_model3_children: Vec::new(),
@@ -220,6 +224,8 @@ impl Level2EconomyState {
             authored_class5_archer_children: Vec::new(),
 
             house_residents: Vec::new(),
+
+            class5_model0_constructor_phase: 0,
 
             class5_model3_constructor_phase: 0,
 
@@ -822,6 +828,16 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_fireflies(&self) -> &[AuthoredFireflyRuntime] {
         &self.authored_fireflies
+    }
+
+    #[must_use]
+    pub fn authored_dragons(&self) -> &[AuthoredDragonRuntime] {
+        &self.authored_dragons
+    }
+
+    #[must_use]
+    pub fn authored_dragon_parts(&self) -> &[AuthoredDragonPart] {
+        &self.authored_dragon_parts
     }
 
     #[must_use]
@@ -5090,6 +5106,16 @@ impl Level2EconomyState {
             );
         }
         for child in self
+            .authored_dragon_parts
+            .iter()
+            .filter(|child| child.active)
+        {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::AuthoredDragonPart,
+            );
+        }
+        for child in self
             .authored_class5_archer_children
             .iter()
             .filter(|child| child.active)
@@ -5269,6 +5295,9 @@ impl Level2EconomyState {
             }
             Level2DynamicArenaKind::AuthoredClass14 => selector!(self.authored_class14, 14),
             Level2DynamicArenaKind::AuthoredClass5 => selector!(self.authored_class5, 5),
+            Level2DynamicArenaKind::AuthoredDragonPart => {
+                selector!(self.authored_dragon_parts, 5)
+            }
             Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
                 selector!(self.authored_class5_archer_children)
             }
@@ -6179,6 +6208,11 @@ impl Level2EconomyState {
                 child.active = false;
             }
         }
+        for part in &mut self.authored_dragon_parts {
+            if inactive_class5_roots.contains(&part.parent_entity_index) {
+                part.active = false;
+            }
+        }
         for child in &mut self.authored_class5_archer_children {
             if inactive_class5_roots.contains(&child.parent_entity_index) {
                 child.active = false;
@@ -6193,6 +6227,22 @@ impl Level2EconomyState {
         self.authored_class5_archer_children
             .retain(|child| child.active);
         for (slot, entity_rng) in reclaimed_class5_archer_children {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_dragon_parts = self
+            .authored_dragon_parts
+            .iter()
+            .filter(|part| !part.active)
+            .map(|part| (part.source_entity_index, part.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_dragon_parts.retain(|part| part.active);
+        for (slot, entity_rng) in reclaimed_dragon_parts {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
                 active: false,
@@ -6233,6 +6283,8 @@ impl Level2EconomyState {
         self.authored_class5_runtime
             .retain(|state| live_class5_slots.contains(&state.source_entity_index));
         self.authored_fireflies
+            .retain(|state| live_class5_slots.contains(&state.source_entity_index));
+        self.authored_dragons
             .retain(|state| live_class5_slots.contains(&state.source_entity_index));
         self.authored_class5_model3
             .retain(|state| live_class5_slots.contains(&state.source_entity_index));
@@ -7079,8 +7131,9 @@ impl Level2EconomyState {
             hasher.update([u8::from(source.drawing_enabled)]);
             hasher.update([u8::from(source.active)]);
         }
-        hasher.update(b"authored-class5-v4");
+        hasher.update(b"authored-class5-v5");
         hasher.update([
+            self.class5_model0_constructor_phase,
             self.class5_model3_constructor_phase,
             self.class5_model4_constructor_phase,
             self.class5_model9_constructor_phase,
@@ -7140,6 +7193,45 @@ impl Level2EconomyState {
             hasher.update(state.stage_target.y.to_le_bytes());
             hasher.update(state.stage_target.z.to_le_bytes());
             hasher.update([u8::from(state.movement_blocked)]);
+        }
+        hasher.update(b"authored-dragon-v1");
+        for state in &self.authored_dragons {
+            hasher.update(state.source_entity_index.to_le_bytes());
+            hasher.update(state.linked_entity_index.to_le_bytes());
+            hasher.update(state.word_0x36.to_le_bytes());
+            hasher.update(state.control_flags.to_le_bytes());
+            hasher.update([state.font_type_index, u8::from(state.movement_blocked)]);
+            hasher.update(state.render_yaw.to_le_bytes());
+            hasher.update(state.render_pitch.to_le_bytes());
+            hasher.update(state.render_roll.to_le_bytes());
+            hasher.update(state.render_fov.to_le_bytes());
+        }
+        for part in &self.authored_dragon_parts {
+            hasher.update(part.source_entity_index.to_le_bytes());
+            hasher.update(part.entity_id.to_le_bytes());
+            hasher.update(part.entity_rng.to_le_bytes());
+            hasher.update(part.parent_entity_index.to_le_bytes());
+            hasher.update(part.previous_entity_index.to_le_bytes());
+            hasher.update(part.next_entity_index.to_le_bytes());
+            hasher.update(part.word_0x36.to_le_bytes());
+            hasher.update([part.model, part.action, part.source_byte_3e]);
+            hasher.update(part.max_life.to_le_bytes());
+            hasher.update(part.life.to_le_bytes());
+            hasher.update(part.mana.to_le_bytes());
+            hasher.update(part.subspell_index.to_le_bytes());
+            hasher.update(part.particle_index.to_le_bytes());
+            hasher.update(part.yaw.to_le_bytes());
+            hasher.update(part.pitch.to_le_bytes());
+            hasher.update(part.roll.to_le_bytes());
+            hasher.update(part.fov.to_le_bytes());
+            hasher.update(part.render_yaw.to_le_bytes());
+            hasher.update(part.render_pitch.to_le_bytes());
+            hasher.update(part.render_roll.to_le_bytes());
+            hasher.update(part.render_fov.to_le_bytes());
+            hasher.update(part.position.x.to_le_bytes());
+            hasher.update(part.position.y.to_le_bytes());
+            hasher.update(part.position.z.to_le_bytes());
+            hasher.update([u8::from(part.drawing_enabled), u8::from(part.active)]);
         }
         hasher.update(b"authored-class5-model3-v1");
         for state in &self.authored_class5_model3 {

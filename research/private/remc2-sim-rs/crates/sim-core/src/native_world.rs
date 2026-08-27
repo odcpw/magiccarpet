@@ -2436,6 +2436,58 @@ pub struct AuthoredFireflyRuntime {
     pub movement_blocked: bool,
 }
 
+/// Mutable source fields specific to an authored class-5/model-0 Dragon.
+/// The generic class-5 root remains the entity authority; this sidecar owns
+/// the linked body chain and presentation fields installed by `sub_4B240`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthoredDragonRuntime {
+    pub source_entity_index: u16,
+    /// Source `word_0x32`, used by the ordinary creature peer relation.
+    pub linked_entity_index: u16,
+    pub word_0x36: i16,
+    pub control_flags: u32,
+    pub font_type_index: u8,
+    pub render_yaw: i16,
+    pub render_pitch: i16,
+    pub render_roll: i16,
+    pub render_fov: i16,
+    pub movement_blocked: bool,
+}
+
+/// One of the sixteen action-232 body rows copied from a Dragon root by
+/// `sub_4B240`. These are real numeric source-arena occupants, not a render
+/// cache: their slots, links, phase bytes, RNG, life, and mana are hashed and
+/// reclaimed with the root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthoredDragonPart {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub previous_entity_index: u16,
+    pub next_entity_index: u16,
+    pub word_0x36: i16,
+    pub model: u8,
+    pub action: u8,
+    pub source_byte_3e: u8,
+    pub max_life: i32,
+    pub life: i32,
+    pub mana: i32,
+    pub subspell_index: u16,
+    pub particle_index: u16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub fov: i16,
+    pub render_yaw: i16,
+    pub render_pitch: i16,
+    pub render_roll: i16,
+    pub render_fov: i16,
+    pub position: Position,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// The model-3-only words which are present in the source class-5 carrier but
 /// are not part of the shared model-4/model-9/trader projection.  The source
 /// slot remains the sole identity joining this sidecar to its root; no second
@@ -2860,6 +2912,10 @@ pub struct Level2EconomyState {
 
     authored_fireflies: Vec<AuthoredFireflyRuntime>,
 
+    authored_dragons: Vec<AuthoredDragonRuntime>,
+
+    authored_dragon_parts: Vec<AuthoredDragonPart>,
+
     authored_class5_model3: Vec<Level2AuthoredClass5Model3State>,
 
     authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
@@ -2869,6 +2925,8 @@ pub struct Level2EconomyState {
     authored_class5_archer_children: Vec<Level2AuthoredClass5ArcherChild>,
 
     house_residents: Vec<Level2HouseResidentSource>,
+
+    class5_model0_constructor_phase: u8,
 
     class5_model3_constructor_phase: u8,
 
@@ -3272,6 +3330,7 @@ pub enum Level2DynamicArenaKind {
     Model76TailSpawn,
     AuthoredClass14,
     AuthoredClass5,
+    AuthoredDragonPart,
     AuthoredClass5ArcherChild,
     AuthoredClass5Model3Child,
     HouseResident,
@@ -3440,6 +3499,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::AuthoredClass5 => 30,
+        Level2DynamicArenaKind::AuthoredDragonPart => 45,
         Level2DynamicArenaKind::AuthoredClass5ArcherChild => 37,
         Level2DynamicArenaKind::AuthoredClass5Model3Child => 36,
         Level2DynamicArenaKind::HouseResident => 35,

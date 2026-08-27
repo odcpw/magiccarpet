@@ -117,7 +117,7 @@ fn validate_semantic_creature_dispatch(
     match (creature_kind, handler) {
         (Some(kind), actual) => {
             let expected = match kind {
-                CreatureKind::Dragon => None,
+                CreatureKind::Dragon => Some(&[ExistingHandler::DragonFamily][..]),
                 CreatureKind::Goat => Some(&[ExistingHandler::GoatFamily][..]),
                 CreatureKind::Bee => Some(&[ExistingHandler::BeeFamily][..]),
                 CreatureKind::Worm => Some(&[ExistingHandler::MultipartFamily][..]),
@@ -144,6 +144,7 @@ fn validate_semantic_creature_dispatch(
         (
             None,
             ExistingHandler::GoatFamily
+            | ExistingHandler::DragonFamily
             | ExistingHandler::BeeFamily
             | ExistingHandler::MultipartFamily
             | ExistingHandler::ArcherFamily
@@ -943,7 +944,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     Level2SourceRoute::Dynamic(row)
                         if matches!(
                             row.kind,
-                            Level2DynamicArenaKind::AuthoredClass5Model3Child
+                            Level2DynamicArenaKind::AuthoredDragonPart
+                                | Level2DynamicArenaKind::AuthoredClass5Model3Child
                                 | Level2DynamicArenaKind::AuthoredModel32
                                 | Level2DynamicArenaKind::AuthoredModel45
                                 | Level2DynamicArenaKind::CastleDefender
@@ -7507,7 +7509,7 @@ impl Level2ResetSession {
             !matches!(
                 (feature.kind, feature.subtype),
                 (2, 0 | 1)
-                    | (5, 2 | 3 | 4 | 9 | 14 | 19)
+                    | (5, 0 | 2 | 3 | 4 | 9 | 14 | 19)
                     | (10, 1 | 5 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 76)
                     | (11, 0 | 1 | 12 | 16 | 17 | 32)
                     | (14, 3 | 5)
@@ -7590,6 +7592,31 @@ impl Level2ResetSession {
                                 .iter()
                                 .any(|row| row.source_entity_index == source.source_entity_index)
                         );
+                    }
+                }
+                (5, 0) => {
+                    let position = feature.world_position(
+                        self.canonical_terrain()
+                            .ground_height(feature.world_position(0)),
+                    );
+                    if self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .allocate_authored_dragon(
+                            feature.index,
+                            position,
+                            &self.session.state.live.terrain,
+                        )
+                        .is_some()
+                    {
+                        self.session
+                            .state
+                            .live
+                            .level2_class5_activated
+                            .insert(feature.index);
                     }
                 }
                 (5, 4) => {
@@ -9748,6 +9775,9 @@ impl Level2ResetSession {
                     Level2DynamicArenaKind::AuthoredClass5 => {
                         row_phase!(economy.authored_class5, source_byte_3e)
                     }
+                    Level2DynamicArenaKind::AuthoredDragonPart => {
+                        row_phase!(economy.authored_dragon_parts, source_byte_3e)
+                    }
                     Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
                         row_phase!(economy.authored_class5_archer_children, source_byte_3e)
                     }
@@ -9961,6 +9991,9 @@ impl Level2ResetSession {
                     }
                     Level2DynamicArenaKind::AuthoredClass5 => {
                         retained_phase!(economy.authored_class5, source_byte_3e)
+                    }
+                    Level2DynamicArenaKind::AuthoredDragonPart => {
+                        retained_phase!(economy.authored_dragon_parts, source_byte_3e)
                     }
                     Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
                         retained_phase!(economy.authored_class5_archer_children, source_byte_3e)
@@ -10187,6 +10220,10 @@ impl Level2ResetSession {
                     }
                     Level2DynamicArenaKind::AuthoredClass5 => dynamic_phase_mut!(
                         live.economy.economy.authored_class5,
+                        source_byte_3e
+                    ),
+                    Level2DynamicArenaKind::AuthoredDragonPart => dynamic_phase_mut!(
+                        live.economy.economy.authored_dragon_parts,
                         source_byte_3e
                     ),
                     Level2DynamicArenaKind::AuthoredClass5ArcherChild => dynamic_phase_mut!(
@@ -10447,11 +10484,15 @@ impl Level2ResetSession {
                 Level2DynamicArenaKind::AuthoredClass14 => {
                     handler == ExistingHandler::Class14Events
                 }
+                Level2DynamicArenaKind::AuthoredDragonPart => {
+                    handler == ExistingHandler::MultipartFamily
+                }
                 Level2DynamicArenaKind::AuthoredClass5
                 | Level2DynamicArenaKind::AuthoredClass5Model3Child
                 | Level2DynamicArenaKind::HouseResident => matches!(
                     handler,
-                    ExistingHandler::MultipartFamily
+                    ExistingHandler::DragonFamily
+                        | ExistingHandler::MultipartFamily
                         | ExistingHandler::ArcherFamily
                         | ExistingHandler::Model9Family
                         | ExistingHandler::BuilderFamily
@@ -11186,6 +11227,50 @@ impl Level2ResetSession {
                     // construction, rather than a timer tick, releases
                     // the holder for the next public upgrade cast.
                     self.clear_castle_spell_holder_cooldown(holder_index);
+                }
+            }
+            (
+                ExistingHandler::DragonFamily,
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::AuthoredClass5,
+                    ..
+                }),
+            ) => {
+                let action = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .authored_class5()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)
+                    .map(|source| source.action)
+                    .ok_or_else(|| format!("Dragon source slot {source_slot} is absent"))?;
+                if action != level2_class5::dragon::DRAGON_ROAM_ACTION {
+                    return Err(format!(
+                        "Dragon source slot {source_slot} reached unimplemented action {action}"
+                    ));
+                }
+                let frozen_model0_slots = &pass_start_class5_model_slots
+                    [usize::from(level2_class5::dragon::DRAGON_MODEL)];
+                let terrain = &self.session.state.live.terrain;
+                let live = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_dragon_roam_slot(
+                        source_slot,
+                        goat_players,
+                        frozen_model0_slots,
+                        terrain,
+                    )?;
+                if live {
+                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                        pass,
+                        source_slot,
+                        kind: Level2DynamicArenaKind::AuthoredClass5,
+                    });
                 }
             }
             (
@@ -15027,6 +15112,12 @@ impl Level2ResetSession {
                     .economy
                     .step_authored_class5_slot_with_target(source_slot, target, terrain)
             }
+            Level2DynamicArenaKind::AuthoredDragonPart => self
+                .session
+                .state
+                .live
+                .economy
+                .step_authored_dragon_part_slot(source_slot),
             Level2DynamicArenaKind::AuthoredClass5Model3Child => self
                 .session
                 .state
@@ -18017,6 +18108,327 @@ mod tests {
                     event,
                     Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                 ))
+        );
+
+        // On the following ordinary source pass, the real imported
+        // objective gate at slot 127 sees stage zero complete and activates
+        // package group 1. That group contains exactly the two authored
+        // Dragon rows 141/142; no level-specific spawn list is involved.
+        const DRAGON_GATE_SLOT: u16 = 127;
+        let global_rng_before_dragons = campaign.level2_compatibility().source_global_rng();
+        let gate_phase_before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[usize::from(DRAGON_GATE_SLOT)]
+        .phase;
+        step(&mut campaign);
+        let dragon_events = campaign.level2_compatibility().dispatch_events();
+        assert!(dragon_events.iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: DRAGON_GATE_SLOT,
+                group: 1,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [141, 142]
+        )));
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert_eq!(live.core.runtime.objectives[0].stage_selectors[1], 1);
+        let gate = &live.economy.entities[usize::from(DRAGON_GATE_SLOT)];
+        assert!(gate.drawing_disabled());
+        assert!(
+            gate.active,
+            "the Dragon gate hide is retained through its epilogue"
+        );
+        assert_eq!(gate.phase, gate_phase_before.wrapping_add(1));
+
+        let mut dragons = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|source| source.model == level2_class5::dragon::DRAGON_MODEL)
+            .copied()
+            .collect::<Vec<_>>();
+        dragons.sort_unstable_by_key(|source| source.authored_index);
+        assert_eq!(
+            dragons
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            [141, 142]
+        );
+        assert_eq!(live.economy.economy.authored_dragons().len(), 2);
+        assert_eq!(live.economy.economy.authored_dragon_parts().len(), 32);
+        let global_rng_at_new_event = global_rng_before_dragons
+            .wrapping_mul(9_377)
+            .wrapping_add(9_439);
+        let next_rng = |rng: u16| rng.wrapping_mul(9_377).wrapping_add(9_439);
+        let authored_positions = [
+            Position {
+                x: (79_u16 << 8).wrapping_add(128),
+                y: (143_u16 << 8).wrapping_add(128),
+                z: 0,
+            },
+            Position {
+                x: (141_u16 << 8).wrapping_add(128),
+                y: (144_u16 << 8).wrapping_add(128),
+                z: 0,
+            },
+        ];
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        let mut same_pass_roots = 0;
+        for (dragon_index, dragon) in dragons.iter().enumerate() {
+            let constructor_phase = u8::try_from(dragon_index).expect("two Dragons");
+            let initial_rng = next_rng(
+                dragon
+                    .source_entity_index
+                    .wrapping_add(global_rng_at_new_event as u16),
+            );
+            let was_visited = dragon.source_entity_index > DRAGON_GATE_SLOT;
+            same_pass_roots += usize::from(was_visited);
+            assert_eq!(
+                (
+                    dragon.action,
+                    dragon.minimum_speed,
+                    dragon.maximum_speed,
+                    dragon.actual_speed,
+                    dragon.max_life,
+                    dragon.life,
+                    dragon.max_mana,
+                    dragon.mana,
+                    dragon.subspell_index,
+                    dragon.particle_index,
+                    dragon.source_byte_39,
+                ),
+                (
+                    level2_class5::dragon::DRAGON_ROAM_ACTION,
+                    80,
+                    16,
+                    30,
+                    4_000,
+                    4_000,
+                    4_500,
+                    level2_class5::dragon::DRAGON_SEGMENT_MANA,
+                    level2_class5::dragon::DRAGON_SUBSPELL_INDEX,
+                    40,
+                    30_u8.wrapping_sub(constructor_phase % 30).wrapping_add(4),
+                )
+            );
+            assert_eq!(
+                dragon.source_byte_3e,
+                constructor_phase.wrapping_add(u8::from(was_visited))
+            );
+            assert_eq!(
+                dragon.entity_rng,
+                if was_visited && constructor_phase == 0 {
+                    next_rng(next_rng(initial_rng))
+                } else {
+                    initial_rng
+                },
+                "only the phase-zero Dragon consumes the two action-1 wander draws"
+            );
+            let mut authored_position = authored_positions[dragon_index];
+            authored_position.z = live.terrain.ground_height(authored_position);
+            if was_visited {
+                let heading = i16::try_from(initial_rng & 0x07ff)
+                    .expect("Dragon heading")
+                    .wrapping_sub(1);
+                let transition = crate::ground_creature_motion::step_ground_creature_motion(
+                    authored_position,
+                    heading,
+                    heading,
+                    30,
+                    &live.terrain,
+                    crate::ground_creature_motion::GroundCreatureMotionConfig {
+                        ground_clearance: 0,
+                        descent: -4,
+                        turn_limit: 34,
+                        terrain_mask: u32::MAX,
+                        maximum_tile_slope: 30,
+                    },
+                );
+                let mut expected_position = transition.position;
+                expected_position.z = expected_position
+                    .z
+                    .wrapping_add((dragon.source_entity_index % 100) as i16);
+                assert_eq!(dragon.position, expected_position);
+                assert_eq!(dragon.yaw, transition.yaw);
+                assert_eq!(dragon.dword_0x10, 150);
+            } else {
+                assert_eq!(dragon.position, authored_position);
+                assert_eq!(
+                    dragon.dword_0x10,
+                    i32::from(dragon.source_entity_index % 100)
+                );
+            }
+            assert_eq!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted { slot, .. }
+                        if *slot == dragon.source_entity_index
+                )),
+                was_visited
+            );
+            assert_eq!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::EpilogueCompleted { slot, .. }
+                        if *slot == dragon.source_entity_index
+                )),
+                was_visited
+            );
+
+            let runtime = live
+                .economy
+                .economy
+                .authored_class5_runtime()
+                .iter()
+                .find(|runtime| runtime.source_entity_index == dragon.source_entity_index)
+                .expect("Dragon class-5 runtime");
+            let sidecar = live
+                .economy
+                .economy
+                .authored_dragons()
+                .iter()
+                .find(|state| state.source_entity_index == dragon.source_entity_index)
+                .expect("Dragon runtime");
+            assert_eq!(
+                (
+                    runtime.byte_0x38,
+                    runtime.xtype,
+                    runtime.descriptor_index,
+                    runtime.pending_damage,
+                    sidecar.word_0x36,
+                    sidecar.control_flags,
+                    sidecar.font_type_index,
+                    sidecar.render_yaw,
+                    sidecar.render_pitch,
+                    sidecar.render_roll,
+                    sidecar.render_fov,
+                ),
+                (1, 3, 71, 0, 96, 8, 0, 140, 171, 171, 140)
+            );
+            let mut part_slot = runtime.linked_head;
+            for part_index in 0..level2_class5::dragon::DRAGON_PART_COUNT {
+                let part = live
+                    .economy
+                    .economy
+                    .authored_dragon_parts()
+                    .iter()
+                    .find(|part| part.source_entity_index == part_slot)
+                    .expect("Dragon body chain remains complete");
+                assert_eq!(part.parent_entity_index, 0);
+                assert_eq!(part.entity_id, dragon.source_entity_index);
+                assert_eq!(part.particle_index, 19 + part_index as u16);
+                assert_eq!(
+                    (
+                        part.model,
+                        part.action,
+                        part.max_life,
+                        part.life,
+                        part.mana,
+                        part.subspell_index,
+                    ),
+                    (
+                        0,
+                        232,
+                        4_000,
+                        4_000,
+                        if part_index == 0 {
+                            level2_class5::dragon::DRAGON_INITIAL_MANA
+                        } else {
+                            level2_class5::dragon::DRAGON_SEGMENT_MANA
+                        },
+                        level2_class5::dragon::DRAGON_SUBSPELL_INDEX,
+                    )
+                );
+                assert_eq!(
+                    part.source_byte_3e,
+                    u8::try_from(part_index)
+                        .expect("Dragon part index")
+                        .wrapping_add(u8::from(part.source_entity_index > DRAGON_GATE_SLOT))
+                );
+                assert_eq!(part.position, authored_position);
+                assert_eq!(
+                    receipts.iter().any(|receipt| matches!(
+                        receipt,
+                        ScheduleReceipt::CallbackCompleted { slot, .. }
+                            if *slot == part.source_entity_index
+                    )),
+                    part.source_entity_index > DRAGON_GATE_SLOT
+                );
+                part_slot = part.next_entity_index;
+            }
+            assert_eq!(part_slot, 0);
+        }
+        assert!(
+            same_pass_roots > 0,
+            "the real allocator must leave at least one Dragon ahead of slot 127 so action 1 runs in the birth pass"
+        );
+
+        // The following ordinary pass reclaims the hidden objective gate and
+        // visits every lower-slot Dragon/part that the fixed ascending cursor
+        // could not reach in the birth pass.
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert!(!live.economy.entities[usize::from(DRAGON_GATE_SLOT)].active);
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        for source_slot in live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|source| source.model == level2_class5::dragon::DRAGON_MODEL)
+            .map(|source| source.source_entity_index)
+            .chain(
+                live.economy
+                    .economy
+                    .authored_dragon_parts()
+                    .iter()
+                    .map(|part| part.source_entity_index),
+            )
+        {
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == source_slot
+            )));
+            assert!(receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::EpilogueCompleted { slot, .. } if *slot == source_slot
+            )));
+        }
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), baseline_hash);
+        assert!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_dragons()
+                .is_empty()
+        );
+        assert!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_dragon_parts()
+                .is_empty()
         );
     }
 
