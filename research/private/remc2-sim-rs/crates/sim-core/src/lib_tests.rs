@@ -2,18 +2,36 @@ use super::*;
 
 fn production_audio_tag_count(sources: &[&str], site: MissionAudioSite) -> usize {
     let test_module_marker = "\n#[cfg(test)]\nmod tests {";
-    let local_tag = format!("audio_site: MissionAudioSite::{site:?},");
-    let crate_tag = format!("audio_site: crate::MissionAudioSite::{site:?},");
+    let variant = format!("MissionAudioSite::{site:?}");
     sources
         .iter()
         .map(|source| {
             let production = source
                 .split_once(test_module_marker)
                 .map_or(*source, |(production, _tests)| production);
-            let production = production.split_whitespace().collect::<String>();
-            let local_tag = local_tag.split_whitespace().collect::<String>();
-            let crate_tag = crate_tag.split_whitespace().collect::<String>();
-            production.matches(&local_tag).count() + production.matches(&crate_tag).count()
+            let mut rest = production;
+            let mut count = 0;
+            while let Some(field_start) = rest.find("audio_site:") {
+                let expression = &rest[field_start + "audio_site:".len()..];
+                let mut depth = 0_i32;
+                let mut expression_end = expression.len();
+                for (offset, byte) in expression.bytes().enumerate() {
+                    match byte {
+                        b'(' | b'[' | b'{' => depth += 1,
+                        b')' | b']' | b'}' => depth -= 1,
+                        b',' if depth == 0 => {
+                            expression_end = offset;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                count += expression[..expression_end].matches(&variant).count();
+                rest = expression
+                    .get(expression_end.saturating_add(1)..)
+                    .unwrap_or_default();
+            }
+            count
         })
         .sum()
 }
@@ -59,6 +77,28 @@ fn mission_audio_census_is_unique_complete_and_compiler_bound() {
         ),
         1,
         "an exact production event field must satisfy reverse binding"
+    );
+    assert_eq!(
+        production_audio_tag_count(
+            &[concat!(
+                "audio_site: if selected {\n",
+                "crate::MissionAudioSite::ExitSequenceSwitch\n",
+                "} else {\n",
+                "crate::MissionAudioSite::ExitAccelerationPhase6\n",
+                "},\n",
+            )],
+            MissionAudioSite::ExitSequenceSwitch,
+        ),
+        1,
+        "a variant in the assigned conditional expression remains compiler-bound"
+    );
+    assert_eq!(
+        production_audio_tag_count(
+            &["let metadata = crate::MissionAudioSite::ExitSequenceSwitch;"],
+            MissionAudioSite::ExitSequenceSwitch,
+        ),
+        0,
+        "a bare production metadata reference must not satisfy reverse binding"
     );
     for site in MissionAudioSite::ALL {
         let contract = site.contract();

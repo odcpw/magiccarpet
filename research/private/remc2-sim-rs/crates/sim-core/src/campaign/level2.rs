@@ -11246,25 +11246,89 @@ impl Level2ResetSession {
                     .find(|source| source.source_entity_index == source_slot)
                     .map(|source| source.action)
                     .ok_or_else(|| format!("Dragon source slot {source_slot} is absent"))?;
-                if action != level2_class5::dragon::DRAGON_ROAM_ACTION {
-                    return Err(format!(
-                        "Dragon source slot {source_slot} reached unimplemented action {action}"
-                    ));
-                }
                 let frozen_model0_slots = &pass_start_class5_model_slots
                     [usize::from(level2_class5::dragon::DRAGON_MODEL)];
                 let terrain = &self.session.state.live.terrain;
-                let live = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .step_authored_dragon_roam_slot(
-                        source_slot,
-                        goat_players,
-                        frozen_model0_slots,
-                        terrain,
-                    )?;
+                let live = match action {
+                    level2_class5::dragon::DRAGON_ROAM_ACTION => self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .step_authored_dragon_roam_slot(
+                            source_slot,
+                            goat_players,
+                            frozen_model0_slots,
+                            terrain,
+                        )?,
+                    level2_class5::dragon::DRAGON_ATTACK_ACTION => {
+                        let target_entity_index = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .economy
+                            .authored_class5()
+                            .iter()
+                            .find(|source| source.source_entity_index == source_slot)
+                            .map(|source| source.word_0x96_150)
+                            .unwrap_or_default();
+                        let target = goat_players
+                            .iter()
+                            .find(|target| target.entity_index == target_entity_index)
+                            .copied();
+                        let step = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .step_authored_dragon_attack_slot(
+                                source_slot,
+                                target,
+                                frozen_model0_slots,
+                                terrain,
+                            )?;
+                        if let Some(launch) = step.fireball {
+                            let source_arena = &mut self.session.state.live.economy;
+                            let spawned =
+                                source_arena.economy.spawn_fireball_projectile_with_payload(
+                                    level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                                        origin: FireballProjectileOrigin::Dragon,
+                                        position: launch.position,
+                                        yaw: launch.yaw,
+                                        pitch: launch.pitch,
+                                        axis_position: launch.target_position,
+                                        source_id_entity_index: launch.owner_entity_index,
+                                        holder_entity_index: 0,
+                                        source_subspell_index: launch.payload,
+                                        source_mana: 0,
+                                        source_dword_0x10: 0,
+                                        target_source_entity_index: launch.target_entity_index,
+                                    },
+                                    0,
+                                );
+                            if spawned.is_some() {
+                                let _ = Level2EconomyState::apply_creature_fireball_target_feedback(
+                                    &mut source_arena.entities,
+                                    launch.target_entity_index,
+                                );
+                                self.push_flight_effect(FlightEvent::PrepareSound {
+                                    #[cfg(test)]
+                                    audio_site: crate::MissionAudioSite::DragonFireball,
+                                    entity_index: source_slot,
+                                    player_index: -1,
+                                    sound_id: 8,
+                                });
+                            }
+                        }
+                        step.live
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Dragon source slot {source_slot} reached unimplemented action {action}"
+                        ));
+                    }
+                };
                 if live {
                     self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
                         pass,
@@ -11411,7 +11475,7 @@ impl Level2ResetSession {
                                     0,
                                 );
                             if spawned.is_some() {
-                                let _ = Level2EconomyState::apply_firefly_fireball_target_feedback(
+                                let _ = Level2EconomyState::apply_creature_fireball_target_feedback(
                                     &mut source_arena.entities,
                                     launch.target_entity_index,
                                 );
@@ -18405,6 +18469,299 @@ mod tests {
                 ScheduleReceipt::EpilogueCompleted { slot, .. } if *slot == source_slot
             )));
         }
+
+        // Continue one of those real package Dragons through its next
+        // package-reached callbacks. Geometry and cadence are staged only to
+        // avoid turning this focused behavior proof into a long flight route;
+        // target selection, dispatch, NewEvent allocation, feedback, audio,
+        // and the projectile scheduler remain the ordinary production path.
+        let dragon_slot = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| {
+                source.model == level2_class5::dragon::DRAGON_MODEL
+                    && source.action == level2_class5::dragon::DRAGON_ROAM_ACTION
+            })
+            .expect("a real group-1 Dragon remains in ordinary roam")
+            .source_entity_index;
+        let dragon_before_target = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == dragon_slot)
+            .copied()
+            .expect("selected Dragon root");
+        let terrain = &campaign.level2_compatibility().session.state.live.terrain;
+        let target_transition = crate::ground_creature_motion::step_ground_creature_motion(
+            dragon_before_target.position,
+            dragon_before_target.yaw,
+            dragon_before_target.roll,
+            dragon_before_target.actual_speed,
+            terrain,
+            crate::ground_creature_motion::GroundCreatureMotionConfig {
+                ground_clearance: 0,
+                descent: -4,
+                turn_limit: 34,
+                terrain_mask: u32::MAX,
+                maximum_tile_slope: 30,
+            },
+        );
+        let mut target_position = target_transition.position;
+        crate::move_entity(&mut target_position, target_transition.yaw, 0, 512);
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .stage_authored_dragon_attack_prerequisite_for_test(
+                    dragon_slot,
+                    dragon_before_target.position,
+                    30,
+                )
+        );
+        campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity_index, target_position)
+            .expect("stage the real player in the real Dragon view cone");
+        let projectile_count_before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .fireball_projectiles()
+            .len();
+        let journal_before_target = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        step(&mut campaign);
+        let targeted = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == dragon_slot)
+            .copied()
+            .expect("targeting Dragon remains live");
+        assert_eq!(
+            (
+                targeted.action,
+                targeted.word_0x96_150,
+                targeted.source_byte_3e,
+            ),
+            (
+                level2_class5::dragon::DRAGON_ATTACK_ACTION,
+                player_entity_index,
+                31,
+            )
+        );
+        assert_eq!(
+            targeted.entity_rng,
+            campaign_shared_families::next_source_rng16(
+                campaign_shared_families::next_source_rng16(dragon_before_target.entity_rng)
+            )
+        );
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .fireball_projectiles()
+                .len(),
+            projectile_count_before,
+            "action 1 only selects action 2; it does not recursively fire"
+        );
+        assert!(
+            campaign.level2_compatibility().effect_journal().records()[journal_before_target..]
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::DragonFireball,
+                        ..
+                    })
+                ))
+        );
+
+        let dragon_before_fire = targeted;
+        let terrain = &campaign.level2_compatibility().session.state.live.terrain;
+        let fire_transition = crate::ground_creature_motion::step_ground_creature_motion(
+            dragon_before_fire.position,
+            dragon_before_fire.yaw,
+            dragon_before_fire.roll,
+            dragon_before_fire.actual_speed,
+            terrain,
+            crate::ground_creature_motion::GroundCreatureMotionConfig {
+                ground_clearance: 0,
+                descent: -4,
+                turn_limit: 34,
+                terrain_mask: u32::MAX,
+                maximum_tile_slope: 30,
+            },
+        );
+        let mut fire_target_position = fire_transition.position;
+        crate::move_entity(&mut fire_target_position, fire_transition.yaw, 0, 2_048);
+        let (expected_yaw, expected_pitch) = crate::level1_mission::projectile_guidance_angles(
+            fire_transition.position,
+            fire_target_position,
+        );
+        let mut expected_launch_position = fire_transition.position;
+        expected_launch_position.z = expected_launch_position.z.wrapping_add(140);
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .stage_authored_dragon_attack_prerequisite_for_test(
+                    dragon_slot,
+                    dragon_before_fire.position,
+                    60,
+                )
+        );
+        campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity_index, fire_target_position)
+            .expect("stage the real target inside the Dragon fire range");
+        let journal_before_fire = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let fired = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == dragon_slot)
+            .expect("firing Dragon remains live");
+        assert_eq!(
+            (fired.action, fired.word_0x96_150, fired.source_byte_3e,),
+            (
+                level2_class5::dragon::DRAGON_ATTACK_ACTION,
+                player_entity_index,
+                61,
+            )
+        );
+        let projectile = live
+            .economy
+            .economy
+            .fireball_projectiles()
+            .iter()
+            .find(|projectile| {
+                projectile.origin == FireballProjectileOrigin::Dragon
+                    && projectile.owner_entity_index == dragon_slot
+            })
+            .expect("Dragon action 2 allocates the shared class-9 fireball");
+        let projectile_visited = projectile.source_entity_index > dragon_slot;
+        let mut expected_projectile_position = expected_launch_position;
+        let mut expected_projectile_pitch = expected_pitch;
+        if projectile_visited {
+            let (_, desired_pitch) = crate::level1_mission::projectile_guidance_angles(
+                expected_launch_position,
+                fire_target_position,
+            );
+            expected_projectile_pitch = expected_projectile_pitch.wrapping_add(crate::turn_toward(
+                expected_projectile_pitch,
+                desired_pitch,
+                22,
+            )) & 0x07ff;
+            crate::move_entity(
+                &mut expected_projectile_position,
+                expected_yaw,
+                expected_projectile_pitch,
+                crate::level1_mission::FIREBALL_SPEED,
+            );
+        }
+        assert_eq!(
+            (
+                projectile.source_class,
+                projectile.source_model,
+                projectile.action,
+                projectile.payload,
+                projectile.target_source_entity_index,
+                projectile.position,
+                projectile.yaw,
+                projectile.pitch,
+                projectile.acquisition_attempted,
+            ),
+            (
+                9,
+                0,
+                0,
+                500,
+                player_entity_index,
+                expected_projectile_position,
+                expected_yaw,
+                expected_projectile_pitch,
+                true,
+            )
+        );
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        assert_eq!(
+            receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted { slot, .. }
+                    if *slot == projectile.source_entity_index
+            )),
+            projectile_visited
+        );
+        assert_eq!(
+            i16::from_le_bytes([
+                live.economy.entities[usize::from(player_entity_index)].record[58],
+                live.economy.entities[usize::from(player_entity_index)].record[59],
+            ]),
+            100,
+            "sub_1CC20 applies target feedback only after allocation succeeds"
+        );
+        let launch_sounds = campaign.level2_compatibility().effect_journal().records()
+            [journal_before_fire..]
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::DragonFireball,
+                        entity_index,
+                        player_index: -1,
+                        sound_id: 8,
+                    }) if entity_index == dragon_slot
+                )
+            })
+            .count();
+        assert_eq!(launch_sounds, 1);
 
         campaign.reset();
         assert_eq!(campaign.state_hash(), baseline_hash);

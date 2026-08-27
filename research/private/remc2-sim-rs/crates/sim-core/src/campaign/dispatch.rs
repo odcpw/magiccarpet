@@ -123,7 +123,9 @@ impl ExistingHandler {
             Self::TerrainStripController => {
                 "authored terrain-strip controller and open/close triggers"
             }
-            Self::DragonFamily => "accepted Dragon constructor and ordinary action-1 roam",
+            Self::DragonFamily => {
+                "accepted Dragon constructor, ordinary roam, and player-target fireball"
+            }
         }
     }
 
@@ -317,7 +319,7 @@ compiled_registry! {
         (PlayerFlight, 3, [2, 3, 12]);
         (CastleRoot, 3, [4, 5, 6]);
         (ManaCarrier, 3, [9]);
-        (DragonFamily, 5, [1]);
+        (DragonFamily, 5, [1, 2]);
         (GoatFamily, 5, [9, 10, 11, 12, 13, 14, 15]);
         (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
         (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
@@ -614,13 +616,15 @@ mod tests {
     fn cf10_supplemental_handlers() -> BTreeMap<String, &'static str> {
         let mut expected = BTreeMap::new();
         for (class, actions, handler) in [
-            (3_u16, &[2_u16, 3][..], "player-flight"),
+            (3_u16, &[2_u16, 3, 12][..], "player-flight"),
             (3, &[4, 6][..], "castle-root"),
+            (5, &[1, 2][..], "dragon-family"),
             (
                 5,
                 &[16, 17, 18, 19, 20, 21, 22, 23][..],
                 "level2-bee-family",
             ),
+            (5, &[74, 76, 77][..], "level2-model9-family"),
             (5, &[121, 122, 124, 125][..], "level2-castle-auxiliary"),
             (11, &[4][..], "level2-switch-producers"),
         ] {
@@ -631,6 +635,7 @@ mod tests {
             }
         }
         expected.insert("Constructor:ClassModel:5:2".to_owned(), "level2-bee-family");
+        expected.insert("Constructor:ClassModel:5:0".to_owned(), "dragon-family");
         expected.insert(
             "Constructor:ClassModel:5:15".to_owned(),
             "level2-castle-auxiliary",
@@ -684,7 +689,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 365);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 378);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -758,7 +763,7 @@ mod tests {
         }
         assert_eq!(expected_handlers.len(), 315);
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 365);
+        assert_eq!(expected_handlers.len(), 378);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

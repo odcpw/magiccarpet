@@ -1022,13 +1022,14 @@ pub struct Level2CastleProjectile {
 }
 
 /// Semantic producer identity for the shared class-9/model-0 Fireball row.
-/// Player spell projectiles acquire and steer toward a target; Firefly
+/// Player spell projectiles acquire and steer toward a target; creature
 /// projectiles retain their launch yaw and adjust pitch toward their bound
 /// player target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FireballProjectileOrigin {
     PlayerSpell,
     Firefly,
+    Dragon,
 }
 
 /// The shared class-9/model-0 Fireball flyer. Its callback owns target

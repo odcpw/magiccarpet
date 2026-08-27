@@ -499,7 +499,7 @@ impl Level2EconomyState {
             max_life: FIREBALL_LIFETIME_TICKS,
             dword_0x10: payload.source_dword_0x10,
             target_source_entity_index: payload.target_source_entity_index,
-            acquisition_attempted: payload.origin == FireballProjectileOrigin::Firefly,
+            acquisition_attempted: payload.origin != FireballProjectileOrigin::PlayerSpell,
             threat_accounted: false,
             control_flags: 0,
             source_word_2c: 0,
@@ -528,10 +528,10 @@ impl Level2EconomyState {
     }
 
     /// Source `sub_1CC20` applies `sub_5EF70` to the bound player only after
-    /// the Firefly's NewEvent allocation succeeds. Keep that target-side
+    /// the creature's NewEvent allocation succeeds. Keep that target-side
     /// entity write beside the shared projectile constructor so callers
     /// cannot publish feedback for a failed allocation.
-    pub(super) fn apply_firefly_fireball_target_feedback(
+    pub(super) fn apply_creature_fireball_target_feedback(
         imported_entities: &mut [EntitySnapshot],
         target_entity_index: u16,
     ) -> bool {
@@ -602,7 +602,10 @@ impl Level2EconomyState {
         };
         let mut projectile = self.fireball_projectiles[projectile_index];
 
-        if projectile.origin == FireballProjectileOrigin::Firefly {
+        if matches!(
+            projectile.origin,
+            FireballProjectileOrigin::Firefly | FireballProjectileOrigin::Dragon
+        ) {
             if let Some(target) =
                 imported_entities.get(usize::from(projectile.target_source_entity_index))
                 && target.active

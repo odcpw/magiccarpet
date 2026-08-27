@@ -7405,11 +7405,16 @@ impl Level2EconomyState {
             hasher.update([field.action, u8::from(field.active)]);
         }
         for projectile in &self.fireball_projectiles {
-            // Preserve the frozen public-spell state hash dialect; Firefly is
-            // an additive semantic origin whose distinct guidance behavior
-            // must still participate in future-state identity.
-            if projectile.origin == FireballProjectileOrigin::Firefly {
-                hasher.update(b"firefly-fireball-origin-v1");
+            // Preserve the frozen public-spell state hash dialect. Creature
+            // producer identity still participates in future-state identity.
+            match projectile.origin {
+                FireballProjectileOrigin::PlayerSpell => {}
+                FireballProjectileOrigin::Firefly => {
+                    hasher.update(b"firefly-fireball-origin-v1");
+                }
+                FireballProjectileOrigin::Dragon => {
+                    hasher.update(b"dragon-fireball-origin-v1");
+                }
             }
             hasher.update(projectile.source_entity_index.to_le_bytes());
             hasher.update(projectile.entity_rng.to_le_bytes());
