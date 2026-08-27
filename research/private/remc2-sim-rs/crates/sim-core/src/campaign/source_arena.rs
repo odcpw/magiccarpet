@@ -5,8 +5,12 @@
 //! session-side entity mirror from drifting from the free stack, generation
 //! counters, map links, and typed rows that reuse those source slots.
 
-use crate::native_world::{
-    EntitySnapshot, Level2DynamicArenaKind, Level2EconomyState, level2_nyphur_source_identity_parts,
+use crate::{
+    Position,
+    native_world::{
+        EntitySnapshot, Level2DynamicArenaKind, Level2EconomyState,
+        level2_nyphur_source_identity_parts,
+    },
 };
 use std::collections::BTreeSet;
 use std::ops::{Deref, DerefMut};
@@ -138,6 +142,45 @@ impl SourceArena {
                         entity.class,
                     )
                 })
+            })
+    }
+
+    /// Resolve the live position behind a frozen class-5 model-list member.
+    /// Dynamic rows own reused slots, so their typed carriers take precedence
+    /// over the decoded imported record at the same numeric index.
+    #[must_use]
+    pub(crate) fn class5_position(&self, source_slot: u16) -> Option<Position> {
+        self.economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .map(|source| source.position)
+            .or_else(|| {
+                self.economy
+                    .house_residents()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)
+                    .map(|source| source.position)
+            })
+            .or_else(|| {
+                self.economy
+                    .authored_bees()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)
+                    .map(|source| source.position)
+            })
+            .or_else(|| {
+                self.economy
+                    .castle_children()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)
+                    .map(|source| source.position)
+            })
+            .or_else(|| {
+                self.entities
+                    .get(usize::from(source_slot))
+                    .filter(|entity| entity.class == 5)
+                    .map(|entity| entity.position)
             })
     }
 

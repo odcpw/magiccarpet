@@ -398,11 +398,21 @@ pub(super) enum Model9DamageTransition {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Model9ReactionCandidate {
+    pub source_slot: u16,
+    pub position: Position,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Model9ReactionOutcome {
+    pub prey_to_consume: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Model9Action79Error {
     Selector(CampaignSharedFamilyError),
     InvalidChildChain { source_slot: u16, child_slot: u16 },
     InvalidDamageTarget { source_slot: u16, target_slot: u16 },
-    UnsupportedReactionIdle { source_slot: u16 },
     UnsupportedAllCandidatesBlocked { source_slot: u16 },
 }
 
@@ -423,10 +433,6 @@ impl fmt::Display for Model9Action79Error {
             } => write!(
                 formatter,
                 "model-9 source slot {source_slot} has invalid damage target slot {target_slot}"
-            ),
-            Self::UnsupportedReactionIdle { source_slot } => write!(
-                formatter,
-                "model-9 source slot {source_slot} reached the unimplemented action-74 target scan"
             ),
             Self::UnsupportedAllCandidatesBlocked { source_slot } => write!(
                 formatter,
@@ -738,20 +744,22 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
     Ok(outcome)
 }
 
-/// Port the package-reachable prefix of remc2 `sub_20940`: consume another
-/// hit while the Skeleton is reacting, or preserve the exact initial
-/// awareness/cooldown branch. The later target-family scan remains visibly
-/// fail-closed until its downstream creature-consumption behavior is shared.
+/// Port remc2 `sub_20940` through its frozen model-list selection. Creature
+/// replacement remains an effect intent so the campaign adapter can keep the
+/// source row unchanged when the corresponding constructor is not admitted.
 pub(super) fn step_model9_action74<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
     entities: &[EntitySnapshot],
     movement_pose: ParticlePose,
     reaction_pose: ParticlePose,
-) -> std::result::Result<Option<Model9DamageTransition>, Model9Action79Error> {
+    scan_period: u16,
+    awareness_radius: i32,
+    candidates: &[Model9ReactionCandidate],
+) -> std::result::Result<Model9ReactionOutcome, Model9Action79Error> {
     require_selector(entity, (MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_REACTION))?;
-    if let Some(transition) = consume_model9_damage(entity, world, entities, reaction_pose)? {
-        return Ok(Some(transition));
+    if consume_model9_damage(entity, world, entities, reaction_pose)?.is_some() {
+        return Ok(Model9ReactionOutcome::default());
     }
 
     let timer = entity.source_dword_10();
@@ -769,15 +777,42 @@ pub(super) fn step_model9_action74<W: FlightWorld>(
             entity.record[74] = 0;
             entity.set_source_dword_10(MODEL9_MOVEMENT_COUNTDOWN);
         }
-        return Ok(None);
+        return Ok(Model9ReactionOutcome::default());
     }
     if entity.record[61] != 0 {
         entity.set_source_dword_10(-50);
-        return Ok(None);
+        return Ok(Model9ReactionOutcome::default());
     }
-    Err(Model9Action79Error::UnsupportedReactionIdle {
-        source_slot: entity.index,
-    })
+    if scan_period == 0 || u16::from(entity.phase) % scan_period != 0 {
+        return Ok(Model9ReactionOutcome::default());
+    }
+
+    let awareness_squared = awareness_radius.wrapping_mul(awareness_radius) as u32;
+    let mut nearest = None;
+    let mut nearest_squared = u32::MAX;
+    for candidate in candidates {
+        let dx = i32::from(candidate.position.x.wrapping_sub(entity.position.x) as i16);
+        let dy = i32::from(candidate.position.y.wrapping_sub(entity.position.y) as i16);
+        let squared = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32;
+        if squared <= awareness_squared && squared < nearest_squared {
+            nearest = Some(*candidate);
+            nearest_squared = squared;
+        }
+    }
+
+    let prey_to_consume = nearest.and_then(|candidate| {
+        let dx = i32::from(candidate.position.x.wrapping_sub(entity.position.x) as i16);
+        let dy = i32::from(candidate.position.y.wrapping_sub(entity.position.y) as i16);
+        let dz = i32::from(candidate.position.z.wrapping_sub(entity.position.z));
+        let squared = dx
+            .wrapping_mul(dx)
+            .wrapping_add(dy.wrapping_mul(dy))
+            .wrapping_add(dz.wrapping_mul(dz)) as u32;
+        // `sub_7277A_radix_3d(...) <= 0x600` is an integer-root check, so
+        // every squared distance below 1537^2 is admitted.
+        (squared < 1_537_u32.pow(2)).then_some(candidate.source_slot)
+    });
+    Ok(Model9ReactionOutcome { prey_to_consume })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

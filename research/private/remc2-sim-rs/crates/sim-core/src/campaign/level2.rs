@@ -10727,7 +10727,7 @@ impl Level2ResetSession {
                 self.step_imported_stone(source_slot)?;
             }
             (ExistingHandler::Model9Family, Level2SourceRoute::Imported) => {
-                self.step_imported_model9(source_slot)?;
+                self.step_imported_model9(source_slot, pass_start_class5_model_slots)?;
             }
             (ExistingHandler::MultipartFamily, Level2SourceRoute::Imported) => {
                 self.step_imported_multipart(source_slot, pass_start_class5_model_slots)?;
@@ -11712,7 +11712,11 @@ impl Level2ResetSession {
         Ok(())
     }
 
-    fn step_imported_model9(&mut self, source_slot: u16) -> std::result::Result<(), String> {
+    fn step_imported_model9(
+        &mut self,
+        source_slot: u16,
+        pass_start_class5_model_slots: &[Vec<u16>; 29],
+    ) -> std::result::Result<(), String> {
         let action = self
             .session
             .state
@@ -11730,7 +11734,10 @@ impl Level2ResetSession {
             .ok_or_else(|| format!("model-9 callback lost source slot {source_slot}"))?;
         match action {
             79 => return self.step_imported_model9_action79(source_slot),
-            74 => return self.step_imported_model9_action74(source_slot),
+            74 => {
+                return self
+                    .step_imported_model9_action74(source_slot, pass_start_class5_model_slots);
+            }
             76 => return self.step_imported_model9_pre_kill(source_slot),
             77 => return self.step_imported_model9_kill(source_slot),
             72 => {}
@@ -11924,23 +11931,77 @@ impl Level2ResetSession {
     fn step_imported_model9_action74(
         &mut self,
         source_slot: u16,
+        pass_start_class5_model_slots: &[Vec<u16>; 29],
     ) -> std::result::Result<(), String> {
         let movement_pose = self.model9_particle_pose(201)?;
         let reaction_pose = self.model9_particle_pose(202)?;
+        let (scan_period, awareness_radius, scanned_model) = {
+            let live = &self.session.state.live;
+            let source = &live.economy.entities[usize::from(source_slot)];
+            let parameter_index = source.parameter_relation.ok_or_else(|| {
+                format!("model-9 source slot {source_slot} has no descriptor relation")
+            })?;
+            let parameter = self
+                .session
+                .definition
+                .presentation
+                .entity_parameters
+                .get(usize::from(parameter_index))
+                .ok_or_else(|| {
+                    format!(
+                        "model-9 source slot {source_slot} descriptor {parameter_index} is out of bounds"
+                    )
+                })?;
+            let scan_period = u16::from_le_bytes([parameter[26], parameter[27]]);
+            if scan_period == 0 {
+                return Err(format!(
+                    "model-9 source slot {source_slot} descriptor scan period is zero"
+                ));
+            }
+            let awareness_radius = i32::from(i16::from_le_bytes([parameter[28], parameter[29]]));
+            let scanned_model =
+                [4_u8, 12, 13][usize::from((u16::from(source.phase) / scan_period) % 3)];
+            (scan_period, awareness_radius, scanned_model)
+        };
+        let candidates = pass_start_class5_model_slots[usize::from(scanned_model)]
+            .iter()
+            .copied()
+            .filter_map(|candidate_slot| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .class5_position(candidate_slot)
+                    .map(
+                        |position| campaign_shared_families::Model9ReactionCandidate {
+                            source_slot: candidate_slot,
+                            position,
+                        },
+                    )
+            })
+            .collect::<Vec<_>>();
         let callback_start_entities = self.session.state.live.economy.entities.clone();
-        let position = {
+        let (position, outcome) = {
             let live = &mut self.session.state.live;
             let source = &mut live.economy.entities[usize::from(source_slot)];
-            campaign_shared_families::step_model9_action74(
+            let outcome = campaign_shared_families::step_model9_action74(
                 source,
                 &live.terrain,
                 &callback_start_entities,
                 movement_pose,
                 reaction_pose,
+                scan_period,
+                awareness_radius,
+                &candidates,
             )
             .map_err(|error| error.to_string())?;
-            source.position
+            (source.position, outcome)
         };
+        if let Some(prey_slot) = outcome.prey_to_consume {
+            return Err(format!(
+                "model-9 source slot {source_slot} selected class-5/model-{scanned_model} prey {prey_slot}; source creature replacement is not admitted"
+            ));
+        }
         self.session
             .state
             .live
@@ -17763,6 +17824,25 @@ mod tests {
                 .death_bursts()
                 .len(),
             burst_count
+        );
+
+        let mut reached_empty_prey_scan = false;
+        for _ in 0..25 {
+            let phase_before = skeleton(&campaign).phase;
+            step(&mut campaign);
+            assert_eq!(
+                (skeleton(&campaign).life, skeleton(&campaign).action),
+                (500, 74),
+                "the surviving Skeleton remains in its reaction scan without package-present prey"
+            );
+            if phase_before % 25 == 0 {
+                reached_empty_prey_scan = true;
+                break;
+            }
+        }
+        assert!(
+            reached_empty_prey_scan,
+            "the real Level 3 Skeleton reaches descriptor row 80's 25-phase prey scan"
         );
 
         apply_hit(&mut campaign, player_entity_index);
