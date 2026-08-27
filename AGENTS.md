@@ -16,6 +16,12 @@ This file adds only MagicCarpet-specific rules to
   Reverse engineering, replay and source archaeology are compatibility tools,
   not hostile-security work.
 
+Build one Rust-authoritative Carpet Flight engine whose first real game package
+is private `MC2-owned`; packages supply semantic game/world definitions and the
+engine supplies reusable deterministic capabilities. Unity is the primary
+player/editor, while humans and AI modify games through the same typed semantic
+API—never through a Level-N engine, raw remc2 identity or client-side gameplay.
+
 ## Binding direction
 
 Read before behavior or architecture work:
@@ -23,10 +29,13 @@ Read before behavior or architecture work:
 1. `docs/program-charter.md`
 2. `docs/product-promise.md`
 3. `docs/modular-engine-game-module-contract.md`
-4. `docs/stack-decision.md`
-5. `docs/private-public-boundary.md`
-6. `docs/provenance-policy.md`
-7. `docs/carpet-flight-engine-plan.md` while recovery remains active
+4. `docs/agent-addressable-game-architecture.md`
+5. `docs/stack-decision.md`
+6. `docs/private-public-boundary.md`
+7. `docs/provenance-policy.md`
+
+`docs/carpet-flight-engine-plan.md` is the completed foundation plan and dated
+evidence index; it no longer selects current work.
 
 Carpet Flight is one private remc2-derived Rust/Unity engine in this repository.
 `MC2-owned` is the first package; later custom/original packages reuse the same
@@ -35,11 +44,9 @@ player/editor and future OpenXR shell. Three.js is an inspector and optional
 client. Separate successor engines/repositories, clean-slate C# simulation,
 browser-first authority and Track-P/Track-S transfer are retired premises.
 
-Current priority is API-first extraction around the successful Level 1 route.
-Before broad later-level work, establish the neutral Rust domain session,
-package/definition, semantic transaction, client and conformance contracts and
-the `MC2-owned` plus `custom-proof` gate. Existing Level 2 work is retained but
-does not outrank this dependency.
+Current priority is the package-derived semantic definition for real Levels 1,
+2 and 3, then binding it through the existing Rust runtime. Level-specific
+compatibility work is retained but does not define the public domain model.
 
 Commercial distribution is a later exact-artifact gate. Owner-local MC2 play
 and private compatibility work do not wait for it.
@@ -62,12 +69,32 @@ pinned remc2 + owner data
 - `research/private/remc2-level-asset-closure/` and
   `remc2-unity-asset-cache/` — owner asset closure and deterministic cache.
 - `research/private/remc2-sim-rs/crates/sim-core/` — gameplay authority.
+  `level_definition.rs` is the semantic vocabulary;
+  `campaign/mc2_level_definition.rs` is the private MC2-number-to-semantic
+  adapter.
 - `research/private/remc2-sim-rs/crates/sim-capi/` — versioned transport;
   current Level 1/2 public shapes are compatibility surfaces, not the neutral
   domain contract.
 - `research/private/remc2-sim-rs/crates/sim-cli/` — headless harness base.
 - `research/private/remc2-unity-native/` — Unity `6000.3.20f1` client.
 - `sim-wasm`/`web` are parked proofs; Three.js must consume the new contract.
+
+## Semantic level architecture
+
+- [`docs/agent-addressable-game-architecture.md`](docs/agent-addressable-game-architecture.md)
+  is the binding definition/runtime/authoring contract and first-three-level
+  pause milestone. Apply it to every domain, not only creatures.
+- Keep raw remc2 identities in the MC2 adapter, one Rust runtime authority, and
+  package-present semantic content only. Definition support is not behavior
+  support; deliver the complete catalog -> package binding -> runtime lifecycle
+  -> downstream consumer chain.
+- Rename a touched `Level2*`/`class5`/`family*` type only when its ownership is
+  genuinely shared; do not add aliases or launch a cosmetic global rename.
+- For crate-boundary work, use the installed
+  `de-monolithize-your-codebase-isomorphically` and
+  `simplify-and-refactor-code-isomorphically` skills; preserve behavior, the
+  compiler mitigation and focused owning-crate verification described by the
+  architecture contract.
 
 ## Invariants
 
@@ -143,13 +170,36 @@ restarting them.
 
 ## Work selection and completion
 
-- After context compaction or session resume during level-content or engine-
-  architecture work, reread
+- After every context compaction or session resume, reread this file and
+  `docs/agent-addressable-game-architecture.md`. For non-trivial continuing
+  work also reread these two skills before acting:
+  `/home/oliver/Projects/odcpw/semantic-architecture/SKILL.md` and
   `/home/oliver/.codex/skills/just-say-no-to-process-porn-and-ceremony/SKILL.md`.
-  Treat the owner package/campaign definition as the level capability census:
+  Recover the newest user goal, Git/dirty state, running command and output,
+  last committed capability, last exact green evidence and current unsupported
+  boundary. Resume there; compaction is not permission to restart discovery,
+  redesign or unchanged expensive gates.
+- Prefer parallel read-only package/source, Rust-ownership and adversarial-gate
+  subagents for a complete semantic domain. Keep one integration owner, or use
+  explicit disjoint reservations for writers. Subagents do not justify
+  micro-items: the deliverable remains the complete catalog -> package binding
+  -> runtime lifecycle -> downstream consumer chain defined by the architecture
+  document.
+- Treat the owner package/campaign definition as the level capability census:
   test only behavior families actually reachable from that package, plus the
-  shared engine invariants those families exercise; do not build speculative
-  per-level test matrices for absent content.
+  shared invariants they exercise; never build absent-content matrices. The
+  qualified package and pinned remc2 outrank guides and reports. Before a row
+  is implemented, pin producer, visit, callback, epilogue, reclaim and first
+  consumer; use bounded archaeology for any missing link.
+- Every focused positive needs the nearest plausible wrong implementation as a
+  negative and an explicit No-Claim. Do not change source-correct engine
+  behavior to preserve a stale test; correct the test only with pinned source
+  and package evidence.
+- A yielded test process is still the same run: resume or inspect it instead of
+  starting another, and never infer success because it disappeared. If its exit
+  result is irretrievably lost, rerun that exact test once and say why.
+- Put new tests in the owning behavior/module file with a descriptive name.
+  Never add to `misc.rs`; extend a test only while it remains one causal chain.
 - Direct Oliver requests govern. Otherwise use `br ready --json` only after the
   recovery graph is reconciled; the pre-recovery graph selects obsolete work.
 - A Bead is worker-ready only when inputs, owned surfaces, exact acceptance,

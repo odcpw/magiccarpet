@@ -4,6 +4,10 @@ Status: **governing architecture contract; planned surfaces are not yet
 implemented unless the evidence-first plan says otherwise**
 Authority: [`program-charter.md`](program-charter.md)
 
+The concrete definition composition, strict agent-authoring boundary and
+first-three-level runtime milestone are binding in
+[`agent-addressable-game-architecture.md`](agent-addressable-game-architecture.md).
+
 ## Decision
 
 Carpet Flight is one Rust-authoritative engine with versioned game packages and

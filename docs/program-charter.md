@@ -151,10 +151,11 @@ Read these in order:
 1. this charter;
 2. [`product-promise.md`](product-promise.md);
 3. [`modular-engine-game-module-contract.md`](modular-engine-game-module-contract.md);
-4. [`stack-decision.md`](stack-decision.md);
-5. [`private-public-boundary.md`](private-public-boundary.md) and
+4. [`agent-addressable-game-architecture.md`](agent-addressable-game-architecture.md);
+5. [`stack-decision.md`](stack-decision.md);
+6. [`private-public-boundary.md`](private-public-boundary.md) and
    [`provenance-policy.md`](provenance-policy.md);
-6. the temporary recovery and execution plan.
+7. the completed recovery plan as dated implementation evidence only.
 
 `AGENTS.md` and `README.md` summarize current repository operation. Other design
 documents are subordinate capability notes or dated historical evidence.
