@@ -596,7 +596,7 @@
             }
             Some(row) => {
                 assert_ne!(row.generation, root_destroyed_generation);
-                assert_eq!(row.kind, Level2DynamicArenaKind::AuthoredBee);
+                assert_eq!(row.kind, Level2DynamicArenaKind::BeeCreature);
                 assert!(!root_destroyed.economy().free_slots.contains(&child_slot));
                 assert!(root_destroyed.economy().map_chains().is_linked(child_slot));
             }
@@ -633,7 +633,7 @@
                 // layer: the exact owner is the new source generation, not
                 // necessarily another Castle-child struct.
                 assert_ne!(row.generation, hidden_generation);
-                assert_eq!(row.kind, Level2DynamicArenaKind::AuthoredBee);
+                assert_eq!(row.kind, Level2DynamicArenaKind::BeeCreature);
                 assert!(!session.economy().free_slots.contains(&child_slot));
                 assert!(session.economy().map_chains().is_linked(child_slot));
             }

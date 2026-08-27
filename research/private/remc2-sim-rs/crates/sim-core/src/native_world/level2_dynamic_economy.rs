@@ -561,7 +561,7 @@ impl Level2EconomyState {
         if damage <= 0 || attacker == 0 || !self.map_chains.is_linked(target_slot) {
             return false;
         }
-        let Some(bee) = self.authored_bees.iter_mut().find(|bee| {
+        let Some(bee) = self.bee_creatures.iter_mut().find(|bee| {
             bee.active
                 && bee.drawing_enabled
                 && bee.life >= 0
@@ -875,7 +875,7 @@ impl Level2EconomyState {
                 })
                 .collect::<Vec<_>>();
             if model == 2 {
-                bucket.extend(self.authored_bees.iter().filter_map(|bee| {
+                bucket.extend(self.bee_creatures.iter().filter_map(|bee| {
                     (bee.active && bee.drawing_enabled && bee.life >= 0 && bee.source_byte_39 != 0)
                         .then_some(Level2FireballGuidanceTarget {
                             source_slot: bee.source_entity_index,
@@ -920,7 +920,7 @@ impl Level2EconomyState {
                 }
             })
             .collect::<Vec<_>>();
-        targets.extend(self.authored_bees.iter().filter_map(|bee| {
+        targets.extend(self.bee_creatures.iter().filter_map(|bee| {
             (bee.active
                 && bee.drawing_enabled
                 && bee.life >= 0

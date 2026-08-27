@@ -775,7 +775,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         .reclaim_house_source_slot_at_source_boundary(source_slot, source_rng);
                 }
                 let economy = &mut self.owner.session.state.live.economy;
-                economy.reclaim_deferred_authored_bees_at_source_boundary();
+                economy.reclaim_deferred_bee_creatures_at_source_boundary();
                 economy.reclaim_possession_rows_at_source_boundary();
                 economy.reclaim_fireball_rows_at_source_boundary();
                 economy.reclaim_death_burst_rows_at_source_boundary();
@@ -1410,7 +1410,7 @@ impl Level2ResetSession {
 
     pub(super) fn level2_bee_action18_target(
         &self,
-        source: &Level2AuthoredBeeSource,
+        source: &BeeCreatureRuntime,
     ) -> Option<(Position, i16, bool)> {
         source
             .target_entity_index
@@ -1708,7 +1708,7 @@ impl Level2ResetSession {
                 .state
                 .live
                 .economy
-                .authored_bees()
+                .bee_creatures()
                 .iter()
                 .filter(|source| source.active && source.life >= 0 && source.model == model)
                 .map(|source| (source.entity_id, source.position)),
@@ -4215,14 +4215,61 @@ impl Level2ResetSession {
                     .live
                     .economy
                     .economy
-                    .authored_bees()
+                    .bee_creatures()
                     .iter()
                     .find(|source| source.source_entity_index == source_slot)
-                    .map(|source| source.authored_index)
-            })?;
-        self.session
-            .definition
-            .creature_kind_for_authored_record(authored_record)
+                    .and_then(|source| source.authored_index())
+            });
+        if let Some(authored_record) = authored_record {
+            self.session
+                .definition
+                .creature_kind_for_authored_record(authored_record)
+        } else {
+            let source = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .bee_creatures()
+                .iter()
+                .find(|source| {
+                    source.source_entity_index == source_slot
+                        && matches!(source.origin, BeeCreatureOrigin::MorphSpell { .. })
+                })?;
+            let BeeCreatureOrigin::MorphSpell { holder_slot } = source.origin else {
+                return None;
+            };
+            if source.active
+                && !source.drawing_enabled
+                && self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .is_deferred_bee_reclaim(source_slot)
+            {
+                // DisableEntityDrawing clears the holder relation before a
+                // higher numeric Bee slot can receive its final same-pass
+                // callback. The typed Morph origin remains authoritative only
+                // for this already-queued terminal row.
+                return Some(CreatureKind::Bee);
+            }
+            self.session
+                .state
+                .live
+                .shared_spells
+                .pickup(holder_slot)
+                .filter(|holder| {
+                    holder.active
+                        && holder.model == 4
+                        && holder.action == 12
+                        && holder.source_word_96() == source_slot
+                        && holder.source_spell_parent_entity_index() == source.parent_entity_index
+                })
+                .map(|_| CreatureKind::Bee)
+        }
     }
 
     fn scenery_kind_for_source_slot(&self, source_slot: u16) -> Option<SceneryKind> {
@@ -6185,7 +6232,7 @@ impl Level2ResetSession {
     pub(super) fn allocate_level2_authored_bee_feature(
         &mut self,
         feature: AuthoredFeature,
-    ) -> Option<Level2AuthoredBeeSource> {
+    ) -> Option<BeeCreatureRuntime> {
         let stage_route = self.level2_bee_stage_route(feature);
         let position = feature.world_position(
             self.canonical_terrain()
@@ -6216,7 +6263,7 @@ impl Level2ResetSession {
     pub fn allocate_level2_authored_bee(
         &mut self,
         authored_index: u16,
-    ) -> Option<Level2AuthoredBeeSource> {
+    ) -> Option<BeeCreatureRuntime> {
         let feature = self
             .session
             .state
@@ -6406,7 +6453,7 @@ impl Level2EconomyTestView<'_> {
     terrain_method!(spawn_mana_spheres_from_death,
         (source_entity_index: u16, position: Position, source_yaw: i16, source_rng_after_death: u16, mana: i32, owner_entity_index: u16, use_mana_fraction: bool) -> Vec<u32>);
     terrain_method!(step_authored_bee_death_tail,
-        (source: &mut Level2AuthoredBeeSource) -> ());
+        (source: &mut BeeCreatureRuntime) -> ());
     terrain_method!(step_authored_bee_slot,
         (source_slot: u16, target_position: Option<Position>) -> bool);
     terrain_method!(step_authored_class5_slot,
@@ -7606,7 +7653,7 @@ impl Level2ResetSession {
                             .insert(feature.index);
                         debug_assert!(
                             self.economy
-                                .authored_bees()
+                                .bee_creatures()
                                 .iter()
                                 .any(|row| row.source_entity_index == source.source_entity_index)
                         );
@@ -9805,8 +9852,8 @@ impl Level2ResetSession {
                     Level2DynamicArenaKind::AuthoredModel13 => {
                         row_phase!(economy.authored_model13, phase)
                     }
-                    Level2DynamicArenaKind::AuthoredBee => {
-                        row_phase!(economy.authored_bees, phase)
+                    Level2DynamicArenaKind::BeeCreature => {
+                        row_phase!(economy.bee_creatures, phase)
                     }
                     Level2DynamicArenaKind::Model13SpawnedChild => {
                         row_phase!(economy.model13_spawned_children, phase)
@@ -10025,8 +10072,8 @@ impl Level2ResetSession {
                     Level2DynamicArenaKind::AuthoredModel13 => {
                         retained_phase!(economy.authored_model13, phase)
                     }
-                    Level2DynamicArenaKind::AuthoredBee => {
-                        retained_phase!(economy.authored_bees, phase)
+                    Level2DynamicArenaKind::BeeCreature => {
+                        retained_phase!(economy.bee_creatures, phase)
                     }
                     Level2DynamicArenaKind::Model13SpawnedChild => {
                         retained_phase!(economy.model13_spawned_children, phase)
@@ -10254,8 +10301,8 @@ impl Level2ResetSession {
                     Level2DynamicArenaKind::AuthoredModel13 => {
                         dynamic_phase_mut!(live.economy.economy.authored_model13, phase)
                     }
-                    Level2DynamicArenaKind::AuthoredBee => {
-                        dynamic_phase_mut!(live.economy.economy.authored_bees, phase)
+                    Level2DynamicArenaKind::BeeCreature => {
+                        dynamic_phase_mut!(live.economy.economy.bee_creatures, phase)
                     }
                     Level2DynamicArenaKind::Model13SpawnedChild => dynamic_phase_mut!(
                         live.economy.economy.model13_spawned_children,
@@ -10553,7 +10600,7 @@ impl Level2ResetSession {
                 Level2DynamicArenaKind::SpellReplacement | Level2DynamicArenaKind::SpellPickup => {
                     handler == ExistingHandler::SpellHolderAndPickup
                 }
-                Level2DynamicArenaKind::AuthoredBee => handler == ExistingHandler::BeeFamily,
+                Level2DynamicArenaKind::BeeCreature => handler == ExistingHandler::BeeFamily,
                 Level2DynamicArenaKind::Model6SpawnedChild => {
                     handler == ExistingHandler::Model6ProjectileChild
                 }
@@ -10601,13 +10648,19 @@ impl Level2ResetSession {
         source_slot: u16,
         visit: &Level2ResolvedSourceVisit,
     ) -> std::result::Result<(), String> {
+        // Legacy direct-selector sessions intentionally have no semantic
+        // LevelDefinition. Semantic/raw consistency becomes authoritative
+        // only after the package adapter binds that immutable definition.
+        if self.session.definition.semantic_level().is_none() {
+            return Ok(());
+        }
         let semantic_creature = self.creature_kind_for_source_slot(source_slot);
         if semantic_creature.is_some()
             || matches!(
                 visit.route,
                 Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredClass5
-                        | Level2DynamicArenaKind::AuthoredBee,
+                        | Level2DynamicArenaKind::BeeCreature,
                     ..
                 })
             )
@@ -10998,6 +11051,21 @@ impl Level2ResetSession {
                                     .get(&self.session.state.live.core.state.entity_index)
                                     .copied(),
                             );
+                        // The source has one player entity. The shared spell
+                        // adapter owns its upkeep callback, so publish those
+                        // writes back to the numeric arena before any later
+                        // source visit can observe a stale pre-upkeep row.
+                        let player_after_upkeep =
+                            self.session.state.live.shared_spells.player_entity.clone();
+                        let numeric_player = &mut self.session.state.live.economy.entities
+                            [usize::from(player_after_upkeep.index)];
+                        numeric_player.set_life(player_after_upkeep.life);
+                        numeric_player.set_mana(player_after_upkeep.mana);
+                        numeric_player.set_mana_regen(player_after_upkeep.mana_regen);
+                        numeric_player.max_mana = player_after_upkeep.max_mana;
+                        numeric_player.record[144..148]
+                            .copy_from_slice(&player_after_upkeep.max_mana.to_le_bytes());
+                        numeric_player.set_control_flags(player_after_upkeep.control_flags);
                         self.session
                             .state
                             .live
@@ -11686,23 +11754,23 @@ impl Level2ResetSession {
                     }
                 }
                 let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
-                    let is_active_speed_holder = self
+                    let active_holder = self
                         .session
                         .state
                         .live
                         .shared_spells
                         .pickup(source_slot)
-                        .is_some_and(|holder| holder.model == 3 && holder.action == 9);
-                    if is_active_speed_holder {
-                        self.step_dynamic_speed_holder(pass, source_slot)
-                    } else {
-                        self.step_level2_dynamic_spell_pickup(
+                        .map(|holder| (holder.model, holder.action));
+                    match active_holder {
+                        Some((3, 9)) => self.step_dynamic_speed_holder(pass, source_slot),
+                        Some((4, 12)) => self.step_dynamic_morph_holder(pass, source_slot),
+                        _ => self.step_level2_dynamic_spell_pickup(
                             pass,
                             source_slot,
                             player_entity_index,
                             *player_position,
                             source_player_order,
-                        )
+                        ),
                     }
                 } else if row.kind == Level2DynamicArenaKind::SpeedTrail {
                     self.session
@@ -13169,6 +13237,356 @@ impl Level2ResetSession {
         remains_live
     }
 
+    /// Dispatch the acquired family-4 holder through remc2 `sub_6A030` at
+    /// its real numeric source slot.
+    fn step_morph_holder_source_slot(&mut self, source_slot: u16) -> Result<bool> {
+        const MORPH_FAMILY: u8 = 4;
+        let holder = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup(source_slot)
+            .filter(|holder| holder.active && holder.model == MORPH_FAMILY && holder.action == 12)
+            .cloned()
+            .ok_or_else(|| NativeWorldError::new("Morph holder source row is not live"))?;
+        let parent_entity_index = holder.source_spell_parent_entity_index();
+        let parent = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .player_entities
+            .iter()
+            .find(|entity| entity.index == parent_entity_index && entity.active)
+            .cloned();
+        let first_pulse = holder.active_value == holder.activation_value.cast_signed();
+        let castle_mana = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .castle
+            .filter(|castle| castle.active && castle.owner_entity_index == parent_entity_index)
+            .map(|castle| castle.mana);
+        let source_gate_passed = parent.as_ref().is_some_and(|parent| {
+            parent.life >= 0
+                && parent.mana >= 0
+                && (holder.mana_regen == 0
+                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
+                && (!first_pulse || parent.mana >= holder.max_mana)
+        });
+        let tier = u8::try_from(holder.level_gate).map_err(|_| {
+            NativeWorldError::new(format!(
+                "Morph holder has invalid tier {}",
+                holder.level_gate
+            ))
+        })?;
+        let presentation_timer = u16::from_le_bytes([holder.record[58], holder.record[59]]);
+        let transition = crate::spell_activation::step_morph_spell(
+            crate::spell_activation::MorphSpellStepInput {
+                active_value: holder.active_value,
+                activation_value: holder.activation_value.cast_signed(),
+                presentation_timer,
+                parent_valid: parent.is_some(),
+                source_gate_passed,
+                parent_mana_regen: parent.as_ref().map_or(0, |parent| parent.mana_regen),
+                mana_cost: holder.max_mana,
+            },
+        );
+
+        if transition.award_experience {
+            self.session
+                .state
+                .live
+                .shared_spells
+                .award_spell_experience(parent_entity_index, MORPH_FAMILY, 1);
+            if let Some(source_player) = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .players
+                .iter()
+                .find(|player| player.entity_index == parent_entity_index)
+                .cloned()
+                && let Some(player) = self
+                    .session
+                    .state
+                    .live
+                    .core
+                    .players
+                    .iter_mut()
+                    .find(|player| player.entity_index == parent_entity_index)
+            {
+                player.sync_spell_progression_family_from(&source_player, MORPH_FAMILY as usize);
+            }
+            if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() {
+                fire.spell_experience[MORPH_FAMILY as usize] =
+                    self.session.state.live.shared_spells.spell_experience[MORPH_FAMILY as usize];
+                fire.spell_levels[MORPH_FAMILY as usize] =
+                    self.session.state.live.shared_spells.spell_levels[MORPH_FAMILY as usize];
+            }
+        }
+
+        let mut spawned_slot = None;
+        if transition.request_creature
+            && let Some(parent) = parent.as_ref()
+        {
+            let product = crate::spell_activation::morph_product(
+                self.session.state.live.terrain.map_type,
+                tier,
+            )
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Morph tier {tier} has no product for {:?}",
+                    self.session.state.live.terrain.map_type
+                ))
+            })?;
+            if product != CreatureKind::Bee {
+                return Err(NativeWorldError::new(format!(
+                    "Morph product {product:?} has no shared creature constructor"
+                )));
+            }
+            let position = if parent_entity_index == self.session.state.live.core.state.entity_index
+            {
+                self.session.state.live.core.state.position
+            } else {
+                parent.position
+            };
+            let terrain = &self.session.state.live.terrain;
+            spawned_slot = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .allocate_morph_bee(
+                    source_slot,
+                    parent_entity_index,
+                    parent.source_id,
+                    position,
+                    terrain,
+                )
+                .map(|source| source.source_entity_index);
+        }
+
+        if let Some(spawned_slot) = spawned_slot {
+            if let Some(authoritative) = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .pickup_mut(source_slot)
+            {
+                authoritative.set_source_word_96(spawned_slot);
+            }
+            let control_flags = parent.as_ref().map_or(0, |parent| parent.control_flags) | 0x21;
+            self.commit_morph_parent_control(parent_entity_index, control_flags);
+            mark_source_audio_call(SourceAudioCallTag::MorphSpellActivation);
+            self.session
+                .state
+                .live
+                .shared_spells
+                .emit_flight_effect(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: crate::MissionAudioSite::MorphSpellActivation,
+                    entity_index: parent_entity_index,
+                    player_index: -1,
+                    sound_id: 60,
+                });
+        }
+
+        if let Some(mana_regen) = transition.parent_mana_regen {
+            self.commit_morph_parent_mana_regen(parent_entity_index, mana_regen);
+        }
+        let mut expired_creature_slot = 0;
+        let mut queued_tier = 0;
+        if let Some(authoritative) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(source_slot)
+        {
+            authoritative.active_value = transition.active_value;
+            authoritative.record[50..52].copy_from_slice(&transition.active_value.to_le_bytes());
+            authoritative.record[58..60]
+                .copy_from_slice(&transition.presentation_timer.to_le_bytes());
+            if transition.expired {
+                expired_creature_slot = authoritative.source_word_96();
+                authoritative.clear_source_word_96();
+                queued_tier = authoritative.source_word_2c();
+            }
+        }
+        if transition.expired {
+            if expired_creature_slot != 0 {
+                let _ = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .disable_morph_bee(expired_creature_slot);
+            }
+            let control_flags = parent.as_ref().map_or(0, |parent| parent.control_flags) & !0x20;
+            self.commit_morph_parent_control(parent_entity_index, control_flags);
+            mark_source_audio_call(SourceAudioCallTag::MorphSpellActivation);
+            self.session
+                .state
+                .live
+                .shared_spells
+                .emit_flight_effect(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: crate::MissionAudioSite::MorphSpellActivation,
+                    entity_index: parent_entity_index,
+                    player_index: -1,
+                    sound_id: 60,
+                });
+            if queued_tier != 0 {
+                let tier = u8::try_from(queued_tier - 1).map_err(|_| {
+                    NativeWorldError::new(format!(
+                        "Morph holder has invalid queued tier {queued_tier}"
+                    ))
+                })?;
+                let profile = level2_set_spell_profile(MORPH_FAMILY, tier).ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "Morph holder has unsupported queued tier {tier}"
+                    ))
+                })?;
+                if let Some(authoritative) = self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .pickup_mut(source_slot)
+                {
+                    authoritative.set_source_word_2c(0);
+                    authoritative.apply_nyphur_spell_profile(profile, tier);
+                }
+            }
+        }
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
+            && let Some(holder) = fire
+                .holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == source_slot)
+        {
+            holder.active_value = transition.active_value;
+        }
+        Ok(true)
+    }
+
+    fn commit_morph_parent_mana_regen(&mut self, parent_entity_index: u16, mana_regen: i32) {
+        self.session
+            .state
+            .live
+            .shared_spells
+            .player_entity
+            .set_mana_regen(mana_regen);
+        for entity in &mut self.session.state.live.shared_spells.player_entities {
+            if entity.index == parent_entity_index {
+                entity.set_mana_regen(mana_regen);
+            }
+        }
+        if let Some(entity) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter_mut()
+            .find(|entity| entity.index == parent_entity_index)
+        {
+            entity.set_mana_regen(mana_regen);
+        }
+    }
+
+    fn commit_morph_parent_control(&mut self, parent_entity_index: u16, control_flags: u32) {
+        self.session.state.live.shared_spells.caster.control_flags = control_flags;
+        self.session
+            .state
+            .live
+            .shared_spells
+            .player_entity
+            .set_control_flags(control_flags);
+        for entity in &mut self.session.state.live.shared_spells.player_entities {
+            if entity.index == parent_entity_index {
+                entity.set_control_flags(control_flags);
+            }
+        }
+        if let Some(entity) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter_mut()
+            .find(|entity| entity.index == parent_entity_index)
+        {
+            entity.set_control_flags(control_flags);
+        }
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
+            && fire.caster.entity_index == parent_entity_index
+        {
+            fire.caster.control_flags = control_flags;
+        }
+    }
+
+    fn step_dynamic_morph_holder(&mut self, pass: u8, source_slot: u16) -> bool {
+        if let Err(error) = self.step_morph_holder_source_slot(source_slot) {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: error.to_string(),
+            });
+            return false;
+        }
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(source_slot)
+        {
+            holder.phase = holder.phase.wrapping_add(1);
+            holder.record[66] = holder.phase;
+        }
+        let Some((action, position)) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup(source_slot)
+            .map(|holder| (holder.action, holder.position))
+        else {
+            return false;
+        };
+        if !self
+            .session
+            .state
+            .live
+            .economy
+            .sync_spell_pickup_projection(source_slot, action, position)
+        {
+            return false;
+        }
+        let remains_live = self
+            .session
+            .state
+            .live
+            .economy
+            .step_spell_pickup_slot(source_slot);
+        if self
+            .commit_imported_spell_source_projection(source_slot)
+            .is_err()
+        {
+            return false;
+        }
+        remains_live
+    }
+
     /// Dispatch the acquired family-3 holder through `GetScroll_69DB0` at
     /// its real numeric source slot.
     fn step_speed_holder_source_slot(&mut self, source_slot: u16) -> bool {
@@ -14148,7 +14566,7 @@ impl Level2ResetSession {
             .state
             .live
             .economy
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .filter(|bee| {
                 bee.active
@@ -15022,143 +15440,183 @@ impl Level2ResetSession {
                     .economy
                     .step_authored_model13_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::AuthoredBee => {
+            Level2DynamicArenaKind::BeeCreature => {
                 let source_before = self
                     .session
                     .state
                     .live
                     .economy
-                    .authored_bees()
+                    .bee_creatures()
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
                     .copied();
                 let Some(source_before) = source_before else {
                     return false;
                 };
-                let pre_kill_credit = (source_before.action == 20)
-                    .then_some(source_before.kill_credit_entity_index)
-                    .filter(|killer| *killer != 0);
-                let class3_candidates = if source_before.action == 17
-                    || (source_before.action == 23 && source_before.stage_var2 == 2)
-                {
-                    self.level2_bee_class3_targets()
+                if matches!(source_before.origin, BeeCreatureOrigin::MorphSpell { .. }) {
+                    let local_player_index = self.session.state.live.core.state.entity_index;
+                    let local_position = self.session.state.live.core.state.position;
+                    let local_yaw = self.session.state.live.core.state.yaw;
+                    let local_roll = self.session.state.live.core.state.roll_accumulator;
+                    let parent = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .entities
+                        .iter()
+                        .find(|entity| entity.index == source_before.parent_entity_index)
+                        .map(|entity| BeeFollowerParent {
+                            entity_index: entity.index,
+                            position: if entity.index == local_player_index {
+                                local_position
+                            } else {
+                                entity.position
+                            },
+                            yaw: if entity.index == local_player_index {
+                                local_yaw
+                            } else {
+                                entity.yaw
+                            },
+                            roll: if entity.index == local_player_index {
+                                local_roll
+                            } else {
+                                entity.source_roll()
+                            },
+                            life: entity.life,
+                            active: entity.active && !entity.drawing_disabled(),
+                        });
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .step_morph_bee_follower(source_slot, parent)
                 } else {
-                    Vec::new()
-                };
-                let acquired_target = if source_before.action == 17 {
+                    let pre_kill_credit = (source_before.action == 20)
+                        .then_some(source_before.kill_credit_entity_index)
+                        .filter(|killer| *killer != 0);
+                    let class3_candidates = if source_before.action == 17
+                        || (source_before.action == 23 && source_before.stage_var2 == 2)
+                    {
+                        self.level2_bee_class3_targets()
+                    } else {
+                        Vec::new()
+                    };
+                    let acquired_target = if source_before.action == 17 {
+                        let terrain = &self.session.state.live.terrain;
+                        self.session.state.live.economy.acquire_authored_bee_target(
+                            source_slot,
+                            &class3_candidates,
+                            terrain,
+                        )
+                    } else {
+                        None
+                    };
+                    let source = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .bee_creatures()
+                        .iter()
+                        .find(|source| source.active && source.source_entity_index == source_slot)
+                        .copied()
+                        .expect("authored Bee remains live after target scan");
+                    let target = if source_before.action == 17 {
+                        acquired_target
+                            .and_then(|target_index| self.level2_bee_entity_target(target_index))
+                    } else if source.action == 18 {
+                        self.level2_bee_action18_target(&source)
+                    } else {
+                        source
+                            .target_entity_index
+                            .and_then(|target_index| self.level2_bee_entity_target(target_index))
+                    };
+                    let contact_candidate = source_before.action == 18
+                        && source_before.target_entity_index
+                            == Some(self.session.state.live.core.state.entity_index)
+                        && target.is_some_and(|(_, _, valid)| valid)
+                        && source_before.action_window > 0
+                        && source_before.source_byte_3e
+                            % u8::try_from(source_before.action_window)
+                                .expect("positive Bee action window")
+                            == 0;
+                    let peers = self.level2_bee_peer_rows(source_before.model);
                     let terrain = &self.session.state.live.terrain;
-                    self.session.state.live.economy.acquire_authored_bee_target(
-                        source_slot,
-                        &class3_candidates,
-                        terrain,
-                    )
-                } else {
-                    None
-                };
-                let source = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .authored_bees()
-                    .iter()
-                    .find(|source| source.active && source.source_entity_index == source_slot)
-                    .copied()
-                    .expect("authored Bee remains live after target scan");
-                let target = if source_before.action == 17 {
-                    acquired_target
-                        .and_then(|target_index| self.level2_bee_entity_target(target_index))
-                } else if source.action == 18 {
-                    self.level2_bee_action18_target(&source)
-                } else {
-                    source
-                        .target_entity_index
-                        .and_then(|target_index| self.level2_bee_entity_target(target_index))
-                };
-                let contact_candidate = source_before.action == 18
-                    && source_before.target_entity_index
-                        == Some(self.session.state.live.core.state.entity_index)
-                    && target.is_some_and(|(_, _, valid)| valid)
-                    && source_before.action_window > 0
-                    && source_before.source_byte_3e
-                        % u8::try_from(source_before.action_window)
-                            .expect("positive Bee action window")
-                        == 0;
-                let peers = self.level2_bee_peer_rows(source_before.model);
-                let terrain = &self.session.state.live.terrain;
-                let live = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .step_authored_bee_slot_with_target_and_peers(
-                        source_slot,
-                        target,
-                        &peers,
-                        &class3_candidates,
-                        terrain,
-                    );
-                if let Some(killer_entity_index) = pre_kill_credit {
-                    // `PreKillEntity_1C890` credits only a live, drawn
-                    // class-3/model-0 owner distinct from the killed root.
-                    // Keep stale, disabled, wrong-class/model, and self-owned
-                    // identities fail-closed before changing the reset census.
-                    let qualifying_killer = killer_entity_index != source_before.entity_id
-                        && self
-                            .session
-                            .state
-                            .live
-                            .economy
-                            .entities
-                            .iter()
-                            .any(|entity| {
-                                entity.index == killer_entity_index
-                                    && entity.active
-                                    && entity.life >= 0
-                                    && entity.class == 3
-                                    && entity.model == 0
-                                    && !entity.drawing_disabled()
-                            });
-                    if qualifying_killer {
-                        let _ = self
-                            .session
-                            .state
-                            .live
-                            .economy
-                            .record_authored_bee_kill(killer_entity_index);
-                    }
-                }
-                if contact_candidate {
-                    if let (Some((target_position, _, true)), Some(after)) = (
-                        target,
-                        self.session
-                            .state
-                            .live
-                            .economy
-                            .authored_bees()
-                            .iter()
-                            .find(|candidate| {
-                                candidate.active && candidate.source_entity_index == source_slot
-                            })
-                            .copied(),
-                    ) {
-                        let distance_squared =
-                            level2_wrapping_source_distance_3d(after.position, target_position);
-                        if after.action == 18
-                            && distance_squared
-                                < u32::from(LEVEL2_BEE_CONTACT_RADIUS)
-                                    .saturating_mul(u32::from(LEVEL2_BEE_CONTACT_RADIUS))
-                        {
-                            // `sub_1C310` invokes `sub_1CE80`, which queues
-                            // subspell 200 through the real player mailbox;
-                            // the player source callback consumes it at its
-                            // next source-ordered visit.
-                            let damage = i32::from(after.subspell_index);
-                            self.queue_level2_player_contact_damage(damage, after.entity_id);
+                    let live = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .step_authored_bee_slot_with_target_and_peers(
+                            source_slot,
+                            target,
+                            &peers,
+                            &class3_candidates,
+                            terrain,
+                        );
+                    if let Some(killer_entity_index) = pre_kill_credit {
+                        // `PreKillEntity_1C890` credits only a live, drawn
+                        // class-3/model-0 owner distinct from the killed root.
+                        // Keep stale, disabled, wrong-class/model, and self-owned
+                        // identities fail-closed before changing the reset census.
+                        let qualifying_killer = killer_entity_index != source_before.entity_id
+                            && self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .entities
+                                .iter()
+                                .any(|entity| {
+                                    entity.index == killer_entity_index
+                                        && entity.active
+                                        && entity.life >= 0
+                                        && entity.class == 3
+                                        && entity.model == 0
+                                        && !entity.drawing_disabled()
+                                });
+                        if qualifying_killer {
+                            let _ = self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .record_authored_bee_kill(killer_entity_index);
                         }
                     }
+                    if contact_candidate {
+                        if let (Some((target_position, _, true)), Some(after)) = (
+                            target,
+                            self.session
+                                .state
+                                .live
+                                .economy
+                                .bee_creatures()
+                                .iter()
+                                .find(|candidate| {
+                                    candidate.active && candidate.source_entity_index == source_slot
+                                })
+                                .copied(),
+                        ) {
+                            let distance_squared =
+                                level2_wrapping_source_distance_3d(after.position, target_position);
+                            if after.action == 18
+                                && distance_squared
+                                    < u32::from(LEVEL2_BEE_CONTACT_RADIUS)
+                                        .saturating_mul(u32::from(LEVEL2_BEE_CONTACT_RADIUS))
+                            {
+                                // `sub_1C310` invokes `sub_1CE80`, which queues
+                                // subspell 200 through the real player mailbox;
+                                // the player source callback consumes it at its
+                                // next source-ordered visit.
+                                let damage = i32::from(after.subspell_index);
+                                self.queue_level2_player_contact_damage(damage, after.entity_id);
+                            }
+                        }
+                    }
+                    live
                 }
-                live
             }
             Level2DynamicArenaKind::Model13SpawnedChild => {
                 let terrain = &self.session.state.live.terrain;
@@ -20093,8 +20551,8 @@ mod tests {
         const FINAL_DRAGON_ROWS: [u16; 3] = [128, 131, 132];
 
         #[track_caller]
-        fn step(campaign: &mut CampaignSession) {
-            let _ = campaign.step(PlayerCommand::default(), 0);
+        fn step_with_command(campaign: &mut CampaignSession, command: PlayerCommand) {
+            let _ = campaign.step(command, 0);
             assert!(
                 campaign
                     .level2_compatibility()
@@ -20104,6 +20562,11 @@ mod tests {
                 "Level 3 final-chain dispatch errors: {:?}",
                 campaign.level2_compatibility().dispatch_events()
             );
+        }
+
+        #[track_caller]
+        fn step(campaign: &mut CampaignSession) {
+            step_with_command(campaign, PlayerCommand::default());
         }
 
         let package = level_three_descriptor_fixture_path();
@@ -20167,7 +20630,7 @@ mod tests {
             live.core.runtime.objectives[0].stage_selectors[REACH_STAGE],
             1
         );
-        assert!(live.economy.economy.authored_bees().is_empty());
+        assert!(live.economy.economy.bee_creatures().is_empty());
         assert!(
             campaign
                 .level2_compatibility()
@@ -20193,7 +20656,7 @@ mod tests {
             live.core.runtime.objectives[0].text_selector,
             BEE_STAGE as u8
         );
-        assert!(live.economy.economy.authored_bees().is_empty());
+        assert!(live.economy.economy.bee_creatures().is_empty());
         assert!(
             campaign
                 .level2_compatibility()
@@ -20224,10 +20687,10 @@ mod tests {
             live.core.runtime.objectives[0].stage_selectors[BEE_STAGE],
             1
         );
-        let bees = live.economy.economy.authored_bees();
+        let bees = live.economy.economy.bee_creatures();
         assert_eq!(
             bees.iter()
-                .map(|source| source.authored_index)
+                .filter_map(BeeCreatureRuntime::authored_index)
                 .collect::<Vec<_>>(),
             BEE_ROWS
         );
@@ -20298,7 +20761,7 @@ mod tests {
         );
         step(&mut campaign);
         let live = &campaign.level2_compatibility().session.state.live;
-        assert!(live.economy.economy.authored_bees().is_empty());
+        assert!(live.economy.economy.bee_creatures().is_empty());
         assert_eq!(
             live.core.runtime.objectives[0].stage_selectors[BEE_STAGE],
             2
@@ -20529,6 +20992,676 @@ mod tests {
             })
             .expect("Morph acquisition receipt");
         assert!(sound_sequence < acquired_sequence);
+
+        // Stage only Morph's already-proven Castle-mana and caster-mana
+        // prerequisites. The real acquired holder, public spell command,
+        // numeric holder visit, shared arena allocation, and follower visit
+        // remain production-owned below.
+        let player_position = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .position;
+        let castle_slot = campaign
+            .level2_compatibility_mut()
+            .economy_mut()
+            .build_castle(player_position, player_entity_index)
+            .expect("the package arena can stage Morph's Castle prerequisite");
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle_slot, 20_000)
+        );
+        {
+            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            live.shared_spells.player_entity.set_mana(5_000);
+            let player_snapshot = live.shared_spells.player_entity.clone();
+            for player in &mut live.shared_spells.player_entities {
+                if player.index == player_entity_index {
+                    *player = player_snapshot.clone();
+                }
+            }
+            live.shared_spells.caster.mana = 5_000;
+            live.shared_spells.player_mana = 5_000;
+            live.economy.entities[usize::from(player_entity_index)].set_mana(5_000);
+        }
+        let pre_cast_bee_count = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .bee_creatures()
+            .len();
+        let pre_cast_sound_cursor = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        let pre_cast_experience = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .shared_spells
+            .spell_experience()[4];
+        assert!(
+            morph_slot < player_entity_index,
+            "the qualified package's Morph holder visits before its player"
+        );
+        step_with_command(
+            &mut campaign,
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 4,
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+        );
+        let armed_live = &campaign.level2_compatibility().session.state.live;
+        let armed_holder = armed_live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .find(|holder| holder.index == morph_slot)
+            .expect("the public command arms the acquired Morph holder");
+        assert_eq!(
+            (armed_holder.active_value, armed_holder.source_word_96()),
+            (201, 0),
+            "the player visit arms Morph but never runs action 12 inline"
+        );
+        assert_eq!(
+            armed_live.economy.economy.bee_creatures().len(),
+            pre_cast_bee_count
+        );
+        assert!(
+            campaign.level2_compatibility().effect_journal().records()[pre_cast_sound_cursor..]
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        sound_id: 60,
+                        ..
+                    })
+                ))
+        );
+
+        let mut allocation_failure = campaign.clone();
+        let player_before_pulse = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state;
+        let player_mana_before_pulse = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .shared_spells
+            .player_entity
+            .mana;
+        let (expected_bee_slot, global_rng_before, constructor_phase_before) = {
+            let economy = &campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy;
+            (
+                *economy
+                    .free_slots
+                    .last()
+                    .expect("qualified Morph route retains a NewEvent slot"),
+                economy.global_rng,
+                economy.bee_model2_constructor_phase,
+            )
+        };
+        let success_journal_cursor = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        step(&mut campaign);
+        let success_live = &campaign.level2_compatibility().session.state.live;
+        let holder = success_live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .find(|holder| holder.index == morph_slot)
+            .expect("Morph holder remains live after its first pulse");
+        assert_eq!(
+            (holder.active_value, holder.source_word_96()),
+            (200, expected_bee_slot)
+        );
+        let morph_bee = success_live
+            .economy
+            .economy
+            .bee_creatures()
+            .iter()
+            .find(|source| {
+                source.source_entity_index == expected_bee_slot
+                    && source.origin
+                        == BeeCreatureOrigin::MorphSpell {
+                            holder_slot: morph_slot,
+                        }
+            })
+            .copied()
+            .expect("Morph's first pulse constructs one semantic Bee");
+        let next16 = |seed: u16| seed.wrapping_mul(9_377).wrapping_add(9_439);
+        let next32 = |seed: u32| seed.wrapping_mul(9_377).wrapping_add(9_439);
+        let constructor_seed = expected_bee_slot.wrapping_add(next32(global_rng_before) as u16);
+        let expected_rng = next16(constructor_seed);
+        let bee_visited_on_birth_pass = expected_bee_slot > morph_slot;
+        assert_eq!(
+            (
+                morph_bee.source_class,
+                morph_bee.model,
+                morph_bee.action,
+                morph_bee.stage_var1,
+                morph_bee.stage_var2,
+                morph_bee.parent_entity_index,
+                morph_bee.control_flags,
+            ),
+            (5, 2, 23, 0, 12, player_entity_index, 9)
+        );
+        assert_eq!(
+            (
+                morph_bee.minimum_speed,
+                morph_bee.maximum_speed,
+                morph_bee.actual_speed,
+                morph_bee.max_life,
+                morph_bee.life,
+                morph_bee.mana,
+                morph_bee.subspell_index,
+            ),
+            (64, 30, 32, 3_000, 3_000, 1_500, 200,)
+        );
+        assert_eq!(
+            (
+                morph_bee.entity_rng,
+                morph_bee.source_byte_3e,
+                morph_bee.phase,
+            ),
+            (
+                expected_rng,
+                constructor_phase_before.wrapping_add(u8::from(bee_visited_on_birth_pass)),
+                u8::from(bee_visited_on_birth_pass),
+            )
+        );
+        let expected_angle = (expected_rng & 0x07ff) as i16 - 1;
+        let followed_parent =
+            if bee_visited_on_birth_pass && expected_bee_slot > player_entity_index {
+                success_live.core.state
+            } else {
+                player_before_pulse
+            };
+        assert_eq!(
+            (morph_bee.yaw, morph_bee.pitch, morph_bee.roll),
+            (
+                if bee_visited_on_birth_pass {
+                    followed_parent.yaw
+                } else {
+                    expected_angle
+                },
+                expected_angle,
+                if bee_visited_on_birth_pass {
+                    followed_parent.roll_accumulator
+                } else {
+                    expected_angle
+                },
+            )
+        );
+        assert_eq!(morph_bee.position, followed_parent.position);
+        assert_eq!(
+            success_live.shared_spells.spell_experience()[4],
+            pre_cast_experience.wrapping_add(1)
+        );
+        assert_eq!(
+            (
+                success_live.shared_spells.player_entity.mana_regen,
+                success_live
+                    .shared_spells
+                    .player_entities
+                    .iter()
+                    .find(|entity| entity.index == player_entity_index)
+                    .expect("local shared player")
+                    .mana_regen,
+                success_live.economy.entities[usize::from(player_entity_index)].mana_regen,
+            ),
+            (100, 100, 100)
+        );
+        assert_eq!(
+            (
+                success_live.shared_spells.player_entity.mana,
+                success_live
+                    .shared_spells
+                    .player_entities
+                    .iter()
+                    .find(|entity| entity.index == player_entity_index)
+                    .expect("local shared player")
+                    .mana,
+                success_live.economy.entities[usize::from(player_entity_index)].mana,
+            ),
+            (
+                player_mana_before_pulse.wrapping_sub(5_000),
+                player_mana_before_pulse.wrapping_sub(5_000),
+                player_mana_before_pulse.wrapping_sub(5_000),
+            ),
+            "the later player visit consumes Morph's -5000 mana-regeneration charge"
+        );
+        assert_eq!(success_live.shared_spells.caster.control_flags & 0x21, 0x21);
+        assert_eq!(
+            success_live
+                .core
+                .context
+                .spell_fire
+                .as_ref()
+                .expect("Morph command context")
+                .caster
+                .control_flags
+                & 0x21,
+            0x21
+        );
+        let success_effects =
+            &campaign.level2_compatibility().effect_journal().records()[success_journal_cursor..];
+        assert_eq!(
+            success_effects
+                .iter()
+                .filter(|record| matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::PrepareSound {
+                            entity_index,
+                            sound_id: 60,
+                            ..
+                        }
+                    ) if entity_index == player_entity_index
+                ))
+                .count(),
+            1
+        );
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        let holder_callback = receipts
+            .iter()
+            .position(|receipt| {
+                matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == morph_slot
+                )
+            })
+            .expect("Morph holder receives its numeric callback");
+        let bee_callback = receipts.iter().position(|receipt| {
+            matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted { slot, .. }
+                    if *slot == expected_bee_slot
+            )
+        });
+        assert_eq!(bee_callback.is_some(), bee_visited_on_birth_pass);
+        if let Some(bee_callback) = bee_callback {
+            assert!(holder_callback < bee_callback);
+        }
+
+        let mut morph_hash_negative = campaign.clone();
+        let morph_hash = campaign.state_hash();
+        morph_hash_negative
+            .level2_compatibility_mut()
+            .economy_mut()
+            .bee_creatures
+            .iter_mut()
+            .find(|source| source.source_entity_index == expected_bee_slot)
+            .expect("Morph Bee hash discriminator")
+            .parent_entity_index ^= 1;
+        assert_ne!(morph_hash_negative.state_hash(), morph_hash);
+
+        // Stage only the terminal counter and queued SetSpell carrier on the
+        // already-real holder/body relation. The ordinary holder visit must
+        // disable the body, clear the parent flag, emit the expiry sound, and
+        // only then install the queued tier. The next idle action-12 visit is
+        // valid even though Day tier 1 has no implemented creature product.
+        let mut queued_expiry = campaign.clone();
+        let body_before_expiry = queued_expiry
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .bee_creatures()
+            .iter()
+            .find(|source| source.source_entity_index == expected_bee_slot)
+            .copied()
+            .expect("live Morph body before expiry");
+        {
+            let holder = queued_expiry
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .shared_spells
+                .pickup_mut(morph_slot)
+                .expect("queued-expiry Morph holder");
+            holder.active_value = 1;
+            holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+            holder.set_source_word_2c(2);
+        }
+        let expiry_effect_cursor = queued_expiry
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        step(&mut queued_expiry);
+        let expired_live = &queued_expiry.level2_compatibility().session.state.live;
+        let expired_holder = expired_live
+            .shared_spells
+            .pickup(morph_slot)
+            .expect("expired Morph holder remains owned");
+        assert_eq!(
+            (
+                expired_holder.active_value,
+                expired_holder.level_gate,
+                expired_holder.activation_value,
+                expired_holder.source_word_2c(),
+                expired_holder.source_word_96(),
+            ),
+            (0, 1, 301, 0, 0)
+        );
+        assert_eq!(expired_live.shared_spells.caster.control_flags & 0x20, 0);
+        let expired_body = expired_live
+            .economy
+            .economy
+            .bee_creatures()
+            .iter()
+            .find(|source| source.source_entity_index == expected_bee_slot)
+            .expect("disabled Morph body remains until the next source boundary");
+        assert!(expired_body.active && !expired_body.drawing_enabled);
+        assert_eq!(
+            queued_expiry
+                .level2_compatibility()
+                .creature_kind_for_source_slot(expected_bee_slot),
+            Some(CreatureKind::Bee),
+            "the terminal Morph origin remains dispatchable after expiry clears the holder back-reference"
+        );
+        assert_eq!(
+            (expired_body.source_byte_3e, expired_body.phase),
+            (
+                body_before_expiry.source_byte_3e.wrapping_add(1),
+                body_before_expiry.phase.wrapping_add(1),
+            ),
+            "the pre-existing Morph body gets exactly one numeric callback in the expiry pass; slot order decides whether it runs before or after the holder hide"
+        );
+        assert_eq!(
+            queued_expiry
+                .level2_compatibility()
+                .effect_journal()
+                .records()[expiry_effect_cursor..]
+                .iter()
+                .filter(|record| matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::PrepareSound {
+                            entity_index,
+                            sound_id: 60,
+                            ..
+                        }
+                    ) if entity_index == player_entity_index
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            queued_expiry
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        step(&mut queued_expiry);
+        assert!(
+            queued_expiry
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+            "an idle queued tier must not require an unimplemented Morph product"
+        );
+        assert!(
+            queued_expiry
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .bee_creatures()
+                .iter()
+                .all(|source| source.source_entity_index != expected_bee_slot),
+            "the following source boundary reclaims the disabled Morph body"
+        );
+        assert!(
+            !queued_expiry
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .map_chains()
+                .is_linked(expected_bee_slot)
+        );
+        assert!(
+            queued_expiry
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .free_slots
+                .contains(&expected_bee_slot),
+            "Morph reclaim returns the exact NewEvent slot"
+        );
+
+        let mut severed_relation = campaign.clone();
+        severed_relation
+            .level2_compatibility_mut()
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(morph_slot)
+            .expect("Morph holder exists in the semantic negative")
+            .clear_source_word_96();
+        let _ = severed_relation.step(PlayerCommand::default(), 0);
+        assert!(
+            severed_relation
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot,
+                        message,
+                        ..
+                    } if *source_slot == expected_bee_slot
+                        && message.contains("no package-authored semantic identity")
+                )),
+            "a Morph Bee without its live holder relation must fail semantic dispatch"
+        );
+
+        // The selector-12 body follows the live player carrier and preserves
+        // numeric ordering. A lower-slot body observes the preceding turn's
+        // public orientation; a higher-slot body observes it in the same pass.
+        let pre_turn_player = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state;
+        step_with_command(
+            &mut campaign,
+            PlayerCommand {
+                roll: 127,
+                ..PlayerCommand::default()
+            },
+        );
+        if expected_bee_slot > player_entity_index {
+            let live = &campaign.level2_compatibility().session.state.live;
+            let follower = live
+                .economy
+                .economy
+                .bee_creatures()
+                .iter()
+                .find(|source| source.source_entity_index == expected_bee_slot)
+                .expect("same-pass Morph follower");
+            assert_eq!(
+                (follower.position, follower.yaw, follower.roll),
+                (
+                    live.core.state.position,
+                    live.core.state.yaw,
+                    live.core.state.roll_accumulator,
+                )
+            );
+        } else {
+            let follower = campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .bee_creatures()
+                .iter()
+                .find(|source| source.source_entity_index == expected_bee_slot)
+                .expect("pre-player Morph follower");
+            assert_eq!(
+                (follower.position, follower.yaw, follower.roll),
+                (
+                    pre_turn_player.position,
+                    pre_turn_player.yaw,
+                    pre_turn_player.roll_accumulator,
+                )
+            );
+        }
+
+        let failure_sound_cursor = allocation_failure
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        let removed_slot = allocation_failure
+            .level2_compatibility_mut()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .exhaust_new_event_capacity_for_test()
+            .expect("failure branch removes a real free slot");
+        let failure_constructor_phase = allocation_failure
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .bee_model2_constructor_phase;
+        step(&mut allocation_failure);
+        let failed_live = &allocation_failure.level2_compatibility().session.state.live;
+        let failed_holder = failed_live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .find(|holder| holder.index == morph_slot)
+            .expect("failed allocation still consumes the Morph pulse");
+        assert_eq!(
+            (failed_holder.active_value, failed_holder.source_word_96()),
+            (200, 0)
+        );
+        assert_eq!(
+            failed_live.shared_spells.spell_experience()[4],
+            pre_cast_experience.wrapping_add(1)
+        );
+        assert_eq!(failed_live.shared_spells.player_entity.mana_regen, 100);
+        assert_eq!(
+            failed_live.shared_spells.player_entity.mana,
+            player_mana_before_pulse.wrapping_sub(5_000)
+        );
+        assert_eq!(
+            failed_live.economy.economy.bee_model2_constructor_phase,
+            failure_constructor_phase
+        );
+        assert_eq!(
+            failed_live
+                .economy
+                .economy
+                .bee_creatures()
+                .iter()
+                .filter(|source| matches!(source.origin, BeeCreatureOrigin::MorphSpell { .. }))
+                .count(),
+            0
+        );
+        assert!(
+            allocation_failure
+                .level2_compatibility()
+                .effect_journal()
+                .records()[failure_sound_cursor..]
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        sound_id: 60,
+                        ..
+                    })
+                ))
+        );
+        assert!(
+            allocation_failure
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .restore_new_event_slot_for_test(removed_slot)
+        );
+        step(&mut allocation_failure);
+        let failed_live = &allocation_failure.level2_compatibility().session.state.live;
+        let failed_holder = failed_live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .find(|holder| holder.index == morph_slot)
+            .expect("Morph holder remains live after the failed first pulse");
+        assert_eq!(
+            (failed_holder.active_value, failed_holder.source_word_96()),
+            (199, 0)
+        );
+        assert_eq!(
+            failed_live
+                .economy
+                .economy
+                .bee_creatures()
+                .iter()
+                .filter(|source| matches!(source.origin, BeeCreatureOrigin::MorphSpell { .. }))
+                .count(),
+            0,
+            "restoring capacity must not retry a consumed first pulse"
+        );
+        allocation_failure.reset();
+        assert_eq!(allocation_failure.state_hash(), baseline_hash);
 
         campaign.reset();
         assert_eq!(campaign.state_hash(), baseline_hash);

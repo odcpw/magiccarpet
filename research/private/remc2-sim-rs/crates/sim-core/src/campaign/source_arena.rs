@@ -164,7 +164,7 @@ impl SourceArena {
             })
             .or_else(|| {
                 self.economy
-                    .authored_bees()
+                    .bee_creatures()
                     .iter()
                     .find(|source| source.source_entity_index == source_slot)
                     .map(|source| source.position)
@@ -290,7 +290,7 @@ impl SourceArena {
             );
         }
         for source in
-            self.economy.authored_bees().iter().filter(|source| {
+            self.economy.bee_creatures().iter().filter(|source| {
                 source.active && source.drawing_enabled && source.source_class == 5
             })
         {

@@ -478,14 +478,14 @@ fn level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash()
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 229 Bee");
     let before = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -493,7 +493,7 @@ fn level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash()
     {
         let mut economy_view = session.economy_mut();
         let source = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == row229_slot)
             .expect("row-229 Bee source");
@@ -507,7 +507,7 @@ fn level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash()
     session.step_outer_turn(PlayerCommand::default(), 0);
     let after = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -520,7 +520,7 @@ fn level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash()
     );
 
     session.reset();
-    assert!(session.economy().authored_bees().is_empty());
+    assert!(session.economy().bee_creatures().is_empty());
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
 
@@ -539,14 +539,14 @@ fn level_two_authored_bee_death_runs_through_production_cursor() {
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 229)
+        .find(|bee| bee.authored_index() == Some(229))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 229 Bee");
     session
         .economy_mut()
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == row229_slot)
         .expect("production row 229 source")
@@ -556,7 +556,7 @@ fn level_two_authored_bee_death_runs_through_production_cursor() {
     assert_eq!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == row229_slot)
             .expect("pre-kill row remains for the next source turn")
@@ -566,7 +566,7 @@ fn level_two_authored_bee_death_runs_through_production_cursor() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let phase_after_action21 = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .expect("phase-gated row remains live after action-21 callback")
@@ -585,14 +585,14 @@ fn level_two_authored_bee_death_runs_through_production_cursor() {
     for _ in 0..10 {
         let before = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == row229_slot)
             .copied();
         session.step_outer_turn(PlayerCommand::default(), 0);
         let after = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == row229_slot)
             .copied();
@@ -642,21 +642,21 @@ fn level_two_authored_bee_action23_selector10_rearms_through_production_cursor()
     fire_level_two_model32_group(&mut session, 21);
     let source_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 231)
+        .find(|bee| bee.authored_index() == Some(231))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 231 Bee");
     let before = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == source_slot)
         .copied()
         .expect("live scripted Bee before selector-10 step");
     let mut economy_view = session.economy_mut();
     let bee = economy_view
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == source_slot)
         .expect("live scripted Bee source");
@@ -665,7 +665,7 @@ fn level_two_authored_bee_action23_selector10_rearms_through_production_cursor()
     session.step_outer_turn(PlayerCommand::default(), 0);
     let after = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == source_slot)
         .copied()
@@ -700,15 +700,15 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 229)
+        .find(|bee| bee.authored_index() == Some(229))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 229 Bee");
     let local_player_slot = session.state.entity_index;
     let initial = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -723,7 +723,7 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
     {
         let mut economy_view = session.economy_mut();
         let source = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == row229_slot)
             .expect("production row 229 source");
@@ -736,7 +736,7 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let action17 = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -759,7 +759,7 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let action18 = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -791,7 +791,7 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let action18_contact = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -822,7 +822,7 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let target_lost = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -831,7 +831,7 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
     assert_eq!(target_lost.actual_speed, target_lost.minimum_speed);
 
     session.reset();
-    assert!(session.economy().authored_bees().is_empty());
+    assert!(session.economy().bee_creatures().is_empty());
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
 
@@ -849,15 +849,15 @@ fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 229)
+        .find(|bee| bee.authored_index() == Some(229))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 229 Bee");
     let local_player_slot = session.state.entity_index;
     let initial = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -873,7 +873,7 @@ fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
     // that natural AI target ownership has already been ported.
     session
         .economy_mut()
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == row229_slot)
         .expect("production row 229 source")
@@ -881,7 +881,7 @@ fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let action16 = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -901,14 +901,14 @@ fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
     // synthetic helper call or extra RNG draw.
     session
         .economy_mut()
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == row229_slot)
         .expect("production row 229 source")
         .action = 19;
     session
         .economy_mut()
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == row229_slot)
         .expect("production row 229 source")
@@ -916,7 +916,7 @@ fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let action19 = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -928,7 +928,7 @@ fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
     assert_eq!(action19.source_byte_3e, 1);
 
     session.reset();
-    assert!(session.economy().authored_bees().is_empty());
+    assert!(session.economy().bee_creatures().is_empty());
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
 

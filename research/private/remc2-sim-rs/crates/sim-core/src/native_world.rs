@@ -1520,17 +1520,27 @@ pub struct Level2Model13SpawnedChild {
     pub active: bool,
 }
 
-/// Authored Level 2 Day Bee constructed by remc2 `sub_4B590` (class 5,
-/// model 2).  Bee rows are dormant authored features, not reset-pool rows;
-/// the source pass allocates them when their class-11 producer group fires.
-/// The state keeps the words consumed by actions 16..19 so target loss,
-/// vertical tracking, recoil, RNG, and the action-18 latch remain observable.
+/// The production path which created a live Bee.
+///
+/// Package records and Morph spells share the same source arena, constructor,
+/// scheduler, and callbacks. Keeping their origins typed prevents a
+/// spell-created Bee from masquerading as an authored package row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2AuthoredBeeSource {
+pub enum BeeCreatureOrigin {
+    AuthoredRecord { authored_index: u16 },
+    MorphSpell { holder_slot: u16 },
+}
+
+/// Live semantic Bee creature constructed by remc2 `sub_4B590` (class 5,
+/// model 2). The state keeps the words consumed by the ordinary Bee actions
+/// and Morph's selector-12 parent follower.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BeeCreatureRuntime {
     pub source_entity_index: u16,
     pub entity_id: u16,
     pub entity_rng: u16,
-    pub authored_index: u16,
+    pub origin: BeeCreatureOrigin,
+    pub parent_entity_index: u16,
     pub source_class: u8,
     pub model: u8,
     pub action: u8,
@@ -1589,6 +1599,27 @@ pub struct Level2AuthoredBeeSource {
     pub shift_rot_y: u16,
     pub phase: u8,
     pub drawing_enabled: bool,
+    pub active: bool,
+}
+
+impl BeeCreatureRuntime {
+    #[must_use]
+    pub const fn authored_index(&self) -> Option<u16> {
+        match self.origin {
+            BeeCreatureOrigin::AuthoredRecord { authored_index } => Some(authored_index),
+            BeeCreatureOrigin::MorphSpell { .. } => None,
+        }
+    }
+}
+
+/// Live parent projection consumed by Morph's selector-12 Bee follower.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BeeFollowerParent {
+    pub entity_index: u16,
+    pub position: Position,
+    pub yaw: i16,
+    pub roll: i16,
+    pub life: i32,
     pub active: bool,
 }
 
@@ -1690,7 +1721,7 @@ fn level2_bee_turn_delta(from: i16, to: i16) -> i16 {
     i16::try_from(magnitude * delta.signum()).expect("Bee source turn delta fits")
 }
 
-fn move_level2_bee_source(source: &mut Level2AuthoredBeeSource, terrain: &SessionTerrain) {
+fn move_level2_bee_source(source: &mut BeeCreatureRuntime, terrain: &SessionTerrain) {
     if source.control_flags & LEVEL2_BEE_MOVEMENT_SKIP_BIT != 0 {
         source.control_flags &= !LEVEL2_BEE_MOVEMENT_SKIP_BIT;
         return;
@@ -1739,7 +1770,7 @@ fn move_level2_bee_source(source: &mut Level2AuthoredBeeSource, terrain: &Sessio
 }
 
 fn select_level2_bee_class3_target(
-    source: &Level2AuthoredBeeSource,
+    source: &BeeCreatureRuntime,
     candidates: &[(u16, Position, u32)],
 ) -> Option<u16> {
     let radius_squared = LEVEL2_BEE_AWARENESS_RADIUS * LEVEL2_BEE_AWARENESS_RADIUS;
@@ -2874,12 +2905,12 @@ pub struct Level2EconomyState {
 
     authored_model13: Vec<Level2AuthoredModel13Source>,
 
-    authored_bees: Vec<Level2AuthoredBeeSource>,
+    bee_creatures: Vec<BeeCreatureRuntime>,
 
     bee_model2_constructor_phase: u8,
 
     authored_bee_kill_census: BTreeMap<u16, u32>,
-    deferred_authored_bee_reclaims: BTreeSet<u16>,
+    deferred_bee_reclaims: BTreeSet<u16>,
 
     authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
 
@@ -3331,7 +3362,7 @@ pub enum Level2DynamicArenaKind {
     AuthoredModel1,
     AuthoredModel45,
     AuthoredModel13,
-    AuthoredBee,
+    BeeCreature,
     Model13SpawnedChild,
     AuthoredModel6,
     Model6SpawnedChild,
@@ -3501,7 +3532,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::AuthoredModel1 => 31,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
         Level2DynamicArenaKind::AuthoredModel13 => 21,
-        Level2DynamicArenaKind::AuthoredBee => 26,
+        Level2DynamicArenaKind::BeeCreature => 26,
         Level2DynamicArenaKind::Model13SpawnedChild => 22,
         Level2DynamicArenaKind::AuthoredModel6 => 15,
         Level2DynamicArenaKind::Model6SpawnedChild => 16,

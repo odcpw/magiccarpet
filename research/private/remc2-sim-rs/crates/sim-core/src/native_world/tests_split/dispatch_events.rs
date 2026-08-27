@@ -382,9 +382,9 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     fire_level_two_model32_group(&mut session, 21);
     let source_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|source| source.authored_index == 229)
+        .find(|source| source.authored_index() == Some(229))
         .map(|source| source.source_entity_index)
         .expect("ordinary group-21 row 229 Bee");
     let stage_target = Position {
@@ -398,7 +398,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
                      source_byte_39: i16| {
         let mut source = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|source| source.source_entity_index == source_slot)
             .copied()
@@ -429,7 +429,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let after_inside = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -464,7 +464,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let after_outside = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -513,7 +513,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     {
         let mut economy_view = session.economy_mut();
         let source = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|source| source.source_entity_index == source_slot)
             .expect("ordinary Bee for cadence check");
@@ -522,7 +522,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let after_off_cadence = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -534,11 +534,18 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     assert_eq!(after_off_cadence.target_entity_index, None);
 
     session.economy.entities[local_index].control_flags |= 0x20;
+    session.shared_spells.player_entity.set_control_flags(0x20);
+    session.shared_spells.caster.control_flags = 0x20;
+    for player in &mut session.shared_spells.player_entities {
+        if player.index == local_entity_index {
+            player.set_control_flags(0x20);
+        }
+    }
     let hidden = configure(&mut session, stage_target, 0, 1);
     {
         let mut economy_view = session.economy_mut();
         let source = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|source| source.source_entity_index == source_slot)
             .expect("ordinary Bee for hidden target");
@@ -548,7 +555,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let after_hidden = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -557,11 +564,18 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     assert_eq!(after_hidden.target_entity_index, None);
 
     session.economy.entities[local_index].control_flags &= !0x20;
+    session.shared_spells.player_entity.set_control_flags(0);
+    session.shared_spells.caster.control_flags = 0;
+    for player in &mut session.shared_spells.player_entities {
+        if player.index == local_entity_index {
+            player.set_control_flags(0);
+        }
+    }
     let visible = configure(&mut session, stage_target, 0, 1);
     {
         let mut economy_view = session.economy_mut();
         let source = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|source| source.source_entity_index == source_slot)
             .expect("ordinary Bee for visible target");
@@ -571,7 +585,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let handed_off = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -588,7 +602,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     {
         let mut economy_view = session.economy_mut();
         let source = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|source| source.source_entity_index == source_slot)
             .expect("action-18 Bee before target loss");
@@ -597,7 +611,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let target_lost = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -619,14 +633,14 @@ fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callbac
     fire_level_two_model32_group(&mut session, 21);
     let source_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|source| source.authored_index == 229)
+        .find(|source| source.authored_index() == Some(229))
         .map(|source| source.source_entity_index)
         .expect("ordinary group-21 row-229 Bee");
     let mut configured = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -698,7 +712,7 @@ fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callbac
     session.step_outer_turn(PlayerCommand::default(), 0);
     let helper_terminal = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -722,7 +736,7 @@ fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callbac
     session.step_outer_turn(PlayerCommand::default(), 0);
     let entry_terminal = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|source| source.source_entity_index == source_slot)
         .copied()
@@ -815,7 +829,7 @@ fn level_two_bee_action17_moves_before_acquisition_rng() {
     );
     let moved = session
         .economy
-        .authored_bees
+        .bee_creatures
         .iter()
         .find(|bee| bee.source_entity_index == configured.source_entity_index)
         .copied()
@@ -916,7 +930,7 @@ fn level_two_bee_action17_blocked_heading_retries_source_order() {
     );
     let retried = session
         .economy
-        .authored_bees
+        .bee_creatures
         .iter()
         .find(|bee| bee.source_entity_index == configured.source_entity_index)
         .copied()
@@ -963,7 +977,7 @@ fn level_two_bee_action18_moves_and_steers_off_cadence_without_damage_or_rng() {
     );
     let after = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == before.source_entity_index)
         .copied()
@@ -1046,7 +1060,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     {
         let mut economy_view = session.economy_mut();
         let bee = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == second.source_entity_index)
             .expect("second Bee remains live");
@@ -1062,7 +1076,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     assert_eq!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == second.source_entity_index)
             .expect("action-16 Bee remains live")
@@ -1075,7 +1089,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     {
         let mut economy_view = session.economy_mut();
         let bee = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == third.source_entity_index)
             .expect("third Bee remains live");
@@ -1091,7 +1105,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     assert_eq!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == third.source_entity_index)
             .expect("action-19 Bee remains live")
@@ -1108,7 +1122,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     assert_eq!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == third.source_entity_index)
             .expect("windowed action-19 Bee remains live")
@@ -1123,7 +1137,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     assert_eq!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == third.source_entity_index)
             .expect("windowed action-19 Bee remains live")
@@ -1133,7 +1147,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     {
         let mut economy_view = session.economy_mut();
         let bee = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == source.source_entity_index)
             .expect("first Bee remains live");
@@ -1148,7 +1162,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     );
     let transitioned = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == source.source_entity_index)
         .copied()
@@ -1159,7 +1173,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     {
         let mut economy_view = session.economy_mut();
         let bee = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == source.source_entity_index)
             .expect("Bee remains live");
@@ -1180,7 +1194,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     );
     let stepped = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == source.source_entity_index)
         .copied()
@@ -1192,7 +1206,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
     assert!(matches!(stepped.last_sound_id, 12 | 13));
     assert_ne!(session.campaign_state_hash(), baseline_hash);
     session.reset();
-    assert!(session.economy().authored_bees().is_empty());
+    assert!(session.economy().bee_creatures().is_empty());
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
 
@@ -1210,7 +1224,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .expect("objective-linked group-21 Bee");
     session
         .economy_mut()
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == dying.source_entity_index)
         .expect("dying Bee remains in source arena")
@@ -1220,7 +1234,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     // two calls cover pre-kill followed by the admitted death callback.
     session
         .economy_mut()
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == dying.source_entity_index)
         .expect("dying Bee remains in source arena")
@@ -1233,7 +1247,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     assert_eq!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == dying.source_entity_index)
             .expect("pre-kill Bee remains until kill callback")
@@ -1248,7 +1262,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     );
     let dead = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == dying.source_entity_index)
         .copied()
@@ -1276,11 +1290,11 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     session.economy_mut().reclaim_inactive_slots();
     session
         .economy_mut()
-        .reclaim_deferred_authored_bees_at_source_boundary();
+        .reclaim_deferred_bee_creatures_at_source_boundary();
     assert!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .all(|bee| bee.source_entity_index != dying.source_entity_index)
     );
@@ -1291,7 +1305,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     {
         let mut economy_view = session.economy_mut();
         let bee = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == no_call.source_entity_index)
             .expect("no-call Bee remains in source arena");
@@ -1299,7 +1313,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     }
     let before_no_call = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == no_call.source_entity_index)
         .copied()
@@ -1311,7 +1325,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     );
     let after_no_call = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == no_call.source_entity_index)
         .copied()
@@ -1331,7 +1345,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     let (expected_rng, expected_roll) = {
         let mut economy_view = session.economy_mut();
         let bee = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == scripted.source_entity_index)
             .expect("scripted Bee remains in source arena");
@@ -1352,7 +1366,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     );
     let stepped_scripted = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == scripted.source_entity_index)
         .copied()
@@ -1361,7 +1375,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     assert_eq!(stepped_scripted.roll, expected_roll);
 
     session.reset();
-    assert!(session.economy().authored_bees().is_empty());
+    assert!(session.economy().bee_creatures().is_empty());
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
 
@@ -1380,23 +1394,23 @@ fn level_two_authored_bee_action23_invalid_selector_is_production_noop() {
     fire_level_two_model32_group(&mut session, 21);
     let source_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 231)
+        .find(|bee| bee.authored_index() == Some(231))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 231 Bee");
 
     for invalid_stage_var in [0_u8, 11_u8] {
         let before = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == source_slot)
             .copied()
             .expect("live scripted Bee before invalid-selector step");
         let mut economy_view = session.economy_mut();
         let bee = economy_view
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == source_slot)
             .expect("live scripted Bee selector");
@@ -1406,7 +1420,7 @@ fn level_two_authored_bee_action23_invalid_selector_is_production_noop() {
         session.step_outer_turn(PlayerCommand::default(), 0);
         let after = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == source_slot)
             .copied()
@@ -1442,14 +1456,14 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 229)
+        .find(|bee| bee.authored_index() == Some(229))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 Bee");
     let mut source = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1465,7 +1479,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     session.step_outer_turn(PlayerCommand::default(), 0);
     let dead_target = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1484,14 +1498,14 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 229)
+        .find(|bee| bee.authored_index() == Some(229))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 Bee after reset");
     let mut source = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1519,7 +1533,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     session.step_outer_turn(PlayerCommand::default(), 0);
     let hidden_target = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1539,14 +1553,14 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 229)
+        .find(|bee| bee.authored_index() == Some(229))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 Bee for range case");
     let mut source = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1565,7 +1579,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     session.step_outer_turn(PlayerCommand::default(), 0);
     let off_cadence = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1582,7 +1596,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
     session.step_outer_turn(PlayerCommand::default(), 0);
     let lost_on_cadence = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1609,9 +1623,9 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("production row-229 Bee");
     assert!(row229_slot > session.state.entity_index);
@@ -1619,7 +1633,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     let configure = |session: &mut Level2ResetSession, delta: u16, byte_3e: u8| {
         let bee = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == row229_slot)
             .copied()
@@ -1644,7 +1658,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     assert_eq!(session.player_pending_attacker, contact.entity_id);
     let after_contact = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1685,7 +1699,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     assert_eq!(session.player_pending_damage, 0);
     let after_edge = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1700,7 +1714,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     assert_eq!(session.player_pending_damage, 0);
     let after_off_cadence = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -1719,16 +1733,16 @@ fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_vis
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("production row-229 Bee");
     assert!(row229_slot > session.state.entity_index);
     let target = session.state.position;
     let bee = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -2511,9 +2525,9 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == 229)
+        .find(|bee| bee.authored_index() == Some(229))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 Bee");
     let local_index = usize::from(session.state.entity_index);
@@ -2535,7 +2549,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
     }
     let source = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -2578,7 +2592,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
     session.step_outer_turn(PlayerCommand::default(), 0);
     let lost = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -2604,7 +2618,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
     session.step_outer_turn(PlayerCommand::default(), 0);
     let reacquired = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -2630,9 +2644,9 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 229 Bee");
 
@@ -2705,6 +2719,13 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
         local.control_flags = 0x20;
         local.next_relation = Some(first_candidate_id);
         local.record[4..8].copy_from_slice(&(u32::from(first_candidate_id) + 1).to_le_bytes());
+        session.shared_spells.player_entity.set_control_flags(0x20);
+        session.shared_spells.caster.control_flags = 0x20;
+        for player in &mut session.shared_spells.player_entities {
+            if player.index == player_entity_index {
+                player.set_control_flags(0x20);
+            }
+        }
         for (offset, candidate_index) in candidate_indices.iter().copied().enumerate() {
             let candidate = &mut session.economy.entities[candidate_index];
             candidate.active = true;
@@ -2731,7 +2752,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
         let heading = heading_for_positions(source_position, target_positions[1]);
         let source = session
             .economy
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|bee| bee.source_entity_index == row229_slot)
             .expect("production row 229 source");
@@ -2754,7 +2775,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let acquired = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -2774,9 +2795,9 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot_after_reset = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 Bee after reset");
     assert_eq!(row229_slot_after_reset, row229_slot);
@@ -2784,7 +2805,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let no_target = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -2802,7 +2823,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     }
     let source = session
         .economy
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == row229_slot)
         .expect("no-target Bee source");
@@ -2813,7 +2834,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let gated = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -2828,7 +2849,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let off_cadence = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == row229_slot)
         .copied()
@@ -2849,8 +2870,8 @@ fn level_two_bee_activation_filters_kind_subtype_and_preserves_source_order() {
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 authored Bee session");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let bees = session.economy().authored_bees();
+    fire_level_two_model32_group(&mut session, 21);
+    let bees = session.economy().bee_creatures();
     assert!(
         !bees.is_empty(),
         "rooted Bee producer groups should activate"
@@ -2861,7 +2882,7 @@ fn level_two_bee_activation_filters_kind_subtype_and_preserves_source_order() {
     );
     assert!(bees.iter().all(|bee| {
         session.mission().authored_features().iter().any(|feature| {
-            feature.index == bee.authored_index
+            bee.authored_index() == Some(feature.index)
                 && feature.kind == 5
                 && feature.subtype == 2
                 && matches!(feature.activation_group, 4 | 17 | 21 | 29)
@@ -4838,9 +4859,9 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     fire_level_two_model32_group(&mut session, 21);
     let bee_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("ordinary group-21 route materializes the authored Bee");
     let bee = drive_level_two_bee_to_action17_for_fireball(&mut session, bee_slot);
@@ -4984,7 +5005,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     );
     let pending = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == bee_slot)
         .copied()
@@ -5016,7 +5037,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     let consumed = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == bee_slot)
         .copied()
@@ -5059,11 +5080,11 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
 fn drive_level_two_bee_to_action17_for_fireball(
     session: &mut Level2ResetSession,
     bee_slot: u16,
-) -> Level2AuthoredBeeSource {
+) -> BeeCreatureRuntime {
     for _ in 0..160 {
         let bee = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == bee_slot)
             .copied()
@@ -5098,7 +5119,7 @@ fn drive_level_two_bee_to_action17_for_fireball(
     }
     let bee = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == bee_slot)
         .copied();
@@ -5108,21 +5129,19 @@ fn drive_level_two_bee_to_action17_for_fireball(
 fn cast_level_two_family0_fireball_at_bee(
     session: &mut Level2ResetSession,
     bee_slot: u16,
-) -> Level2AuthoredBeeSource {
+) -> BeeCreatureRuntime {
     let bee = drive_level_two_bee_to_action17_for_fireball(session, bee_slot);
     let expected_life = bee.life.wrapping_sub(250);
-    // Both source hand directions move the launch carrier 256 units left at
-    // yaw zero. The holder adds no Y displacement; a 120-unit Z line keeps
-    // the first callback inside the strict Bee volume across the authored
-    // terrain heights.
-    let (x_offset, y_offset, z_offset) = (256, 360, 120);
+    // Reuse the qualified single-shot route's exact source launch carrier:
+    // both hand directions move 256 units left at yaw zero, then the first
+    // flyer callback covers the remaining 384-unit Y separation inside the
+    // strict Fireball/Bee collision volumes.
     let player_position = Position {
-        x: bee.position.x.wrapping_add(x_offset),
-        y: bee.position.y.wrapping_add(y_offset),
+        x: bee.position.x.wrapping_add(256),
+        y: bee.position.y.wrapping_add(384),
         z: bee
             .position
             .z
-            .wrapping_add(z_offset)
             .wrapping_sub(session.state.entity_fov),
     };
     session
@@ -5142,12 +5161,19 @@ fn cast_level_two_family0_fireball_at_bee(
     session.state.impulse_x = 0;
     session.state.impulse_y = 0;
     session.state.impulse_z = 0;
-    let previous_projectile_slots = session
+    let previous_projectile_generations = session
         .economy()
         .fireball_projectiles()
         .iter()
-        .map(|projectile| projectile.source_entity_index)
-        .collect::<BTreeSet<_>>();
+        .map(|projectile| {
+            (
+                projectile.source_entity_index,
+                session
+                    .economy()
+                    .slot_generation(projectile.source_entity_index),
+            )
+        })
+        .collect::<Vec<_>>();
     session.step_outer_turn(
         PlayerCommand {
             opcode: 6,
@@ -5162,17 +5188,25 @@ fn cast_level_two_family0_fireball_at_bee(
         .fireball_projectiles()
         .iter()
         .find(|projectile| {
-            projectile.active
-                && !previous_projectile_slots.contains(&projectile.source_entity_index)
+            let previous_generation = previous_projectile_generations
+                .iter()
+                .find_map(|(source_slot, generation)| {
+                    (*source_slot == projectile.source_entity_index).then_some(*generation)
+                })
+                .unwrap_or_default();
+            session
+                .economy()
+                .slot_generation(projectile.source_entity_index)
+                > previous_generation
         })
         .copied()
-        .expect("ordinary family-0 cast allocates a fresh Fireball row");
+        .expect("ordinary family-0 cast allocates a fresh Fireball generation");
     let player_entity_index = session.state.entity_index;
     let mut consumed = None;
     for _pass in 0..=16 {
         let current = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|candidate| candidate.source_entity_index == bee_slot)
             .copied()
@@ -5191,7 +5225,7 @@ fn cast_level_two_family0_fireball_at_bee(
     let consumed = consumed.unwrap_or_else(|| {
         let bee = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|candidate| candidate.source_entity_index == bee_slot)
             .copied();
@@ -5204,7 +5238,7 @@ fn cast_level_two_family0_fireball_at_bee(
 }
 
 #[test]
-fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_objective() {
+fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() {
     let inspection = NativeWorld::inspect_level2_with_owner_cache(
         &level_two_fixture_path(),
         &level_two_gameplay_cache_path(),
@@ -5217,23 +5251,27 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_objecti
     session
         .runtime
         .set_level2_objective_text_selector(LEVEL2_BEE_OBJECTIVE_STAGE_INDEX);
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let bee_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("ordinary reset group-21 route materializes row 229");
 
-    let mut last_consumed = None;
-    for _ in 0..13 {
-        last_consumed = Some(cast_level_two_family0_fireball_at_bee(
-            &mut session,
-            bee_slot,
-        ));
-    }
-    let lethal = last_consumed.expect("thirteenth Fireball consumption");
+    // This gate owns the public lethal mailbox and death tail, not repeated
+    // action-18 disengagement. Stage only the real row's life at the lethal
+    // threshold; its action, phase, RNG, target and scheduler route remain
+    // production-owned through the one genuine public Fireball below.
+    session
+        .economy_mut()
+        .bee_creatures
+        .iter_mut()
+        .find(|bee| bee.source_entity_index == bee_slot)
+        .expect("ordinary row 229 Bee remains live before the lethal shot")
+        .life = 0;
+    let lethal = cast_level_two_family0_fireball_at_bee(&mut session, bee_slot);
     assert_eq!(lethal.action, 20);
     assert_eq!(lethal.life, -250);
     assert_eq!(lethal.pending_damage, 250);
@@ -5247,7 +5285,7 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_objecti
     session.step_outer_turn(PlayerCommand::default(), 0);
     let pre_kill = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|bee| bee.source_entity_index == bee_slot)
         .copied()
@@ -5296,7 +5334,7 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_objecti
     for _ in 0..10 {
         let before = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == bee_slot)
             .copied();
@@ -5304,7 +5342,7 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_objecti
         session.step_outer_turn(PlayerCommand::default(), 0);
         let after = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == bee_slot)
             .copied();
@@ -5324,6 +5362,12 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_objecti
             assert!(!after.active);
             assert!(!after.drawing_enabled);
             assert_eq!(after_counts, (1, 1));
+            assert_eq!(
+                session.runtime().objectives[0].stage_selectors
+                    [LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+                1,
+                "the hide pass still uses its frozen pass-start model-2 census"
+            );
         } else {
             assert!(after.active);
             assert!(after.drawing_enabled);
@@ -5340,7 +5384,17 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_objecti
     );
     assert_eq!(
         session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
-        2
+        1,
+        "the two surviving group-21 Bees keep the extinction objective open"
+    );
+    assert_eq!(
+        session
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter_map(BeeCreatureRuntime::authored_index)
+            .collect::<Vec<_>>(),
+        vec![230, 231]
     );
     assert_eq!(output_counts(&session), (1, 1));
     session.reset();
@@ -5668,7 +5722,7 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
     );
     assert_eq!(
         exhausted
-            .authored_bees
+            .bee_creatures
             .iter()
             .find(|target| target.source_entity_index == bee_slot)
             .expect("target Bee after failed allocation")
@@ -5698,7 +5752,7 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
     assert_eq!(flyer.entity_rng, projectile_rng);
     assert_eq!(
         economy
-            .authored_bees
+            .bee_creatures
             .iter()
             .find(|target| target.source_entity_index == bee_slot)
             .expect("target Bee before impact callback")
@@ -5740,7 +5794,7 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
     );
     assert_eq!(
         economy
-            .authored_bees
+            .bee_creatures
             .iter()
             .find(|target| target.source_entity_index == bee_slot)
             .expect("target Bee after impact callback")
@@ -5763,7 +5817,7 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
     assert!(!economy.submit_authored_bee_damage(bee_slot, 0, session.state.entity_index));
     assert_eq!(
         economy
-            .authored_bees
+            .bee_creatures
             .iter()
             .find(|target| target.source_entity_index == bee_slot)
             .expect("target Bee after invalid mailbox writes")

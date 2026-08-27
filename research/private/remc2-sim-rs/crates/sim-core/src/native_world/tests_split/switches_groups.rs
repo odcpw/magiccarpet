@@ -1339,10 +1339,10 @@ fn level_two_group21_day_bees_inherit_l2_06_from_ordinary_production() {
         .map(|authored_index| {
             session
                 .economy()
-                .authored_bees()
+                .bee_creatures()
                 .iter()
                 .copied()
-                .find(|source| source.authored_index == authored_index)
+                .find(|source| source.authored_index() == Some(authored_index))
                 .expect("ordinary group-21 Day Bee")
         })
         .collect::<Vec<_>>();
@@ -1351,7 +1351,7 @@ fn level_two_group21_day_bees_inherit_l2_06_from_ordinary_production() {
             .iter()
             .map(|source| {
                 (
-                    source.authored_index,
+                    source.authored_index().expect("authored group-21 Bee"),
                     source.action,
                     source.stage_var1,
                     source.stage_var2,
@@ -1406,12 +1406,12 @@ fn level_two_group21_day_bees_inherit_l2_06_from_ordinary_production() {
 
     session.reset();
     assert_eq!(session.runtime().stage_variables[6].word_2, 0);
-    assert!(session.economy().authored_bees().is_empty());
+    assert!(session.economy().bee_creatures().is_empty());
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
 
 #[test]
-fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
+fn level_two_group21_bee_extinction_advances_type7_objective_on_production_path() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
     let mut session = inspection
@@ -1440,17 +1440,17 @@ fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
         .runtime
         .set_level2_objective_text_selector(LEVEL2_BEE_OBJECTIVE_STAGE_INDEX);
     assert_eq!(session.runtime().objectives[0].text_selector, 2);
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 229 Bee");
     session
         .economy_mut()
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == row229_slot)
         .expect("production row 229 source")
@@ -1459,7 +1459,7 @@ fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
     assert_eq!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == row229_slot)
             .expect("action-21 row remains before kill callback")
@@ -1475,7 +1475,7 @@ fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
     for _ in 0..10 {
         let before = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == row229_slot)
             .copied()
@@ -1483,7 +1483,7 @@ fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
         session.step_outer_turn(PlayerCommand::default(), 0);
         let after = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|bee| bee.source_entity_index == row229_slot)
             .copied()
@@ -1503,19 +1503,91 @@ fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
     assert!(phase_zero_callback_seen);
     assert_eq!(
         session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
-        2
+        1,
+        "the final Bee remains in the pass-start model-2 census on its hide turn"
     );
     assert_eq!(
         session.runtime().bytes()[304 + LEVEL2_BEE_OBJECTIVE_STAGE_INDEX + 3],
-        2
+        1
     );
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
-            .all(|bee| bee.authored_index != LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            .all(|bee| bee.authored_index() != Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
+    );
+    assert_eq!(
+        session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+        1,
+        "row 229 alone cannot satisfy the model-2 absence objective"
+    );
+    assert_eq!(
+        session.runtime().bytes()[304 + LEVEL2_BEE_OBJECTIVE_STAGE_INDEX + 3],
+        1
+    );
+    assert_eq!(
+        session
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter_map(BeeCreatureRuntime::authored_index)
+            .collect::<Vec<_>>(),
+        vec![230, 231],
+        "the other two package Bees still occupy the model-2 census"
+    );
+
+    for bee in session.economy_mut().bee_creatures.iter_mut().filter(|bee| {
+        matches!(bee.authored_index(), Some(230 | 231))
+    }) {
+        bee.action = 20;
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session
+        .economy()
+        .bee_creatures()
+        .iter()
+        .filter(|bee| matches!(bee.authored_index(), Some(230 | 231)))
+        .all(|bee| bee.action == 21 && bee.active && bee.drawing_enabled));
+
+    let mut final_hide_pass_seen = false;
+    for _ in 0..10 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let remaining_drawn = session
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter(|bee| {
+                matches!(bee.authored_index(), Some(230 | 231))
+                    && bee.active
+                    && bee.drawing_enabled
+            })
+            .count();
+        if remaining_drawn == 0 {
+            final_hide_pass_seen = true;
+            assert_eq!(
+                session.runtime().objectives[0].stage_selectors
+                    [LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+                1,
+                "the final hide pass still uses its frozen model-2 census"
+            );
+            break;
+        }
+    }
+    assert!(final_hide_pass_seen, "all group-21 Bees reach phase-gated hide");
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.economy().bee_creatures().iter().all(|bee| {
+        !matches!(bee.authored_index(), Some(229 | 230 | 231))
+    }));
+    assert_eq!(
+        session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+        2,
+        "the following pass rebuilds an empty model-2 census before objective service"
+    );
+    assert_eq!(
+        session.runtime().bytes()[304 + LEVEL2_BEE_OBJECTIVE_STAGE_INDEX + 3],
+        2
     );
 
     // Reset restores the selector and the production activation ledger.
@@ -1523,17 +1595,17 @@ fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
     // selected must not advance the type-7 slot.
     session.reset();
     assert_eq!(session.runtime().objectives[0].text_selector, 0);
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 row 229 Bee for selector-negative path");
     session
         .economy_mut()
-        .authored_bees
+        .bee_creatures
         .iter_mut()
         .find(|bee| bee.source_entity_index == row229_slot)
         .expect("production row 229 source for selector-negative path")
@@ -2175,9 +2247,9 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
     assert_eq!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
-            .map(|source| source.authored_index)
+            .filter_map(BeeCreatureRuntime::authored_index)
             .filter(|index| matches!(index, 236 | 237 | 257))
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([236, 237, 257])
@@ -3300,7 +3372,7 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
 
     session.reset();
     assert!(session.economy().authored_switch_producers().is_empty());
-    assert!(session.economy().authored_bees().is_empty());
+    assert!(session.economy().bee_creatures().is_empty());
     assert!(session.economy().mana_attraction_fields().is_empty());
     assert!(session.economy().authored_class5().is_empty());
     assert!(session.economy().authored_class14().is_empty());
@@ -3371,10 +3443,10 @@ fn level_two_authored_model32_switch_reaches_group17_bees_from_production_turns(
     assert!(!row208.fired);
     let bee_indices = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .filter(|source| matches!(source.authored_index, 236 | 237 | 257))
-        .map(|source| source.authored_index)
+        .filter(|source| matches!(source.authored_index(), Some(236 | 237 | 257)))
+        .filter_map(BeeCreatureRuntime::authored_index)
         .collect::<BTreeSet<_>>();
     assert_eq!(bee_indices, BTreeSet::from([236, 237, 257]));
 
@@ -3383,9 +3455,9 @@ fn level_two_authored_model32_switch_reaches_group17_bees_from_production_turns(
     assert!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
-            .all(|source| !matches!(source.authored_index, 236 | 237 | 257))
+            .all(|source| !matches!(source.authored_index(), Some(236 | 237 | 257)))
     );
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
@@ -3922,52 +3994,48 @@ fn level_two_reset_model32_producer_reaches_group21_bees_from_production_turns()
     // source slot 76 with source id/group 21. The ordinary source pass
     // must consume that real producer and materialize the three authored
     // group-21 Bees without a direct allocator or fixture-only route.
-    let producer_slot = session.economy.entities()
-        .iter()
-        .find(|entity| {
-            entity.index == 76
-                && entity.active
-                && entity.class == 11
-                && entity.model == 32
-                && entity.action == 32
-                && entity.source_id == 21
-                && !entity.drawing_disabled()
-        })
-        .expect("reset group-21 model-32 producer")
-        .index;
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    let producer_slot = fire_level_two_model32_group(&mut session, 21);
 
     let expected_bees = BTreeSet::from([229_u16, 230, 231]);
     let actual_bees = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .filter(|source| source.active && expected_bees.contains(&source.authored_index))
-        .map(|source| source.authored_index)
+        .filter(|source| {
+            source.active
+                && source
+                    .authored_index()
+                    .is_some_and(|index| expected_bees.contains(&index))
+        })
+        .filter_map(BeeCreatureRuntime::authored_index)
         .collect::<BTreeSet<_>>();
     assert_eq!(actual_bees, expected_bees);
     let activated_from_producer = session
         .dispatch_events()
         .iter()
-        .filter_map(|event| match event {
+        .find_map(|event| match event {
             Level2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 21,
                 authored_indices,
                 ..
-            } if *source_slot == producer_slot => authored_indices.first().copied(),
+            } if *source_slot == producer_slot => Some(authored_indices.to_vec()),
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .expect("group-21 activation receipt from the real producer");
     assert_eq!(activated_from_producer, vec![229, 230, 231]);
 
     session.reset();
     assert!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
-            .all(|source| !expected_bees.contains(&source.authored_index))
+            .all(|source| {
+                source
+                    .authored_index()
+                    .is_none_or(|index| !expected_bees.contains(&index))
+            })
     );
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
@@ -3981,52 +4049,48 @@ fn level_two_reset_model32_producer_reaches_group29_bees_from_production_turns()
         .expect("Level 2 group-29 Bee session");
     let baseline_hash = session.campaign_state_hash();
 
-    let producer_slot = session.economy.entities()
-        .iter()
-        .find(|entity| {
-            entity.index == 87
-                && entity.active
-                && entity.class == 11
-                && entity.model == 32
-                && entity.action == 32
-                && entity.source_id == 29
-                && !entity.drawing_disabled()
-        })
-        .expect("reset group-29 model-32 producer")
-        .index;
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    let producer_slot = fire_level_two_model32_group(&mut session, 29);
 
     let expected_bees = BTreeSet::from([307_u16, 308, 312]);
     let actual_bees = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .filter(|source| source.active && expected_bees.contains(&source.authored_index))
-        .map(|source| source.authored_index)
+        .filter(|source| {
+            source.active
+                && source
+                    .authored_index()
+                    .is_some_and(|index| expected_bees.contains(&index))
+        })
+        .filter_map(BeeCreatureRuntime::authored_index)
         .collect::<BTreeSet<_>>();
     assert_eq!(actual_bees, expected_bees);
     let activated_from_producer = session
         .dispatch_events()
         .iter()
-        .filter_map(|event| match event {
+        .find_map(|event| match event {
             Level2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 29,
                 authored_indices,
                 ..
-            } if *source_slot == producer_slot => authored_indices.first().copied(),
+            } if *source_slot == producer_slot => Some(authored_indices.to_vec()),
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .expect("group-29 activation receipt from the real producer");
     assert_eq!(activated_from_producer, vec![307, 308, 312]);
 
     session.reset();
     assert!(
         session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
-            .all(|source| !expected_bees.contains(&source.authored_index))
+            .all(|source| {
+                source
+                    .authored_index()
+                    .is_none_or(|index| !expected_bees.contains(&index))
+            })
     );
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }

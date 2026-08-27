@@ -661,6 +661,7 @@ pub enum MissionAudioSite {
     DistanceLoop5,
     DistanceLoop31,
     SpeedSpellActivation,
+    MorphSpellActivation,
     GoatBleat,
     FireballLaunch,
     PossessionLaunch,
@@ -733,6 +734,7 @@ pub enum SourceAudioCallTag {
     PossessionLaunchBasic,
     InitialCastleLaunch,
     SpeedSpellActivation,
+    MorphSpellActivation,
     ArcherArrowLaunch,
     SurfaceWaterLoop,
     SurfaceLandLoop,
@@ -751,7 +753,7 @@ pub enum SourceAudioCallTag {
 
 /// Compiler-checked binding from every reachable source occurrence identity
 /// to the production tag used at its Rust call path.
-pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 48] = [
+pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 49] = [
     (
         SourceAudioCallTag::VolumePreviewAdjustVolume,
         "286982557778df1130f462a82b40225bf7e9cff0ef1a128b9d00f0a7a0d6ea2a",
@@ -888,6 +890,13 @@ pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 48] = [
         SourceAudioCallTag::SpeedSpellActivation,
         "c6b694c0a1b64535d469458085a0e119bcaf323fb9e160a7987b0d985cee2e0d",
     ),
+    // GOLDEN-CHANGE: Level 3's package-present family-4/action-12 route makes
+    // the previously Level-1-excluded first sub_6A030 sound reachable. The
+    // occurrence hash is the frozen owner ledger value for pinned line 56382.
+    (
+        SourceAudioCallTag::MorphSpellActivation,
+        "51d9ecbc8c8301f053d666cd4dd85e983569ca314534fa5e57d0a2d5014eaeaf",
+    ),
     (
         SourceAudioCallTag::ArcherArrowLaunch,
         "65fb54779566695f30c8e4f3d137f2348f13f6f08879194d4355463bb6c5a2db",
@@ -951,7 +960,7 @@ pub fn mark_source_audio_call(_tag: SourceAudioCallTag) {}
 
 #[cfg(test)]
 impl SourceAudioCallTag {
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 49] = [
         Self::VolumePreviewAdjustVolume,
         Self::GoatAction08Bleat,
         Self::GoatAction09Bleat,
@@ -986,6 +995,7 @@ impl SourceAudioCallTag {
         Self::PossessionLaunchBasic,
         Self::InitialCastleLaunch,
         Self::SpeedSpellActivation,
+        Self::MorphSpellActivation,
         Self::ArcherArrowLaunch,
         Self::SurfaceWaterLoop,
         Self::SurfaceLandLoop,
@@ -1031,6 +1041,7 @@ impl MissionAudioSite {
         Self::DistanceLoop5,
         Self::DistanceLoop31,
         Self::SpeedSpellActivation,
+        Self::MorphSpellActivation,
         Self::GoatBleat,
         Self::FireballLaunch,
         Self::PossessionLaunch,
@@ -1168,6 +1179,14 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp:56262-56271",
+                true,
+            ),
+            Self::MorphSpellActivation => (
+                "60",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:56382",
                 true,
             ),
             Self::GoatBleat => (

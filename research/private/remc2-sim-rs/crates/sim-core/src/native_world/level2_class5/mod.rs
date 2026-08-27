@@ -35,7 +35,7 @@ mod tests;
 impl Level2EconomyState {
     pub(super) fn consume_authored_bee_damage_mailbox(
         &mut self,
-        source: &mut Level2AuthoredBeeSource,
+        source: &mut BeeCreatureRuntime,
     ) -> Option<bool> {
         if source.action != 17 || source.pending_attacker_entity_index == 0 {
             return None;
@@ -110,7 +110,7 @@ impl Level2EconomyState {
     /// admits the exact output/reclaim branch only at phase 0 modulo 8.
     pub(super) fn step_authored_bee_death_tail(
         &mut self,
-        source: &mut Level2AuthoredBeeSource,
+        source: &mut BeeCreatureRuntime,
         terrain: &SessionTerrain,
     ) {
         if source.source_byte_3e & 7 != 0 {
@@ -138,7 +138,7 @@ impl Level2EconomyState {
         source.active = false;
         source.life = -1;
         source.target_entity_index = None;
-        self.deferred_authored_bee_reclaims
+        self.deferred_bee_reclaims
             .insert(source.source_entity_index);
     }
 }

@@ -1344,9 +1344,9 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     );
     let bee = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
-        .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
         .copied()
         .expect("production row-229 Bee source");
     assert_eq!(bee.subspell_index, 200);
@@ -1356,7 +1356,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     for _ in 0..128 {
         let live_bee = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
             .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
             .copied()
@@ -1471,7 +1471,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     let outcome = acquire_shield(&mut session);
     let live_bee = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
         .copied()
@@ -1488,9 +1488,11 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     let set_player_outside_contact = |session: &mut Level2ResetSession| {
         let live_bee = session
             .economy()
-            .authored_bees()
+            .bee_creatures()
             .iter()
-            .find(|candidate| candidate.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            .find(|candidate| {
+                candidate.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            })
             .copied()
             .expect("production row-229 Bee remains live");
         let mut position = live_bee.position;
@@ -1520,7 +1522,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     assert_eq!(outcome.source_slot, before_acquisition.holder_entity_index);
     let bee_before_acquisition = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
         .copied()
@@ -1538,7 +1540,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     assert_eq!(last_live.active_value, 1);
     let bee_before_contact = session
         .economy()
-        .authored_bees()
+        .bee_creatures()
         .iter()
         .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
         .copied()

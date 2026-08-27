@@ -512,6 +512,12 @@ impl EntitySnapshot {
         self.record[154..156].fill(0);
     }
 
+    /// Write the source `word_0x96_150` relation used by active physical
+    /// spell holders to retain their spawned creature.
+    pub(super) fn set_source_word_96(&mut self, source_slot: u16) {
+        self.record[154..156].copy_from_slice(&source_slot.to_le_bytes());
+    }
+
     /// Source `array_0x52_82.yaw`, distinct from the entity orientation yaw.
     #[must_use]
     pub(super) fn array_yaw(&self) -> i16 {

@@ -2009,7 +2009,7 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
     // fail-closed boundary used by the real dynamic cursor.
     let economy_before = session.economy().clone();
     let economy_hash = session.economy().reset_hash();
-    for wrong_model in [1, 2, 13] {
+    for wrong_model in [2, 13] {
         assert!(
             session
                 .economy_mut()

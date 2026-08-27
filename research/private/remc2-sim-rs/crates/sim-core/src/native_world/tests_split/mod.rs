@@ -99,7 +99,7 @@ fn fire_level_two_model32_group(session: &mut Level2ResetSession, group: u16) ->
                 source.phase,
                 source.drawing_disabled()
             )),
-        session.economy.authored_bees().len(),
+        session.economy.bee_creatures().len(),
         session.level2_bees_activated,
         session.dispatch_events()
     );

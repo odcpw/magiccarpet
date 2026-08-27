@@ -2067,46 +2067,55 @@ impl Level2SharedSpellResetSession {
 
     /// Apply `sub_6D8B0(parent, 3, 1)` for the active Speed holder.
     pub(super) fn award_speed_experience(&mut self, parent_entity_index: u16, amount: i32) {
-        const FAMILY: usize = 3;
+        self.award_spell_experience(parent_entity_index, 3, amount);
+    }
+
+    /// Apply the shared `sub_6D8B0` spell-experience transition for a
+    /// package-backed physical spell family.
+    pub(super) fn award_spell_experience(
+        &mut self,
+        parent_entity_index: u16,
+        family: u8,
+        amount: i32,
+    ) {
+        let family = usize::from(family);
+        assert!(family < PLAYER_SPELL_COUNT, "spell family is in range");
         let owner_index = self
             .players
             .iter()
             .position(|player| player.entity_index == parent_entity_index)
-            .expect("Speed holder parent remains in the source player rows");
+            .expect("spell holder parent remains in the source player rows");
         let mut owner = self.players[owner_index].clone();
-        let previous_unlocked = owner.spell_unlocked_levels[FAMILY];
-        let runtime = owner.runtime_spell_experience[FAMILY].wrapping_add(amount);
-        let total = owner.persistent_spell_experience[FAMILY].wrapping_add(runtime);
-        let unlocked = if total >= 1_200 {
-            2
-        } else if total >= 400 {
-            1
-        } else {
-            0
-        };
-        owner.runtime_spell_experience[FAMILY] = runtime;
-        owner.spell_unlocked_levels[FAMILY] = unlocked;
-        owner.record[164 + FAMILY * std::mem::size_of::<i32>()
-            ..164 + (FAMILY + 1) * std::mem::size_of::<i32>()]
+        let previous_unlocked = owner.spell_unlocked_levels[family];
+        let runtime = owner.runtime_spell_experience[family].wrapping_add(amount);
+        let total = owner.persistent_spell_experience[family].wrapping_add(runtime);
+        let unlocked = LEVEL2_SPELL_TIER_THRESHOLDS[family]
+            .iter()
+            .rposition(|threshold| total >= *threshold)
+            .unwrap_or(0) as i8;
+        owner.runtime_spell_experience[family] = runtime;
+        owner.spell_unlocked_levels[family] = unlocked;
+        owner.record[164 + family * std::mem::size_of::<i32>()
+            ..164 + (family + 1) * std::mem::size_of::<i32>()]
             .copy_from_slice(&runtime.to_le_bytes());
-        owner.record[502 + FAMILY] = unlocked.cast_unsigned();
-        if owner.family_selected_tiers[FAMILY] > unlocked {
-            owner.family_selected_tiers[FAMILY] = unlocked;
-            owner.record[528 + FAMILY] = unlocked.cast_unsigned();
+        owner.record[502 + family] = unlocked.cast_unsigned();
+        if owner.family_selected_tiers[family] > unlocked {
+            owner.family_selected_tiers[family] = unlocked;
+            owner.record[528 + family] = unlocked.cast_unsigned();
         }
         let family_enabled =
-            owner.spell_enabled_flags[FAMILY] != 0 || owner.enabled_spell_holders[FAMILY] != 0;
+            owner.spell_enabled_flags[family] != 0 || owner.enabled_spell_holders[family] != 0;
         let owner_is_local = owner.entity_index == self.local_player.entity_index;
         self.players[owner_index] = owner.clone();
         if owner_is_local {
-            self.spell_experience[FAMILY] = runtime;
-            self.spell_levels[FAMILY] = unlocked;
+            self.spell_experience[family] = runtime;
+            self.spell_levels[family] = unlocked;
             self.local_player = owner;
         }
         if unlocked != previous_unlocked && family_enabled {
             mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
             self.emit_shared_spell_effect(Level2SharedSpellEvent::AbilityImproved {
-                source_family: FAMILY as u8,
+                source_family: family as u8,
                 tier: unlocked,
             });
             self.emit_flight_effect(FlightEvent::PrepareSound {

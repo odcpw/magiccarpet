@@ -164,12 +164,12 @@ impl Level2EconomyState {
 
             authored_model13: Vec::new(),
 
-            authored_bees: Vec::new(),
+            bee_creatures: Vec::new(),
 
             bee_model2_constructor_phase: 0,
 
             authored_bee_kill_census: BTreeMap::new(),
-            deferred_authored_bee_reclaims: BTreeSet::new(),
+            deferred_bee_reclaims: BTreeSet::new(),
 
             authored_switch_producers: Vec::new(),
 
@@ -615,8 +615,8 @@ impl Level2EconomyState {
     }
 
     #[must_use]
-    pub fn authored_bees(&self) -> &[Level2AuthoredBeeSource] {
-        &self.authored_bees
+    pub fn bee_creatures(&self) -> &[BeeCreatureRuntime] {
+        &self.bee_creatures
     }
 
     /// Stage the terminal hide of already-proven authored Bee roots for a
@@ -629,14 +629,18 @@ impl Level2EconomyState {
         authored_indices: &[u16],
     ) -> usize {
         let mut hidden = 0;
-        for source in &mut self.authored_bees {
-            if source.active && authored_indices.contains(&source.authored_index) {
+        for source in &mut self.bee_creatures {
+            if source.active
+                && source
+                    .authored_index()
+                    .is_some_and(|index| authored_indices.contains(&index))
+            {
                 source.action = 21;
                 source.drawing_enabled = false;
                 source.active = false;
                 source.life = -1;
                 source.target_entity_index = None;
-                self.deferred_authored_bee_reclaims
+                self.deferred_bee_reclaims
                     .insert(source.source_entity_index);
                 hidden += 1;
             }
@@ -1343,11 +1347,73 @@ impl Level2EconomyState {
         position: Position,
         stage_route: Option<Level2BeeStageRoute>,
         terrain: &SessionTerrain,
-    ) -> Option<Level2AuthoredBeeSource> {
-        let source_entity_index = self.allocate_slot()?;
-        let initial_rng = self.new_event_rng(source_entity_index);
+    ) -> Option<BeeCreatureRuntime> {
+        let (action, stage_var1, stage_var2, stage_target) =
+            stage_route.map_or((17, 0, 0, None), |route| {
+                (
+                    8 * 2 + 7,
+                    route.stage_var1,
+                    route.stage_var2,
+                    Some(route.stage_target),
+                )
+            });
         let mut position = position;
         position.z = terrain.ground_height(position);
+        self.allocate_bee_creature(
+            BeeCreatureOrigin::AuthoredRecord { authored_index },
+            position,
+            0,
+            0,
+            action,
+            stage_var1,
+            stage_var2,
+            stage_target,
+            terrain,
+        )
+    }
+
+    /// Allocate the Day Bee body created by one successful Morph pulse.
+    /// Unlike an authored group row, `sub_6A030` spawns at the caster's exact
+    /// 3-D position and installs the caster relationship after `sub_4B590`.
+    pub(super) fn allocate_morph_bee(
+        &mut self,
+        holder_slot: u16,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        position: Position,
+        terrain: &SessionTerrain,
+    ) -> Option<BeeCreatureRuntime> {
+        self.allocate_bee_creature(
+            BeeCreatureOrigin::MorphSpell { holder_slot },
+            position,
+            parent_entity_index,
+            parent_entity_id,
+            23,
+            0,
+            12,
+            None,
+            terrain,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn allocate_bee_creature(
+        &mut self,
+        origin: BeeCreatureOrigin,
+        position: Position,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        action: u8,
+        stage_var1: u8,
+        stage_var2: u8,
+        stage_target: Option<Position>,
+        terrain: &SessionTerrain,
+    ) -> Option<BeeCreatureRuntime> {
+        if terrain.map_type != MapType::Day {
+            return None;
+        }
+        let source_entity_index = self.allocate_slot()?;
+        let initial_rng = self.new_event_rng(source_entity_index);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -1372,20 +1438,16 @@ impl Level2EconomyState {
         let source_byte_39 = action_window
             - i16::from(source_byte_3e % u8::try_from(action_window).expect("positive window"))
             + 4;
-        let (action, stage_var1, stage_var2, stage_target) =
-            stage_route.map_or((17, 0, 0, None), |route| {
-                (
-                    8 * 2 + 7,
-                    route.stage_var1,
-                    route.stage_var2,
-                    Some(route.stage_target),
-                )
-            });
-        let source = Level2AuthoredBeeSource {
+        let source = BeeCreatureRuntime {
             source_entity_index,
-            entity_id: source_entity_index,
+            entity_id: if parent_entity_id == 0 {
+                source_entity_index
+            } else {
+                parent_entity_id
+            },
             entity_rng,
-            authored_index,
+            origin,
+            parent_entity_index,
             source_class: 5,
             model: 2,
             action,
@@ -1395,7 +1457,7 @@ impl Level2EconomyState {
             // NewEvent_4A050 initializes the control dword to 8. The
             // movement helper only consumes the later byte-1 bit 8 (0x800),
             // so the constructor's low-byte marker remains intact here.
-            control_flags: 8,
+            control_flags: 8 | u32::from(parent_entity_index != 0),
             mana: 1500,
             max_life: 3000,
             life: 3000,
@@ -1426,7 +1488,7 @@ impl Level2EconomyState {
             active: true,
         };
         self.source_rng.insert(source_entity_index, entity_rng);
-        self.authored_bees.push(source);
+        self.bee_creatures.push(source);
         Some(source)
     }
 
@@ -1435,7 +1497,7 @@ impl Level2EconomyState {
     /// explicit; no player or objective is inferred here.
     pub fn set_authored_bee_target(&mut self, source_slot: u16, target: Option<u16>) -> bool {
         let Some(source) = self
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|source| source.active && source.source_entity_index == source_slot)
         else {
@@ -1445,13 +1507,75 @@ impl Level2EconomyState {
         true
     }
 
-    #[cfg(test)]
-    pub(super) fn replace_authored_bee_for_test(
+    /// Run Morph's action-23 selector-12 follower at the Bee's ordinary
+    /// numeric source visit. This callback owns no RNG; it follows the live
+    /// parent exactly and leaves the common Bee phase advance in this one
+    /// authoritative carrier.
+    pub(super) fn step_morph_bee_follower(
         &mut self,
-        updated: Level2AuthoredBeeSource,
+        source_slot: u16,
+        parent: Option<BeeFollowerParent>,
     ) -> bool {
+        let Some(source_index) = self.bee_creatures.iter().position(|source| {
+            source.active
+                && source.source_entity_index == source_slot
+                && matches!(source.origin, BeeCreatureOrigin::MorphSpell { .. })
+                && source.action == 23
+                && source.stage_var2 == 12
+        }) else {
+            return false;
+        };
+        let mut source = self.bee_creatures[source_index];
+        let parent = parent.filter(|parent| {
+            parent.active && parent.life >= 0 && parent.entity_index == source.parent_entity_index
+        });
+        if let Some(parent) = parent {
+            source.position = parent.position;
+            source.yaw = parent.yaw;
+            source.roll = parent.roll;
+        } else {
+            source.drawing_enabled = false;
+            self.deferred_bee_reclaims.insert(source_slot);
+        }
+        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+        source.phase = source.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, source.entity_rng);
+        self.bee_creatures[source_index] = source;
+        if source.drawing_enabled {
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: source.position.x,
+                    y: source.position.y,
+                })
+                .is_ok()
+        } else {
+            // DisableEntityDrawing retains the map link through the rest of
+            // this pass. The following source boundary owns unlink/release.
+            true
+        }
+    }
+
+    /// Apply Morph holder expiry to its related Bee. The disabled row stays
+    /// allocated until the following source-boundary reclaim.
+    pub(super) fn disable_morph_bee(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self.bee_creatures.iter_mut().find(|source| {
+            source.active
+                && source.source_entity_index == source_slot
+                && matches!(source.origin, BeeCreatureOrigin::MorphSpell { .. })
+        }) else {
+            return false;
+        };
+        source.drawing_enabled = false;
+        self.deferred_bee_reclaims.insert(source_slot);
+        true
+    }
+
+    #[cfg(test)]
+    pub(super) fn replace_authored_bee_for_test(&mut self, updated: BeeCreatureRuntime) -> bool {
         let Some(source) = self
-            .authored_bees
+            .bee_creatures
             .iter_mut()
             .find(|source| source.source_entity_index == updated.source_entity_index)
         else {
@@ -1475,13 +1599,13 @@ impl Level2EconomyState {
         terrain: &SessionTerrain,
     ) -> Option<u16> {
         let Some(source_index) = self
-            .authored_bees
+            .bee_creatures
             .iter()
             .position(|source| source.active && source.source_entity_index == source_slot)
         else {
             return None;
         };
-        let mut source = self.authored_bees[source_index];
+        let mut source = self.bee_creatures[source_index];
         if source.action != 17 {
             return None;
         }
@@ -1493,7 +1617,7 @@ impl Level2EconomyState {
         move_level2_bee_source(&mut source, terrain);
         if source.action_window <= 0 {
             self.source_rng.insert(source_slot, source.entity_rng);
-            self.authored_bees[source_index] = source;
+            self.bee_creatures[source_index] = source;
             return None;
         }
         if source.source_byte_3e
@@ -1501,7 +1625,7 @@ impl Level2EconomyState {
             != 0
         {
             self.source_rng.insert(source_slot, source.entity_rng);
-            self.authored_bees[source_index] = source;
+            self.bee_creatures[source_index] = source;
             return None;
         }
 
@@ -1519,7 +1643,7 @@ impl Level2EconomyState {
         // byte-0x39; a zero window suppresses only the class-3 scan.
         if source.source_byte_39 == 0 {
             self.source_rng.insert(source_slot, source.entity_rng);
-            self.authored_bees[source_index] = source;
+            self.bee_creatures[source_index] = source;
             return None;
         }
 
@@ -1531,7 +1655,7 @@ impl Level2EconomyState {
             source.target_entity_index = Some(target_index);
         }
         self.source_rng.insert(source_slot, source.entity_rng);
-        self.authored_bees[source_index] = source;
+        self.bee_creatures[source_index] = source;
         selected
     }
 
@@ -2300,7 +2424,7 @@ impl Level2EconomyState {
     /// transitions.  This keeps the explicit target mailbox from becoming a
     /// synthetic "any target means attack" shortcut.
     pub(super) fn bee_target_in_awareness_band(
-        source: &Level2AuthoredBeeSource,
+        source: &BeeCreatureRuntime,
         target: Position,
     ) -> bool {
         let dx = i32::from(target.x) - i32::from(source.position.x);
@@ -2314,7 +2438,7 @@ impl Level2EconomyState {
     /// same-model peer override that roll. Peer bounds use the entity's
     /// source pitch field exactly as the decompilation does.
     pub(super) fn steer_authored_bee_source(
-        source: &mut Level2AuthoredBeeSource,
+        source: &mut BeeCreatureRuntime,
         target: Position,
         peers: &[(u16, Position)],
     ) {
@@ -2378,13 +2502,13 @@ impl Level2EconomyState {
         terrain: &SessionTerrain,
     ) -> bool {
         let Some(source_index) = self
-            .authored_bees
+            .bee_creatures
             .iter()
             .position(|source| source.active && source.source_entity_index == source_slot)
         else {
             return false;
         };
-        let mut source = self.authored_bees[source_index];
+        let mut source = self.bee_creatures[source_index];
         // `sub_1F660` consumes the action-17 mailbox before dispatching the
         // ordinary callback body.  A consumed mailbox selects action 18 or
         // action 20 directly, so the target scan and its RNG tail must not
@@ -2396,7 +2520,7 @@ impl Level2EconomyState {
             source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
             source.phase = source.phase.wrapping_add(1);
             self.source_rng.insert(source_slot, source.entity_rng);
-            self.authored_bees[source_index] = source;
+            self.bee_creatures[source_index] = source;
             return self
                 .map_chains
                 .sync_entity(RenderableMapSeed {
@@ -2656,7 +2780,7 @@ impl Level2EconomyState {
         source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
         self.source_rng.insert(source_slot, source.entity_rng);
-        self.authored_bees[source_index] = source;
+        self.bee_creatures[source_index] = source;
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -5072,10 +5196,10 @@ impl Level2EconomyState {
                 Level2DynamicArenaKind::AuthoredModel13,
             );
         }
-        for source in self.authored_bees.iter().filter(|source| source.active) {
+        for source in self.bee_creatures.iter().filter(|source| source.active) {
             visit(
                 source.source_entity_index,
-                Level2DynamicArenaKind::AuthoredBee,
+                Level2DynamicArenaKind::BeeCreature,
             );
         }
         for source in self
@@ -5392,7 +5516,7 @@ impl Level2EconomyState {
             Level2DynamicArenaKind::AuthoredModel1 => selector!(self.authored_model1, 10),
             Level2DynamicArenaKind::AuthoredModel45 => selector!(self.authored_model45),
             Level2DynamicArenaKind::AuthoredModel13 => selector!(self.authored_model13),
-            Level2DynamicArenaKind::AuthoredBee => selector!(self.authored_bees),
+            Level2DynamicArenaKind::BeeCreature => selector!(self.bee_creatures),
             Level2DynamicArenaKind::Model13SpawnedChild => {
                 selector!(self.model13_spawned_children)
             }
@@ -5784,26 +5908,26 @@ impl Level2EconomyState {
     /// Reclaim a phase-zero Bee hidden during the preceding source pass. This
     /// is deliberately before the next cursor snapshot and after the prior
     /// pass's event tail, matching the source's following-pass `sub_57F20`.
-    pub(super) fn reclaim_deferred_authored_bees_at_source_boundary(&mut self) {
+    pub(super) fn reclaim_deferred_bee_creatures_at_source_boundary(&mut self) {
         let reclaimed_bees = self
-            .authored_bees
+            .bee_creatures
             .iter()
             .filter(|source| {
-                !source.active
+                !source.drawing_enabled
                     && self
-                        .deferred_authored_bee_reclaims
+                        .deferred_bee_reclaims
                         .contains(&source.source_entity_index)
             })
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
-        self.authored_bees.retain(|source| {
-            source.active
+        self.bee_creatures.retain(|source| {
+            source.drawing_enabled
                 || !self
-                    .deferred_authored_bee_reclaims
+                    .deferred_bee_reclaims
                     .contains(&source.source_entity_index)
         });
         for (slot, entity_rng) in reclaimed_bees {
-            self.deferred_authored_bee_reclaims.remove(&slot);
+            self.deferred_bee_reclaims.remove(&slot);
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
                 active: false,
@@ -5812,6 +5936,11 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+    }
+
+    #[must_use]
+    pub(super) fn is_deferred_bee_reclaim(&self, source_slot: u16) -> bool {
+        self.deferred_bee_reclaims.contains(&source_slot)
     }
 
     /// Reclaim Archer roots and class-9/model-13 children disabled during the
@@ -5876,7 +6005,7 @@ impl Level2EconomyState {
         true
     }
 
-    fn reclaim_inactive_slots_with_policy(&mut self, defer_authored_bees: bool) {
+    fn reclaim_inactive_slots_with_policy(&mut self, defer_bee_creatures: bool) {
         // Castle projectiles are disabled by their source callback and
         // reclaimed only by reclaim_hidden_castle_rows_at_source_boundary at
         // the following UpdateEntities prologue. Same-pass reclamation would
@@ -6026,26 +6155,26 @@ impl Level2EconomyState {
             self.release_slot(slot, Some(entity_rng));
         }
         let reclaimed_bees = self
-            .authored_bees
+            .bee_creatures
             .iter()
             .filter(|source| {
                 !source.active
-                    && (!defer_authored_bees
+                    && (!defer_bee_creatures
                         || !self
-                            .deferred_authored_bee_reclaims
+                            .deferred_bee_reclaims
                             .contains(&source.source_entity_index))
             })
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
-        self.authored_bees.retain(|source| {
+        self.bee_creatures.retain(|source| {
             source.active
-                || (defer_authored_bees
+                || (defer_bee_creatures
                     && self
-                        .deferred_authored_bee_reclaims
+                        .deferred_bee_reclaims
                         .contains(&source.source_entity_index))
         });
         for (slot, entity_rng) in reclaimed_bees {
-            self.deferred_authored_bee_reclaims.remove(&slot);
+            self.deferred_bee_reclaims.remove(&slot);
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
                 active: false,
@@ -6759,11 +6888,23 @@ impl Level2EconomyState {
                 u8::from(source.active),
             ]);
         }
-        for source in &self.authored_bees {
+        for source in &self.bee_creatures {
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_id.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
-            hasher.update(source.authored_index.to_le_bytes());
+            match source.origin {
+                BeeCreatureOrigin::AuthoredRecord { authored_index } => {
+                    // Preserve the established authored-Bee hash stream
+                    // byte-for-byte. Package identity already proves this
+                    // origin; only Morph needs an added discriminator.
+                    hasher.update(authored_index.to_le_bytes());
+                }
+                BeeCreatureOrigin::MorphSpell { holder_slot } => {
+                    hasher.update(b"morph-bee-origin-v1");
+                    hasher.update(holder_slot.to_le_bytes());
+                    hasher.update(source.parent_entity_index.to_le_bytes());
+                }
+            }
             hasher.update([
                 source.source_class,
                 source.model,
@@ -6819,7 +6960,7 @@ impl Level2EconomyState {
             hasher.update(count.to_le_bytes());
         }
         hasher.update(b"level2-authored-bee-deferred-reclaim-v1");
-        for source_entity_index in &self.deferred_authored_bee_reclaims {
+        for source_entity_index in &self.deferred_bee_reclaims {
             hasher.update(source_entity_index.to_le_bytes());
         }
         hasher.update(b"level2-authored-switch-producer-v1");
