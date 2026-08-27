@@ -610,8 +610,8 @@ mod tests {
     use super::*;
     use crate::game_definition::GamePackage;
     use crate::game_definition::{
-        ChangeSetBuilder, PublicationFault, RequestedTiming, SemanticId, SemanticValue,
-        WorkspaceStore, default_catalog, engine_capabilities,
+        ChangeSetBuilder, IntegerParameter, PublicationFault, RequestedTiming, WorkspaceStore,
+        default_catalog, engine_capabilities,
     };
     use std::{convert::Infallible, path::PathBuf};
 
@@ -738,10 +738,7 @@ mod tests {
             "publish-speed",
             RequestedTiming::SessionReset,
         )
-        .replace(
-            SemanticId::parse("flight.player.max_forward_speed").unwrap(),
-            SemanticValue::Integer(82),
-        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 96)
         .build()
         .unwrap();
         let validation = store.validate(&catalog, change_set.clone()).unwrap();

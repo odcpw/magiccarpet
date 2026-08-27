@@ -134,6 +134,16 @@ impl CampaignSession {
         self.level2.step_outer_turn(command, speed_index)
     }
 
+    pub(crate) fn step_with_tuning(
+        &mut self,
+        command: PlayerCommand,
+        speed_index: u8,
+        tuning: crate::FlightTuning,
+    ) -> Vec<StepEvidence> {
+        self.level2
+            .step_outer_turn_with_tuning(command, speed_index, tuning)
+    }
+
     pub fn reset(&mut self) {
         self.level2.reset();
     }

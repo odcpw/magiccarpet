@@ -686,7 +686,8 @@ pub extern "C" fn mc_game_session_presentation_asset_json_v1(
 mod tests {
     use super::*;
     use sim_core::game_definition::{
-        ChangeSetBuilder, PublicationFault, RequestedTiming, SemanticId, SemanticValue,
+        ArtifactId, ChangeSetBuilder, IntegerParameter, PresentationAssetSlot, PublicationFault,
+        RequestedTiming,
     };
 
     fn fixture_paths() -> (PathBuf, PathBuf, PathBuf) {
@@ -992,12 +993,9 @@ mod tests {
             "f9-variant",
             RequestedTiming::PackageReload,
         )
-        .replace(
-            SemanticId::parse("presentation.spell.fireball.projectile_asset").unwrap(),
-            SemanticValue::Reference(
-                "sha256:c924ac200c84b9983374d1abcacff27414c3f565ac82792394353e0358ee0b34"
-                    .to_owned(),
-            ),
+        .bind_asset(
+            PresentationAssetSlot::FireballProjectile,
+            ArtifactId::parse("presentation.projectile_asset_variant").unwrap(),
         )
         .build()
         .unwrap();
@@ -1119,10 +1117,7 @@ mod tests {
             "flight-limit-16",
             RequestedTiming::SessionReset,
         )
-        .replace(
-            SemanticId::parse("flight.player.max_forward_speed").unwrap(),
-            SemanticValue::Integer(16),
-        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 16)
         .build()
         .unwrap();
         let validation = store.validate(&catalog, change_set.clone()).unwrap();

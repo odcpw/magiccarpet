@@ -1,6 +1,7 @@
 use sim_core::game_definition::{
-    DefinitionError, GameDefinition, GamePackage, Mc2OwnedInputs, SemanticCatalog, SemanticId,
-    default_catalog, engine_capabilities, load_mc2_owned,
+    CHANGE_SET_SCHEMA, DefinitionError, DefinitionOperation, GameDefinition, GamePackage,
+    Mc2OwnedInputs, SemanticCatalog, SemanticId, default_catalog, engine_capabilities,
+    load_mc2_owned,
 };
 use std::process::ExitCode;
 
@@ -65,6 +66,10 @@ fn game_capabilities() -> ExitCode {
         "catalog_hash": catalog.catalog_hash(),
         "read_only": catalog.descriptors().all(|descriptor| descriptor.access.as_str() == "read_only"),
         "authoring_transaction_available": true,
+        "authoring": {
+            "change_set_schema": CHANGE_SET_SCHEMA,
+            "operation_schema": DefinitionOperation::schema_json(),
+        },
         "writable_descriptor_count": catalog.descriptors().filter(|descriptor| descriptor.access.as_str() == "writable").count(),
         "limits": {"default_page_size": 100, "maximum_page_size": 100},
         "operations": {

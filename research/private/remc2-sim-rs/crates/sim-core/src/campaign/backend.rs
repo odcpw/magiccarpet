@@ -29,8 +29,9 @@ use crate::{
         spec::{CampaignDefinition as CampaignDescriptor, CampaignSelection},
     },
     game_definition::{
-        ArtifactKind, DefinitionError, DefinitionErrorCode, GameDefinition, RequiredCapability,
-        SemanticCatalog, SemanticId, default_catalog, engine_capabilities,
+        ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFlightBinding,
+        GameDefinition, RequiredCapability, SemanticCatalog, SemanticId, default_catalog,
+        engine_capabilities,
     },
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAudioCommand, GameCommand, GameEvent,
@@ -285,6 +286,7 @@ impl Mc2CampaignInputs {
 #[derive(Debug)]
 pub struct Mc2CampaignBackend {
     campaign: CampaignSession,
+    flight_binding: DefinitionFlightBinding,
     package_base: GameDefinition,
     package_graph_hash: String,
     artifact_graph_hash: String,
@@ -301,6 +303,8 @@ impl GameAdapter for Mc2CampaignAdapter {
         input: Self::OpenInput,
     ) -> Result<Self::Backend, Self::Error> {
         let catalog = default_catalog().map_err(CampaignBackendError::Definition)?;
+        let flight_binding = DefinitionFlightBinding::from_definition(definition)
+            .map_err(CampaignBackendError::Definition)?;
         require_catalog_defaults(definition, &catalog)?;
         let package_base = load_mc2_campaign(&input.package_root, &catalog)
             .map_err(CampaignBackendError::Definition)?;
@@ -328,6 +332,7 @@ impl GameAdapter for Mc2CampaignAdapter {
         }
         Ok(Mc2CampaignBackend {
             campaign,
+            flight_binding,
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
             package_base,
@@ -343,6 +348,9 @@ fn require_catalog_defaults(
     catalog: &SemanticCatalog,
 ) -> Result<(), CampaignBackendError> {
     for descriptor in catalog.descriptors() {
+        if DefinitionFlightBinding::consumes(&descriptor.id) {
+            continue;
+        }
         if definition.value(&descriptor.id) != Some(&descriptor.default_value) {
             return Err(CampaignBackendError::UnappliedSemanticValue {
                 id: descriptor.id.clone(),
@@ -436,7 +444,11 @@ impl GameSessionBackend for Mc2CampaignBackend {
 
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
         let mut candidate = self.campaign.clone();
-        let _evidence = candidate.step(campaign_player_command(command), CAMPAIGN_SPEED_INDEX);
+        let _evidence = candidate.step_with_tuning(
+            campaign_player_command(command),
+            CAMPAIGN_SPEED_INDEX,
+            self.flight_binding.tuning(),
+        );
         if let Some(message) = candidate.events().iter().find_map(|event| match event {
             Level2DispatchEvent::Error { message, .. } => Some(message.clone()),
             _ => None,
@@ -454,11 +466,14 @@ impl GameSessionBackend for Mc2CampaignBackend {
             return Err(CampaignBackendError::PackageSubstitution);
         }
         let catalog = default_catalog().map_err(CampaignBackendError::Definition)?;
+        let flight_binding = DefinitionFlightBinding::from_definition(definition)
+            .map_err(CampaignBackendError::Definition)?;
         definition
             .verify_semantic_variant_of(&self.package_base, &catalog)
             .map_err(CampaignBackendError::Definition)?;
         require_catalog_defaults(definition, &catalog)?;
         self.campaign.reset();
+        self.flight_binding = flight_binding;
         Ok(())
     }
 }
@@ -636,8 +651,10 @@ fn hex_digest(bytes: [u8; 32]) -> String {
 mod tests {
     use super::*;
     use crate::campaign::state::{ResetState, encode_reset_v1};
-    use crate::game_definition::GamePackage;
-    use crate::game_definition::SemanticValue;
+    use crate::game_definition::{
+        ChangeSetBuilder, GamePackage, IntegerParameter, PublicationFault, RequestedTiming,
+        SemanticValue, WorkspaceStore,
+    };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
         ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind, MechanicKind,
@@ -647,7 +664,12 @@ mod tests {
         build_level_definition, entity_definition, entity_id, objective_definition,
         reissue_at_revision, with_replacement,
     };
-    use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+    use std::{
+        collections::BTreeSet,
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn descriptor_fixture_path() -> PathBuf {
         std::env::var_os("MC_CAMPAIGN_PACKAGE_V1").map_or_else(
@@ -677,6 +699,48 @@ mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    fn temporary_workspace_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock follows the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "carpet-flight-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn publish_player_max_forward_speed(
+        store: &WorkspaceStore,
+        catalog: &SemanticCatalog,
+        active: &GameDefinition,
+        idempotency_key: &str,
+        speed: i64,
+    ) -> GameDefinition {
+        let change_set = ChangeSetBuilder::new(
+            "campaign-flight-authoring",
+            active,
+            idempotency_key,
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, speed)
+        .build()
+        .expect("typed flight change set");
+        let validation = store
+            .validate(catalog, change_set.clone())
+            .expect("flight change validates");
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .expect("flight change publishes");
+        store.active_definition().expect("published definition")
     }
 
     fn assert_package_content(
@@ -1234,12 +1298,118 @@ mod tests {
     }
 
     #[test]
+    fn campaign_backend_consumes_published_flight_tuning_across_level_packages() {
+        let catalog = default_catalog().unwrap();
+        for (ordinal, root) in [
+            level_one_descriptor_fixture_path(),
+            descriptor_fixture_path(),
+            level_three_descriptor_fixture_path(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let base = load_mc2_campaign(&root, &catalog).unwrap();
+            let workspace_root = temporary_workspace_path(&format!("campaign-flight-{ordinal}"));
+            let store =
+                WorkspaceStore::create(&workspace_root, "campaign-flight-authoring", base.clone())
+                    .unwrap();
+            let mut existing = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(base.clone()),
+                40 + u64::try_from(ordinal).unwrap(),
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap();
+            let initial = existing.snapshot();
+
+            let speed_16 = publish_player_max_forward_speed(
+                &store,
+                &catalog,
+                &base,
+                &format!("publish-speed-16-{ordinal}"),
+                16,
+            );
+            let speed_48 = publish_player_max_forward_speed(
+                &store,
+                &catalog,
+                &speed_16,
+                &format!("publish-speed-48-{ordinal}"),
+                48,
+            );
+            if ordinal == 0 {
+                let before = store.state_bytes().unwrap();
+                let unsupported = ChangeSetBuilder::new(
+                    "campaign-flight-authoring",
+                    &speed_48,
+                    "unsupported-campaign-fireball-cost",
+                    RequestedTiming::SessionReset,
+                )
+                .set_integer(IntegerParameter::FireballManaCost, 200)
+                .build()
+                .unwrap();
+                let rejected = store.validate(&catalog, unsupported).unwrap();
+                assert!(!rejected.accepted);
+                assert_eq!(rejected.diagnostics[0].code, "DEPENDENCY_FAILED");
+                assert_eq!(store.state_bytes().unwrap(), before);
+            }
+
+            assert_eq!(existing.identity().definition_hash, base.definition_hash());
+            assert_eq!(existing.identity().generation, 1);
+            let accelerate = GameCommand {
+                longitudinal: LongitudinalControl::Accelerate,
+                ..GameCommand::default()
+            };
+            for _ in 0..4 {
+                existing.step(guard(&existing), accelerate).unwrap();
+            }
+            assert_eq!(existing.snapshot().value.player_motion.target_speed, 64);
+
+            let reopened = existing
+                .reopen(guard(&existing), Arc::new(speed_16.clone()))
+                .unwrap();
+            assert_eq!(reopened.identity.generation, 2);
+            assert_eq!(reopened.identity.definition_revision, 2);
+            assert_eq!(reopened.value, initial.value);
+            for _ in 0..4 {
+                existing.step(guard(&existing), accelerate).unwrap();
+            }
+            let capped_16 = existing.snapshot();
+            assert_eq!(capped_16.value.player_motion.target_speed, 16);
+            assert_eq!(capped_16.value.player_motion.actual_speed, 16);
+
+            let mut authored_48 = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(speed_48),
+                50 + u64::try_from(ordinal).unwrap(),
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap();
+            for _ in 0..4 {
+                authored_48.step(guard(&authored_48), accelerate).unwrap();
+            }
+            let capped_48 = authored_48.snapshot();
+            assert_eq!(capped_48.value.player_motion.target_speed, 48);
+            assert_eq!(capped_48.value.player_motion.actual_speed, 48);
+            assert_ne!(capped_48.value.player_pose, capped_16.value.player_pose);
+
+            authored_48.reset(guard(&authored_48)).unwrap();
+            for _ in 0..4 {
+                authored_48.step(guard(&authored_48), accelerate).unwrap();
+            }
+            assert_eq!(authored_48.snapshot().value, capped_48.value);
+
+            std::fs::remove_dir_all(&workspace_root).unwrap();
+        }
+    }
+
+    #[test]
     fn campaign_backend_rejects_deviation_substitution_and_stale_guards() {
         let root = descriptor_fixture_path();
         let catalog = default_catalog().unwrap();
         let base = load_mc2_campaign(&root, &catalog).unwrap();
-        let speed_id = SemanticId::parse("flight.player.max_forward_speed").unwrap();
-        let deviated = with_replacement(&base, &speed_id, SemanticValue::Integer(16), 2).unwrap();
+        let fireball_cost_id = SemanticId::parse("spell.fireball.mana_cost").unwrap();
+        let deviated =
+            with_replacement(&base, &fireball_cost_id, SemanticValue::Integer(200), 2).unwrap();
 
         let error = GameSession::open(
             &Mc2CampaignAdapter,

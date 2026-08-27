@@ -318,11 +318,14 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-At repository revision `dca58273`, this is a binding target with partial real
-implementation, not a completion claim:
+As of the semantic-operation v2 milestone, this is a binding target with
+partial real implementation, not a completion claim:
 
-- the transaction store already provides guarded atomic/idempotent publication,
-  but its writable vocabulary is primarily scalar replacement;
+- the transaction store provides guarded atomic/idempotent publication through
+  a discoverable closed operation schema; the first consumed operation binds
+  `flight.player.max_forward_speed` through the ordinary neutral campaign
+  player callback for the real Level 1, 2 and 3 packages, while operations
+  without campaign runtime consumers fail before publication;
 - `LevelDefinition` is a package-derived read-only semantic census whose IDs
   are still ordinal-derived; it is not yet the complete typed placement/spawn/
   behavior/asset authoring model above;
@@ -336,7 +339,8 @@ implementation, not a completion claim:
   directly, neutral campaign saves/loads do not yet exist, and level completion
   does not yet drive a Rust-owned 1 -> 2 -> 3 handoff.
 
-The next foundation implementation seam is therefore the closed definition
-operation model plus a real neutral runtime consumer. Creature-family closure
-continues as capability implementation under that definition; it does not
-replace the authoring seam or become another public architecture.
+The next foundation implementation seam is stable author-chosen entity identity
+plus a private MC2 instance-to-runtime binding, followed by one real typed
+placement operation and its ordinary scheduler consumer. Creature-family
+closure continues as capability implementation under that definition; it does
+not replace the authoring seam or become another public architecture.

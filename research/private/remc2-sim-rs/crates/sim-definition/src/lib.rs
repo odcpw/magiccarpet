@@ -5,6 +5,7 @@
 //! transport, or gameplay scheduler.
 
 mod catalog;
+mod operation;
 mod package;
 mod presentation_asset;
 mod transaction;
@@ -18,6 +19,9 @@ pub use catalog::{
     SemanticBinding, SemanticCatalog, SemanticDescriptor, SemanticId, SemanticValue,
     TemporalContract, ValidateBinding, ValueType, default_catalog,
 };
+pub use operation::{
+    ArtifactId, DefinitionOperation, IntegerParameter, OptionParameter, PresentationAssetSlot,
+};
 pub use package::{
     ArtifactKind, ArtifactNode, CompiledCapability, CompiledCapabilityRegistry, GamePackage,
     PackageProvenance, PackageProvenanceKind, RequiredCapability, engine_capabilities,
@@ -28,7 +32,7 @@ pub use presentation_asset::{
 };
 pub use transaction::{
     APPLY_RECEIPT_SCHEMA, ApplyReceipt, ApplyStatus, CHANGE_SET_SCHEMA, ChangeSet,
-    ChangeSetBuilder, DefinitionDiff, Diagnostic, PublicationFault, Replacement, RequestedTiming,
+    ChangeSetBuilder, DefinitionDiff, Diagnostic, PublicationFault, RequestedTiming,
     TransactionError, TransactionErrorCode, VALIDATION_RECEIPT_SCHEMA, ValidationReceipt,
     WORKSPACE_SCHEMA, WorkspaceInspection, WorkspaceStore,
 };
@@ -46,7 +50,7 @@ use level_definition::LevelDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v1";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "1.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "2.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {

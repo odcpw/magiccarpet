@@ -543,6 +543,29 @@ fn validate_definition_replacement(
     Ok(())
 }
 
+fn validate_player_max_forward_speed(
+    _: &GameDefinition,
+    id: &SemanticId,
+    value: &SemanticValue,
+) -> Result<()> {
+    const SOURCE_SPEED_STEP: i64 = 16;
+    let SemanticValue::Integer(value) = value else {
+        return Err(DefinitionError::new(
+            DefinitionErrorCode::TypeMismatch,
+            id.as_str(),
+            "player maximum forward speed is not an integer",
+        ));
+    };
+    if value % SOURCE_SPEED_STEP != 0 {
+        return Err(DefinitionError::new(
+            DefinitionErrorCode::OutOfRange,
+            id.as_str(),
+            "player maximum forward speed must be a multiple of the source speed step (16)",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_presentation_asset_replacement(
     definition: &GameDefinition,
     id: &SemanticId,
@@ -565,6 +588,16 @@ fn writable_definition_binding(id: &str) -> Result<SemanticBinding> {
         id: SemanticId::parse(id)?,
         read: Some(read_definition_value),
         validate: Some(validate_definition_replacement),
+        apply: Some(apply_definition_replacement),
+        read_back: Some(read_definition_value),
+    })
+}
+
+fn writable_player_max_forward_speed_binding() -> Result<SemanticBinding> {
+    Ok(SemanticBinding {
+        id: SemanticId::parse("flight.player.max_forward_speed")?,
+        read: Some(read_definition_value),
+        validate: Some(validate_player_max_forward_speed),
         apply: Some(apply_definition_replacement),
         read_back: Some(read_definition_value),
     })
@@ -670,7 +703,7 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
             ValueType::Integer,
             Some("source_velocity_units_per_entity_pass"),
             SemanticValue::Integer(80),
-            (Some(0), Some(i64::from(i16::MAX))),
+            (Some(0), Some(32_752)),
             &[],
             MutationTiming::SessionReset,
             "sim-core/flight-source-pin",
@@ -763,7 +796,7 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
         .access = Access::Writable;
     let bindings = vec![
         writable_definition_binding("ai.enemy.default.policy")?,
-        writable_definition_binding("flight.player.max_forward_speed")?,
+        writable_player_max_forward_speed_binding()?,
         writable_presentation_asset_binding("presentation.spell.fireball.projectile_asset")?,
         writable_definition_binding("spell.fireball.mana_cost")?,
     ];

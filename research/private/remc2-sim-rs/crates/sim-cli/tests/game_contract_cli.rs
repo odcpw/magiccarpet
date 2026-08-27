@@ -69,6 +69,19 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
+    assert_eq!(capabilities["contract_version"], "2.0");
+    assert_eq!(
+        capabilities["data"]["authoring"]["change_set_schema"],
+        "carpet-flight-change-set/v2"
+    );
+    assert_eq!(
+        capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["operation"],
+        "set_integer"
+    );
+    assert_eq!(
+        capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["parameter_ids"][0],
+        "flight.player.max_forward_speed"
+    );
     assert_eq!(
         capabilities["data"]["compiled_capabilities"]
             .as_array()
@@ -286,8 +299,9 @@ fn workspace_authoring_cli_stages_previews_and_refuses_unsafe_asset_timing_witho
     fs::write(
         &changes_path,
         serde_json::to_vec(&serde_json::json!([{
-            "id": "presentation.spell.fireball.projectile_asset",
-            "value": {"type": "reference", "value": "sha256:c924ac200c84b9983374d1abcacff27414c3f565ac82792394353e0358ee0b34"}
+            "operation": "bind_asset",
+            "slot": "presentation.spell.fireball.projectile_asset",
+            "artifact": "presentation.projectile_asset_variant"
         }]))
         .unwrap(),
     )
@@ -406,14 +420,15 @@ fn authoring_cli_rejects_session_generation_and_duplicate_workspace_creation() {
     fs::write(
         &invalid_path,
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": "carpet-flight-change-set/v1",
+            "schema_version": "carpet-flight-change-set/v2",
             "target_workspace": "schema-workspace",
             "expected_definition_hash": definition_hash,
             "expected_definition_revision": 1,
             "idempotency_key": "wrong-guard",
-            "changes": [{
-                "id": "flight.player.max_forward_speed",
-                "value": {"type": "integer", "value": 82}
+            "operations": [{
+                "operation": "set_integer",
+                "parameter": "flight.player.max_forward_speed",
+                "value": 82
             }],
             "requested_timing": "session_reset",
             "intent": null,
@@ -465,9 +480,10 @@ fn authoring_cli_applies_reads_back_retries_and_forward_rolls_back_definition_va
     fs::write(
         &changes_path,
         serde_json::to_vec(&serde_json::json!([{
-            "id": "flight.player.max_forward_speed",
-            "value": {"type": "integer", "value": 82},
-            "expected_value": {"type": "integer", "value": 80}
+            "operation": "set_integer",
+            "parameter": "flight.player.max_forward_speed",
+            "value": 96,
+            "expected_value": 80
         }]))
         .unwrap(),
     )
@@ -506,7 +522,7 @@ fn authoring_cli_applies_reads_back_retries_and_forward_rolls_back_definition_va
     let preview: Value = serde_json::from_slice(&preview.stdout).unwrap();
     assert_eq!(preview["data"]["validation"]["accepted"], true);
     assert_eq!(preview["data"]["diff"][0]["before"]["value"], 80);
-    assert_eq!(preview["data"]["diff"][0]["after"]["value"], 82);
+    assert_eq!(preview["data"]["diff"][0]["after"]["value"], 96);
     let validation_hash = preview["data"]["validation"]["receipt_hash"]
         .as_str()
         .unwrap();
@@ -551,7 +567,7 @@ fn authoring_cli_applies_reads_back_retries_and_forward_rolls_back_definition_va
     ]);
     assert!(get.status.success());
     let get: Value = serde_json::from_slice(&get.stdout).unwrap();
-    assert_eq!(get["data"]["value"]["value"], 82);
+    assert_eq!(get["data"]["value"]["value"], 96);
     assert_eq!(get["identity"]["revision"], 2);
 
     let retry = run(&apply_arguments);
@@ -639,8 +655,9 @@ fn killed_cli_before_commit_preserves_state_and_reports_not_started() {
     fs::write(
         &changes_path,
         serde_json::to_vec(&serde_json::json!([{
-            "id": "flight.player.max_forward_speed",
-            "value": {"type": "integer", "value": 83}
+            "operation": "set_integer",
+            "parameter": "flight.player.max_forward_speed",
+            "value": 112
         }]))
         .unwrap(),
     )
@@ -746,8 +763,9 @@ fn killed_cli_after_commit_recovers_exact_receipt_and_idempotent_retry() {
     fs::write(
         &changes_path,
         serde_json::to_vec(&serde_json::json!([{
-            "id": "flight.player.max_forward_speed",
-            "value": {"type": "integer", "value": 84}
+            "operation": "set_integer",
+            "parameter": "flight.player.max_forward_speed",
+            "value": 128
         }]))
         .unwrap(),
     )

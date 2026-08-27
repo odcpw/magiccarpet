@@ -454,7 +454,7 @@ fn target_and_strafe_controls_obey_steps_limits_and_decay() {
 #[test]
 fn definition_bound_forward_limit_uses_the_ordinary_decoder() {
     let tuning = FlightTuning {
-        max_forward_speed: 20,
+        max_forward_speed: 16,
     };
     let mut authored = FlightState::default();
     let mut classic = FlightState::default();
@@ -462,13 +462,13 @@ fn definition_bound_forward_limit_uses_the_ordinary_decoder() {
         decode_movement_with_tuning(1, &mut authored, tuning);
         decode_movement(1, &mut classic);
     }
-    assert_eq!(authored.target_speed, 20);
+    assert_eq!(authored.target_speed, 16);
     assert_eq!(classic.target_speed, 64);
 
-    for _ in 0..4 {
+    for _ in 0..10 {
         decode_movement_with_tuning(2, &mut authored, tuning);
     }
-    assert_eq!(authored.target_speed, -20);
+    assert_eq!(authored.target_speed, -80);
 }
 
 #[test]

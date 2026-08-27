@@ -1728,14 +1728,14 @@ pub fn decode_movement_with_tuning(flags: u8, state: &mut FlightState, tuning: F
     if flags & 0b0000_0001 != 0 && state.target_speed < tuning.max_forward_speed {
         forward_direction = 1;
     }
-    if flags & 0b0000_0010 != 0 && state.target_speed > -tuning.max_forward_speed {
+    if flags & 0b0000_0010 != 0 && state.target_speed > SOURCE_REVERSE_LIMIT {
         forward_direction = -1;
     }
     if forward_direction != 0 {
         state.target_speed = state
             .target_speed
             .saturating_add(SPEED_STEP * forward_direction)
-            .clamp(-tuning.max_forward_speed, tuning.max_forward_speed);
+            .clamp(SOURCE_REVERSE_LIMIT, tuning.max_forward_speed);
         state.speed_changed_flag = 1;
     }
 

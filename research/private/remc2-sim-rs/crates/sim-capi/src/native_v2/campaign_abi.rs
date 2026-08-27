@@ -2866,7 +2866,7 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                         .map(campaign_entity_snapshot)
                         .collect::<Vec<_>>();
                     let mut occupied = BTreeSet::new();
-                    for source in reset.economy().authored_bees() {
+                    for source in reset.economy().bee_creatures() {
                         let slot = usize::from(source.source_entity_index);
                         if slot >= rows.len() || !occupied.insert(source.source_entity_index) {
                             return Err(AbiError::new(

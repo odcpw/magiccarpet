@@ -5,7 +5,8 @@
 //! identities, and the receipt journal. Live sessions are intentionally absent.
 
 use super::{
-    Access, DefinitionError, GameDefinition, MutationTiming, SemanticCatalog, SemanticId,
+    Access, ArtifactId, DefinitionError, DefinitionOperation, GameDefinition, IntegerParameter,
+    MutationTiming, OptionParameter, PresentationAssetSlot, SemanticCatalog, SemanticId,
     SemanticValue,
 };
 use serde::{Deserialize, Serialize};
@@ -20,7 +21,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v1";
+pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v2";
 pub const WORKSPACE_SCHEMA: &str = "carpet-flight-definition-workspace/v1";
 pub const VALIDATION_RECEIPT_SCHEMA: &str = "carpet-flight-validation-receipt/v1";
 pub const APPLY_RECEIPT_SCHEMA: &str = "carpet-flight-apply-receipt/v1";
@@ -191,22 +192,13 @@ impl RequestedTiming {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Replacement {
-    pub id: SemanticId,
-    pub value: SemanticValue,
-    #[serde(default)]
-    pub expected_value: Option<SemanticValue>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChangeSet {
     pub schema_version: String,
     pub target_workspace: String,
     pub expected_definition_hash: String,
     pub expected_definition_revision: u64,
     pub idempotency_key: String,
-    pub changes: Vec<Replacement>,
+    pub operations: Vec<DefinitionOperation>,
     pub requested_timing: RequestedTiming,
     #[serde(default)]
     pub intent: Option<String>,
@@ -233,18 +225,18 @@ impl ChangeSet {
                 "definition revision must be positive",
             ));
         }
-        if self.changes.is_empty() {
+        if self.operations.is_empty() {
             return Err(TransactionError::new(
                 TransactionErrorCode::InvalidRequest,
-                "changes",
-                "change set must contain at least one replacement",
+                "operations",
+                "change set must contain at least one typed operation",
             ));
         }
-        if self.changes.len() > 100 {
+        if self.operations.len() > 100 {
             return Err(TransactionError::new(
                 TransactionErrorCode::InvalidRequest,
-                "changes",
-                "change set exceeds the hard limit of 100 replacements",
+                "operations",
+                "change set exceeds the hard limit of 100 operations",
             ));
         }
         if self
@@ -258,12 +250,16 @@ impl ChangeSet {
                 "non-authoritative intent exceeds the hard limit of 1024 bytes",
             ));
         }
-        self.changes.sort_by(|left, right| left.id.cmp(&right.id));
-        if self.changes.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        self.operations.sort_by_key(DefinitionOperation::target_id);
+        if self
+            .operations
+            .windows(2)
+            .any(|pair| pair[0].target_id() == pair[1].target_id())
+        {
             return Err(TransactionError::new(
                 TransactionErrorCode::InvalidRequest,
-                "changes",
-                "change set repeats a semantic ID",
+                "operations",
+                "change set repeats a semantic target",
             ));
         }
         Ok(self)
@@ -295,7 +291,7 @@ impl ChangeSetBuilder {
                 expected_definition_hash: definition.definition_hash().to_owned(),
                 expected_definition_revision: definition.revision(),
                 idempotency_key: idempotency_key.into(),
-                changes: Vec::new(),
+                operations: Vec::new(),
                 requested_timing,
                 intent: None,
             },
@@ -303,12 +299,38 @@ impl ChangeSetBuilder {
     }
 
     #[must_use]
-    pub fn replace(mut self, id: SemanticId, value: SemanticValue) -> Self {
-        self.change_set.changes.push(Replacement {
-            id,
-            value,
-            expected_value: None,
-        });
+    pub fn set_integer(mut self, parameter: IntegerParameter, value: i64) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetInteger {
+                parameter,
+                value,
+                expected_value: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn select_option(mut self, parameter: OptionParameter, option: impl Into<String>) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SelectOption {
+                parameter,
+                option: option.into(),
+                expected_option: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn bind_asset(mut self, slot: PresentationAssetSlot, artifact: ArtifactId) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::BindAsset {
+                slot,
+                artifact,
+                expected_artifact: None,
+            });
         self
     }
 
@@ -1085,7 +1107,14 @@ fn validate_against(
     let mut proposed = active.clone();
     let mut preliminarily_valid = BTreeSet::new();
     let candidate_revision = active.revision().saturating_add(1);
-    for replacement in &change_set.changes {
+    let mut resolved_operations = Vec::with_capacity(change_set.operations.len());
+    for operation in &change_set.operations {
+        match operation.resolve(active) {
+            Ok(resolved) => resolved_operations.push(resolved),
+            Err(error) => diagnostics.push(error.into()),
+        }
+    }
+    for replacement in &resolved_operations {
         let descriptor = catalog.descriptor(&replacement.id);
         if let Some(descriptor) = descriptor {
             required_timing = Some(match (required_timing, descriptor.mutation_timing) {
@@ -1170,7 +1199,7 @@ fn validate_against(
             Err(error) => diagnostics.push(error.into()),
         }
     }
-    for replacement in &change_set.changes {
+    for replacement in &resolved_operations {
         if preliminarily_valid.contains(&replacement.id)
             && let Err(error) =
                 catalog.validate_replacement(&proposed, &replacement.id, &replacement.value)
@@ -1180,7 +1209,7 @@ fn validate_against(
     }
     let mut candidate = active.clone();
     if diagnostics.is_empty() {
-        for replacement in &change_set.changes {
+        for replacement in &resolved_operations {
             match catalog.apply_replacement(
                 &candidate,
                 &replacement.id,
@@ -1195,9 +1224,9 @@ fn validate_against(
     let accepted = diagnostics.is_empty();
     let change_set_hash = change_set.canonical_hash();
     let affected_ids = change_set
-        .changes
+        .operations
         .iter()
-        .map(|replacement| replacement.id.as_str().to_owned())
+        .map(|operation| operation.target_id().as_str().to_owned())
         .collect::<Vec<_>>();
     let mut receipt = ValidationReceipt {
         schema: VALIDATION_RECEIPT_SCHEMA.to_owned(),
@@ -1247,9 +1276,9 @@ fn make_apply_receipt(
     rollback_of_transaction: Option<String>,
 ) -> ApplyReceipt {
     let applied_ids = change_set
-        .changes
+        .operations
         .iter()
-        .map(|replacement| replacement.id.as_str().to_owned())
+        .map(|operation| operation.target_id().as_str().to_owned())
         .collect::<Vec<_>>();
     let read_back_hash = read_back_hash(candidate, &applied_ids);
     make_receipt(
@@ -1607,10 +1636,7 @@ mod tests {
             key,
             RequestedTiming::SessionReset,
         )
-        .replace(
-            SemanticId::parse("flight.player.max_forward_speed").unwrap(),
-            SemanticValue::Integer(value),
-        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, value)
         .build()
         .expect("change set")
     }
@@ -1683,7 +1709,10 @@ mod tests {
         assert_eq!(retry, receipt);
 
         let mut reused = request.clone();
-        reused.changes[0].value = SemanticValue::Integer(84);
+        let DefinitionOperation::SetInteger { value, .. } = &mut reused.operations[0] else {
+            panic!("test request remains an integer operation");
+        };
+        *value = 84;
         let error = store
             .apply(
                 &catalog,
@@ -1927,12 +1956,9 @@ mod tests {
             "partial-asset",
             RequestedTiming::PackageReload,
         )
-        .replace(
-            SemanticId::parse("presentation.spell.fireball.projectile_asset").unwrap(),
-            SemanticValue::Reference(
-                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                    .to_owned(),
-            ),
+        .bind_asset(
+            PresentationAssetSlot::FireballProjectile,
+            ArtifactId::parse("presentation.missing_asset").unwrap(),
         )
         .build()
         .unwrap();
@@ -1949,12 +1975,9 @@ mod tests {
             "unsafe-asset-timing",
             RequestedTiming::SessionReset,
         )
-        .replace(
-            SemanticId::parse("presentation.spell.fireball.projectile_asset").unwrap(),
-            SemanticValue::Reference(
-                "sha256:c924ac200c84b9983374d1abcacff27414c3f565ac82792394353e0358ee0b34"
-                    .to_owned(),
-            ),
+        .bind_asset(
+            PresentationAssetSlot::FireballProjectile,
+            ArtifactId::parse("presentation.projectile_asset_variant").unwrap(),
         )
         .build()
         .unwrap();
@@ -1964,25 +1987,16 @@ mod tests {
         assert_eq!(rejected.diagnostics[0].code, "UNSAFE_TIMING");
         assert_eq!(store.state_bytes().unwrap(), before);
 
-        for (idempotency_key, value, expected_code) in [
-            (
-                "wrong-goat-policy-type",
-                SemanticValue::Integer(1),
-                "TYPE_MISMATCH",
-            ),
-            (
-                "unknown-goat-policy",
-                SemanticValue::Enum("berserk_goat_v1".to_owned()),
-                "OUT_OF_RANGE",
-            ),
-        ] {
+        for (idempotency_key, value, expected_code) in
+            [("unknown-goat-policy", "berserk_goat_v1", "OUT_OF_RANGE")]
+        {
             let invalid_policy = ChangeSetBuilder::new(
                 "custom-workspace",
                 &definition,
                 idempotency_key,
                 RequestedTiming::SessionReset,
             )
-            .replace(SemanticId::parse("ai.enemy.default.policy").unwrap(), value)
+            .select_option(OptionParameter::EnemyDefaultPolicy, value)
             .build()
             .unwrap();
             let rejected = store
@@ -1993,39 +2007,34 @@ mod tests {
             assert_eq!(store.state_bytes().unwrap(), before);
         }
 
-        let wrong_fireball_type = ChangeSetBuilder::new(
-            "custom-workspace",
-            &definition,
-            "wrong-fireball-type",
-            RequestedTiming::SessionReset,
-        )
-        .replace(
-            SemanticId::parse("spell.fireball.mana_cost").unwrap(),
-            SemanticValue::Enum("two-hundred".to_owned()),
-        )
-        .build()
-        .unwrap();
-        let rejected = store
-            .validate(&default_catalog().unwrap(), wrong_fireball_type)
-            .unwrap();
-        assert_eq!(rejected.diagnostics[0].code, "TYPE_MISMATCH");
-        assert_eq!(store.state_bytes().unwrap(), before);
-
         let negative_fireball_cost = ChangeSetBuilder::new(
             "custom-workspace",
             &definition,
             "negative-fireball-cost",
             RequestedTiming::SessionReset,
         )
-        .replace(
-            SemanticId::parse("spell.fireball.mana_cost").unwrap(),
-            SemanticValue::Integer(-1),
-        )
+        .set_integer(IntegerParameter::FireballManaCost, -1)
         .build()
         .unwrap();
         let rejected = store
             .validate(&default_catalog().unwrap(), negative_fireball_cost)
             .unwrap();
+        assert_eq!(rejected.diagnostics[0].code, "OUT_OF_RANGE");
+        assert_eq!(store.state_bytes().unwrap(), before);
+
+        let misaligned_speed = ChangeSetBuilder::new(
+            "custom-workspace",
+            &definition,
+            "misaligned-flight-speed",
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 20)
+        .build()
+        .unwrap();
+        let rejected = store
+            .validate(&default_catalog().unwrap(), misaligned_speed)
+            .unwrap();
+        assert!(!rejected.accepted);
         assert_eq!(rejected.diagnostics[0].code, "OUT_OF_RANGE");
         assert_eq!(store.state_bytes().unwrap(), before);
 
@@ -2035,7 +2044,7 @@ mod tests {
             "expected_definition_hash": definition.definition_hash(),
             "expected_definition_revision": 1,
             "idempotency_key": "bad-schema",
-            "changes": [{"id": "flight.player.max_forward_speed", "value": {"type": "integer", "value": 82}}],
+            "operations": [{"operation": "set_integer", "parameter": "flight.player.max_forward_speed", "value": 82}],
             "requested_timing": "session_reset",
             "intent": null,
             "session_generation": 7
@@ -2047,9 +2056,10 @@ mod tests {
             "expected_definition_hash": definition.definition_hash(),
             "expected_definition_revision": 1,
             "idempotency_key": "wrong-unit",
-            "changes": [{
-                "id": "spell.fireball.mana_cost",
-                "value": {"type": "integer", "value": 200},
+            "operations": [{
+                "operation": "set_integer",
+                "parameter": "spell.fireball.mana_cost",
+                "value": 200,
                 "unit": "source_velocity_units_per_entity_pass"
             }],
             "requested_timing": "session_reset",
@@ -2062,14 +2072,42 @@ mod tests {
             "expected_definition_hash": definition.definition_hash(),
             "expected_definition_revision": 1,
             "idempotency_key": "unsafe-timing",
-            "changes": [{
-                "id": "spell.fireball.mana_cost",
-                "value": {"type": "integer", "value": 200}
+            "operations": [{
+                "operation": "set_integer",
+                "parameter": "spell.fireball.mana_cost",
+                "value": 200
             }],
             "requested_timing": "next_tick",
             "intent": null
         });
         assert!(serde_json::from_value::<ChangeSet>(unsafe_timing).is_err());
+        let legacy_replacement = serde_json::json!({
+            "schema_version": CHANGE_SET_SCHEMA,
+            "target_workspace": "custom-workspace",
+            "expected_definition_hash": definition.definition_hash(),
+            "expected_definition_revision": 1,
+            "idempotency_key": "legacy-replacement",
+            "changes": [{"id": "flight.player.max_forward_speed", "value": {"type": "integer", "value": 82}}],
+            "requested_timing": "session_reset"
+        });
+        assert!(serde_json::from_value::<ChangeSet>(legacy_replacement).is_err());
+        let legacy_v1 = serde_json::json!({
+            "schema_version": "carpet-flight-change-set/v1",
+            "target_workspace": "custom-workspace",
+            "expected_definition_hash": definition.definition_hash(),
+            "expected_definition_revision": 1,
+            "idempotency_key": "legacy-v1",
+            "operations": [{
+                "operation": "set_integer",
+                "parameter": "flight.player.max_forward_speed",
+                "value": 80
+            }],
+            "requested_timing": "session_reset"
+        });
+        let legacy_v1 = serde_json::from_value::<ChangeSet>(legacy_v1).unwrap();
+        let error = legacy_v1.canonicalized().unwrap_err();
+        assert_eq!(error.code, TransactionErrorCode::InvalidRequest);
+        assert_eq!(error.path_or_id, "schema_version");
         assert_eq!(store.state_bytes().unwrap(), before);
         let _ = fs::remove_dir_all(root);
     }
@@ -2086,12 +2124,9 @@ mod tests {
             "publish-asset-variant",
             RequestedTiming::PackageReload,
         )
-        .replace(
-            SemanticId::parse("presentation.spell.fireball.projectile_asset").unwrap(),
-            SemanticValue::Reference(
-                "sha256:c924ac200c84b9983374d1abcacff27414c3f565ac82792394353e0358ee0b34"
-                    .to_owned(),
-            ),
+        .bind_asset(
+            PresentationAssetSlot::FireballProjectile,
+            ArtifactId::parse("presentation.projectile_asset_variant").unwrap(),
         )
         .build()
         .unwrap();

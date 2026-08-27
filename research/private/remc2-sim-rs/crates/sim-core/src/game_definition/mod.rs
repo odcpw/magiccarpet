@@ -5,18 +5,21 @@
 //! consumes the live MC2 world adapter.
 
 mod mc2_owned;
+mod runtime;
 
 pub use mc2_owned::{Mc2OwnedInputs, load_mc2_owned};
+pub use runtime::{DefinitionFlightBinding, PLAYER_MAX_FORWARD_SPEED_ID};
 pub use sim_definition::{
-    APPLY_RECEIPT_SCHEMA, Access, ApplyBinding, ApplyReceipt, ApplyStatus, ArtifactKind,
-    ArtifactNode, BoundPresentationAsset, CHANGE_SET_SCHEMA, ChangeSet, ChangeSetBuilder,
-    CompiledCapability, CompiledCapabilityRegistry, DefinitionDiff, DefinitionError,
-    DefinitionErrorCode, DescriptorKind, Diagnostic, GAME_DEFINITION_SCHEMA, GAME_PACKAGE_SCHEMA,
-    GameDefinition, GamePackage, INDEXED_SPRITE_SCHEMA, IndexedPresentationAsset, MutationTiming,
-    PackageProvenance, PackageProvenanceKind, PresentationAssetBudgets, PublicationFault,
-    ReadBackBinding, ReadBinding, Replacement, RequestedTiming, RequiredCapability, Result,
-    SEMANTIC_CONTRACT_VERSION, SemanticBinding, SemanticCatalog, SemanticDescriptor, SemanticId,
-    SemanticValue, TemporalContract, TransactionError, TransactionErrorCode,
-    VALIDATION_RECEIPT_SCHEMA, ValidateBinding, ValidationReceipt, ValueType, WORKSPACE_SCHEMA,
-    WorkspaceInspection, WorkspaceStore, default_catalog, engine_capabilities,
+    APPLY_RECEIPT_SCHEMA, Access, ApplyBinding, ApplyReceipt, ApplyStatus, ArtifactId,
+    ArtifactKind, ArtifactNode, BoundPresentationAsset, CHANGE_SET_SCHEMA, ChangeSet,
+    ChangeSetBuilder, CompiledCapability, CompiledCapabilityRegistry, DefinitionDiff,
+    DefinitionError, DefinitionErrorCode, DefinitionOperation, DescriptorKind, Diagnostic,
+    GAME_DEFINITION_SCHEMA, GAME_PACKAGE_SCHEMA, GameDefinition, GamePackage,
+    INDEXED_SPRITE_SCHEMA, IndexedPresentationAsset, IntegerParameter, MutationTiming,
+    OptionParameter, PackageProvenance, PackageProvenanceKind, PresentationAssetBudgets,
+    PresentationAssetSlot, PublicationFault, ReadBackBinding, ReadBinding, RequestedTiming,
+    RequiredCapability, Result, SEMANTIC_CONTRACT_VERSION, SemanticBinding, SemanticCatalog,
+    SemanticDescriptor, SemanticId, SemanticValue, TemporalContract, TransactionError,
+    TransactionErrorCode, VALIDATION_RECEIPT_SCHEMA, ValidateBinding, ValidationReceipt, ValueType,
+    WORKSPACE_SCHEMA, WorkspaceInspection, WorkspaceStore, default_catalog, engine_capabilities,
 };

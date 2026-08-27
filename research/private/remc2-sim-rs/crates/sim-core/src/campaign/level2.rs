@@ -638,6 +638,7 @@ struct Level2SourceSchedulerWorld<'session, 'evidence> {
     owner: &'session mut Level2ResetSession,
     pass: u8,
     latched_command: crate::LatchedCommand,
+    flight_tuning: crate::FlightTuning,
     evidence: &'evidence mut Vec<crate::StepEvidence>,
     source_player_order: Vec<usize>,
     player_entity_index: u16,
@@ -1062,6 +1063,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
         self.owner.dispatch_level2_source_visit(
             self.pass,
             self.latched_command,
+            self.flight_tuning,
             self.evidence,
             slot,
             visit,
@@ -10908,6 +10910,7 @@ impl Level2ResetSession {
         &mut self,
         pass: u8,
         latched_command: crate::LatchedCommand,
+        flight_tuning: crate::FlightTuning,
         evidence: &mut Vec<crate::StepEvidence>,
         source_slot: u16,
         visit: &Level2ResolvedSourceVisit,
@@ -11080,12 +11083,13 @@ impl Level2ResetSession {
                             .expect("Level 2 campaign state owns canonical runtime");
                         let core = &mut campaign.live.core;
                         let terrain = &campaign.live.terrain;
-                        evidence.push(crate::step_entity_pass_with_context(
+                        evidence.push(crate::step_entity_pass_with_context_and_tuning(
                             &mut core.state,
                             latched_command,
                             profile,
                             terrain,
                             &mut core.context,
+                            flight_tuning,
                         ));
                         let context_events = self.session.state.live.core.context.events
                             [context_event_start..]
@@ -13158,6 +13162,7 @@ impl Level2ResetSession {
         &mut self,
         pass: u8,
         latched_command: crate::LatchedCommand,
+        flight_tuning: crate::FlightTuning,
         evidence: &mut Vec<crate::StepEvidence>,
     ) -> std::result::Result<[bool; 29], (u16, String)> {
         let player_entity_index = self.session.state.live.core.state.entity_index;
@@ -13166,6 +13171,7 @@ impl Level2ResetSession {
             owner: self,
             pass,
             latched_command,
+            flight_tuning,
             evidence,
             source_player_order: Vec::new(),
             player_entity_index,
@@ -17146,6 +17152,7 @@ impl Level2ResetSession {
         self.step_level2_source_pass_with_player(
             pass,
             crate::LatchedCommand::default(),
+            crate::FlightTuning::CLASSIC,
             &mut evidence,
         )
         .map(|_| ())
@@ -17157,6 +17164,15 @@ impl Level2ResetSession {
         &mut self,
         command: PlayerCommand,
         speed_index: u8,
+    ) -> Vec<crate::StepEvidence> {
+        self.step_outer_turn_with_tuning(command, speed_index, crate::FlightTuning::CLASSIC)
+    }
+
+    pub(crate) fn step_outer_turn_with_tuning(
+        &mut self,
+        command: PlayerCommand,
+        speed_index: u8,
+        flight_tuning: crate::FlightTuning,
     ) -> Vec<crate::StepEvidence> {
         #[cfg(test)]
         CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow_mut().clear());
@@ -17249,6 +17265,7 @@ impl Level2ResetSession {
             match self.step_level2_source_pass_with_player(
                 u8::try_from(pass).unwrap_or(u8::MAX),
                 latched_command,
+                flight_tuning,
                 &mut evidence,
             ) {
                 Ok(present) => pass_start_class5_model_present = present,

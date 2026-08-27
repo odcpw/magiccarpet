@@ -799,7 +799,7 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use sim_core::game_definition::{
-        ChangeSetBuilder, PublicationFault, RequestedTiming, SemanticId, SemanticValue,
+        ChangeSetBuilder, IntegerParameter, OptionParameter, PublicationFault, RequestedTiming,
         WorkspaceStore,
     };
     use sim_core::game_session::{GameSession, SessionGuard};
@@ -975,10 +975,7 @@ mod tests {
             "publish-owner-speed",
             RequestedTiming::SessionReset,
         )
-        .replace(
-            SemanticId::parse("flight.player.max_forward_speed").unwrap(),
-            SemanticValue::Integer(16),
-        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 16)
         .build()
         .unwrap();
         let validation = store.validate(&catalog, change_set.clone()).unwrap();
@@ -1096,10 +1093,7 @@ mod tests {
             "publish-owner-fireball-cost",
             RequestedTiming::SessionReset,
         )
-        .replace(
-            SemanticId::parse("spell.fireball.mana_cost").unwrap(),
-            SemanticValue::Integer(200),
-        )
+        .set_integer(IntegerParameter::FireballManaCost, 200)
         .build()
         .unwrap();
         let validation = store.validate(&catalog, change_set.clone()).unwrap();
@@ -1223,10 +1217,7 @@ mod tests {
             "publish-vigilant-goat-policy",
             RequestedTiming::SessionReset,
         )
-        .replace(
-            SemanticId::parse("ai.enemy.default.policy").unwrap(),
-            SemanticValue::Enum("vigilant_goat_v1".to_owned()),
-        )
+        .select_option(OptionParameter::EnemyDefaultPolicy, "vigilant_goat_v1")
         .build()
         .unwrap();
         let validation = store.validate(&catalog, change_set.clone()).unwrap();

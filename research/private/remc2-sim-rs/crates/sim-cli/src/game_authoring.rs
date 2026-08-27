@@ -3,8 +3,8 @@ use crate::game_contract::{
     load_definition,
 };
 use sim_core::game_definition::{
-    ApplyStatus, CHANGE_SET_SCHEMA, ChangeSet, Mc2OwnedInputs, PublicationFault, Replacement,
-    RequestedTiming, TransactionError, WorkspaceStore, default_catalog,
+    ApplyStatus, CHANGE_SET_SCHEMA, ChangeSet, DefinitionOperation, Mc2OwnedInputs,
+    PublicationFault, RequestedTiming, TransactionError, WorkspaceStore, default_catalog,
 };
 use std::{io::Read, path::PathBuf, process::ExitCode};
 
@@ -139,7 +139,7 @@ fn stage_set(arguments: &[String]) -> ExitCode {
             "--changes <JSON-file-or-> is required",
         );
     };
-    let replacements: Vec<Replacement> = match read_json(&changes) {
+    let operations: Vec<DefinitionOperation> = match read_json(&changes) {
         Ok(value) => value,
         Err(error) => return game_request_error("set", "INVALID_REQUEST", &error),
     };
@@ -154,7 +154,7 @@ fn stage_set(arguments: &[String]) -> ExitCode {
         expected_definition_hash: inspection.active_definition_hash,
         expected_definition_revision: inspection.active_definition_revision,
         idempotency_key,
-        changes: replacements,
+        operations,
         requested_timing: timing,
         intent,
     };

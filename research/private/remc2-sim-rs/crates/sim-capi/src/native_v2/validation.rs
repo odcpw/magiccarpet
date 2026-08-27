@@ -2483,7 +2483,7 @@ pub(super) fn campaign_entity_snapshot(entity: &EntitySnapshot) -> McCampaignEnt
 }
 
 pub(super) fn campaign_live_bee_entity_snapshot(
-    source: &sim_core::native_world::Level2AuthoredBeeSource,
+    source: &sim_core::native_world::BeeCreatureRuntime,
 ) -> McCampaignEntitySnapshotV2 {
     McCampaignEntitySnapshotV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
