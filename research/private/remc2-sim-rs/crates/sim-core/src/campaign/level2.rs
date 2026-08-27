@@ -4809,6 +4809,7 @@ impl Level2ResetSession {
                                 CreatureKind::Bee
                                     | CreatureKind::Archer
                                     | CreatureKind::Firefly
+                                    | CreatureKind::Skeleton
                             )
                             && self
                                 .session
@@ -17955,6 +17956,68 @@ mod tests {
         );
         assert_eq!(skeleton(&campaign).life, 1_000);
         assert_eq!(skeleton(&campaign).action, 72);
+
+        // The preceding production route proves one complete Skeleton death.
+        // Stage the same retained hide boundary for all eleven package rows so
+        // this continuation proves only the downstream frozen-census objective
+        // chronology, not eleven copies of combat.
+        let skeleton_slots = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .filter(|entity| entity.active && entity.class == 5 && entity.model == 9)
+            .map(|entity| entity.index)
+            .collect::<Vec<_>>();
+        assert_eq!(skeleton_slots.len(), 11);
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .objectives[0]
+                .stage_selectors[0],
+            1
+        );
+        for source_slot in &skeleton_slots {
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .entities[usize::from(*source_slot)]
+            .disable_drawing();
+        }
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert!(skeleton_slots.iter().all(|source_slot| {
+            let entity = &live.economy.entities[usize::from(*source_slot)];
+            !entity.active && entity.class == 0
+        }));
+        assert_eq!(live.core.runtime.objectives[0].stage_selectors[0], 2);
+        assert_eq!(live.core.runtime.objectives[0].text_selector, 1);
+        assert!(
+            !live.authored_features_consumed.contains(&141)
+                && !live.authored_features_consumed.contains(&142),
+            "post-pass objective completion cannot activate the next group in the completed entity pass"
+        );
+        assert!(
+            campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                ))
+        );
     }
 
     #[test]
