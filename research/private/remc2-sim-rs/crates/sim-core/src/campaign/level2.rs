@@ -10485,7 +10485,10 @@ impl Level2ResetSession {
                     handler == ExistingHandler::Class14Events
                 }
                 Level2DynamicArenaKind::AuthoredDragonPart => {
-                    handler == ExistingHandler::MultipartFamily
+                    matches!(
+                        handler,
+                        ExistingHandler::DragonFamily | ExistingHandler::MultipartFamily
+                    )
                 }
                 Level2DynamicArenaKind::AuthoredClass5
                 | Level2DynamicArenaKind::AuthoredClass5Model3Child
@@ -11249,6 +11252,49 @@ impl Level2ResetSession {
                 let frozen_model0_slots = &pass_start_class5_model_slots
                     [usize::from(level2_class5::dragon::DRAGON_MODEL)];
                 let terrain = &self.session.state.live.terrain;
+                let lifecycle = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_dragon_lifecycle_slot(source_slot, terrain)?;
+                if lifecycle.handled {
+                    if let Some(killer_entity_index) = lifecycle.pre_kill_credit {
+                        let qualifying_killer = killer_entity_index != source_slot
+                            && self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .entities
+                                .iter()
+                                .any(|entity| {
+                                    entity.index == killer_entity_index
+                                        && entity.active
+                                        && entity.life >= 0
+                                        && entity.class == 3
+                                        && entity.model == 0
+                                        && !entity.drawing_disabled()
+                                });
+                        if qualifying_killer {
+                            let _ = self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .record_authored_creature_kill(killer_entity_index);
+                        }
+                    }
+                    self.append_new_economy_events(pass, source_slot);
+                    if lifecycle.retained_for_epilogue {
+                        self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                            pass,
+                            source_slot,
+                            kind: Level2DynamicArenaKind::AuthoredClass5,
+                        });
+                    }
+                    return Ok(());
+                }
                 let live = match action {
                     level2_class5::dragon::DRAGON_ROAM_ACTION => self
                         .session
@@ -11519,6 +11565,7 @@ impl Level2ResetSession {
             (
                 ExistingHandler::TreeLifecycle
                 | ExistingHandler::CastleRoot
+                | ExistingHandler::DragonFamily
                 | ExistingHandler::ManaCarrier
                 | ExistingHandler::MultipartFamily
                 | ExistingHandler::ArcherFamily
@@ -15253,12 +15300,14 @@ impl Level2ResetSession {
                     .economy
                     .step_authored_class5_slot_with_target(source_slot, target, terrain)
             }
-            Level2DynamicArenaKind::AuthoredDragonPart => self
-                .session
-                .state
-                .live
-                .economy
-                .step_authored_dragon_part_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredDragonPart => {
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_dragon_part_slot(source_slot, terrain)
+            }
             Level2DynamicArenaKind::AuthoredClass5Model3Child => self
                 .session
                 .state
@@ -18820,6 +18869,322 @@ mod tests {
             (death_spheres_before_damage, death_bursts_before_damage),
             "a nonlethal body hit has no Dragon death outputs"
         );
+
+        // Continue that same real Dragon through its lethal body hit. The
+        // impact mailbox remains private to the segment until its later
+        // numeric visit; the earlier root observes the lower child life on
+        // the following pass, then PreKill changes the entire linked body to
+        // action 5 before any later body slot is visited.
+        let mut damaged_body_slots = Vec::new();
+        let mut body_slot = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5_runtime()
+            .iter()
+            .find(|runtime| runtime.source_entity_index == damaged_dragon_slot)
+            .expect("lethal Dragon runtime")
+            .linked_head;
+        while body_slot != 0 {
+            damaged_body_slots.push(body_slot);
+            body_slot = campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_dragon_parts()
+                .iter()
+                .find(|part| part.source_entity_index == body_slot)
+                .expect("lethal Dragon body chain")
+                .next_entity_index;
+        }
+        assert_eq!(
+            damaged_body_slots.len(),
+            level2_class5::dragon::DRAGON_PART_COUNT
+        );
+        let kill_census_before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_bee_kill_census(player_entity_index);
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .stage_authored_dragon_part_position_for_test(
+                    damaged_part_slot,
+                    isolated_part_position,
+                )
+        );
+        let lethal_part_position = isolated_part_position;
+        campaign
+            .level2_compatibility_mut()
+            .apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
+                live: true,
+                first_impact: true,
+                damage_pulse: true,
+                owner_entity_index: player_entity_index,
+                payload: u16::try_from(level2_class5::dragon::DRAGON_LIFE)
+                    .expect("Dragon life fits the source payload"),
+                position: lethal_part_position,
+            });
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let root_before_lethal_propagation = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == damaged_dragon_slot)
+            .expect("Dragon root precedes the lethal segment");
+        let lethal_part = live
+            .economy
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.source_entity_index == damaged_part_slot)
+            .expect("lethal segment remains allocated");
+        assert_eq!(
+            (
+                root_before_lethal_propagation.life,
+                root_before_lethal_propagation.action,
+                lethal_part.life,
+                lethal_part.word_0x26,
+            ),
+            (
+                3_500,
+                level2_class5::dragon::DRAGON_ATTACK_ACTION,
+                -500,
+                player_entity_index,
+            ),
+            "the root cannot consume a later segment's lethal mailbox in the same pass"
+        );
+
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let pre_kill_root = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == damaged_dragon_slot)
+            .expect("lethal Dragon reaches PreKill");
+        assert_eq!(
+            (
+                pre_kill_root.life,
+                pre_kill_root.action,
+                pre_kill_root.word_0x24,
+            ),
+            (
+                -500,
+                level2_class5::dragon::DRAGON_PRE_KILL_ACTION,
+                player_entity_index,
+            )
+        );
+        let immediate_body_death = live
+            .economy
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.entity_id == damaged_dragon_slot && part.source_byte_3e & 7 == 0)
+            .copied()
+            .expect("the sixteen Dragon phases include an immediate action-5 cadence");
+        let root_phase_before_pre_kill = pre_kill_root.source_byte_3e;
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let dying_root = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == damaged_dragon_slot)
+            .expect("Dragon root remains allocated through the PreKill epilogue");
+        let immediate_body_after = live
+            .economy
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.source_entity_index == immediate_body_death.source_entity_index)
+            .expect("hidden body row remains allocated through its kill epilogue");
+        assert_eq!(
+            (
+                dying_root.action,
+                dying_root.active,
+                dying_root.source_byte_3e,
+                immediate_body_after.action,
+                immediate_body_after.active,
+                immediate_body_after.drawing_enabled,
+                immediate_body_after.source_byte_3e,
+            ),
+            (
+                level2_class5::dragon::DRAGON_KILL_ACTION,
+                true,
+                root_phase_before_pre_kill.wrapping_add(1),
+                level2_class5::dragon::DRAGON_KILL_ACTION,
+                false,
+                false,
+                immediate_body_death.source_byte_3e.wrapping_add(1),
+            ),
+            "PreKill changes the linked body before its later numeric action-5 visit"
+        );
+        assert_eq!(
+            live.economy
+                .economy
+                .authored_bee_kill_census(player_entity_index),
+            kill_census_before.wrapping_add(1),
+            "only the Dragon root's PreKill callback credits the real player"
+        );
+        assert!(live.economy.economy.events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                mana,
+                ..
+            } if *source_entity_index == immediate_body_death.source_entity_index
+                && *mana == immediate_body_death.mana
+        )));
+        assert!(live.economy.economy.events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::DeathBurstSpawned {
+                parent_entity_index,
+                id_entity_index,
+                ..
+            } if *parent_entity_index == immediate_body_death.source_entity_index
+                && *id_entity_index == damaged_dragon_slot
+        )));
+
+        let root_phase_at_kill_wait = dying_root.source_byte_3e;
+        let callbacks_before_root_kill =
+            usize::from(8_u8.wrapping_sub(root_phase_at_kill_wait & 7) & 7);
+        for _ in 0..callbacks_before_root_kill {
+            step(&mut campaign);
+            let root = campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == damaged_dragon_slot)
+                .expect("Dragon waits live for its action-5 cadence");
+            assert!(root.active && root.action == level2_class5::dragon::DRAGON_KILL_ACTION);
+        }
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let hidden_root = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == damaged_dragon_slot)
+            .expect("hidden Dragon root remains allocated through its kill epilogue");
+        assert!(!hidden_root.active && !hidden_root.drawing_enabled);
+        assert!(live.economy.economy.events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                mana,
+                ..
+            } if *source_entity_index == damaged_dragon_slot
+                && *mana == level2_class5::dragon::DRAGON_SEGMENT_MANA
+        )));
+        assert!(live.economy.economy.events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::DeathBurstSpawned {
+                parent_entity_index,
+                id_entity_index,
+                ..
+            } if *parent_entity_index == damaged_dragon_slot
+                && *id_entity_index == damaged_dragon_slot
+        )));
+
+        // Every body row owns an independent action-5 cadence. Within eight
+        // further ordinary visits all sixteen rows have converted their own
+        // mana and the following prologues reclaim the hidden root/body slots.
+        for _ in 0..9 {
+            let live = &campaign.level2_compatibility().session.state.live;
+            let root_present = live
+                .economy
+                .economy
+                .authored_class5()
+                .iter()
+                .any(|source| source.source_entity_index == damaged_dragon_slot);
+            let body_present = live
+                .economy
+                .economy
+                .authored_dragon_parts()
+                .iter()
+                .any(|part| part.entity_id == damaged_dragon_slot);
+            if !root_present && !body_present {
+                break;
+            }
+            step(&mut campaign);
+        }
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert!(
+            live.economy
+                .economy
+                .authored_class5()
+                .iter()
+                .all(|source| source.source_entity_index != damaged_dragon_slot)
+        );
+        assert!(
+            live.economy
+                .economy
+                .authored_dragon_parts()
+                .iter()
+                .all(|part| part.entity_id != damaged_dragon_slot)
+        );
+        let mut expected_death_sources = damaged_body_slots;
+        expected_death_sources.push(damaged_dragon_slot);
+        for source_slot in expected_death_sources {
+            assert_eq!(
+                live.economy
+                    .economy
+                    .events()
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        Level2EconomyEvent::ManaSphereSpawned {
+                            source_entity_index,
+                            ..
+                        } if *source_entity_index == source_slot
+                    ))
+                    .count(),
+                1,
+                "each Dragon root/body row converts its own mana exactly once"
+            );
+            assert_eq!(
+                live.economy
+                    .economy
+                    .events()
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        Level2EconomyEvent::DeathBurstSpawned {
+                            parent_entity_index,
+                            ..
+                        } if *parent_entity_index == source_slot
+                    ))
+                    .count(),
+                1,
+                "each Dragon root/body row creates one death burst"
+            );
+        }
 
         // Continue one of those real package Dragons through its next
         // package-reached callbacks. Geometry and cadence are staged only to

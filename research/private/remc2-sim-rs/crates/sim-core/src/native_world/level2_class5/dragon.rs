@@ -11,6 +11,8 @@ use crate::goat::GoatPlayerTarget;
 pub(crate) const DRAGON_MODEL: u8 = 0;
 pub(crate) const DRAGON_ROAM_ACTION: u8 = 1;
 pub(crate) const DRAGON_ATTACK_ACTION: u8 = 2;
+pub(crate) const DRAGON_PRE_KILL_ACTION: u8 = 4;
+pub(crate) const DRAGON_KILL_ACTION: u8 = 5;
 pub(crate) const DRAGON_PART_ACTION: u8 = 232;
 pub(crate) const DRAGON_PART_COUNT: usize = 16;
 pub(crate) const DRAGON_DESCRIPTOR: u16 = 71;
@@ -46,6 +48,13 @@ pub(crate) struct DragonAttackStep {
     pub(crate) fireball: Option<DragonFireballLaunch>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DragonLifecycleStep {
+    pub(crate) handled: bool,
+    pub(crate) retained_for_epilogue: bool,
+    pub(crate) pre_kill_credit: Option<u16>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DragonFireballLaunch {
     pub(crate) owner_entity_index: u16,
@@ -58,6 +67,93 @@ pub(crate) struct DragonFireballLaunch {
 }
 
 impl Level2EconomyState {
+    /// Run the generic action-4/action-5 creature lifecycle for one Dragon
+    /// root. `PreKillEntity_1C890` changes every linked body row to action 5
+    /// before changing the root; `KillEntity_1C930` then converts each row's
+    /// own mana on its independent byte-0x3E cadence.
+    pub(crate) fn step_authored_dragon_lifecycle_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> std::result::Result<DragonLifecycleStep, String> {
+        let Some(source_index) = self.authored_class5.iter().position(|source| {
+            source.active
+                && source.source_entity_index == source_slot
+                && source.model == DRAGON_MODEL
+        }) else {
+            return Ok(DragonLifecycleStep::default());
+        };
+        let runtime_index = self
+            .authored_class5_runtime
+            .iter()
+            .position(|runtime| runtime.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Dragon source slot {source_slot} has no class-5 runtime"))?;
+        let dragon_index = self
+            .authored_dragons
+            .iter()
+            .position(|state| state.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Dragon source slot {source_slot} has no runtime sidecar"))?;
+        let mut source = self.authored_class5[source_index];
+
+        if source.action == DRAGON_PRE_KILL_ACTION {
+            let mut part_slot = self.authored_class5_runtime[runtime_index].linked_head;
+            while part_slot != 0 {
+                let Some(part_index) = self
+                    .authored_dragon_parts
+                    .iter()
+                    .position(|part| part.source_entity_index == part_slot)
+                else {
+                    break;
+                };
+                let next_part = self.authored_dragon_parts[part_index].next_entity_index;
+                self.authored_dragon_parts[part_index].action = DRAGON_KILL_ACTION;
+                part_slot = next_part;
+            }
+            let pre_kill_credit = (source.word_0x24 != 0).then_some(source.word_0x24);
+            source.action = DRAGON_KILL_ACTION;
+            self.authored_class5[source_index] = source;
+            return Ok(DragonLifecycleStep {
+                handled: true,
+                retained_for_epilogue: true,
+                pre_kill_credit,
+            });
+        }
+        if source.action != DRAGON_KILL_ACTION {
+            return Ok(DragonLifecycleStep::default());
+        }
+
+        if source.source_byte_3e & 7 == 0 {
+            if source.mana > 0 {
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                let owner = self.source_owner(source_slot);
+                let _ = self.spawn_mana_sphere_from_death(
+                    source_slot,
+                    source.position,
+                    source.yaw,
+                    source.entity_rng,
+                    source.mana,
+                    owner,
+                    terrain,
+                );
+            }
+            let _ = self.spawn_death_burst_from_death_with_id(
+                source_slot,
+                source_slot,
+                source.position,
+            );
+            source.drawing_enabled = false;
+            source.active = false;
+            self.authored_dragons[dragon_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
+            self.source_rng.insert(source_slot, source.entity_rng);
+            self.authored_class5[source_index] = source;
+        }
+        Ok(DragonLifecycleStep {
+            handled: true,
+            retained_for_epilogue: true,
+            pre_kill_credit: None,
+        })
+    }
+
     /// Reproduce `sub_4B240`: one Dragon root followed by sixteen copied body
     /// rows, then map-link the root after the body chain. The adapter keeps
     /// the constructor transactional so arena exhaustion cannot publish a
@@ -511,15 +607,47 @@ impl Level2EconomyState {
     /// Run the action-232 Dragon-body callback. The segment follows its
     /// `word_0x32` predecessor first, then consumes its private damage
     /// mailbox. The scheduler remains the sole byte-0x3E epilogue owner.
-    pub(crate) fn step_authored_dragon_part_slot(&mut self, source_slot: u16) -> bool {
+    pub(crate) fn step_authored_dragon_part_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> bool {
         let Some(part_index) = self.authored_dragon_parts.iter().position(|part| {
-            part.active
-                && part.source_entity_index == source_slot
-                && part.model == DRAGON_MODEL
-                && part.action == DRAGON_PART_ACTION
+            part.active && part.source_entity_index == source_slot && part.model == DRAGON_MODEL
         }) else {
             return false;
         };
+        let mut part = self.authored_dragon_parts[part_index];
+        if part.action == DRAGON_KILL_ACTION {
+            if part.source_byte_3e & 7 == 0 {
+                if part.mana > 0 {
+                    part.entity_rng = level2_next_rng16(part.entity_rng);
+                    let owner = self.source_owner(source_slot);
+                    let _ = self.spawn_mana_sphere_from_death(
+                        source_slot,
+                        part.position,
+                        part.yaw,
+                        part.entity_rng,
+                        part.mana,
+                        owner,
+                        terrain,
+                    );
+                }
+                let _ = self.spawn_death_burst_from_death_with_id(
+                    source_slot,
+                    part.entity_id,
+                    part.position,
+                );
+                part.drawing_enabled = false;
+                part.active = false;
+                self.source_rng.insert(source_slot, part.entity_rng);
+                self.authored_dragon_parts[part_index] = part;
+            }
+            return true;
+        }
+        if part.action != DRAGON_PART_ACTION {
+            return false;
+        }
         let previous_slot = self.authored_dragon_parts[part_index].previous_entity_index;
         let previous_position = self
             .authored_class5
