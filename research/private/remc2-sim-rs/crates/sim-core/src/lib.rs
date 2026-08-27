@@ -37,8 +37,30 @@ pub mod level1_parity;
 pub use sim_definition::level_definition;
 pub mod level_exit;
 pub mod mission_content;
-pub mod mode26_raster;
-pub mod mode5_raster;
+/// Compatibility facade for the exact mode-26 terrain raster contract.
+pub mod mode26_raster {
+    pub use sim_terrain_raster::mode26_raster::{
+        MODE26_BLEND_OFFSET, MODE26_DIRECT_TEXTURE_THRESHOLD, Mode26FramePixel, Mode26Pixel,
+        NIGHT_TABLES_BYTES, rasterize_mode26_span, rasterize_mode26_span_from_atlas,
+        rasterize_mode26_triangle_from_atlas_into_framebuffer,
+        rasterize_mode26_triangle_into_framebuffer,
+    };
+    pub(crate) use sim_terrain_raster::mode26_raster::{
+        rasterize_mode26_triangle_from_tile_atlas_into_framebuffer,
+        visit_mode26_triangle_from_tile_atlas_into_framebuffer,
+    };
+}
+/// Compatibility facade for the exact mode-5 terrain raster contract.
+pub mod mode5_raster {
+    pub use sim_terrain_raster::mode5_raster::{
+        Mode5FramePixel, Mode5Pixel, Mode5Scanline, Mode5Span, Mode5TriangleSetup, Mode5Vertex,
+        mode5_horizontal_increment, rasterize_mode5_span, rasterize_mode5_span_from_atlas,
+        rasterize_mode5_triangle, rasterize_mode5_triangle_from_atlas, setup_mode5_triangle,
+    };
+    pub(crate) use sim_terrain_raster::mode5_raster::{
+        rasterize_mode5_triangle_from_tile_atlas, visit_mode5_triangle_from_tile_atlas,
+    };
+}
 pub mod music;
 pub mod native_world;
 pub mod presentation_frame;

@@ -208,6 +208,7 @@ dependencies = [
  "sim-collision",
  "sim-definition",
  "sim-input",
+ "sim-terrain-raster",
  "sim-voxel",
 ]
 
@@ -222,6 +223,10 @@ dependencies = [
 
 [[package]]
 name = "sim-input"
+version = "0.1.0"
+
+[[package]]
+name = "sim-terrain-raster"
 version = "0.1.0"
 
 [[package]]

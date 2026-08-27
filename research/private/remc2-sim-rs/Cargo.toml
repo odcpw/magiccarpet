@@ -4,6 +4,7 @@ members = [
     "crates/sim-collision",
     "crates/sim-definition",
     "crates/sim-input",
+    "crates/sim-terrain-raster",
     "crates/sim-voxel",
     "crates/sim-core",
     "crates/sim-cli",

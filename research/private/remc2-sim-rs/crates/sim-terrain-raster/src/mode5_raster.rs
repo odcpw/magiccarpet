@@ -231,7 +231,8 @@ pub fn rasterize_mode5_triangle_from_atlas(
     frame_pixels
 }
 
-pub(crate) fn rasterize_mode5_triangle_from_tile_atlas(
+#[doc(hidden)]
+pub fn rasterize_mode5_triangle_from_tile_atlas(
     vertices: [Mode5Vertex; 3],
     viewport_width: i32,
     viewport_height: i32,
@@ -280,7 +281,8 @@ pub(crate) fn visit_mode5_triangle_from_atlas<F>(
     );
 }
 
-pub(crate) fn visit_mode5_triangle_from_tile_atlas<F>(
+#[doc(hidden)]
+pub fn visit_mode5_triangle_from_tile_atlas<F>(
     vertices: [Mode5Vertex; 3],
     viewport_width: i32,
     viewport_height: i32,

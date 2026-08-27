@@ -263,7 +263,8 @@ pub fn rasterize_mode26_triangle_from_atlas_into_framebuffer(
     )
 }
 
-pub(crate) fn rasterize_mode26_triangle_from_tile_atlas_into_framebuffer(
+#[doc(hidden)]
+pub fn rasterize_mode26_triangle_from_tile_atlas_into_framebuffer(
     vertices: [Mode5Vertex; 3],
     viewport_width: i32,
     viewport_height: i32,
@@ -359,7 +360,8 @@ fn rasterize_mode26_triangle_from_atlas_with_addressing(
 /// record per sampled pixel. Classic HD uses this streaming seam because
 /// large profile-sized water triangles otherwise spend most of their time
 /// growing and copying temporary sample vectors.
-pub(crate) fn visit_mode26_triangle_from_tile_atlas_into_framebuffer<F>(
+#[doc(hidden)]
+pub fn visit_mode26_triangle_from_tile_atlas_into_framebuffer<F>(
     vertices: [Mode5Vertex; 3],
     viewport_width: i32,
     viewport_height: i32,
