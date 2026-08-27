@@ -728,6 +728,33 @@ impl Level2EconomyState {
             })
             .is_ok()
     }
+
+    /// Stage only the already-proven terminal hide of one real Dragon root.
+    /// The next ordinary source boundary still owns body propagation, map
+    /// unlinking, slot/RNG release, and the frozen model-0 census used by the
+    /// semantic extinction objective.
+    #[cfg(test)]
+    pub(crate) fn stage_authored_dragon_terminal_hide_for_test(
+        &mut self,
+        source_slot: u16,
+    ) -> bool {
+        let Some(source) = self.authored_class5.iter_mut().find(|source| {
+            source.active
+                && source.source_entity_index == source_slot
+                && source.model == DRAGON_MODEL
+        }) else {
+            return false;
+        };
+        source.drawing_enabled = false;
+        source.active = false;
+        for part in &mut self.authored_dragon_parts {
+            if part.active && part.entity_id == source_slot {
+                part.drawing_enabled = false;
+                part.active = false;
+            }
+        }
+        true
+    }
 }
 
 fn step_dragon_motion(

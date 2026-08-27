@@ -144,8 +144,9 @@ impl Level2EconomyState {
 }
 
 impl Level2EconomyState {
-    /// Allocate an authored class-5/model-3, model-4, or model-9 row through
-    /// the pinned `sub_4B6F0`/`AddArchers_4BA10`/`sub_4BBB0` constructors.  The model-3 constructor
+    /// Allocate an authored class-5/model-1, model-3, model-4, or model-9 row through
+    /// the pinned `AddCreature_4B490`/`sub_4B6F0`/`AddArchers_4BA10`/`sub_4BBB0`
+    /// constructors. The model-3 constructor
     /// also creates a sixteen-child particle chain in remc2; this bounded
     /// source row owns the root allocation and leaves that presentation
     /// child callback for the dedicated creature slice.
@@ -174,6 +175,18 @@ impl Level2EconomyState {
             dword_0x10,
             particle_index,
         ) = match model {
+            crate::goat::GOAT_MODEL => (
+                crate::goat::GOAT_CONSTRUCTOR_ACTION,
+                crate::goat::GOAT_CONSTRUCTOR_MINIMUM_SPEED,
+                crate::goat::GOAT_CONSTRUCTOR_MAXIMUM_SPEED,
+                crate::goat::GOAT_CONSTRUCTOR_MAXIMUM_SPEED,
+                crate::goat::GOAT_CONSTRUCTOR_LIFE,
+                crate::goat::GOAT_CONSTRUCTOR_MANA,
+                0,
+                0,
+                0,
+                crate::goat::GOAT_RENDER_PARAMETER_INDEX,
+            ),
             3 => (25, 64, 16, 30, 9_000, 2_250, 4_500, 0, 0, 88),
             9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
             _ => return None,
@@ -184,8 +197,19 @@ impl Level2EconomyState {
         let state_before = (model == 3).then(|| self.clone());
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
-        let entity_rng = level2_next_rng16(initial_rng);
+        // `AddCreature_4B490` performs no constructor RNG draw. The other
+        // constructors consume their source-local orientation draw here.
+        let entity_rng = if model == crate::goat::GOAT_MODEL {
+            initial_rng
+        } else {
+            level2_next_rng16(initial_rng)
+        };
         let source_byte_3e = match model {
+            crate::goat::GOAT_MODEL => {
+                let phase = self.class5_model1_constructor_phase;
+                self.class5_model1_constructor_phase = phase.wrapping_add(1);
+                phase
+            }
             3 => {
                 let phase = self.class5_model3_constructor_phase;
                 self.class5_model3_constructor_phase = phase.wrapping_add(1);
@@ -246,7 +270,7 @@ impl Level2EconomyState {
             mana,
             max_mana,
             subspell_index,
-            dword_0x10: if matches!(model, 3 | 4) {
+            dword_0x10: if matches!(model, 1 | 3 | 4) {
                 i32::from(source_entity_index % 100)
             } else {
                 dword_0x10
@@ -259,19 +283,29 @@ impl Level2EconomyState {
             byte_0x46_70: 0,
             particle_index,
             source_byte_3e,
-            source_byte_39: if model == 3 { 34 } else { 0 },
+            source_byte_39: if model == 3 {
+                34
+            } else if model == crate::goat::GOAT_MODEL {
+                crate::goat::GOAT_DESCRIPTOR_CADENCE.cast_unsigned()
+            } else {
+                0
+            },
             yaw,
             pitch,
             roll,
             fov,
-            shift_rot_x: if model == 4 {
+            shift_rot_x: if model == crate::goat::GOAT_MODEL {
+                crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT
+            } else if model == 4 {
                 128
             } else if model == 9 {
                 128
             } else {
                 0
             },
-            shift_rot_y: if model == 4 {
+            shift_rot_y: if model == crate::goat::GOAT_MODEL {
+                crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT
+            } else if model == 4 {
                 256
             } else if model == 9 {
                 128
@@ -295,11 +329,71 @@ impl Level2EconomyState {
         } else {
             None
         };
+        if model == crate::goat::GOAT_MODEL {
+            self.source_owner.insert(source_entity_index, 0);
+            self.authored_class5_runtime
+                .push(Level2AuthoredClass5RuntimeState {
+                    source_entity_index,
+                    byte_0x38: 1,
+                    xtype: 3,
+                    descriptor_index: crate::goat::GOAT_DESCRIPTOR_INDEX,
+                    pending_damage: 0,
+                    linked_head: 0,
+                });
+        }
         self.authored_class5.push(source);
         if let Some(model3_state) = model3_state {
             self.authored_class5_model3.push(model3_state);
         }
         Some(source)
+    }
+
+    /// Copy only Goat-owned mutable fields into its generic NewEvent/map
+    /// projection. The Goat family remains behavior authority; the generic
+    /// class-5 row remains allocation, cursor, hash, and map identity.
+    pub(crate) fn sync_authored_goat_projection(&mut self, goat: &GoatState) -> bool {
+        let Some(source_index) = self.authored_class5.iter().position(|source| {
+            source.model == crate::goat::GOAT_MODEL
+                && source.source_entity_index == goat.entity_index
+        }) else {
+            // Reset-imported Goats have no generic NewEvent projection.
+            return true;
+        };
+
+        let drawing_enabled = goat.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
+        let source = &mut self.authored_class5[source_index];
+        source.entity_rng = goat.rng;
+        source.action = goat.action;
+        source.minimum_speed = goat.minimum_speed;
+        source.maximum_speed = goat.maximum_speed;
+        source.actual_speed = goat.actual_speed;
+        source.max_life = goat.max_life;
+        source.life = goat.life;
+        source.mana = goat.mana;
+        source.pending_word_0x62 = goat.pending_attacker.cast_unsigned();
+        source.word_0x26 = goat.current_attacker.cast_unsigned();
+        source.word_0x24 = goat.kill_credit_entity.cast_unsigned();
+        source.word_0x96_150 = goat.target_entity_index.unwrap_or(0);
+        source.source_byte_3e = goat.phase;
+        source.source_byte_39 = goat.proximity_countdown.cast_unsigned();
+        source.yaw = goat.yaw;
+        source.pitch = goat.pitch;
+        source.roll = goat.roll;
+        source.position = goat.position;
+        source.drawing_enabled = drawing_enabled;
+        source.active = goat.active && drawing_enabled;
+        self.source_rng.insert(goat.entity_index, goat.rng);
+        if let Some(runtime) = self.authored_class5_runtime_mut(goat.entity_index) {
+            runtime.pending_damage = goat.pending_damage;
+        }
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: goat.entity_index,
+                active: drawing_enabled,
+                x: goat.position.x,
+                y: goat.position.y,
+            })
+            .is_ok()
     }
 
     /// Advance one authored class-5 root through the live source cursor.

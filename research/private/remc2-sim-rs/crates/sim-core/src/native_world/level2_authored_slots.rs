@@ -156,6 +156,8 @@ impl Level2EconomyState {
 
             speed_trails: Vec::new(),
 
+            terrain_strip_close_triggers: Vec::new(),
+
             authored_model45: Vec::new(),
 
             authored_model1: Vec::new(),
@@ -226,6 +228,8 @@ impl Level2EconomyState {
             house_residents: Vec::new(),
 
             class5_model0_constructor_phase: 0,
+
+            class5_model1_constructor_phase: 0,
 
             class5_model3_constructor_phase: 0,
 
@@ -586,6 +590,13 @@ impl Level2EconomyState {
     #[must_use]
     pub fn speed_trails(&self) -> &[SpeedTrailEffect] {
         &self.speed_trails
+    }
+
+    #[must_use]
+    pub(crate) fn terrain_strip_close_triggers(
+        &self,
+    ) -> &[terrain_strip::TerrainStripCloseTrigger] {
+        &self.terrain_strip_close_triggers
     }
 
     #[must_use]
@@ -1023,6 +1034,70 @@ impl Level2EconomyState {
         step_speed_trail_effect(trail);
         trail.phase = trail.phase.wrapping_add(1);
         trail.active
+    }
+
+    /// Allocate the authored close command through remc2 `sub_4F900`.
+    pub(crate) fn allocate_terrain_strip_close_trigger(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+        terrain: &SessionTerrain,
+    ) -> Option<terrain_strip::TerrainStripCloseTrigger> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut position = position;
+        position.z = terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = terrain_strip::TerrainStripCloseTrigger {
+            source_entity_index,
+            entity_rng,
+            authored_index,
+            class: 10,
+            model: 63,
+            action: 68,
+            max_life: 1,
+            life: 1,
+            control_flags: 1,
+            source_byte_3e: source_entity_index as u8,
+            position,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_owner.insert(source_entity_index, 0);
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.terrain_strip_close_triggers.push(source);
+        Some(source)
+    }
+
+    /// Retain the command as a drawing-disabled tombstone until the next
+    /// source-boundary reclaim, matching `sub_34390` plus the common epilogue.
+    pub(crate) fn complete_terrain_strip_close_trigger(
+        &mut self,
+        source_entity_index: u16,
+    ) -> bool {
+        let Some(source) = self
+            .terrain_strip_close_triggers
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_entity_index)
+        else {
+            return false;
+        };
+        source.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        source.drawing_enabled = false;
+        source.active = false;
+        true
     }
 
     /// Allocate the class-15 holder made by `AddSpellXX_XX_51120` during the
@@ -4759,6 +4834,11 @@ impl Level2EconomyState {
         else {
             return false;
         };
+        // This cfg(test)-only seam stages the complete upstream Castle-mana
+        // prerequisite. Preserve the injected payload through the ordinary
+        // Castle upkeep callback instead of letting a level-one capacity cap
+        // turn a downstream objective/gate test into a Castle-upgrade test.
+        castle.mana_capacity = castle.mana_capacity.max(mana);
         castle.mana = mana;
         true
     }
@@ -4937,6 +5017,16 @@ impl Level2EconomyState {
             visit(
                 trail.source_entity_index,
                 Level2DynamicArenaKind::SpeedTrail,
+            );
+        }
+        for source in self
+            .terrain_strip_close_triggers
+            .iter()
+            .filter(|source| source.active)
+        {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::TerrainStripCloseTrigger,
             );
         }
         for source in self.authored_model1.iter().filter(|source| source.active) {
@@ -5266,6 +5356,11 @@ impl Level2EconomyState {
             Level2DynamicArenaKind::SpellPickup => selector!(self.spell_pickups, 15),
             Level2DynamicArenaKind::SpeedTrail => self
                 .speed_trails
+                .iter()
+                .find(|row| row.active && row.source_entity_index == source_slot)
+                .map(|row| (row.class, row.action)),
+            Level2DynamicArenaKind::TerrainStripCloseTrigger => self
+                .terrain_strip_close_triggers
                 .iter()
                 .find(|row| row.active && row.source_entity_index == source_slot)
                 .map(|row| (row.class, row.action)),
@@ -5838,6 +5933,23 @@ impl Level2EconomyState {
             .collect::<Vec<_>>();
         self.speed_trails.retain(|trail| trail.active);
         for (slot, entity_rng) in reclaimed_speed_trails {
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_terrain_strip_triggers = self
+            .terrain_strip_close_triggers
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.terrain_strip_close_triggers
+            .retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_terrain_strip_triggers {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
             self.release_slot(slot, Some(entity_rng));
         }
         let reclaimed_model1 = self
@@ -6528,6 +6640,26 @@ impl Level2EconomyState {
             hasher.update(trail.control_flags.to_le_bytes());
             hasher.update([u8::from(trail.active)]);
         }
+        hasher.update(b"terrain-strip-close-triggers-v1");
+        for source in &self.terrain_strip_close_triggers {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([
+                source.class,
+                source.model,
+                source.action,
+                source.source_byte_3e,
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+        }
         hasher.update(b"authored-model1-v1");
         for source in &self.authored_model1 {
             hasher.update(source.source_entity_index.to_le_bytes());
@@ -7134,6 +7266,7 @@ impl Level2EconomyState {
         hasher.update(b"authored-class5-v5");
         hasher.update([
             self.class5_model0_constructor_phase,
+            self.class5_model1_constructor_phase,
             self.class5_model3_constructor_phase,
             self.class5_model4_constructor_phase,
             self.class5_model9_constructor_phase,

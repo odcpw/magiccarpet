@@ -957,6 +957,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                                 | Level2DynamicArenaKind::BeyondSightPulseEffect
                                 | Level2DynamicArenaKind::ManaAttraction
                                 | Level2DynamicArenaKind::AuthoredSwitchProducer
+                                | Level2DynamicArenaKind::TerrainStripCloseTrigger
                         ) =>
                     {
                         Level2EpiloguePolicy::SchedulerAdvance {
@@ -4809,6 +4810,7 @@ impl Level2ResetSession {
                             && matches!(
                                 kind,
                                 CreatureKind::Bee
+                                    | CreatureKind::Dragon
                                     | CreatureKind::Archer
                                     | CreatureKind::Firefly
                                     | CreatureKind::Skeleton
@@ -7509,8 +7511,11 @@ impl Level2ResetSession {
             !matches!(
                 (feature.kind, feature.subtype),
                 (2, 0 | 1)
-                    | (5, 0 | 2 | 3 | 4 | 9 | 14 | 19)
-                    | (10, 1 | 5 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 76)
+                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 14 | 19)
+                    | (
+                        10,
+                        1 | 5 | 6 | 13 | 17 | 22 | 39 | 45 | 54 | 58 | 59 | 63 | 76
+                    )
                     | (11, 0 | 1 | 12 | 16 | 17 | 32)
                     | (14, 3 | 5)
                     | (15, 2 | 3 | 6 | 11)
@@ -7612,6 +7617,37 @@ impl Level2ResetSession {
                         )
                         .is_some()
                     {
+                        self.session
+                            .state
+                            .live
+                            .level2_class5_activated
+                            .insert(feature.index);
+                    }
+                }
+                (5, 1) => {
+                    let position = feature.world_position(
+                        self.canonical_terrain()
+                            .ground_height(feature.world_position(0)),
+                    );
+                    let source = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .allocate_authored_class5(
+                            feature.index,
+                            crate::goat::GOAT_MODEL,
+                            position,
+                            &self.session.state.live.terrain,
+                        );
+                    if let Some(source) = source {
+                        self.session.state.live.goats.add_authored_goat(
+                            source.source_entity_index,
+                            source.entity_rng,
+                            source.source_byte_3e,
+                            source.position,
+                        )?;
                         self.session
                             .state
                             .live
@@ -7843,6 +7879,20 @@ impl Level2ResetSession {
                             .level2_model59_activated
                             .insert(feature.index);
                     }
+                }
+                (10, 63) => {
+                    let position = feature.world_position(
+                        self.canonical_terrain()
+                            .ground_height(feature.world_position(0)),
+                    );
+                    let terrain = &self.session.state.live.terrain;
+                    let _ = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .allocate_terrain_strip_close_trigger(feature.index, position, terrain);
                 }
                 (10, 76) => {
                     if self
@@ -9730,6 +9780,9 @@ impl Level2ResetSession {
                     Level2DynamicArenaKind::SpeedTrail => {
                         row_phase!(economy.speed_trails, phase)
                     }
+                    Level2DynamicArenaKind::TerrainStripCloseTrigger => {
+                        row_phase!(economy.terrain_strip_close_triggers, source_byte_3e)
+                    }
                     Level2DynamicArenaKind::AuthoredModel1 => {
                         row_phase!(economy.authored_model1, phase)
                     }
@@ -9946,6 +9999,9 @@ impl Level2ResetSession {
                     }
                     Level2DynamicArenaKind::SpeedTrail => {
                         retained_phase!(economy.speed_trails, phase)
+                    }
+                    Level2DynamicArenaKind::TerrainStripCloseTrigger => {
+                        retained_phase!(economy.terrain_strip_close_triggers, source_byte_3e)
                     }
                     Level2DynamicArenaKind::AuthoredModel1 => {
                         retained_phase!(economy.authored_model1, phase)
@@ -10171,6 +10227,10 @@ impl Level2ResetSession {
                     Level2DynamicArenaKind::SpeedTrail => {
                         dynamic_phase_mut!(live.economy.economy.speed_trails, phase)
                     }
+                    Level2DynamicArenaKind::TerrainStripCloseTrigger => dynamic_phase_mut!(
+                        live.economy.economy.terrain_strip_close_triggers,
+                        source_byte_3e
+                    ),
                     Level2DynamicArenaKind::AuthoredModel1 => {
                         dynamic_phase_mut!(live.economy.economy.authored_model1, phase)
                     }
@@ -10467,6 +10527,9 @@ impl Level2ResetSession {
                     handler == ExistingHandler::Class10Effects
                 }
                 Level2DynamicArenaKind::SpeedTrail => handler == ExistingHandler::Class10Effects,
+                Level2DynamicArenaKind::TerrainStripCloseTrigger => {
+                    handler == ExistingHandler::TerrainStripController
+                }
                 Level2DynamicArenaKind::CastleRoot => handler == ExistingHandler::CastleRoot,
                 Level2DynamicArenaKind::CastleAuxiliary => {
                     handler == ExistingHandler::CastleAuxiliary
@@ -10525,18 +10588,18 @@ impl Level2ResetSession {
         source_slot: u16,
         visit: &Level2ResolvedSourceVisit,
     ) -> std::result::Result<(), String> {
-        if matches!(
-            visit.route,
-            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
-                kind: Level2DynamicArenaKind::AuthoredClass5 | Level2DynamicArenaKind::AuthoredBee,
-                ..
-            })
-        ) {
-            validate_semantic_creature_dispatch(
-                source_slot,
-                self.creature_kind_for_source_slot(source_slot),
-                visit.handler,
-            )?;
+        let semantic_creature = self.creature_kind_for_source_slot(source_slot);
+        if semantic_creature.is_some()
+            || matches!(
+                visit.route,
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::AuthoredClass5
+                        | Level2DynamicArenaKind::AuthoredBee,
+                    ..
+                })
+            )
+        {
+            validate_semantic_creature_dispatch(source_slot, semantic_creature, visit.handler)?;
         }
         let semantic_scenery = self.scenery_kind_for_source_slot(source_slot);
         if semantic_scenery.is_some()
@@ -10758,6 +10821,15 @@ impl Level2ResetSession {
             }
             (ExistingHandler::TerrainStripController, Level2SourceRoute::Imported) => {
                 self.step_imported_terrain_strip(source_slot)?;
+            }
+            (
+                ExistingHandler::TerrainStripController,
+                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    kind: Level2DynamicArenaKind::TerrainStripCloseTrigger,
+                    ..
+                }),
+            ) => {
+                self.step_dynamic_terrain_strip_close_trigger(source_slot)?;
             }
             (ExistingHandler::SwitchProducers, Level2SourceRoute::Imported) => {
                 self.step_imported_switch(pass, source_slot, source_player_order)?;
@@ -11654,12 +11726,26 @@ impl Level2ResetSession {
             }
             (ExistingHandler::GoatFamily, Level2SourceRoute::Goat) => {
                 let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
-                let terrain = &self.session.state.live.terrain;
-                events.extend(self.session.state.live.goats.step_source_slot(
-                    source_slot,
-                    terrain,
-                    goat_players,
-                ));
+                {
+                    let live = &mut self.session.state.live;
+                    events.extend(live.goats.step_source_slot(
+                        source_slot,
+                        &live.terrain,
+                        goat_players,
+                    ));
+                    if let Some(goat) = live
+                        .goats
+                        .goats()
+                        .iter()
+                        .find(|goat| goat.entity_index == source_slot)
+                        .cloned()
+                        && !live.economy.economy.sync_authored_goat_projection(&goat)
+                    {
+                        return Err(format!(
+                            "Goat source slot {source_slot} failed to synchronize its NewEvent map projection"
+                        ));
+                    }
+                }
                 self.apply_level2_goat_economy_events(&events);
                 self.append_new_economy_events(pass, source_slot);
                 self.push_dispatch_effect(Level2DispatchEvent::Goat {
@@ -12856,6 +12942,49 @@ impl Level2ResetSession {
     ) -> std::result::Result<(), String> {
         let trigger_position =
             self.session.state.live.economy.entities[usize::from(source_slot)].position;
+        self.set_terrain_strip_controller_life_at(trigger_position, target_life);
+        self.session.state.live.economy.entities[usize::from(source_slot)].disable_drawing();
+        Ok(())
+    }
+
+    fn step_dynamic_terrain_strip_close_trigger(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
+        let trigger_position = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .terrain_strip_close_triggers()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .map(|source| source.position)
+            .ok_or_else(|| {
+                format!("terrain-strip close callback lost dynamic source slot {source_slot}")
+            })?;
+        self.set_terrain_strip_controller_life_at(trigger_position, 2);
+        if !self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .complete_terrain_strip_close_trigger(source_slot)
+        {
+            return Err(format!(
+                "terrain-strip close callback could not retain source slot {source_slot}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn set_terrain_strip_controller_life_at(
+        &mut self,
+        trigger_position: Position,
+        target_life: i32,
+    ) {
         let tile_x = trigger_position.x.wrapping_sub(128).to_be_bytes()[0];
         let tile_y = trigger_position.y.wrapping_sub(128).to_be_bytes()[0];
         let chain = self
@@ -12877,8 +13006,6 @@ impl Level2ResetSession {
         if let Some(target) = target {
             self.session.state.live.economy.entities[usize::from(target)].set_life(target_life);
         }
-        self.session.state.live.economy.entities[usize::from(source_slot)].disable_drawing();
-        Ok(())
     }
 
     /// Run the production Level 2 entity pass through the literal source
@@ -14859,6 +14986,9 @@ impl Level2ResetSession {
                 .live
                 .economy
                 .step_speed_trail(source_slot),
+            Level2DynamicArenaKind::TerrainStripCloseTrigger => self
+                .step_dynamic_terrain_strip_close_trigger(source_slot)
+                .is_ok(),
             Level2DynamicArenaKind::AuthoredModel1 => self
                 .session
                 .state
@@ -17974,7 +18104,7 @@ mod tests {
     }
 
     #[test]
-    fn cf14_level3_skeleton_damage_death_and_reclaim_follow_source_boundaries() {
+    fn cf14_level3_skeleton_and_dragon_deaths_unlock_goats_and_terrain_close() {
         const SKELETON_SLOT: u16 = 93;
         const FIREBALL_DAMAGE: u16 = 500;
 
@@ -18009,6 +18139,7 @@ mod tests {
             assert_eq!(skeleton(campaign).source_upkeep_payload(), 500);
         }
 
+        #[track_caller]
         fn step(campaign: &mut CampaignSession) {
             let _ = campaign.step(PlayerCommand::default(), 0);
             assert!(
@@ -19479,6 +19610,440 @@ mod tests {
             .count();
         assert_eq!(launch_sounds, 1);
 
+        // The preceding route proves the complete death and source-boundary
+        // reclaim of one real Dragon. Stage only that already-proven terminal
+        // hide on the one remaining package Dragon so this continuation owns
+        // the downstream semantic objective, objective gate, authored group,
+        // and terrain-strip command lifecycle—not a duplicate combat proof.
+        let remaining_dragons = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|source| source.model == level2_class5::dragon::DRAGON_MODEL)
+            .map(|source| source.source_entity_index)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_dragons, [dragon_slot]);
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .objectives[0]
+                .stage_selectors[1],
+            1
+        );
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .stage_authored_dragon_terminal_hide_for_test(dragon_slot)
+        );
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert!(live.economy.economy.authored_dragons().is_empty());
+        assert!(live.economy.economy.authored_dragon_parts().is_empty());
+        assert_eq!(live.core.runtime.objectives[0].stage_selectors[1], 2);
+        assert_eq!(live.core.runtime.objectives[0].text_selector, 2);
+        assert!(
+            live.economy
+                .economy
+                .terrain_strip_close_triggers()
+                .is_empty()
+        );
+        assert!(
+            campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
+                ))
+        );
+
+        // The Dragon-extinction selector belongs to the package's real group-5
+        // gate. On the following numeric pass it constructs exactly the eleven
+        // Goats and eighteen Archers authored for Level 3. The Goat rows reuse
+        // the one shared Goat behavior family; their generic class-5 records
+        // remain the NewEvent/map/hash projection.
+        const GROUP5_GATE_SLOT: u16 = 218;
+        const TERRAIN_GATE_SLOT: u16 = 128;
+        const TERRAIN_CONTROLLER_SLOT: u16 = 94;
+        let group5_gate_phase_before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[usize::from(GROUP5_GATE_SLOT)]
+        .phase;
+        step(&mut campaign);
+        let events = campaign.level2_compatibility().dispatch_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: GROUP5_GATE_SLOT,
+                group: 5,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == (166_u16..=194).collect::<Vec<_>>().as_slice()
+        )));
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
+        )));
+        let live = &campaign.level2_compatibility().session.state.live;
+        let group5_gate = &live.economy.entities[usize::from(GROUP5_GATE_SLOT)];
+        assert!(group5_gate.active && group5_gate.drawing_disabled());
+        assert_eq!(group5_gate.phase, group5_gate_phase_before.wrapping_add(1));
+        let goat_roots = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|source| source.model == crate::goat::GOAT_MODEL)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            goat_roots
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            (166_u16..=176).collect::<Vec<_>>()
+        );
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        for (constructor_phase, source) in goat_roots.iter().enumerate() {
+            let goat = live
+                .goats
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == source.source_entity_index)
+                .expect("every authored Goat root has one behavior carrier");
+            let visited = source.source_entity_index > GROUP5_GATE_SLOT;
+            assert_eq!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted { slot, .. }
+                        if *slot == source.source_entity_index
+                )),
+                visited
+            );
+            assert_eq!(
+                (
+                    goat.source_id,
+                    goat.action,
+                    goat.max_life,
+                    goat.life,
+                    goat.mana,
+                    goat.minimum_speed,
+                    goat.maximum_speed,
+                    goat.actual_speed,
+                    goat.render_parameter_index,
+                ),
+                (
+                    source.source_entity_index,
+                    crate::goat::GOAT_CONSTRUCTOR_ACTION,
+                    crate::goat::GOAT_CONSTRUCTOR_LIFE,
+                    crate::goat::GOAT_CONSTRUCTOR_LIFE,
+                    crate::goat::GOAT_CONSTRUCTOR_MANA,
+                    crate::goat::GOAT_CONSTRUCTOR_MINIMUM_SPEED,
+                    crate::goat::GOAT_CONSTRUCTOR_MAXIMUM_SPEED,
+                    crate::goat::GOAT_CONSTRUCTOR_MAXIMUM_SPEED,
+                    crate::goat::GOAT_RENDER_PARAMETER_INDEX,
+                )
+            );
+            assert_eq!(
+                (
+                    goat.collision_half_width,
+                    goat.collision_half_depth,
+                    goat.collision_vertical_offset,
+                    goat.collision_half_height,
+                    goat.control_flags,
+                    goat.phase,
+                ),
+                (
+                    crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT,
+                    crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT,
+                    crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT,
+                    crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT,
+                    8_u32,
+                    u8::try_from(constructor_phase)
+                        .expect("eleven Goat phases fit u8")
+                        .wrapping_add(u8::from(visited)),
+                )
+            );
+            assert_eq!(
+                (
+                    source.entity_rng,
+                    source.action,
+                    source.source_byte_3e,
+                    source.source_byte_39,
+                    source.position,
+                    source.active,
+                    source.drawing_enabled,
+                ),
+                (
+                    goat.rng,
+                    goat.action,
+                    goat.phase,
+                    goat.proximity_countdown.cast_unsigned(),
+                    goat.position,
+                    true,
+                    true,
+                )
+            );
+        }
+        assert_eq!(live.core.runtime.objectives[0].stage_selectors[2], 1);
+
+        // The package's stage-2 Castle-mana selector is serviced post-pass.
+        // Group 5 does not itself satisfy that objective, and its authored
+        // model-32 gate (row 145) must remain inert until the objective phase
+        // observes the real Castle and secured-mana carriers. Castle building
+        // and mana collection are not under test here: stage only those two
+        // upstream prerequisites, then leave objective timing, the imported
+        // model-32 gate's dispatch, group construction, and cleanup to the
+        // ordinary scheduler.
+        let terrain_gate = &live.economy.entities[usize::from(TERRAIN_GATE_SLOT)];
+        assert_eq!(
+            (
+                terrain_gate.class,
+                terrain_gate.model,
+                terrain_gate.action,
+                terrain_gate.source_id,
+                terrain_gate.level_gate,
+            ),
+            (11, 32, 32, 2, 2)
+        );
+        let terrain_gate_phase = terrain_gate.phase;
+        let controller_position = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[usize::from(TERRAIN_CONTROLLER_SLOT)]
+        .position;
+        let expected_trigger_position = Position {
+            z: live.terrain.ground_height(controller_position),
+            ..controller_position
+        };
+        let player_entity_index = live.core.state.entity_index;
+        let player_position = live.core.state.position;
+        let denominator = live.economy.economy.owner_mana_global();
+        assert!(denominator > 0);
+        let castle_slot = campaign
+            .level2_compatibility_mut()
+            .economy_mut()
+            .build_castle(player_position, player_entity_index)
+            .expect("the package arena can stage the Castle-mana prerequisite");
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle_slot, denominator)
+        );
+        let staged_economy = campaign.level2_compatibility().economy();
+        let staged_castle = staged_economy
+            .castle()
+            .expect("the staged Castle remains the player Castle authority");
+        assert_eq!(staged_economy.player_castle_entity_index(), castle_slot);
+        assert_eq!(staged_castle.owner_entity_index, player_entity_index);
+        assert!(
+            100_i32
+                * staged_economy
+                    .owner_mana_aggregate(player_entity_index)
+                    .saturating_add(staged_castle.mana)
+                / staged_economy.owner_mana_global()
+                >= 30
+        );
+
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let post_objective_economy = &live.economy.economy;
+        let post_objective_castle = post_objective_economy
+            .castle()
+            .expect("the player Castle remains live through objective service");
+        let post_objective_percent = 100_i32
+            * post_objective_economy
+                .owner_mana_aggregate(player_entity_index)
+                .saturating_add(post_objective_castle.mana)
+            / post_objective_economy.owner_mana_global();
+        assert_eq!(
+            live.core.runtime.objectives[0].stage_selectors[2], 2,
+            "post-pass Castle-mana percent is {post_objective_percent}"
+        );
+        let terrain_gate = &live.economy.entities[usize::from(TERRAIN_GATE_SLOT)];
+        assert!(terrain_gate.active && !terrain_gate.drawing_disabled());
+        assert_eq!(terrain_gate.phase, terrain_gate_phase.wrapping_add(1));
+        assert!(
+            campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
+                ))
+        );
+
+        // Objective completion happens after numeric callbacks, so row 145
+        // sees the completed selector and constructs the model-63 command only
+        // on this following source pass.
+        step(&mut campaign);
+        let events = campaign.level2_compatibility().dispatch_events();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot,
+                    group: 2,
+                    authored_indices,
+                    ..
+                } if *source_slot == TERRAIN_GATE_SLOT
+                    && authored_indices.as_ref() == [146]
+            )),
+            "the following numeric pass must expose real group-2 activation: {events:?}"
+        );
+        let live = &campaign.level2_compatibility().session.state.live;
+        let hidden_terrain_gate = &live.economy.entities[usize::from(TERRAIN_GATE_SLOT)];
+        assert!(hidden_terrain_gate.active && hidden_terrain_gate.drawing_disabled());
+        assert_eq!(
+            hidden_terrain_gate.phase,
+            terrain_gate_phase.wrapping_add(2)
+        );
+        let trigger = *live
+            .economy
+            .economy
+            .terrain_strip_close_triggers()
+            .iter()
+            .find(|source| source.authored_index == 146)
+            .expect("group 2 constructs authored terrain-strip row 146");
+        let trigger_visited = trigger.source_entity_index > TERRAIN_GATE_SLOT;
+        assert_eq!(
+            (
+                trigger.class,
+                trigger.model,
+                trigger.action,
+                trigger.max_life,
+                trigger.life,
+                trigger.position,
+                trigger.control_flags,
+                trigger.drawing_enabled,
+                trigger.active,
+            ),
+            (
+                10,
+                63,
+                68,
+                1,
+                1,
+                expected_trigger_position,
+                if trigger_visited { 0x401 } else { 1 },
+                !trigger_visited,
+                !trigger_visited,
+            )
+        );
+        assert_eq!(
+            trigger.source_byte_3e,
+            (trigger.source_entity_index as u8).wrapping_add(u8::from(trigger_visited))
+        );
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        assert_eq!(
+            receipts.iter().any(|receipt| matches!(
+                receipt,
+                ScheduleReceipt::CallbackCompleted { slot, .. }
+                    if *slot == trigger.source_entity_index
+            )),
+            trigger_visited
+        );
+
+        if !trigger_visited {
+            step(&mut campaign);
+        }
+        let live = &campaign.level2_compatibility().session.state.live;
+        let hidden_trigger = live
+            .economy
+            .economy
+            .terrain_strip_close_triggers()
+            .iter()
+            .find(|source| source.source_entity_index == trigger.source_entity_index)
+            .expect("close command remains allocated through its epilogue");
+        assert_eq!(
+            (
+                hidden_trigger.control_flags,
+                hidden_trigger.drawing_enabled,
+                hidden_trigger.active,
+                hidden_trigger.source_byte_3e,
+                live.economy.entities[usize::from(TERRAIN_CONTROLLER_SLOT)].life,
+            ),
+            (
+                0x401,
+                false,
+                false,
+                (trigger.source_entity_index as u8).wrapping_add(1),
+                2,
+            )
+        );
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            ScheduleReceipt::CallbackCompleted { slot, .. }
+                if *slot == trigger.source_entity_index
+        )));
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            ScheduleReceipt::EpilogueCompleted { slot, .. }
+                if *slot == trigger.source_entity_index
+        )));
+
+        let terrain_before_close = campaign.terrain_hash();
+        let journal_before_close = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert!(
+            live.economy
+                .economy
+                .terrain_strip_close_triggers()
+                .iter()
+                .all(|source| source.source_entity_index != trigger.source_entity_index)
+        );
+        assert!(!live.economy.entities[usize::from(TERRAIN_GATE_SLOT)].active);
+        assert_ne!(campaign.terrain_hash(), terrain_before_close);
+        assert!(
+            campaign.level2_compatibility().effect_journal().records()[journal_before_close..]
+                .iter()
+                .any(|record| matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index: TERRAIN_CONTROLLER_SLOT,
+                        sound_id: 47,
+                        ..
+                    })
+                ))
+        );
+
         campaign.reset();
         assert_eq!(campaign.state_hash(), baseline_hash);
         assert!(
@@ -19941,51 +20506,11 @@ mod tests {
     }
 
     #[test]
-    fn cf14_level3_terrain_controller_and_triggers_preserve_numeric_order() {
-        fn install_trigger(
-            campaign: &mut CampaignSession,
-            slot: u16,
-            model: u8,
-            action: u8,
-            position: crate::Position,
-        ) {
-            {
-                let row = &mut campaign
-                    .level2_compatibility_mut()
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .entities[usize::from(slot)];
-                row.active = true;
-                row.record[2] = 1;
-                row.class = 10;
-                row.model = model;
-                row.action = action;
-                row.record[67] = 10;
-                row.record[68] = model;
-                row.record[73] = action;
-                row.set_control_flags(0);
-                row.set_life(1);
-            }
-            campaign
-                .level2_compatibility_mut()
-                .set_level2_entity_position(slot, position)
-                .expect("trigger joins the controller map cell");
-        }
-
+    fn cf14_level3_terrain_controller_preserves_rng_audio_and_reset() {
         let package = level_three_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
             .expect("qualified Level 3 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let controller_position = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[94]
-            .position;
         let terrain_rng = campaign
             .level2_compatibility()
             .session
@@ -20002,9 +20527,19 @@ mod tests {
             .entities[94]
             .entity_rng;
 
-        // A lower-slot close trigger mutates the controller before its visit,
-        // so the first callback performs one close tick in this same scan.
-        install_trigger(&mut campaign, 93, 63, 68, controller_position);
+        // Group 2's real row-146 command is proven in the package-chain test.
+        // Start at its resulting controller state here so this focused test
+        // owns only the package-present controller callback and replay.
+        {
+            let controller = &mut campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .entities[94];
+            controller.set_life(2);
+        }
         let terrain_before = campaign.terrain_hash();
         let _ = campaign.step(PlayerCommand::default(), 0);
         let controller = &campaign
@@ -20050,27 +20585,6 @@ mod tests {
                     )
                 ))
         );
-        assert!(
-            campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[93]
-                .drawing_disabled()
-        );
-        let _ = campaign.step(PlayerCommand::default(), 0);
-        assert!(
-            !campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[93]
-                .active
-        );
         let close_hash = campaign.state_hash();
         let close_effects = campaign
             .effects_after(
@@ -20093,47 +20607,8 @@ mod tests {
                 .live
                 .economy
                 .entities[94];
-            controller.set_life(4);
-            controller.set_subspell_index(0);
+            controller.set_life(2);
         }
-        // A higher-slot open trigger runs after the controller. Its life write
-        // becomes visible to the controller only on the following scan.
-        install_trigger(&mut campaign, 95, 64, 69, controller_position);
-        let _ = campaign.step(PlayerCommand::default(), 0);
-        let controller = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[94];
-        assert_eq!((controller.life, controller.subspell_index), (1, 0));
-        let terrain_before_open = campaign.terrain_hash();
-        let _ = campaign.step(PlayerCommand::default(), 0);
-        let controller = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[94];
-        assert_eq!((controller.life, controller.subspell_index), (1, 1));
-        assert_ne!(campaign.terrain_hash(), terrain_before_open);
-        assert!(
-            !campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[95]
-                .active
-        );
-
-        campaign.reset();
-        assert_eq!(campaign.state_hash(), reset_hash);
-        install_trigger(&mut campaign, 93, 63, 68, controller_position);
-        let _ = campaign.step(PlayerCommand::default(), 0);
         let _ = campaign.step(PlayerCommand::default(), 0);
         assert_eq!(campaign.state_hash(), close_hash);
         assert_eq!(
@@ -20149,40 +20624,6 @@ mod tests {
                 .records,
             close_effects
         );
-
-        // The registry key is class/action, but the imported callback still
-        // validates the constructor model. A model-63 row carrying action 69
-        // is a malformed carrier: the whole pass rolls back before callback,
-        // epilogue, terrain, RNG, or journal mutation.
-        campaign.reset();
-        install_trigger(&mut campaign, 93, 63, 69, controller_position);
-        let invalid_hash = campaign.state_hash();
-        let invalid_global_rng = campaign.level2_compatibility().source_global_rng();
-        let evidence = campaign.step(PlayerCommand::default(), 0);
-        assert!(evidence.is_empty());
-        assert_eq!(campaign.state_hash(), invalid_hash);
-        assert_eq!(
-            campaign.level2_compatibility().source_global_rng(),
-            invalid_global_rng
-        );
-        assert!(
-            !campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[93]
-                .drawing_disabled()
-        );
-        assert!(matches!(
-            campaign.level2_compatibility().dispatch_events(),
-            [crate::native_world::Level2DispatchEvent::Error {
-                source_slot: 93,
-                message,
-                ..
-            }] if message.contains("rejects source selector 10/63/69")
-        ));
     }
 
     fn level_two_nyphur_possession_session() -> Level2ResetSession {

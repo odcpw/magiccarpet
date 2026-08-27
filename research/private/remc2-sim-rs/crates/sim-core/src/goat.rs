@@ -36,6 +36,14 @@ pub const GOAT_PATROL_ACTION: u8 = 15;
 pub const GOAT_PATROL_STAGE_MODE: i8 = 2;
 pub const GOAT_RENDER_PARAMETER_INDEX: u16 = 238;
 pub const GOAT_BASE_TMAP: u16 = 152;
+pub(crate) const GOAT_CONSTRUCTOR_ACTION: u8 = 9;
+pub(crate) const GOAT_CONSTRUCTOR_LIFE: i32 = 600;
+pub(crate) const GOAT_CONSTRUCTOR_MANA: i32 = 300;
+pub(crate) const GOAT_CONSTRUCTOR_MINIMUM_SPEED: i16 = 54;
+pub(crate) const GOAT_CONSTRUCTOR_MAXIMUM_SPEED: i16 = 18;
+pub(crate) const GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT: i16 = 75;
+pub(crate) const GOAT_DESCRIPTOR_INDEX: u16 = 98;
+pub(crate) const GOAT_DESCRIPTOR_CADENCE: i8 = 33;
 
 fn goat_bleat_source_call(action: u8) -> SourceAudioCallTag {
     match action {
@@ -503,6 +511,77 @@ impl GoatFamily {
             config,
             outer_tick: 0,
         })
+    }
+
+    /// Add one `AddCreature_4B490` result to the existing source-ordered Goat
+    /// family. The shared NewEvent arena owns slot allocation, RNG seeding,
+    /// map linkage, and reset; this family remains the sole behavior carrier.
+    pub(crate) fn add_authored_goat(
+        &mut self,
+        entity_index: u16,
+        entity_rng: u16,
+        phase: u8,
+        position: Position,
+    ) -> Result<(), String> {
+        if self
+            .goats
+            .iter()
+            .any(|goat| goat.entity_index == entity_index)
+        {
+            return Err(format!(
+                "Goat source slot {entity_index} is already occupied"
+            ));
+        }
+
+        let goat = GoatState {
+            entity_index,
+            source_id: entity_index,
+            active: true,
+            control_flags: 8,
+            max_life: GOAT_CONSTRUCTOR_LIFE,
+            life: GOAT_CONSTRUCTOR_LIFE,
+            pending_damage: 0,
+            pending_attacker: 0,
+            kill_credit_entity: 0,
+            current_attacker: 0,
+            rng: entity_rng,
+            yaw: 0,
+            pitch: 0,
+            roll: 0,
+            position,
+            collision_half_width: GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT,
+            collision_half_depth: GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT,
+            collision_vertical_offset: GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT,
+            collision_half_height: GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT,
+            render_parameter_index: GOAT_RENDER_PARAMETER_INDEX,
+            animation_frame: 0,
+            action: GOAT_CONSTRUCTOR_ACTION,
+            phase,
+            proximity_countdown: GOAT_DESCRIPTOR_CADENCE,
+            proximity_subcounter: 0,
+            stage_var_1: 0,
+            stage_var_2: 0,
+            actual_speed: GOAT_CONSTRUCTOR_MAXIMUM_SPEED,
+            minimum_speed: GOAT_CONSTRUCTOR_MINIMUM_SPEED,
+            maximum_speed: GOAT_CONSTRUCTOR_MAXIMUM_SPEED,
+            mana: GOAT_CONSTRUCTOR_MANA,
+            behavior_flags: self.config.behavior_flags,
+            partner_entity_index: None,
+            target_entity_index: None,
+        };
+
+        let insert_at = self
+            .goats
+            .iter()
+            .position(|candidate| candidate.entity_index > entity_index)
+            .unwrap_or(self.goats.len());
+        let mut goats = self.goats.to_vec();
+        let mut child_links = self.child_links.to_vec();
+        goats.insert(insert_at, goat);
+        child_links.insert(insert_at, None);
+        self.goats = goats.into_boxed_slice();
+        self.child_links = child_links.into_boxed_slice();
+        Ok(())
     }
 
     /// Construct the complete Level 2 class-5/model-1 family in authored

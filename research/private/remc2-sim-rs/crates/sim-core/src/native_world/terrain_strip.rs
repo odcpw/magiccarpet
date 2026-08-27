@@ -10,6 +10,29 @@ use super::{MapType, Position, SessionTerrain, TerrainPlanes};
 const TERRAIN_STRIP_TYPE: u8 = 8;
 const TERRAIN_STRIP_SOUND: u16 = 47;
 
+/// Authored class-10/model-63/action-68 command created by `sub_4F900`.
+///
+/// The command is a real `NewEvent` row: it owns a numeric source slot, is
+/// map-linked at the authored position, closes the controller in its cell,
+/// then remains as a drawing-disabled tombstone through the common callback
+/// epilogue before the following source boundary reclaims it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TerrainStripCloseTrigger {
+    pub(crate) source_entity_index: u16,
+    pub(crate) entity_rng: u16,
+    pub(crate) authored_index: u16,
+    pub(crate) class: u8,
+    pub(crate) model: u8,
+    pub(crate) action: u8,
+    pub(crate) max_life: i32,
+    pub(crate) life: i32,
+    pub(crate) control_flags: u32,
+    pub(crate) source_byte_3e: u8,
+    pub(crate) position: Position,
+    pub(crate) drawing_enabled: bool,
+    pub(crate) active: bool,
+}
+
 /// Mutable source words used by `sub_59F60` after the generic constructor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TerrainStripControllerState {

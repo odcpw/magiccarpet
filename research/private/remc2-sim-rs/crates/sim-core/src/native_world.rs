@@ -2866,6 +2866,8 @@ pub struct Level2EconomyState {
 
     speed_trails: Vec<SpeedTrailEffect>,
 
+    terrain_strip_close_triggers: Vec<terrain_strip::TerrainStripCloseTrigger>,
+
     authored_model45: Vec<Level2AuthoredModel45Source>,
 
     authored_model1: Vec<Level2AuthoredModel1Source>,
@@ -2936,6 +2938,8 @@ pub struct Level2EconomyState {
     house_residents: Vec<Level2HouseResidentSource>,
 
     class5_model0_constructor_phase: u8,
+
+    class5_model1_constructor_phase: u8,
 
     class5_model3_constructor_phase: u8,
 
@@ -3323,6 +3327,7 @@ pub enum Level2DynamicArenaKind {
     SpellReplacement,
     SpellPickup,
     SpeedTrail,
+    TerrainStripCloseTrigger,
     AuthoredModel1,
     AuthoredModel45,
     AuthoredModel13,
@@ -3492,6 +3497,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::SpellReplacement => 9,
         Level2DynamicArenaKind::SpellPickup => 10,
         Level2DynamicArenaKind::SpeedTrail => 44,
+        Level2DynamicArenaKind::TerrainStripCloseTrigger => 46,
         Level2DynamicArenaKind::AuthoredModel1 => 31,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
         Level2DynamicArenaKind::AuthoredModel13 => 21,
