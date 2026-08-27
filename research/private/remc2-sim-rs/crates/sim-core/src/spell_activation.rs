@@ -474,6 +474,32 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
         [
             Level2SetSpellProfile {
                 subspell_index: 100,
+                word_0x30: 201,
+                byte_0x3b: 1,
+                mana_regen: 20_000,
+                max_mana: 5_000,
+                mana: 24,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 100,
+                word_0x30: 301,
+                byte_0x3b: 1,
+                mana_regen: 20_000,
+                max_mana: 7_500,
+                mana: 24,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 100,
+                word_0x30: 455,
+                byte_0x3b: 1,
+                mana_regen: 25_000,
+                max_mana: 15_000,
+                mana: 32,
+            },
+        ],
+        [
+            Level2SetSpellProfile {
+                subspell_index: 100,
                 word_0x30: 101,
                 byte_0x3b: 1,
                 mana_regen: 0,
@@ -555,9 +581,10 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
         1 => 1,
         2 => 2,
         3 => 3,
-        6 => 4,
-        11 => 5,
-        12 => 6,
+        4 => 4,
+        6 => 5,
+        11 => 6,
+        12 => 7,
         _ => return None,
     };
     if tier > 2 {
@@ -618,7 +645,7 @@ pub fn acquire_level2_spell_holder_with_return_side(
     overlaps: bool,
     return_side: i16,
 ) -> SpellHolderAcquisitionResult {
-    if !matches!(state.family, 0..=3 | 6 | 11 | 12) {
+    if !matches!(state.family, 0..=4 | 6 | 11 | 12) {
         return SpellHolderAcquisitionResult::Rejected(
             SpellHolderAcquisitionFailure::UnsupportedFamily,
         );
@@ -2121,6 +2148,9 @@ mod tests {
             (3, 0, 2, 301, 1, 0, 1_000, 3),
             (3, 1, 3, 451, 1, 0, 2_500, 5),
             (3, 2, 4, 501, 1, 0, 5_000, 9),
+            (4, 0, 100, 201, 1, 20_000, 5_000, 24),
+            (4, 1, 100, 301, 1, 20_000, 7_500, 24),
+            (4, 2, 100, 455, 1, 25_000, 15_000, 32),
             (6, 0, 100, 101, 1, 0, 1_000, 9),
             (6, 1, 100, 201, 1, 0, 1_500, 7),
             (6, 2, 100, 301, 1, 0, 10_000, 33),
@@ -2147,7 +2177,7 @@ mod tests {
             );
         }
         assert_eq!(level2_set_spell_profile(6, 3), None);
-        assert_eq!(level2_set_spell_profile(4, 0), None);
+        assert_eq!(level2_set_spell_profile(5, 0), None);
     }
 
     #[test]

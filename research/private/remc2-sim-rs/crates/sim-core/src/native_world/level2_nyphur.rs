@@ -60,41 +60,6 @@ const fn level2_nyphur_mode14_attack_band(distance: u32) -> bool {
         && distance < LEVEL2_NYPHUR_MODE14_PRIMARY_MAX_DISTANCE
 }
 
-/// Source `Spells.cpp` family-4 rows used by `SetSpell_6D5E0` when
-/// `sub_15FC0` selects one of the four bucket models.  The generic Level 2
-/// profile table intentionally does not admit family 4 on the fresh route;
-/// this narrow mode-14 projection is only reachable through a validated
-/// source-owned family-4 holder.
-const fn level2_nyphur_family4_spell_profile(tier: u8) -> Option<Level2SetSpellProfile> {
-    Some(match tier {
-        0 => Level2SetSpellProfile {
-            subspell_index: 100,
-            word_0x30: 201,
-            byte_0x3b: 1,
-            mana_regen: 20_000,
-            max_mana: 5_000,
-            mana: 24,
-        },
-        1 => Level2SetSpellProfile {
-            subspell_index: 100,
-            word_0x30: 301,
-            byte_0x3b: 1,
-            mana_regen: 20_000,
-            max_mana: 7_500,
-            mana: 24,
-        },
-        2 => Level2SetSpellProfile {
-            subspell_index: 100,
-            word_0x30: 455,
-            byte_0x3b: 1,
-            mana_regen: 25_000,
-            max_mana: 15_000,
-            mana: 32,
-        },
-        _ => return None,
-    })
-}
-
 /// Source-owned Level 2 AI participant/holder chain at reset.
 ///
 /// The participant rows remain part of the lossless entity/player arrays. This
@@ -877,7 +842,6 @@ impl Level2NyphurCommonUpkeep {
         let tier = level2_applied_tier(raw_tier)?;
         let profile = match family {
             0 | 1 | 3 => level2_direct_starting_spell_profile(family, tier),
-            4 => level2_nyphur_family4_spell_profile(tier),
             _ => level2_set_spell_profile(family, tier),
         }?;
         Some((tier, profile))

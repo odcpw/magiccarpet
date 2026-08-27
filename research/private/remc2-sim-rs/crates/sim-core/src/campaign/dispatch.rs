@@ -348,6 +348,7 @@ compiled_registry! {
         (TerrainStripController, 10, [68, 69]);
         (CountdownSwitch, 11, [16, 17]);
         (TerrainStripController, 14, [6]);
+        (SpellHolderAndPickup, 15, [12, 13]);
     }
     constructors {
         (TreeLifecycle, 2, [0]);
@@ -618,7 +619,7 @@ mod tests {
         for (class, actions, handler) in [
             (3_u16, &[2_u16, 3, 12][..], "player-flight"),
             (3, &[4, 6][..], "castle-root"),
-            (5, &[1, 2][..], "dragon-family"),
+            (5, &[1, 2, 4, 5][..], "dragon-family"),
             (
                 5,
                 &[16, 17, 18, 19, 20, 21, 22, 23][..],
@@ -650,6 +651,7 @@ mod tests {
             (10, &[68, 69][..], "terrain-strip-controller"),
             (11, &[16, 17][..], "absence-countdown-switch"),
             (14, &[6][..], "terrain-strip-controller"),
+            (15, &[12, 13][..], "spell-holder-and-pickup-family"),
         ] {
             for action in actions {
                 expected.insert(
@@ -689,7 +691,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 378);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 384);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -763,7 +765,7 @@ mod tests {
         }
         assert_eq!(expected_handlers.len(), 315);
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 378);
+        assert_eq!(expected_handlers.len(), 384);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

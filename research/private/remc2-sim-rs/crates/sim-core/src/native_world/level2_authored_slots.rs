@@ -619,6 +619,31 @@ impl Level2EconomyState {
         &self.authored_bees
     }
 
+    /// Stage the terminal hide of already-proven authored Bee roots for a
+    /// downstream objective/gate test. Bee combat and death outputs are not
+    /// claimed here; the next production source boundary still owns unlink,
+    /// slot release, the frozen model-2 census, and objective service.
+    #[cfg(test)]
+    pub(super) fn stage_authored_bee_terminal_hide_for_test(
+        &mut self,
+        authored_indices: &[u16],
+    ) -> usize {
+        let mut hidden = 0;
+        for source in &mut self.authored_bees {
+            if source.active && authored_indices.contains(&source.authored_index) {
+                source.action = 21;
+                source.drawing_enabled = false;
+                source.active = false;
+                source.life = -1;
+                source.target_entity_index = None;
+                self.deferred_authored_bee_reclaims
+                    .insert(source.source_entity_index);
+                hidden += 1;
+            }
+        }
+        hidden
+    }
+
     #[must_use]
     pub fn authored_switch_producers(&self) -> &[Level2AuthoredSwitchProducerSource] {
         &self.authored_switch_producers

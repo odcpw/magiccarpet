@@ -6306,6 +6306,19 @@ impl Level2EconomyTestView<'_> {
             .hide_authored_class5_rows_for_test(authored_indices)
     }
 
+    pub(crate) fn stage_authored_bee_terminal_hide_for_test(
+        &mut self,
+        authored_indices: &[u16],
+    ) -> usize {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .stage_authored_bee_terminal_hide_for_test(authored_indices)
+    }
+
     pub(crate) fn retire_authored_multipart_prerequisite_for_test(
         &mut self,
         authored_index: u16,
@@ -7518,7 +7531,7 @@ impl Level2ResetSession {
                     )
                     | (11, 0 | 1 | 12 | 16 | 17 | 32)
                     | (14, 3 | 5)
-                    | (15, 2 | 3 | 6 | 11)
+                    | (15, 2 | 3 | 4 | 6 | 11)
             )
         }) {
             return Err(format!(
@@ -7991,7 +8004,7 @@ impl Level2ResetSession {
                         );
                     }
                 }
-                (15, 2 | 3 | 6 | 11) => {
+                (15, 2 | 3 | 4 | 6 | 11) => {
                     let terrain = &self.session.state.live.terrain;
                     self.session
                         .state
@@ -20068,6 +20081,457 @@ mod tests {
                 .authored_dragon_parts()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn cf14_level3_reach_bees_morph_and_final_dragons_follow_package_order() {
+        const REACH_GATE_SLOT: u16 = 129;
+        const FINAL_GATE_SLOT: u16 = 132;
+        const REACH_STAGE: usize = 3;
+        const BEE_STAGE: usize = 4;
+        const BEE_ROWS: [u16; 6] = [149, 150, 152, 153, 154, 155];
+        const FINAL_DRAGON_ROWS: [u16; 3] = [128, 131, 132];
+
+        #[track_caller]
+        fn step(campaign: &mut CampaignSession) {
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            assert!(
+                campaign
+                    .level2_compatibility()
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "Level 3 final-chain dispatch errors: {:?}",
+                campaign.level2_compatibility().dispatch_events()
+            );
+        }
+
+        let package = level_three_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("qualified Level 3 descriptor opens");
+        let baseline_hash = campaign.state_hash();
+        let player_entity_index = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .entity_index;
+
+        // Skeleton, Dragon, and Castle-mana behavior are proven separately.
+        // Stage only those upstream objective results; this test begins at
+        // the real reach-location predicate and retains every later producer,
+        // numeric callback, objective pause, constructor, and acquisition.
+        {
+            let runtime = &mut campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .core
+                .runtime;
+            for stage_index in 0..REACH_STAGE {
+                runtime.set_level2_objective_stage_selector_for(0, stage_index, 2);
+            }
+            runtime.set_level2_objective_text_selector_for(0, REACH_STAGE);
+        }
+
+        let target = Position {
+            x: 110_u16.wrapping_mul(256),
+            y: 110_u16.wrapping_mul(256),
+            z: campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .core
+                .state
+                .position
+                .z,
+        };
+        let outside = Position {
+            x: target.x.wrapping_add(
+                u16::try_from(LEVEL2_OBJECTIVE_POINT_RADIUS + 1)
+                    .expect("Level 3 objective radius fits u16"),
+            ),
+            ..target
+        };
+        campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity_index, outside)
+            .expect("stage the real player just outside the reach radius");
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert_eq!(
+            live.core.runtime.objectives[0].stage_selectors[REACH_STAGE],
+            1
+        );
+        assert!(live.economy.economy.authored_bees().is_empty());
+        assert!(
+            campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 3, .. }
+                ))
+        );
+
+        campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity_index, target)
+            .expect("move the real player onto the package reach point");
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert_eq!(
+            live.core.runtime.objectives[0].stage_selectors[REACH_STAGE],
+            2
+        );
+        assert_eq!(
+            live.core.runtime.objectives[0].text_selector,
+            BEE_STAGE as u8
+        );
+        assert!(live.economy.economy.authored_bees().is_empty());
+        assert!(
+            campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 3, .. }
+                ))
+        );
+
+        // Objective evaluation is post-pass. The imported model-32 gate sees
+        // the completed selector only on the following numeric visit, then
+        // synchronously constructs the six package Bees in authored order.
+        step(&mut campaign);
+        let events = campaign.level2_compatibility().dispatch_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: REACH_GATE_SLOT,
+                group: 3,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == BEE_ROWS
+        )));
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert_eq!(
+            live.core.runtime.objectives[0].stage_selectors[BEE_STAGE],
+            1
+        );
+        let bees = live.economy.economy.authored_bees();
+        assert_eq!(
+            bees.iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            BEE_ROWS
+        );
+        let bee_slots = bees
+            .iter()
+            .map(|source| source.source_entity_index)
+            .collect::<Vec<_>>();
+        assert!(
+            bee_slots.windows(2).all(|slots| slots[0] < slots[1]),
+            "the shared allocator assigns the package rows in authored order: {bee_slots:?}"
+        );
+        let receipts = campaign
+            .level2_compatibility()
+            .cf10_production_schedule_receipts();
+        for (constructor_phase, bee) in bees.iter().enumerate() {
+            let visited = bee.source_entity_index > REACH_GATE_SLOT;
+            assert_eq!(
+                (
+                    bee.source_entity_index,
+                    bee.action,
+                    bee.stage_var1,
+                    bee.stage_var2,
+                    bee.stage_target,
+                    bee.source_byte_3e,
+                ),
+                (
+                    bee_slots[constructor_phase],
+                    23,
+                    3,
+                    2,
+                    Some(Position {
+                        x: 111_u16.wrapping_mul(256),
+                        y: 142_u16.wrapping_mul(256),
+                        z: 0,
+                    }),
+                    u8::try_from(constructor_phase)
+                        .expect("six Bee phases fit u8")
+                        .wrapping_add(u8::from(visited)),
+                )
+            );
+            assert_eq!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::CallbackCompleted { slot, .. }
+                        if *slot == bee.source_entity_index
+                )),
+                visited
+            );
+            assert_eq!(
+                receipts.iter().any(|receipt| matches!(
+                    receipt,
+                    ScheduleReceipt::EpilogueCompleted { slot, .. }
+                        if *slot == bee.source_entity_index
+                )),
+                visited
+            );
+        }
+
+        // Bee combat/death is already covered by the shared Bee tests. Stage
+        // only the proven terminal hide on these six real roots; production
+        // reclaim and the frozen model-2 objective census remain under test.
+        assert_eq!(
+            campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_authored_bee_terminal_hide_for_test(&BEE_ROWS),
+            BEE_ROWS.len()
+        );
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert!(live.economy.economy.authored_bees().is_empty());
+        assert_eq!(
+            live.core.runtime.objectives[0].stage_selectors[BEE_STAGE],
+            2
+        );
+        assert!(
+            campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
+                ))
+        );
+
+        step(&mut campaign);
+        let events = campaign.level2_compatibility().dispatch_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: FINAL_GATE_SLOT,
+                group: 4,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [127, 157]
+        )));
+        let live = &campaign.level2_compatibility().session.state.live;
+        let final_switch = *live
+            .economy
+            .economy
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 127)
+            .expect("group 4 constructs its package model-0 switch");
+        assert_eq!(
+            (
+                final_switch.source_class,
+                final_switch.model,
+                final_switch.action,
+                final_switch.stage_tag,
+                final_switch.position.x,
+                final_switch.position.y,
+            ),
+            (
+                11,
+                0,
+                0,
+                12,
+                target.x.wrapping_add(128),
+                target.y.wrapping_add(128),
+            )
+        );
+        let morph_slot = *live
+            .shared_spells
+            .authored_pickup_slots()
+            .get(&157)
+            .expect("group 4 constructs the package Morph pickup");
+        let morph = live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .find(|pickup| pickup.index == morph_slot)
+            .expect("Morph pickup remains in the shared entity authority");
+        assert_eq!((morph.class, morph.model, morph.action,), (15, 4, 13));
+        assert_ne!(morph_slot, final_switch.source_entity_index);
+        assert_eq!(
+            (
+                morph.subspell_index,
+                morph.source_spell_word_30(),
+                morph.mana_regen,
+                morph.max_mana,
+                morph.mana,
+            ),
+            (100, 201, 20_000, 5_000, 24)
+        );
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 12, .. }
+        )));
+
+        let journal_start = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        // Row 127 is not an eager area trigger. NewEvent may reuse any current
+        // free slot, so pin the source rule rather than a stale slot number:
+        // model-0 fires only on phase&7==0 and Morph acquires only on
+        // phase&3==0. Every disallowed visit must remain inert.
+        let mut saw_morph_acquisition = false;
+        let mut firing_switch_phase = None;
+        for _ in 0..8 {
+            let live = &campaign.level2_compatibility().session.state.live;
+            let switch = live
+                .economy
+                .economy
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.source_entity_index == final_switch.source_entity_index)
+                .expect("final switch remains allocated until its source cadence");
+            let morph = live
+                .shared_spells
+                .dynamic_pickups()
+                .iter()
+                .find(|pickup| pickup.index == morph_slot)
+                .expect("Morph pickup remains allocated through acquisition");
+            let switch_may_fire = switch.phase & 7 == 0;
+            let morph_may_acquire = morph.action == 13 && morph.phase & 3 == 0;
+            let switch_phase = switch.phase;
+
+            step(&mut campaign);
+            let events = campaign.level2_compatibility().dispatch_events();
+            let fired_group12 = events.iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 12, .. }
+                )
+            });
+            let acquired_morph = events.iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot,
+                        family: 4,
+                        result: Some(_),
+                        ..
+                    } if *source_slot == morph_slot
+                )
+            });
+            assert_eq!(fired_group12, switch_may_fire);
+            assert_eq!(acquired_morph, morph_may_acquire);
+            saw_morph_acquisition |= acquired_morph;
+            if fired_group12 {
+                firing_switch_phase = Some(switch_phase);
+                break;
+            }
+        }
+        assert!(firing_switch_phase.is_some_and(|phase| phase & 7 == 0));
+        assert!(saw_morph_acquisition);
+
+        let events = campaign.level2_compatibility().dispatch_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 12,
+                authored_indices,
+                ..
+            } if *source_slot == final_switch.source_entity_index
+                && authored_indices.as_ref() == FINAL_DRAGON_ROWS
+        )));
+        let hidden_switch = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.source_entity_index == final_switch.source_entity_index)
+            .expect("final switch remains allocated through its firing epilogue");
+        assert!(hidden_switch.fired && !hidden_switch.drawing_enabled);
+        assert_eq!(
+            hidden_switch.phase,
+            firing_switch_phase
+                .expect("the final switch fired")
+                .wrapping_add(1)
+        );
+
+        let live = &campaign.level2_compatibility().session.state.live;
+        let morph = live
+            .shared_spells
+            .dynamic_pickups()
+            .iter()
+            .find(|pickup| pickup.index == morph_slot)
+            .expect("the acquired Morph holder keeps the same source slot");
+        assert_eq!(
+            (
+                morph.model,
+                morph.action,
+                morph.source_spell_parent_entity_index()
+            ),
+            (4, 12, player_entity_index)
+        );
+        let player = live
+            .core
+            .players
+            .iter()
+            .find(|player| player.entity_index == player_entity_index)
+            .expect("local Level 3 player authority");
+        assert_eq!(player.enabled_spell_holders[4], morph_slot);
+        assert_eq!(player.acquired_spell_flags[4], 1);
+        assert_eq!(
+            live.economy
+                .economy
+                .authored_class5()
+                .iter()
+                .filter(|source| source.model == level2_class5::dragon::DRAGON_MODEL)
+                .map(|source| source.authored_index)
+                .filter(|authored_index| FINAL_DRAGON_ROWS.contains(authored_index))
+                .collect::<Vec<_>>(),
+            FINAL_DRAGON_ROWS
+        );
+        let effects = &campaign.level2_compatibility().effect_journal().records()[journal_start..];
+        let sound_sequence = effects
+            .iter()
+            .find_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    entity_index,
+                    sound_id: 18,
+                    ..
+                }) if entity_index == player_entity_index => Some(record.sequence),
+                _ => None,
+            })
+            .expect("Morph pickup sound 18");
+        let acquired_sequence = effects
+            .iter()
+            .find_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::SharedSpell(
+                    Level2SharedSpellEvent::SpellAcquired {
+                        source_slot,
+                        family: 4,
+                        ..
+                    },
+                ) if source_slot == morph_slot => Some(record.sequence),
+                _ => None,
+            })
+            .expect("Morph acquisition receipt");
+        assert!(sound_sequence < acquired_sequence);
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), baseline_hash);
     }
 
     #[test]

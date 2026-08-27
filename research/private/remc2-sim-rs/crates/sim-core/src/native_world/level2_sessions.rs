@@ -1318,6 +1318,7 @@ impl Level2SharedSpellResetSession {
         let family = match authored.subtype {
             2 => 2,
             3 => 3,
+            4 => 4,
             6 => 6,
             11 => 11,
             _ => {
