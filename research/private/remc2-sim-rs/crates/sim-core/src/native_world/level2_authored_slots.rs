@@ -7194,7 +7194,7 @@ impl Level2EconomyState {
             hasher.update(state.stage_target.z.to_le_bytes());
             hasher.update([u8::from(state.movement_blocked)]);
         }
-        hasher.update(b"authored-dragon-v1");
+        hasher.update(b"authored-dragon-v2");
         for state in &self.authored_dragons {
             hasher.update(state.source_entity_index.to_le_bytes());
             hasher.update(state.linked_entity_index.to_le_bytes());
@@ -7214,7 +7214,15 @@ impl Level2EconomyState {
             hasher.update(part.previous_entity_index.to_le_bytes());
             hasher.update(part.next_entity_index.to_le_bytes());
             hasher.update(part.word_0x36.to_le_bytes());
-            hasher.update([part.model, part.action, part.source_byte_3e]);
+            hasher.update(part.pending_word_0x62.to_le_bytes());
+            hasher.update(part.pending_damage.to_le_bytes());
+            hasher.update(part.word_0x26.to_le_bytes());
+            hasher.update([
+                part.model,
+                part.action,
+                part.source_byte_3e,
+                part.source_byte_39,
+            ]);
             hasher.update(part.max_life.to_le_bytes());
             hasher.update(part.life.to_le_bytes());
             hasher.update(part.mana.to_le_bytes());

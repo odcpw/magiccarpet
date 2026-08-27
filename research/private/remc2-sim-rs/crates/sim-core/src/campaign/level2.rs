@@ -13879,8 +13879,8 @@ impl Level2ResetSession {
 
     /// Apply the shared `sub_10C80(a2 = 0)` damage pulse emitted by a
     /// class-10/model-0 impact. Imported rows retain their lossless mailbox;
-    /// typed Castle, Bee, and Firefly rows receive the same additive owner/payload
-    /// write through their authoritative carriers.
+    /// typed Castle, Bee, Firefly, and Dragon rows receive the same additive
+    /// owner/payload write through their authoritative carriers.
     fn apply_level2_class10_model0_damage(
         &mut self,
         step: level2_dynamic_economy::Level2Class10Model0Step,
@@ -14022,6 +14022,83 @@ impl Level2ResetSession {
                 .live
                 .economy
                 .submit_authored_firefly_damage(
+                    target_slot,
+                    i32::from(step.payload),
+                    step.owner_entity_index,
+                );
+        }
+
+        let dragon_root_slots = self
+            .session
+            .state
+            .live
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|target| {
+                target.active
+                    && target.drawing_enabled
+                    && target.life >= 0
+                    && target.model == level2_class5::dragon::DRAGON_MODEL
+                    && target.source_entity_index != step.owner_entity_index
+            })
+            .filter_map(|target| {
+                let render = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .authored_dragons()
+                    .iter()
+                    .find(|state| state.source_entity_index == target.source_entity_index)?;
+                crate::level1_mission::source_entities_overlap(
+                    step.position,
+                    LEVEL2_FIREBALL_COLLISION_HALF_WIDTH,
+                    LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET,
+                    LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT,
+                    target.position,
+                    render.render_pitch,
+                    render.render_yaw,
+                    render.render_fov,
+                )
+                .then_some(target.source_entity_index)
+            })
+            .collect::<Vec<_>>();
+        let dragon_part_slots = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .filter(|part| {
+                part.active
+                    && part.drawing_enabled
+                    && part.life >= 0
+                    && part.source_entity_index != step.owner_entity_index
+                    && crate::level1_mission::source_entities_overlap(
+                        step.position,
+                        LEVEL2_FIREBALL_COLLISION_HALF_WIDTH,
+                        LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET,
+                        LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT,
+                        part.position,
+                        part.render_pitch,
+                        part.render_yaw,
+                        part.render_fov,
+                    )
+            })
+            .map(|part| part.source_entity_index)
+            .collect::<Vec<_>>();
+        for target_slot in dragon_root_slots.into_iter().chain(dragon_part_slots) {
+            let _ = self
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .submit_authored_dragon_damage(
                     target_slot,
                     i32::from(step.payload),
                     step.owner_entity_index,
@@ -18379,6 +18456,7 @@ mod tests {
                 (1, 3, 71, 0, 96, 8, 0, 140, 171, 171, 140)
             );
             let mut part_slot = runtime.linked_head;
+            let mut previous_position = dragon.position;
             for part_index in 0..level2_class5::dragon::DRAGON_PART_COUNT {
                 let part = live
                     .economy
@@ -18413,12 +18491,42 @@ mod tests {
                     )
                 );
                 assert_eq!(
+                    (
+                        part.source_byte_39,
+                        part.pending_word_0x62,
+                        part.pending_damage,
+                        part.word_0x26,
+                    ),
+                    (dragon.source_byte_39, 0, 0, 0),
+                    "NewEvent's raw Dragon copy starts with an empty segment mailbox"
+                );
+                assert_eq!(
                     part.source_byte_3e,
                     u8::try_from(part_index)
                         .expect("Dragon part index")
                         .wrapping_add(u8::from(part.source_entity_index > DRAGON_GATE_SLOT))
                 );
-                assert_eq!(part.position, authored_position);
+                if part.source_entity_index > DRAGON_GATE_SLOT {
+                    let (expected_yaw, expected_pitch) =
+                        crate::level1_mission::projectile_guidance_angles(
+                            authored_position,
+                            previous_position,
+                        );
+                    let mut expected_position = previous_position;
+                    crate::move_entity(
+                        &mut expected_position,
+                        expected_yaw,
+                        expected_pitch,
+                        part.word_0x36.wrapping_neg(),
+                    );
+                    assert_eq!(
+                        (part.position, part.yaw, part.pitch),
+                        (expected_position, expected_yaw, expected_pitch),
+                        "an ahead-of-cursor action-232 row follows its predecessor in the birth pass"
+                    );
+                } else {
+                    assert_eq!(part.position, authored_position);
+                }
                 assert_eq!(
                     receipts.iter().any(|receipt| matches!(
                         receipt,
@@ -18427,6 +18535,7 @@ mod tests {
                     )),
                     part.source_entity_index > DRAGON_GATE_SLOT
                 );
+                previous_position = part.position;
                 part_slot = part.next_entity_index;
             }
             assert_eq!(part_slot, 0);
@@ -18469,6 +18578,248 @@ mod tests {
                 ScheduleReceipt::EpilogueCompleted { slot, .. } if *slot == source_slot
             )));
         }
+
+        // Drive one real body row through the shared class-10 damage adapter.
+        // The root is numerically earlier, so it cannot observe the segment's
+        // lower life until the following UpdateEntities pass.
+        let damaged_dragon_slot = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| {
+                source.model == level2_class5::dragon::DRAGON_MODEL
+                    && source.action == level2_class5::dragon::DRAGON_ROAM_ACTION
+            })
+            .expect("a real Dragon is available for body damage")
+            .source_entity_index;
+        let mut damaged_part_slot = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5_runtime()
+            .iter()
+            .find(|runtime| runtime.source_entity_index == damaged_dragon_slot)
+            .expect("damaged Dragon runtime")
+            .linked_head;
+        for _ in 0..8 {
+            damaged_part_slot = campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .authored_dragon_parts()
+                .iter()
+                .find(|part| part.source_entity_index == damaged_part_slot)
+                .expect("middle Dragon segment predecessor")
+                .next_entity_index;
+        }
+        assert_ne!(damaged_part_slot, 0, "the Dragon has sixteen body rows");
+        assert!(
+            damaged_dragon_slot < damaged_part_slot,
+            "the constructor's first body row follows its earlier root in the numeric arena"
+        );
+        let mut isolated_part_position = Position {
+            x: 8_u16 << 8,
+            y: 8_u16 << 8,
+            z: 0,
+        };
+        isolated_part_position.z = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .terrain
+            .ground_height(isolated_part_position);
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .stage_authored_dragon_part_position_for_test(
+                    damaged_part_slot,
+                    isolated_part_position,
+                )
+        );
+        let damaged_root_position = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == damaged_dragon_slot)
+            .expect("damaged Dragon root")
+            .position;
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .stage_authored_dragon_attack_prerequisite_for_test(
+                    damaged_dragon_slot,
+                    damaged_root_position,
+                    1,
+                )
+        );
+        let death_spheres_before_damage = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .spheres()
+            .len();
+        let death_bursts_before_damage = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .death_bursts()
+            .len();
+        campaign
+            .level2_compatibility_mut()
+            .apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
+                live: true,
+                first_impact: true,
+                damage_pulse: true,
+                owner_entity_index: player_entity_index,
+                payload: FIREBALL_DAMAGE,
+                position: isolated_part_position,
+            });
+        let queued_part = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.source_entity_index == damaged_part_slot)
+            .expect("the isolated body row receives the impact mailbox");
+        assert_eq!(
+            (
+                queued_part.life,
+                queued_part.pending_word_0x62,
+                queued_part.pending_damage,
+                queued_part.word_0x26,
+            ),
+            (4_000, player_entity_index, 500, 0)
+        );
+        let queued_root = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == damaged_dragon_slot)
+            .expect("the earlier root does not receive the isolated impact");
+        assert_eq!(
+            (queued_root.life, queued_root.pending_word_0x62),
+            (4_000, 0)
+        );
+
+        let root_phase_before_part_hit = queued_root.source_byte_3e;
+        let part_phase_before_hit = queued_part.source_byte_3e;
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let root_after_part_hit = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == damaged_dragon_slot)
+            .expect("Dragon root remains live before child propagation");
+        let part_after_hit = live
+            .economy
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.source_entity_index == damaged_part_slot)
+            .expect("damaged body row remains live");
+        assert_eq!(
+            (
+                root_after_part_hit.life,
+                root_after_part_hit.action,
+                root_after_part_hit.source_byte_3e,
+                part_after_hit.life,
+                part_after_hit.pending_word_0x62,
+                part_after_hit.pending_damage,
+                part_after_hit.word_0x26,
+                part_after_hit.source_byte_3e,
+            ),
+            (
+                4_000,
+                level2_class5::dragon::DRAGON_ROAM_ACTION,
+                root_phase_before_part_hit.wrapping_add(1),
+                3_500,
+                0,
+                0,
+                player_entity_index,
+                part_phase_before_hit.wrapping_add(1),
+            ),
+            "the earlier root visits before the later body row consumes its mailbox"
+        );
+
+        let root_phase_before_propagation = root_after_part_hit.source_byte_3e;
+        step(&mut campaign);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let propagated_root = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == damaged_dragon_slot)
+            .expect("damaged Dragon root remains live");
+        assert_eq!(
+            (
+                propagated_root.life,
+                propagated_root.action,
+                propagated_root.word_0x26,
+                propagated_root.word_0x96_150,
+                propagated_root.source_byte_3e,
+            ),
+            (
+                3_500,
+                level2_class5::dragon::DRAGON_ATTACK_ACTION,
+                player_entity_index,
+                player_entity_index,
+                root_phase_before_propagation.wrapping_add(1),
+            ),
+            "the following root visit copies the first lower-life segment and attacker"
+        );
+        assert_eq!(
+            (
+                live.economy.economy.spheres().len(),
+                live.economy.economy.death_bursts().len(),
+            ),
+            (death_spheres_before_damage, death_bursts_before_damage),
+            "a nonlethal body hit has no Dragon death outputs"
+        );
 
         // Continue one of those real package Dragons through its next
         // package-reached callbacks. Geometry and cadence are staged only to

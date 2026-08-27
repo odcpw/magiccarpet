@@ -2458,7 +2458,7 @@ pub struct AuthoredDragonRuntime {
 /// One of the sixteen action-232 body rows copied from a Dragon root by
 /// `sub_4B240`. These are real numeric source-arena occupants, not a render
 /// cache: their slots, links, phase bytes, RNG, life, and mana are hashed and
-/// reclaimed with the root.
+/// reclaimed through the shared arena.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthoredDragonPart {
     pub source_entity_index: u16,
@@ -2468,9 +2468,17 @@ pub struct AuthoredDragonPart {
     pub previous_entity_index: u16,
     pub next_entity_index: u16,
     pub word_0x36: i16,
+    /// Source damage-mailbox owner `str_0x5E.word_0x62`.
+    pub pending_word_0x62: u16,
+    /// Source damage-mailbox payload `str_0x5E.dword_0x5E`.
+    pub pending_damage: i32,
+    /// Source attacker relation `word_0x26`, copied into the Dragon root
+    /// when this segment becomes the first lower-life child.
+    pub word_0x26: u16,
     pub model: u8,
     pub action: u8,
     pub source_byte_3e: u8,
+    pub source_byte_39: u8,
     pub max_life: i32,
     pub life: i32,
     pub mana: i32,

@@ -1,4 +1,5 @@
-//! Authored class-5/model-0 Dragon construction, roaming, and player attack.
+//! Authored class-5/model-0 Dragon construction, body following, damage
+//! propagation, roaming, and player attack.
 //!
 //! Dragons use the shared class-5 root and NewEvent arena. This module owns
 //! only the model-0 constructor sidecar, its sixteen action-232 body rows,
@@ -147,9 +148,13 @@ impl Level2EconomyState {
                 previous_entity_index,
                 next_entity_index: 0,
                 word_0x36: speed / 2,
+                pending_word_0x62: 0,
+                pending_damage: 0,
+                word_0x26: 0,
                 model: DRAGON_MODEL,
                 action: DRAGON_PART_ACTION,
                 source_byte_3e: u8::try_from(part_index).expect("Dragon part index fits u8"),
+                source_byte_39: source.source_byte_39,
                 max_life: DRAGON_LIFE,
                 life: DRAGON_LIFE,
                 // `sub_4B240` copies the root before replacing the root's
@@ -257,37 +262,38 @@ impl Level2EconomyState {
                 "Dragon source slot {source_slot} has no runtime sidecar"
             ));
         };
-        let runtime = self
+        let runtime_index = self
             .authored_class5_runtime
             .iter()
-            .find(|runtime| runtime.source_entity_index == source_slot)
-            .copied()
+            .position(|runtime| runtime.source_entity_index == source_slot)
             .ok_or_else(|| format!("Dragon source slot {source_slot} has no class-5 runtime"))?;
-        if self.authored_class5[source_index].pending_word_0x62 != 0 || runtime.pending_damage != 0
-        {
-            return Err(format!(
-                "Dragon source slot {source_slot} reached the unimplemented damage branch"
-            ));
-        }
 
         let mut source = self.authored_class5[source_index];
         let mut state = self.authored_dragons[state_index];
-        step_dragon_motion(&mut source, &mut state, terrain);
+        let mut runtime = self.authored_class5_runtime[runtime_index];
+        if !consume_dragon_damage(
+            &mut source,
+            &mut runtime,
+            &self.authored_dragon_parts,
+            terrain,
+        ) {
+            step_dragon_motion(&mut source, &mut state, terrain);
 
-        if source.source_byte_3e % DRAGON_DESCRIPTOR_CADENCE == 0 {
-            apply_dragon_wander(&mut source);
-            if source.source_byte_39 != 0 {
-                if let Some(target) = nearest_dragon_player(source, players) {
-                    source.word_0x96_150 = target;
-                    source.action = 2;
-                } else if let Some(peer) = nearest_unlinked_dragon(
-                    source,
-                    frozen_model0_slots,
-                    &self.authored_class5,
-                    &self.authored_dragons,
-                ) {
-                    state.linked_entity_index = peer;
-                    source.action = 3;
+            if source.source_byte_3e % DRAGON_DESCRIPTOR_CADENCE == 0 {
+                apply_dragon_wander(&mut source);
+                if source.source_byte_39 != 0 {
+                    if let Some(target) = nearest_dragon_player(source, players) {
+                        source.word_0x96_150 = target;
+                        source.action = 2;
+                    } else if let Some(peer) = nearest_unlinked_dragon(
+                        source,
+                        frozen_model0_slots,
+                        &self.authored_class5,
+                        &self.authored_dragons,
+                    ) {
+                        state.linked_entity_index = peer;
+                        source.action = 3;
+                    }
                 }
             }
         }
@@ -296,6 +302,7 @@ impl Level2EconomyState {
 
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_class5[source_index] = source;
+        self.authored_class5_runtime[runtime_index] = runtime;
         self.authored_dragons[state_index] = state;
         Ok(self
             .map_chains
@@ -332,72 +339,78 @@ impl Level2EconomyState {
             .iter()
             .position(|state| state.source_entity_index == source_slot)
             .ok_or_else(|| format!("Dragon source slot {source_slot} has no runtime sidecar"))?;
-        let runtime = self
+        let runtime_index = self
             .authored_class5_runtime
             .iter()
-            .find(|runtime| runtime.source_entity_index == source_slot)
-            .copied()
+            .position(|runtime| runtime.source_entity_index == source_slot)
             .ok_or_else(|| format!("Dragon source slot {source_slot} has no class-5 runtime"))?;
-        if self.authored_class5[source_index].pending_word_0x62 != 0 || runtime.pending_damage != 0
-        {
-            return Err(format!(
-                "Dragon source slot {source_slot} reached the unimplemented damage branch"
-            ));
-        }
 
         let mut source = self.authored_class5[source_index];
         let mut state = self.authored_dragons[state_index];
-        step_dragon_motion(&mut source, &mut state, terrain);
-
-        let target = target.filter(|target| {
-            target.entity_index == source.word_0x96_150
-                && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-        });
         let mut fireball = None;
-        if let Some(target) = target {
-            if source.source_byte_3e & 3 == 0 {
-                source.roll = i16::try_from(crate::heading_for_positions(
-                    source.position,
-                    target.position,
-                ))
-                .expect("Dragon target heading fits i16");
-                if let Some(peer) =
-                    first_close_dragon(source, frozen_model0_slots, &self.authored_class5)
-                {
-                    source.roll =
-                        i16::try_from(crate::heading_for_positions(peer.position, source.position))
-                            .expect("Dragon separation heading fits i16");
-                }
-            }
-            if source.source_byte_3e % DRAGON_DESCRIPTOR_CADENCE == 0 {
-                if distance_3d_wrapped(source.position, target.position) >= u32::from(DRAGON_RANGE)
-                {
-                    source.action = DRAGON_ROAM_ACTION;
-                } else {
-                    let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+        let mut runtime = self.authored_class5_runtime[runtime_index];
+        if !consume_dragon_damage(
+            &mut source,
+            &mut runtime,
+            &self.authored_dragon_parts,
+            terrain,
+        ) {
+            step_dragon_motion(&mut source, &mut state, terrain);
+
+            let target = target.filter(|target| {
+                target.entity_index == source.word_0x96_150
+                    && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+            });
+            if let Some(target) = target {
+                if source.source_byte_3e & 3 == 0 {
+                    source.roll = i16::try_from(crate::heading_for_positions(
                         source.position,
                         target.position,
-                    );
-                    let mut launch_position = source.position;
-                    launch_position.z = launch_position.z.wrapping_add(DRAGON_RENDER_ROTATION / 2);
-                    fireball = Some(DragonFireballLaunch {
-                        owner_entity_index: source.source_entity_index,
-                        target_entity_index: target.entity_index,
-                        position: launch_position,
-                        target_position: target.position,
-                        yaw,
-                        pitch,
-                        payload: DRAGON_FIREBALL_PAYLOAD,
-                    });
+                    ))
+                    .expect("Dragon target heading fits i16");
+                    if let Some(peer) =
+                        first_close_dragon(source, frozen_model0_slots, &self.authored_class5)
+                    {
+                        source.roll = i16::try_from(crate::heading_for_positions(
+                            peer.position,
+                            source.position,
+                        ))
+                        .expect("Dragon separation heading fits i16");
+                    }
                 }
+                if source.source_byte_3e % DRAGON_DESCRIPTOR_CADENCE == 0 {
+                    if distance_3d_wrapped(source.position, target.position)
+                        >= u32::from(DRAGON_RANGE)
+                    {
+                        source.action = DRAGON_ROAM_ACTION;
+                    } else {
+                        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+                            source.position,
+                            target.position,
+                        );
+                        let mut launch_position = source.position;
+                        launch_position.z =
+                            launch_position.z.wrapping_add(DRAGON_RENDER_ROTATION / 2);
+                        fireball = Some(DragonFireballLaunch {
+                            owner_entity_index: source.source_entity_index,
+                            target_entity_index: target.entity_index,
+                            position: launch_position,
+                            target_position: target.position,
+                            yaw,
+                            pitch,
+                            payload: DRAGON_FIREBALL_PAYLOAD,
+                        });
+                    }
+                }
+            } else {
+                source.action = DRAGON_ROAM_ACTION;
             }
-        } else {
-            source.action = DRAGON_ROAM_ACTION;
         }
 
         step_dragon_tails(&mut source, state, terrain);
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_class5[source_index] = source;
+        self.authored_class5_runtime[runtime_index] = runtime;
         self.authored_dragons[state_index] = state;
         let live = self
             .map_chains
@@ -440,13 +453,152 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    pub(crate) fn step_authored_dragon_part_slot(&self, source_slot: u16) -> bool {
-        self.authored_dragon_parts.iter().any(|part| {
+    /// Submit one `sub_10C80(a2 = 0)` mailbox write to a live Dragon root or
+    /// body segment. The target consumes this mailbox only on its own numeric
+    /// source visit.
+    pub(crate) fn submit_authored_dragon_damage(
+        &mut self,
+        target_slot: u16,
+        damage: i32,
+        attacker: u16,
+    ) -> bool {
+        if damage <= 0 || attacker == 0 || !self.map_chains.is_linked(target_slot) {
+            return false;
+        }
+        if let Some(source_index) = self.authored_class5.iter().position(|source| {
+            source.active
+                && source.drawing_enabled
+                && source.life >= 0
+                && source.source_entity_index == target_slot
+                && source.source_entity_index != attacker
+                && source.model == DRAGON_MODEL
+        }) {
+            let Some(runtime) = self
+                .authored_class5_runtime
+                .iter_mut()
+                .find(|runtime| runtime.source_entity_index == target_slot)
+            else {
+                return false;
+            };
+            let source = &mut self.authored_class5[source_index];
+            runtime.pending_damage = if source.pending_word_0x62 == 0 {
+                damage
+            } else {
+                runtime.pending_damage.wrapping_add(damage)
+            };
+            source.pending_word_0x62 = attacker;
+            return true;
+        }
+        let Some(part) = self.authored_dragon_parts.iter_mut().find(|part| {
+            part.active
+                && part.drawing_enabled
+                && part.life >= 0
+                && part.source_entity_index == target_slot
+                && part.source_entity_index != attacker
+                && part.model == DRAGON_MODEL
+        }) else {
+            return false;
+        };
+        part.pending_damage = if part.pending_word_0x62 == 0 {
+            damage
+        } else {
+            part.pending_damage.wrapping_add(damage)
+        };
+        part.pending_word_0x62 = attacker;
+        true
+    }
+
+    /// Run the action-232 Dragon-body callback. The segment follows its
+    /// `word_0x32` predecessor first, then consumes its private damage
+    /// mailbox. The scheduler remains the sole byte-0x3E epilogue owner.
+    pub(crate) fn step_authored_dragon_part_slot(&mut self, source_slot: u16) -> bool {
+        let Some(part_index) = self.authored_dragon_parts.iter().position(|part| {
             part.active
                 && part.source_entity_index == source_slot
                 && part.model == DRAGON_MODEL
                 && part.action == DRAGON_PART_ACTION
-        })
+        }) else {
+            return false;
+        };
+        let previous_slot = self.authored_dragon_parts[part_index].previous_entity_index;
+        let previous_position = self
+            .authored_class5
+            .iter()
+            .find(|root| {
+                root.active
+                    && root.model == DRAGON_MODEL
+                    && root.source_entity_index == previous_slot
+            })
+            .map(|root| root.position)
+            .or_else(|| {
+                self.authored_dragon_parts
+                    .iter()
+                    .find(|part| {
+                        part.active
+                            && part.model == DRAGON_MODEL
+                            && part.source_entity_index == previous_slot
+                    })
+                    .map(|part| part.position)
+            });
+
+        let part = &mut self.authored_dragon_parts[part_index];
+        let Some(previous_position) = previous_position else {
+            part.drawing_enabled = false;
+            part.active = false;
+            return true;
+        };
+        if part.source_byte_39 != 0 {
+            let (yaw, pitch) =
+                crate::level1_mission::projectile_guidance_angles(part.position, previous_position);
+            part.yaw = yaw;
+            part.pitch = pitch;
+            let mut position = previous_position;
+            crate::move_entity(&mut position, yaw, pitch, part.word_0x36.wrapping_neg());
+            part.position = position;
+            if part.pending_word_0x62 != 0 {
+                part.life = part.life.wrapping_sub(part.pending_damage);
+                part.word_0x26 = part.pending_word_0x62;
+                part.pending_word_0x62 = 0;
+                part.pending_damage = 0;
+            } else {
+                part.word_0x26 = 0;
+            }
+        } else if part.source_byte_3e & 3 == 0 {
+            part.position = previous_position;
+        }
+        self.source_rng.insert(source_slot, part.entity_rng);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: part.drawing_enabled,
+                x: part.position.x,
+                y: part.position.y,
+            })
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_authored_dragon_part_position_for_test(
+        &mut self,
+        source_slot: u16,
+        position: Position,
+    ) -> bool {
+        let Some(part) = self
+            .authored_dragon_parts
+            .iter_mut()
+            .find(|part| part.active && part.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        part.position = position;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_ok()
     }
 }
 
@@ -475,6 +627,63 @@ fn step_dragon_motion(
     if transition.killed {
         source.life = -1;
     }
+}
+
+/// Consume the common creature mailbox/child-chain prefix shared by Dragon
+/// actions 1 and 2. A damaged body segment is observed only when the root's
+/// later numeric visit reaches this prefix.
+fn consume_dragon_damage(
+    source: &mut Level2AuthoredClass5Source,
+    runtime: &mut Level2AuthoredClass5RuntimeState,
+    parts: &[AuthoredDragonPart],
+    terrain: &SessionTerrain,
+) -> bool {
+    let mut damaged = false;
+    if source.pending_word_0x62 != 0 {
+        source.life = source.life.wrapping_sub(runtime.pending_damage);
+        source.word_0x26 = source.pending_word_0x62;
+        source.pending_word_0x62 = 0;
+        runtime.pending_damage = 0;
+        damaged = true;
+    } else {
+        source.word_0x26 = 0;
+    }
+
+    let mut child_slot = runtime.linked_head;
+    while child_slot != 0 {
+        let Some(child) = parts
+            .iter()
+            .find(|part| part.source_entity_index == child_slot)
+        else {
+            break;
+        };
+        if child.life < source.life {
+            source.life = child.life;
+            source.word_0x26 = child.word_0x26;
+            damaged = true;
+            break;
+        }
+        child_slot = child.next_entity_index;
+    }
+
+    if !damaged {
+        return false;
+    }
+    if source.life < 0 {
+        source.word_0x24 = source.word_0x26;
+        source.action = 4;
+    } else {
+        source.word_0x96_150 = source.word_0x26;
+        source.action = DRAGON_ATTACK_ACTION;
+        let ground = terrain.ground_height(source.position);
+        if source.position.z > ground {
+            source.position.z = source.position.z.wrapping_sub(4);
+        }
+        if source.position.z <= ground {
+            source.position.z = ground;
+        }
+    }
+    true
 }
 
 fn step_dragon_tails(
