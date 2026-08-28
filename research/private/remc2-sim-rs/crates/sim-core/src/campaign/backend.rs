@@ -170,19 +170,33 @@ pub fn load_mc2_campaign(
             &["campaign.owner_export"],
         )?,
     ];
-    let requirements = [
+    let mut requirement_ids = vec![
         "engine.ai.creature_policy",
         "engine.flight.fixed_point",
         "engine.spell.projectile",
-    ]
-    .into_iter()
-    .map(|id| {
-        Ok(RequiredCapability {
-            id: SemanticId::parse(id)?,
-            exact_version: 1,
+    ];
+    if descriptor
+        .level_definition()
+        .objectives()
+        .iter()
+        .any(|objective| {
+            matches!(
+                objective.condition(),
+                sim_definition::level_definition::ObjectiveCondition::CastleManaPercent(_)
+            )
         })
-    })
-    .collect::<crate::game_definition::Result<Vec<_>>>()?;
+    {
+        requirement_ids.push("engine.objective.castle_mana_percent");
+    }
+    let requirements = requirement_ids
+        .into_iter()
+        .map(|id| {
+            Ok(RequiredCapability {
+                id: SemanticId::parse(id)?,
+                exact_version: 1,
+            })
+        })
+        .collect::<crate::game_definition::Result<Vec<_>>>()?;
     let package = game_package(
         "mc2.campaign",
         1,
@@ -800,7 +814,7 @@ mod tests {
         store.active_definition().expect("published definition")
     }
 
-    fn publish_reach_objective(
+    fn publish_objective(
         store: &WorkspaceStore,
         catalog: &SemanticCatalog,
         active: &GameDefinition,
@@ -813,7 +827,7 @@ mod tests {
         let change_set = ChangeSetBuilder::new(
             workspace,
             active,
-            "author-reach-objective",
+            "author-objective-condition",
             RequestedTiming::SessionReset,
         )
         .put_objective_from(objective, original, authored)
@@ -1331,7 +1345,7 @@ mod tests {
                     "objective.charge.first_castle",
                     "objective.clear.lethal_fireflies",
                 ],
-                [true, true, false, false, false],
+                [true, true, false, true, false],
             ),
             (
                 descriptor_fixture_path(),
@@ -1353,7 +1367,7 @@ mod tests {
                     "objective.reach.revealed_way",
                     "objective.clear.final_bees",
                 ],
-                [false, false, false, true, false],
+                [false, false, true, true, false],
             ),
         ];
         let mut writable = 0;
@@ -1378,7 +1392,7 @@ mod tests {
                 writable += usize::from(expected_writable);
             }
         }
-        assert_eq!(writable, 5);
+        assert_eq!(writable, 7);
     }
 
     fn guard(session: &GameSession<Mc2CampaignBackend>) -> SessionGuard {
@@ -1388,6 +1402,112 @@ mod tests {
             generation: identity.generation,
             expected_tick: identity.tick,
         }
+    }
+
+    fn stage_castle_mana_objective_percent(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        stage_index: usize,
+        target_percent: i32,
+    ) -> (i32, usize) {
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let player_count = usize::from(compatibility.session.state.live.core.runtime.player_count);
+        let (objective_index, player_entity_index) = compatibility
+            .session
+            .state
+            .live
+            .core
+            .players
+            .iter()
+            .take(player_count)
+            .find(|player| player.active_player_index >= 0)
+            .map(|player| {
+                (
+                    usize::from(player.player_color_index()),
+                    player.entity_index,
+                )
+            })
+            .expect("the package exposes one participating objective owner");
+        let objective =
+            &mut compatibility.session.state.live.core.runtime.objectives[objective_index];
+        objective.done = 0;
+        objective.is_level_end = 0;
+        objective.stage_selectors.fill(0);
+        objective.stage_selectors[stage_index] = 1;
+        objective.text_selector = stage_index as u8;
+        compatibility
+            .activate_authored_group_prerequisite_for_test(5)
+            .expect("the real objective gate group materializes");
+        let player_position = compatibility.state.position;
+        let castle_slot = compatibility
+            .economy_mut()
+            .build_castle(player_position, player_entity_index)
+            .expect("the package arena can stage the Castle objective prerequisite");
+        let denominator = compatibility.economy().owner_mana_global();
+        let existing = compatibility
+            .economy()
+            .owner_mana_aggregate(player_entity_index);
+        assert!(denominator > 0);
+        let target_total = denominator
+            .saturating_mul(target_percent)
+            .saturating_add(99)
+            / 100;
+        assert!(target_total >= existing);
+        assert!(
+            compatibility
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle_slot, target_total - existing)
+        );
+        let economy = compatibility.economy();
+        let castle = economy.castle().unwrap();
+        (
+            100_i32
+                * economy
+                    .owner_mana_aggregate(player_entity_index)
+                    .saturating_add(castle.mana)
+                / economy.owner_mana_global(),
+            objective_index,
+        )
+    }
+
+    fn set_staged_castle_mana_percent(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        target_percent: i32,
+    ) -> i32 {
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let player_count = usize::from(compatibility.session.state.live.core.runtime.player_count);
+        let player_entity_index = compatibility
+            .session
+            .state
+            .live
+            .core
+            .players
+            .iter()
+            .take(player_count)
+            .find(|player| player.active_player_index >= 0)
+            .map(|player| player.entity_index)
+            .expect("the package exposes one participating objective owner");
+        let castle_slot = compatibility.economy().player_castle_entity_index();
+        let denominator = compatibility.economy().owner_mana_global();
+        let existing = compatibility
+            .economy()
+            .owner_mana_aggregate(player_entity_index);
+        let target_total = denominator
+            .saturating_mul(target_percent)
+            .saturating_add(99)
+            / 100;
+        assert!(target_total >= existing);
+        assert!(
+            compatibility
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle_slot, target_total - existing)
+        );
+        let economy = compatibility.economy();
+        let castle = economy.castle().unwrap();
+        100_i32
+            * economy
+                .owner_mana_aggregate(player_entity_index)
+                .saturating_add(castle.mana)
+            / economy.owner_mana_global()
     }
 
     fn assert_matches_direct(neutral: &GameSession<Mc2CampaignBackend>, direct: &CampaignSession) {
@@ -1974,7 +2094,7 @@ mod tests {
             1
         );
 
-        let published = publish_reach_objective(
+        let published = publish_objective(
             &store,
             &catalog,
             &base,
@@ -2159,6 +2279,260 @@ mod tests {
             2
         );
         std::fs::remove_dir_all(workspace_root).unwrap();
+    }
+
+    #[test]
+    fn campaign_backend_castle_mana_thresholds_bind_real_level_one_and_three_after_reopen_and_reset()
+     {
+        // No-Claim: this focused consumer gate stages the selected objective,
+        // group-5 prerequisite, Castle, and mana authority. It does not prove
+        // organic preceding-objective progression, Castle construction or mana
+        // collection, the sealed legacy Level1Mission authoring route,
+        // save/replay, or any other objective-condition family.
+        const AUTHORED_THRESHOLD: u16 = 50;
+        let catalog = default_catalog().unwrap();
+        let cases = [
+            (
+                level_one_descriptor_fixture_path(),
+                "objective.charge.first_castle",
+                3_usize,
+                15_u16,
+                6_u16,
+                &[108_u16, 134, 135, 154, 189, 193][..],
+            ),
+            (
+                level_three_descriptor_fixture_path(),
+                "objective.charge.reveal_entrance",
+                2_usize,
+                30_u16,
+                2_u16,
+                &[146_u16][..],
+            ),
+        ];
+
+        for (case_index, (root, objective_id, stage, default, group, group_rows)) in
+            cases.into_iter().enumerate()
+        {
+            let base = load_mc2_campaign(&root, &catalog).unwrap();
+            assert!(base.required_capabilities().iter().any(|requirement| {
+                requirement.id.as_str() == "engine.objective.castle_mana_percent"
+                    && requirement.exact_version == 1
+            }));
+            let workspace_root =
+                temporary_workspace_path(&format!("campaign-castle-objective-{case_index}"));
+            let workspace = format!("campaign-castle-objective-{case_index}");
+            let store = WorkspaceStore::create(&workspace_root, &workspace, base.clone()).unwrap();
+            let mut session = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(base.clone()),
+                80 + case_index as u64,
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap();
+            let published = publish_objective(
+                &store,
+                &catalog,
+                &base,
+                &workspace,
+                objective_id,
+                ObjectiveCondition::CastleManaPercent(default),
+                ObjectiveCondition::CastleManaPercent(AUTHORED_THRESHOLD),
+            );
+
+            let (old_percent, objective_index) =
+                stage_castle_mana_objective_percent(&mut session, stage, 45);
+            assert!((45..i32::from(AUTHORED_THRESHOLD)).contains(&old_percent));
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player_entity_index = compatibility
+                .session
+                .state
+                .live
+                .core
+                .players
+                .iter()
+                .find(|player| usize::from(player.player_color_index()) == objective_index)
+                .map(|player| player.entity_index)
+                .expect("the objective owner remains present after the ordinary step");
+            let economy = compatibility.economy();
+            let castle = economy.castle().unwrap();
+            let old_post_step_percent = 100_i32
+                * economy
+                    .owner_mana_aggregate(player_entity_index)
+                    .saturating_add(castle.mana)
+                / economy.owner_mana_global();
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2
+                    .session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .objectives[objective_index]
+                    .stage_selectors[stage],
+                2,
+                "case {case_index} old generation retained {old_post_step_percent}% against package default {default}"
+            );
+
+            session
+                .reopen(guard(&session), Arc::new(published.clone()))
+                .unwrap();
+            let objective = sim_definition::adapter::stable_objective_id(objective_id).unwrap();
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .semantic_level_definition()
+                    .unwrap()
+                    .objective(&objective)
+                    .unwrap()
+                    .condition(),
+                ObjectiveCondition::CastleManaPercent(AUTHORED_THRESHOLD)
+            );
+            let (authored_percent, reopened_objective_index) =
+                stage_castle_mana_objective_percent(&mut session, stage, 45);
+            assert_eq!(reopened_objective_index, objective_index);
+            assert!((45..i32::from(AUTHORED_THRESHOLD)).contains(&authored_percent));
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2
+                    .session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .objectives[objective_index]
+                    .stage_selectors[stage],
+                1,
+                "the authored threshold must replace the raw package default"
+            );
+
+            // The ordinary Castle upkeep releases one source-sized reserve
+            // before the post-entity objective pass. Stage enough authority
+            // for the retained post-upkeep percentage to remain above 50.
+            let completed_percent = set_staged_castle_mana_percent(&mut session, 100);
+            assert!(completed_percent >= i32::from(AUTHORED_THRESHOLD));
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player_entity_index = compatibility
+                .session
+                .state
+                .live
+                .core
+                .players
+                .iter()
+                .find(|player| usize::from(player.player_color_index()) == objective_index)
+                .map(|player| player.entity_index)
+                .expect("the objective owner remains present after the ordinary step");
+            let economy = compatibility.economy();
+            let castle = economy.castle().unwrap();
+            let post_step_percent = 100_i32
+                * economy
+                    .owner_mana_aggregate(player_entity_index)
+                    .saturating_add(castle.mana)
+                / economy.owner_mana_global();
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2
+                    .session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .objectives[objective_index]
+                    .stage_selectors[stage],
+                2,
+                "case {case_index} retained {post_step_percent}% after objective service"
+            );
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .events()
+                    .iter()
+                    .all(|event| !matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated { group: emitted, .. }
+                            if *emitted == group
+                    ))
+            );
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .events()
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            group: emitted,
+                            authored_indices,
+                            ..
+                        } if *emitted == group && authored_indices.as_ref() == group_rows
+                    ))
+            );
+
+            session.reset(guard(&session)).unwrap();
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .semantic_level_definition()
+                    .unwrap()
+                    .objective(&objective)
+                    .unwrap()
+                    .condition(),
+                ObjectiveCondition::CastleManaPercent(AUTHORED_THRESHOLD)
+            );
+            let (reset_percent, reset_objective_index) =
+                stage_castle_mana_objective_percent(&mut session, stage, 45);
+            assert_eq!(reset_objective_index, objective_index);
+            assert!((45..i32::from(AUTHORED_THRESHOLD)).contains(&reset_percent));
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2
+                    .session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .objectives[objective_index]
+                    .stage_selectors[stage],
+                1,
+                "reset must retain the authored threshold"
+            );
+
+            std::fs::remove_dir_all(workspace_root).unwrap();
+        }
+
+        let level_two = load_mc2_campaign(descriptor_fixture_path(), &catalog).unwrap();
+        assert!(level_two.required_capabilities().iter().all(|requirement| {
+            requirement.id.as_str() != "engine.objective.castle_mana_percent"
+        }));
     }
 
     #[test]

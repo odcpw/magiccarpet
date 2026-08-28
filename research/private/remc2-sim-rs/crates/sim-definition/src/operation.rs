@@ -210,12 +210,22 @@ impl DefinitionOperation {
                     "objective_ids": "game objectives -> data.objectives[].id",
                     "target_id": "<objective-id>.condition",
                     "condition": {
-                        "shape": {"reach_location": {"x": "integer", "y": "integer"}},
-                        "unit": "level_tile",
-                        "bounds": {
-                            "x": {"minimum": 0, "maximum": 255},
-                            "y": {"minimum": 0, "maximum": 255}
-                        }
+                        "shapes": [
+                            {
+                                "reach_location": {"x": "integer", "y": "integer"},
+                                "unit": "level_tile",
+                                "bounds": {
+                                    "x": {"minimum": 0, "maximum": 255},
+                                    "y": {"minimum": 0, "maximum": 255}
+                                }
+                            },
+                            {
+                                "castle_mana_percent": "integer",
+                                "unit": "percent",
+                                "minimum": 0,
+                                "maximum": 100
+                            }
+                        ]
                     },
                     "expected_condition": "same shape, unit, and bounds as condition",
                     "writable_when": "objective.condition_access == session_reset",

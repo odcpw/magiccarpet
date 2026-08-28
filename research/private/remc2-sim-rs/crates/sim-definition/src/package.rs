@@ -119,6 +119,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
                 "Deterministic fixed-width player flight integration.",
             ),
             (
+                "engine.objective.castle_mana_percent",
+                "Owned-Castle mana percentage objective evaluation.",
+            ),
+            (
                 "engine.presentation.indexed_asset",
                 "Typed indexed presentation-asset binding.",
             ),

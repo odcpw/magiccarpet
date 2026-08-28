@@ -302,7 +302,11 @@ impl SemanticDescriptor {
             (
                 ValueType::ObjectiveCondition,
                 SemanticValue::ObjectiveCondition(ObjectiveCondition::ReachLocation(position)),
-            ) => {
+            ) if matches!(
+                &self.default_value,
+                SemanticValue::ObjectiveCondition(ObjectiveCondition::ReachLocation(_))
+            ) =>
+            {
                 let x = i64::from(position.x);
                 let y = i64::from(position.y);
                 if self
@@ -316,6 +320,25 @@ impl SemanticDescriptor {
                         DefinitionErrorCode::OutOfRange,
                         path,
                         "objective location is outside descriptor bounds",
+                    ));
+                }
+            }
+            (
+                ValueType::ObjectiveCondition,
+                SemanticValue::ObjectiveCondition(ObjectiveCondition::CastleManaPercent(percent)),
+            ) if matches!(
+                &self.default_value,
+                SemanticValue::ObjectiveCondition(ObjectiveCondition::CastleManaPercent(_))
+            ) =>
+            {
+                let percent = i64::from(*percent);
+                if self.minimum.is_some_and(|minimum| percent < minimum)
+                    || self.maximum.is_some_and(|maximum| percent > maximum)
+                {
+                    return Err(DefinitionError::new(
+                        DefinitionErrorCode::OutOfRange,
+                        path,
+                        "objective Castle-mana percentage is outside descriptor bounds",
                     ));
                 }
             }

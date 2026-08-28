@@ -80,7 +80,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "5.0");
+    assert_eq!(capabilities["contract_version"], "6.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v5"
@@ -117,6 +117,25 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         put_objective["objective_ids"],
         "game objectives -> data.objectives[].id"
     );
+    assert_eq!(
+        put_objective["condition"]["shapes"],
+        serde_json::json!([
+            {
+                "reach_location": {"x": "integer", "y": "integer"},
+                "unit": "level_tile",
+                "bounds": {
+                    "x": {"minimum": 0, "maximum": 255},
+                    "y": {"minimum": 0, "maximum": 255}
+                }
+            },
+            {
+                "castle_mana_percent": "integer",
+                "unit": "percent",
+                "minimum": 0,
+                "maximum": 100
+            }
+        ])
+    );
     let set_countdown = capabilities["data"]["authoring"]["operation_schema"]["variants"]
         .as_array()
         .unwrap()
@@ -132,8 +151,16 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        4
+        5
     );
+    let castle_capability = capabilities["data"]["compiled_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["id"] == "engine.objective.castle_mana_percent")
+        .expect("Castle objective capability is discoverable");
+    assert_eq!(castle_capability["version"], 1);
+    assert_eq!(castle_capability["provider"], "engine_compiled");
     assert_eq!(
         capabilities["data"]["semantic_ids"]
             .as_array()
@@ -221,7 +248,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "5.0");
+    assert_eq!(entities["contract_version"], "6.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -325,7 +352,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "5.0");
+    assert_eq!(described["contract_version"], "6.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v4"
@@ -825,6 +852,289 @@ fn campaign_workspace_discovers_and_authors_reach_objective_through_typed_cli() 
         get["data"]["value"],
         serde_json::json!({"type": "objective_condition", "value": {"reach_location": {"x": 120, "y": 120}}})
     );
+}
+
+#[test]
+fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli() {
+    const OBJECTIVE: &str = "objective.charge.first_castle";
+    const TARGET: &str = "objective.charge.first_castle.condition";
+
+    let temporary = TempWorkspace::new("semantic-castle-objective");
+    let workspace = temporary.0.to_str().unwrap();
+    let campaign = level_one_campaign_fixture();
+    let campaign = campaign.to_str().expect("UTF-8 campaign path");
+
+    let objectives = run(&[
+        "game",
+        "objectives",
+        "--campaign-package",
+        campaign,
+        "--id",
+        OBJECTIVE,
+    ]);
+    assert!(objectives.status.success(), "{:?}", objectives.stderr);
+    let objectives: Value = serde_json::from_slice(&objectives.stdout).unwrap();
+    assert_eq!(objectives["data"]["page"]["total"], 1);
+    assert_eq!(
+        objectives["data"]["objectives"][0],
+        serde_json::json!({
+            "id": OBJECTIVE,
+            "condition": {"castle_mana_percent": 15},
+            "condition_access": "session_reset"
+        })
+    );
+
+    let described = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        campaign,
+        "--id",
+        TARGET,
+    ]);
+    assert!(described.status.success(), "{:?}", described.stderr);
+    assert!(described.stderr.is_empty());
+    let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+    assert_eq!(described["contract_version"], "6.0");
+    assert_eq!(
+        described["identity"]["schema"],
+        "carpet-flight-game-definition/v4"
+    );
+    let descriptor = &described["data"]["descriptors"][0];
+    assert_eq!(descriptor["id"], TARGET);
+    assert_eq!(descriptor["kind"], "objective");
+    assert_eq!(descriptor["value_type"], "objective_condition");
+    assert_eq!(descriptor["unit"], "percent");
+    assert_eq!(descriptor["access"], "writable");
+    assert_eq!(descriptor["mutation_timing"], "session_reset");
+    assert_eq!(descriptor["bounds_or_enum"]["minimum"], 0);
+    assert_eq!(descriptor["bounds_or_enum"]["maximum"], 100);
+    assert_eq!(
+        descriptor["default_value"]["value"],
+        serde_json::json!({"castle_mana_percent": 15})
+    );
+    assert_eq!(
+        descriptor["effective_value"]["value"],
+        serde_json::json!({"castle_mana_percent": 15})
+    );
+
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "semantic-castle-objective-workspace",
+        "--campaign-package",
+        campaign,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+
+    let changes_path = temporary.0.join("put-castle-objective.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "put_objective",
+            "objective": OBJECTIVE,
+            "condition": {"castle_mana_percent": 60},
+            "expected_condition": {"castle_mana_percent": 15}
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "semantic-castle-objective-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(
+        staged["data"]["change_set"]["schema_version"],
+        "carpet-flight-change-set/v5"
+    );
+    assert_eq!(
+        staged["data"]["change_set"]["operations"][0]["operation"],
+        "put_objective"
+    );
+    let change_set_path = temporary.0.join("castle-objective-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        validated["data"]["validation"]["affected_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let diff = run(&[
+        "game",
+        "diff",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(diff.status.success(), "{:?}", diff.stderr);
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(
+        diff["data"]["diff"],
+        serde_json::json!([{
+            "id": TARGET,
+            "before": {"type": "objective_condition", "value": {"castle_mana_percent": 15}},
+            "after": {"type": "objective_condition", "value": {"castle_mana_percent": 60}}
+        }])
+    );
+
+    let validation_receipt = validated["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validation_receipt,
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(
+        applied["data"]["receipt"]["applied_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let authored = run(&["game", "get", "--workspace", workspace, "--id", TARGET]);
+    assert!(authored.status.success(), "{:?}", authored.stderr);
+    let authored: Value = serde_json::from_slice(&authored.stdout).unwrap();
+    assert_eq!(authored["identity"]["revision"], 2);
+    assert_eq!(authored["data"]["descriptor"]["unit"], "percent");
+    assert_eq!(
+        authored["data"]["descriptor"]["default_value"]["value"],
+        serde_json::json!({"castle_mana_percent": 15})
+    );
+    assert_eq!(
+        authored["data"]["descriptor"]["effective_value"]["value"],
+        serde_json::json!({"castle_mana_percent": 60})
+    );
+    assert_eq!(
+        authored["data"]["value"],
+        serde_json::json!({
+            "type": "objective_condition",
+            "value": {"castle_mana_percent": 60}
+        })
+    );
+
+    let committed_state = fs::read(temporary.0.join("workspace-state.json")).unwrap();
+    let out_of_range_path = temporary.0.join("castle-objective-out-of-range.json");
+    fs::write(
+        &out_of_range_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "put_objective",
+            "objective": OBJECTIVE,
+            "condition": {"castle_mana_percent": 101},
+            "expected_condition": {"castle_mana_percent": 60}
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let out_of_range_staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "semantic-castle-objective-out-of-range",
+        "--timing",
+        "session_reset",
+        "--changes",
+        out_of_range_path.to_str().unwrap(),
+    ]);
+    assert!(
+        out_of_range_staged.status.success(),
+        "{:?}",
+        out_of_range_staged.stderr
+    );
+    let out_of_range_staged: Value = serde_json::from_slice(&out_of_range_staged.stdout).unwrap();
+    let rejected_change_set_path = temporary.0.join("castle-objective-rejected.json");
+    fs::write(
+        &rejected_change_set_path,
+        serde_json::to_vec(&out_of_range_staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let rejected_validation = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        rejected_change_set_path.to_str().unwrap(),
+    ]);
+    assert!(
+        rejected_validation.status.success(),
+        "{:?}",
+        rejected_validation.stderr
+    );
+    let rejected_validation: Value = serde_json::from_slice(&rejected_validation.stdout).unwrap();
+    assert_eq!(rejected_validation["data"]["validation"]["accepted"], false);
+    assert_eq!(
+        rejected_validation["data"]["validation"]["diagnostics"][0]["code"],
+        "OUT_OF_RANGE"
+    );
+    assert_eq!(
+        fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+        committed_state
+    );
+
+    let rejected_receipt = rejected_validation["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+    let rejected_apply = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        rejected_change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        rejected_receipt,
+    ]);
+    assert_eq!(rejected_apply.status.code(), Some(3));
+    assert!(rejected_apply.stdout.is_empty());
+    let rejected_apply: Value = serde_json::from_slice(&rejected_apply.stderr).unwrap();
+    assert_eq!(rejected_apply["errors"][0]["code"], "VALIDATION_REJECTED");
+    assert_eq!(rejected_apply["errors"][0]["state_changed"], false);
+    assert_eq!(
+        fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+        committed_state
+    );
+
+    // No-Claim: this proves the real Level-1 authoring transport and guarded
+    // publication/readback only. Runtime evaluation, reset/reopen consumption,
+    // organic Castle funding, Level 3, the sealed legacy Level1Mission route,
+    // and save/replay are owned by separate focused gates.
 }
 
 #[test]

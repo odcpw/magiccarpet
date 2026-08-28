@@ -50,7 +50,7 @@ use level_definition::LevelDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v4";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "5.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "6.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -732,15 +732,30 @@ impl GameDefinition {
             level_definition::LevelObjectiveConditionAccess::SessionReset
         );
         let target_id = id.as_str().to_owned();
+        let (unit, minimum, maximum, runtime_effect) = match objective.default_condition() {
+            level_definition::ObjectiveCondition::ReachLocation(_) => (
+                Some("level_tile".to_owned()),
+                Some(0),
+                Some(i64::from(u8::MAX)),
+                "new runtime generations evaluate the authored location in the ordinary objective pass",
+            ),
+            level_definition::ObjectiveCondition::CastleManaPercent(_) => (
+                Some("percent".to_owned()),
+                Some(0),
+                Some(100),
+                "new runtime generations evaluate the authored Castle-mana threshold in the ordinary objective pass",
+            ),
+            _ => (None, None, None, "read-only package objective condition"),
+        };
         Some(SemanticDescriptor {
             id: id.clone(),
             descriptor_version: 1,
             kind: DescriptorKind::Objective,
             value_type: ValueType::ObjectiveCondition,
-            unit: Some("level_tile".to_owned()),
+            unit,
             default_value: SemanticValue::ObjectiveCondition(objective.default_condition()),
-            minimum: Some(0),
-            maximum: Some(i64::from(u8::MAX)),
+            minimum,
+            maximum,
             enum_values: Vec::new(),
             access: if writable {
                 Access::Writable
@@ -756,8 +771,7 @@ impl GameDefinition {
             side_effects: if writable {
                 vec![
                     "already-open sessions remain unchanged until explicit reopen/reset".to_owned(),
-                    "new runtime generations evaluate the authored location in the ordinary objective pass"
-                        .to_owned(),
+                    runtime_effect.to_owned(),
                 ]
             } else {
                 Vec::new()

@@ -534,13 +534,24 @@ impl Mc2LevelDefinition {
                         ));
                     }
                 };
-                if condition_access == LevelObjectiveConditionAccess::SessionReset
-                    && !matches!(condition, ObjectiveCondition::ReachLocation(_))
+                if matches!(condition, ObjectiveCondition::CastleManaPercent(percent) if percent > 100)
                 {
                     return Err(format!(
-                        "writable semantic objective {} is not a ReachLocation condition",
+                        "semantic objective {} Castle-mana percentage is outside 0..=100",
                         id.as_str()
                     ));
+                }
+                if condition_access == LevelObjectiveConditionAccess::SessionReset {
+                    match condition {
+                        ObjectiveCondition::ReachLocation(_) => {}
+                        ObjectiveCondition::CastleManaPercent(percent) if percent <= 100 => {}
+                        _ => {
+                            return Err(format!(
+                                "writable semantic objective {} has no supported authoring consumer",
+                                id.as_str()
+                            ));
+                        }
+                    }
                 }
                 Ok(objective_definition(id, condition, condition_access))
             })

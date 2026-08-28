@@ -574,13 +574,26 @@ impl LevelDefinition {
                     objective.id.as_str()
                 ));
             }
-            if objective.condition_access == LevelObjectiveConditionAccess::SessionReset
-                && !matches!(objective.condition, ObjectiveCondition::ReachLocation(_))
-            {
+            if matches!(
+                objective.condition,
+                ObjectiveCondition::CastleManaPercent(percent) if percent > 100
+            ) {
                 return Err(format!(
-                    "semantic objective {} exposes an unsupported writable condition",
+                    "semantic objective {} Castle-mana percentage is outside 0..=100",
                     objective.id.as_str()
                 ));
+            }
+            if objective.condition_access == LevelObjectiveConditionAccess::SessionReset {
+                match objective.condition {
+                    ObjectiveCondition::ReachLocation(_) => {}
+                    ObjectiveCondition::CastleManaPercent(percent) if percent <= 100 => {}
+                    _ => {
+                        return Err(format!(
+                            "semantic objective {} exposes an unsupported writable condition",
+                            objective.id.as_str()
+                        ));
+                    }
+                }
             }
         }
         let unique_groups = activation_groups.iter().copied().collect::<BTreeSet<_>>();
@@ -646,18 +659,6 @@ impl LevelDefinition {
         id: &LevelObjectiveId,
         condition: ObjectiveCondition,
     ) -> Result<Self, String> {
-        let ObjectiveCondition::ReachLocation(position) = condition else {
-            return Err(format!(
-                "semantic objective {} only admits ReachLocation authoring",
-                id.as_str()
-            ));
-        };
-        if position.x > u16::from(u8::MAX) || position.y > u16::from(u8::MAX) {
-            return Err(format!(
-                "semantic objective {} location is outside the 256x256 world",
-                id.as_str()
-            ));
-        }
         let mut candidate = self.clone();
         let objective = candidate
             .objectives
@@ -670,14 +671,32 @@ impl LevelDefinition {
                 id.as_str()
             ));
         }
-        if !matches!(
-            objective.default_condition,
-            ObjectiveCondition::ReachLocation(_)
-        ) {
-            return Err(format!(
-                "semantic objective {} cannot change condition family",
-                id.as_str()
-            ));
+        match (objective.default_condition, condition) {
+            (ObjectiveCondition::ReachLocation(_), ObjectiveCondition::ReachLocation(position)) => {
+                if position.x > u16::from(u8::MAX) || position.y > u16::from(u8::MAX) {
+                    return Err(format!(
+                        "semantic objective {} location is outside the 256x256 world",
+                        id.as_str()
+                    ));
+                }
+            }
+            (
+                ObjectiveCondition::CastleManaPercent(_),
+                ObjectiveCondition::CastleManaPercent(percent),
+            ) => {
+                if percent > 100 {
+                    return Err(format!(
+                        "semantic objective {} Castle-mana percentage is outside 0..=100",
+                        id.as_str()
+                    ));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "semantic objective {} cannot change condition family",
+                    id.as_str()
+                ));
+            }
         }
         if objective.condition == condition {
             return Err(format!(
@@ -824,6 +843,9 @@ impl LevelDefinition {
                         (
                             ObjectiveCondition::ReachLocation(_),
                             ObjectiveCondition::ReachLocation(_)
+                        ) | (
+                            ObjectiveCondition::CastleManaPercent(_),
+                            ObjectiveCondition::CastleManaPercent(_)
                         )
                     ))
             {
@@ -837,6 +859,14 @@ impl LevelDefinition {
             {
                 return Err(format!(
                     "semantic level variant moves objective {} outside the 256x256 world",
+                    original.id.as_str()
+                ));
+            }
+            if let ObjectiveCondition::CastleManaPercent(percent) = candidate.condition
+                && percent > 100
+            {
+                return Err(format!(
+                    "semantic level variant gives objective {} a Castle-mana percentage outside 0..=100",
                     original.id.as_str()
                 ));
             }

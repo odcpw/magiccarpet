@@ -1935,9 +1935,19 @@ mod tests {
             ObjectiveCondition::NoLivingCreatures(crate::level_definition::CreatureKind::Bee),
             LevelObjectiveConditionAccess::ReadOnly,
         );
+        let castle_mana = objective_definition(
+            stable_objective_id("objective.charge.first_castle").unwrap(),
+            ObjectiveCondition::CastleManaPercent(15),
+            LevelObjectiveConditionAccess::SessionReset,
+        );
         with_level_definition(
             fixture_definition(),
-            build_level_definition(Vec::new(), vec![writable, read_only], Vec::new()).unwrap(),
+            build_level_definition(
+                Vec::new(),
+                vec![writable, read_only, castle_mana],
+                Vec::new(),
+            )
+            .unwrap(),
         )
     }
 
@@ -2166,6 +2176,144 @@ mod tests {
                 .semantic_target_value(&target),
             Some(SemanticValue::ObjectiveCondition(original))
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn castle_mana_percent_publication_is_bounded_same_family_and_atomic() {
+        let root = temporary_workspace("castle-mana-objective");
+        let definition = fixture_definition_with_objectives();
+        let store =
+            WorkspaceStore::create(&root, "castle-mana-objective", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let objective = stable_objective_id("objective.charge.first_castle").unwrap();
+        let target = SemanticId::parse("objective.charge.first_castle.condition").unwrap();
+        let descriptor = definition
+            .level_objective_condition_descriptor(&target)
+            .unwrap();
+        assert_eq!(descriptor.unit.as_deref(), Some("percent"));
+        assert_eq!(descriptor.minimum, Some(0));
+        assert_eq!(descriptor.maximum, Some(100));
+        assert_eq!(descriptor.access, Access::Writable);
+        assert_eq!(
+            descriptor.default_value,
+            SemanticValue::ObjectiveCondition(ObjectiveCondition::CastleManaPercent(15))
+        );
+
+        let request = ChangeSetBuilder::new(
+            "castle-mana-objective",
+            &definition,
+            "author-castle-mana-threshold",
+            RequestedTiming::SessionReset,
+        )
+        .put_objective_from(
+            objective.clone(),
+            ObjectiveCondition::CastleManaPercent(15),
+            ObjectiveCondition::CastleManaPercent(60),
+        )
+        .build()
+        .unwrap();
+        let before = store.state_bytes().unwrap();
+        let validation = store.validate(&catalog, request.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        let (_, diff) = store.diff(&catalog, request.clone()).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(
+            diff[0].before,
+            SemanticValue::ObjectiveCondition(ObjectiveCondition::CastleManaPercent(15))
+        );
+        assert_eq!(
+            diff[0].after,
+            SemanticValue::ObjectiveCondition(ObjectiveCondition::CastleManaPercent(60))
+        );
+        assert_eq!(store.state_bytes().unwrap(), before);
+        let applied = store
+            .apply(
+                &catalog,
+                request,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let active = store.active_definition().unwrap();
+        assert_eq!(
+            active.semantic_target_value(&target),
+            Some(SemanticValue::ObjectiveCondition(
+                ObjectiveCondition::CastleManaPercent(60)
+            ))
+        );
+        assert_eq!(
+            active
+                .level_objective_condition_descriptor(&target)
+                .unwrap()
+                .default_value,
+            SemanticValue::ObjectiveCondition(ObjectiveCondition::CastleManaPercent(15))
+        );
+        store
+            .rollback(
+                active.definition_hash(),
+                active.revision(),
+                &applied.transaction_id,
+                "rollback-castle-mana-threshold",
+                PublicationFault::None,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .active_definition()
+                .unwrap()
+                .semantic_target_value(&target),
+            Some(SemanticValue::ObjectiveCondition(
+                ObjectiveCondition::CastleManaPercent(15)
+            ))
+        );
+
+        let unchanged = store.state_bytes().unwrap();
+        for (index, operation) in [
+            DefinitionOperation::PutObjective {
+                objective: objective.clone(),
+                condition: ObjectiveCondition::CastleManaPercent(101),
+                expected_condition: None,
+            },
+            DefinitionOperation::PutObjective {
+                objective: objective.clone(),
+                condition: ObjectiveCondition::ReachLocation(TilePosition { x: 15, y: 15 }),
+                expected_condition: None,
+            },
+            DefinitionOperation::PutObjective {
+                objective: objective.clone(),
+                condition: ObjectiveCondition::CastleManaPercent(60),
+                expected_condition: Some(ObjectiveCondition::CastleManaPercent(14)),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rejected = ChangeSetBuilder::new(
+                "castle-mana-objective",
+                &store.active_definition().unwrap(),
+                format!("reject-castle-mana-threshold-{index}"),
+                RequestedTiming::SessionReset,
+            )
+            .operation(operation)
+            .build()
+            .unwrap();
+            let validation = store.validate(&catalog, rejected).unwrap();
+            assert!(!validation.accepted);
+            if index == 2 {
+                assert_eq!(validation.diagnostics[0].code, "CONFLICT");
+            }
+            assert_eq!(store.state_bytes().unwrap(), unchanged);
+        }
+
+        let invalid_read_only = objective_definition(
+            stable_objective_id("objective.charge.invalid_read_only").unwrap(),
+            ObjectiveCondition::CastleManaPercent(101),
+            LevelObjectiveConditionAccess::ReadOnly,
+        );
+        let error = build_level_definition(Vec::new(), vec![invalid_read_only], Vec::new())
+            .expect_err("read-only package content still obeys the percent vocabulary");
+        assert!(error.contains("outside 0..=100"), "{error}");
         let _ = fs::remove_dir_all(root);
     }
 
