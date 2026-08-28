@@ -207,6 +207,19 @@ pub fn load_mc2_campaign(
     {
         requirement_ids.push("engine.objective.no_living_creatures");
     }
+    if descriptor
+        .level_definition()
+        .objectives()
+        .iter()
+        .any(|objective| {
+            matches!(
+                objective.condition(),
+                sim_definition::level_definition::ObjectiveCondition::NoStandingBuildings
+            )
+        })
+    {
+        requirement_ids.push("engine.objective.no_standing_buildings");
+    }
     if descriptor.local_player_fireball_mana_cost().is_some() {
         requirement_ids.push(FIREBALL_MANA_COST_CAPABILITY_ID);
     }
@@ -1823,6 +1836,7 @@ mod tests {
                 ],
                 [true, true, true, true, true],
                 &["archer", "firefly"][..],
+                false,
             ),
             (
                 descriptor_fixture_path(),
@@ -1835,6 +1849,7 @@ mod tests {
                 ],
                 [true, false, true, true, false],
                 &["bee", "archer", "skeleton"][..],
+                true,
             ),
             (
                 level_three_descriptor_fixture_path(),
@@ -1847,10 +1862,18 @@ mod tests {
                 ],
                 [true, true, true, true, true],
                 &["dragon", "bee", "archer", "skeleton"][..],
+                false,
             ),
         ];
         let mut writable = 0;
-        for (root, expected_ids, expected_writable, expected_no_living_kinds) in cases {
+        for (
+            root,
+            expected_ids,
+            expected_writable,
+            expected_no_living_kinds,
+            expects_standing_building_capability,
+        ) in cases
+        {
             let definition = load_mc2_campaign(root, &catalog).unwrap();
             assert!(
                 definition
@@ -1860,6 +1883,16 @@ mod tests {
                         requirement.id.as_str() == "engine.objective.no_living_creatures"
                             && requirement.exact_version == 1
                     })
+            );
+            assert_eq!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == "engine.objective.no_standing_buildings"
+                            && requirement.exact_version == 1
+                    }),
+                expects_standing_building_capability
             );
             let objectives = definition.level_definition().unwrap().objectives();
             assert_eq!(objectives.len(), 5);

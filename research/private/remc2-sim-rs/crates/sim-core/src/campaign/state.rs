@@ -17,8 +17,8 @@ use crate::{
     TetherTarget,
     collision_mask::CollisionMaskBank,
     level_definition::{
-        BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, MechanicKind,
-        SceneryKind, SpellKind, SwitchKind,
+        BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelObjectiveId,
+        MechanicKind, SceneryKind, SpellKind, SwitchKind,
     },
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
@@ -88,6 +88,7 @@ pub struct CampaignDefinition {
     initial_source_mechanics: BTreeMap<u16, MechanicKind>,
     authored_mechanic_entities: BTreeMap<u16, LevelEntityId>,
     initial_source_mechanic_entities: BTreeMap<u16, LevelEntityId>,
+    standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
     pub(crate) collision_masks: Option<CollisionMaskBank>,
     pub(crate) presentation: PresentationSelectors,
 }
@@ -114,6 +115,7 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) initial_source_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) authored_mechanic_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) initial_source_mechanic_entities: BTreeMap<u16, LevelEntityId>,
+    pub(crate) standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
 }
 
 /// Source slot/map topology observed alongside the lossless entity records.
@@ -378,6 +380,7 @@ impl CampaignDefinition {
             initial_source_mechanics: BTreeMap::new(),
             authored_mechanic_entities: BTreeMap::new(),
             initial_source_mechanic_entities: BTreeMap::new(),
+            standing_building_chains: BTreeMap::new(),
             collision_masks,
             presentation,
         }
@@ -401,6 +404,7 @@ impl CampaignDefinition {
         self.initial_source_mechanics = bindings.initial_source_mechanics;
         self.authored_mechanic_entities = bindings.authored_mechanic_entities;
         self.initial_source_mechanic_entities = bindings.initial_source_mechanic_entities;
+        self.standing_building_chains = bindings.standing_building_chains;
     }
 
     pub(crate) fn replace_semantic_level(
@@ -419,6 +423,12 @@ impl CampaignDefinition {
     #[must_use]
     pub fn semantic_level(&self) -> Option<&LevelDefinition> {
         self.semantic_level.as_ref()
+    }
+
+    pub(crate) fn standing_building_chain(&self, objective_id: &LevelObjectiveId) -> Option<&[u8]> {
+        self.standing_building_chains
+            .get(objective_id)
+            .map(AsRef::as_ref)
     }
 
     pub(crate) fn authored_creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {
@@ -833,6 +843,16 @@ fn digest_source_sidecars(state: &ResetState) -> CanonicalDigest {
 }
 
 fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
+    if state.source_frame_timing_index != 0 {
+        hasher.update(b"level2-source-frame-timing-index-v1");
+        hasher.update([state.source_frame_timing_index]);
+    }
+    let rebuilt_model45 = state.economy.rebuilt_model45_building_selectors();
+    if state.source_model45_building_selectors != rebuilt_model45 {
+        hasher.update(b"level2-source-model45-building-selectors-v1");
+        append_len(hasher, state.source_model45_building_selectors.len());
+        hasher.update(&state.source_model45_building_selectors);
+    }
     hasher.update(state.player_pending_damage.to_le_bytes());
     hasher.update(state.player_pending_attacker.to_le_bytes());
     hasher.update(state.player_life.to_le_bytes());

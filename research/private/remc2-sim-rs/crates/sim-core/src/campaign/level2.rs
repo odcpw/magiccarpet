@@ -652,6 +652,8 @@ struct Level2SourceSchedulerWorld<'session, 'evidence> {
     /// Post-pass objectives consume this frozen presence rather than rescanning
     /// rows after callbacks may have hidden or created them.
     pass_start_class5_model_present: [bool; 29],
+    /// Frozen source list used by the post-pass type-9 objective service.
+    pass_start_model45_building_selectors: Vec<u8>,
     pass_start_castle_auxiliary_membership: level2_dynamic_economy::Level2CastleAuxiliaryMembership,
     pass_start_castle_root_slot: Option<u16>,
     goat_begin_events: BTreeMap<u16, Vec<GoatStepEvent>>,
@@ -819,23 +821,33 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 economy.reclaim_inactive_slots_at_source_boundary();
             }
             PassPhase::RebuildMemberships => {
-                let economy = &mut self.owner.session.state.live.economy;
-                economy.rebuild_possession_guidance_source_slots();
-                economy.rebuild_owner_mana_projection_at_source_boundary();
-                let reset_owner_max_mana = self
-                    .owner
-                    .session
-                    .baseline
-                    .economy
-                    .economy
-                    .owner_max_mana
-                    .clone();
-                economy.rebuild_owner_max_mana_projection(&reset_owner_max_mana);
+                let selectors = {
+                    let economy = &mut self.owner.session.state.live.economy;
+                    economy.rebuild_possession_guidance_source_slots();
+                    economy.rebuild_owner_mana_projection_at_source_boundary();
+                    let reset_owner_max_mana = self
+                        .owner
+                        .session
+                        .baseline
+                        .economy
+                        .economy
+                        .owner_max_mana
+                        .clone();
+                    economy.rebuild_owner_max_mana_projection(&reset_owner_max_mana);
 
-                self.pass_start_class5_model_slots = economy.rebuilt_class5_model_slots();
-                self.pass_start_class5_model_present = std::array::from_fn(|model| {
-                    !self.pass_start_class5_model_slots[model].is_empty()
-                });
+                    self.pass_start_class5_model_slots = economy.rebuilt_class5_model_slots();
+                    self.pass_start_class5_model_present = std::array::from_fn(|model| {
+                        !self.pass_start_class5_model_slots[model].is_empty()
+                    });
+                    economy.rebuilt_model45_building_selectors()
+                };
+                self.owner
+                    .session
+                    .state
+                    .live
+                    .source_model45_building_selectors
+                    .clone_from(&selectors);
+                self.pass_start_model45_building_selectors = selectors;
             }
             PassPhase::PreDispatch => {
                 self.owner
@@ -4295,6 +4307,8 @@ impl Level2ResetSession {
         let initial_player_life = initial_player.life;
         let definition =
             CampaignDefinition::new(profile, package_sha256, collision_masks, presentation);
+        let economy = SourceArena::new(entities, economy);
+        let source_model45_building_selectors = economy.rebuilt_model45_building_selectors();
         let live = Level2LiveState {
             core: CanonicalRuntimeState {
                 state,
@@ -4304,13 +4318,15 @@ impl Level2ResetSession {
                 effect_journal: crate::campaign::journal::EffectJournal::default(),
             },
             terrain,
-            economy: SourceArena::new(entities, economy),
+            economy,
             bad_stones,
             shared_spells,
             ordinary,
             goats,
             mission,
             nyphur_dispatcher,
+            source_frame_timing_index: 0,
+            source_model45_building_selectors,
             player_pending_damage: initial_player_pending_damage,
             player_pending_attacker: initial_player_pending_attacker,
             player_life: initial_player_life,
@@ -5059,11 +5075,10 @@ impl Level2ResetSession {
     /// `sub_58F00_game_objectives` walk: stage selectors at one are eligible,
     /// a successful predicate writes two, and the first remaining one becomes
     /// the next objective-text selector (or sets `IsLevelEnd` when none remain).
-    /// Type 9 is deliberately deferred because the compact runtime does not
-    /// yet expose the exact active BUILD-chain relation used by remc2.
     pub(super) fn advance_level2_objectives(
         &mut self,
         pass_start_class5_model_present: &[bool; 29],
+        pass_start_model45_building_selectors: &[u8],
     ) {
         let owner_colors = self
             .session
@@ -5117,13 +5132,13 @@ impl Level2ResetSession {
                 else {
                     continue;
                 };
-                let condition = self
+                let semantic_objective = self
                     .session
                     .definition
                     .semantic_level()
                     .and_then(|level| level.objectives().get(stage_index))
-                    .map(|objective| objective.condition());
-                let achieved = if let Some(condition) = condition {
+                    .map(|objective| (objective.id().clone(), objective.condition()));
+                let achieved = if let Some((objective_id, condition)) = semantic_objective {
                     match condition {
                         ObjectiveCondition::CastleManaPercent(required_percent) => {
                             let required_percent = i32::from(required_percent);
@@ -5209,10 +5224,20 @@ impl Level2ResetSession {
                                 })
                                 .is_some_and(|present| !present)
                         }
-                        // The source scans BLDGPRM/BUILD chains here. Until the
-                        // runtime exports those chain links, do not infer success
-                        // from the temporary model-45 producer row.
-                        ObjectiveCondition::NoStandingBuildings => false,
+                        ObjectiveCondition::NoStandingBuildings => {
+                            objective.text_selector as usize == stage_index
+                                && self.session.state.live.source_frame_timing_index & 0x0f == 0
+                                && self
+                                    .session
+                                    .definition
+                                    .standing_building_chain(&objective_id)
+                                    .is_some_and(|chain| {
+                                        !chain.is_empty()
+                                            && !pass_start_model45_building_selectors
+                                                .iter()
+                                                .any(|selector| chain.contains(selector))
+                                    })
+                        }
                     }
                 } else {
                     // Legacy owner-export sessions predate the campaign
@@ -13729,7 +13754,7 @@ impl Level2ResetSession {
         latched_command: crate::LatchedCommand,
         flight_tuning: crate::FlightTuning,
         evidence: &mut Vec<crate::StepEvidence>,
-    ) -> std::result::Result<[bool; 29], (u16, String)> {
+    ) -> std::result::Result<([bool; 29], Vec<u8>), (u16, String)> {
         let player_entity_index = self.session.state.live.core.state.entity_index;
         let player_position = self.session.state.live.core.state.position;
         let mut world = Level2SourceSchedulerWorld {
@@ -13745,12 +13770,18 @@ impl Level2ResetSession {
             pass_start_mana_sphere_slots: BTreeSet::new(),
             pass_start_class5_model_slots: std::array::from_fn(|_| Vec::new()),
             pass_start_class5_model_present: [false; 29],
+            pass_start_model45_building_selectors: Vec::new(),
             pass_start_castle_auxiliary_membership: Default::default(),
             pass_start_castle_root_slot: None,
             goat_begin_events: BTreeMap::new(),
         };
         run_update_entities(&mut world)
-            .map(|_| world.pass_start_class5_model_present)
+            .map(|_| {
+                (
+                    world.pass_start_class5_model_present,
+                    world.pass_start_model45_building_selectors,
+                )
+            })
             .map_err(|error| match error {
                 ScheduleError::UnknownDispatch { slot, selector, .. } => {
                     let message = match selector {
@@ -17002,6 +17033,31 @@ impl Level2ResetSession {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-objective-switch-state-v1");
+        if self.session.state.live.source_frame_timing_index != 0 {
+            hasher.update(b"level2-source-frame-timing-index-v1");
+            hasher.update([self.session.state.live.source_frame_timing_index]);
+        }
+        let rebuilt_model45 = self
+            .session
+            .state
+            .live
+            .economy
+            .rebuilt_model45_building_selectors();
+        if self.session.state.live.source_model45_building_selectors != rebuilt_model45 {
+            hasher.update(b"level2-source-model45-building-selectors-v1");
+            hasher.update(
+                u64::try_from(
+                    self.session
+                        .state
+                        .live
+                        .source_model45_building_selectors
+                        .len(),
+                )
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+            );
+            hasher.update(&self.session.state.live.source_model45_building_selectors);
+        }
         hasher.update([
             self.session
                 .state
@@ -17839,6 +17895,12 @@ impl Level2ResetSession {
             .live
             .shared_spells
             .step_day_hud_player_events();
+        self.session.state.live.source_frame_timing_index = self
+            .session
+            .state
+            .live
+            .source_frame_timing_index
+            .wrapping_add(1);
         self.session.state.scratch.level2_day_hud_color_phase_1 = color_phase_1;
         self.session.state.scratch.level2_day_hud_color_phase_2 = color_phase_2;
         self.sync_level2_day_hud_player_projection();
@@ -17867,15 +17929,20 @@ impl Level2ResetSession {
         }
         let mut evidence = Vec::new();
         // Unsupported speed bytes skip UpdateEntities but the following
-        // objective service still observes the extant class-5 lists. Seed the
-        // snapshot from current source rows, then replace it with each real
-        // pass-start rebuild for the supported 1/4/8-pass modes.
+        // objective service still observes the last source membership lists.
+        // Replace them only after an actual pass-start rebuild.
         let mut pass_start_class5_model_present = self
             .session
             .state
             .live
             .economy
             .rebuilt_class5_model_presence();
+        let mut pass_start_model45_building_selectors = self
+            .session
+            .state
+            .live
+            .source_model45_building_selectors
+            .clone();
         for pass in 0..crate::entity_passes_for_speed_index(speed_index) {
             // UpdateEntities performs the source 57F20 reclaim prologue
             // immediately before each entity pass. A landed 10/43/45
@@ -17892,7 +17959,10 @@ impl Level2ResetSession {
                 flight_tuning,
                 &mut evidence,
             ) {
-                Ok(present) => pass_start_class5_model_present = present,
+                Ok((present, selectors)) => {
+                    pass_start_class5_model_present = present;
+                    pass_start_model45_building_selectors = selectors;
+                }
                 Err((source_slot, message)) => {
                     self.session.state = state_before;
                     self.session.state.scratch.dispatch_events.clear();
@@ -17915,7 +17985,10 @@ impl Level2ResetSession {
         // before the next outer turn's authored switch pass.  Keep that
         // ordering so model-32 sees the newly completed stage only on the
         // following turn, exactly as the source does.
-        self.advance_level2_objectives(&pass_start_class5_model_present);
+        self.advance_level2_objectives(
+            &pass_start_class5_model_present,
+            &pass_start_model45_building_selectors,
+        );
         self.flush_shared_effects();
         evidence
     }
@@ -18845,6 +18918,255 @@ mod tests {
         let stone = &session.entities()[usize::from(stone_slot)];
         assert_eq!((stone.class, stone.model, stone.action), (2, 1, 3));
         assert_eq!(stone.phase, phase_before.wrapping_add(1));
+    }
+
+    #[test]
+    fn level_two_no_standing_buildings_waits_for_reclaim_and_cadence_then_opens_group31() {
+        const PRIOR_STAGE: usize = 3;
+        const FINAL_STAGE: usize = 4;
+        const GROUP31_ROWS: [u16; 15] = [
+            209, 244, 260, 261, 262, 264, 265, 266, 267, 268, 269, 270, 271, 272, 274,
+        ];
+
+        // No-Claim: this stages objectives 0-3 at their already-proven
+        // boundary and exercises the real Level-2 package's type-9 predicate,
+        // source cadence, pass-start model-45 membership, and first group-31
+        // consumer. It does not prove organic prior objectives, player-driven
+        // vault destruction, arbitrary BLDGPRM graphs, authoring, L1/L3,
+        // save/replay, Unity/CAPI, or commercial distribution.
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
+            .expect("real Level 2 descriptor opens");
+        let baseline_hash = campaign.state_hash();
+        let session = campaign.level2_compatibility_mut();
+        let objective_id =
+            crate::level_definition::LevelObjectiveId::parse("objective.clear.payahandra_vaults")
+                .unwrap();
+        assert_eq!(
+            session
+                .session
+                .definition
+                .standing_building_chain(&objective_id),
+            Some(&[21, 54][..])
+        );
+        let ordinary_house_rows = session
+            .ordinary()
+            .houses()
+            .iter()
+            .filter(|house| house.active)
+            .map(|house| (house.entity_index, house.building_index))
+            .collect::<Vec<_>>();
+        let ordinary_houses = ordinary_house_rows
+            .iter()
+            .map(|(_, selector)| *selector)
+            .collect::<Vec<_>>();
+        assert_eq!(ordinary_houses.len(), 22);
+        assert!(
+            ordinary_houses
+                .iter()
+                .all(|selector| ![21, 54].contains(selector))
+        );
+        let group31_root = session
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 4
+                    && entity.action == 4
+                    && entity.source_id == 31
+            })
+            .map(|entity| entity.index)
+            .expect("real Level 2 group-31 root");
+        assert_eq!(group31_root, 37);
+
+        // Stage only the preceding real model-32 boundary, then invoke its
+        // production group-8 constructor before the turn under test. The
+        // tested turns still own every model-45 callback, epilogue, reclaim,
+        // objective evaluation, and group-31 consumer.
+        {
+            let objective = &mut session.session.state.live.core.runtime.objectives[0];
+            objective.stage_selectors.fill(0);
+            objective.stage_selectors[PRIOR_STAGE] = 2;
+            objective.text_selector = PRIOR_STAGE as u8;
+            objective.done = 0;
+            objective.is_level_end = 0;
+        }
+        session.activate_level2_authored_group8(0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 32,
+                group: 8,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [153, 154]
+        )));
+        assert_eq!(session.economy().authored_model45().len(), 2);
+        assert!(
+            session
+                .economy()
+                .authored_model45()
+                .iter()
+                .all(|source| source.active && source.drawing_enabled),
+            "group-8 births must remain visible until their own numeric visit: {:?}",
+            session.economy().authored_model45()
+        );
+        let frozen_before_group8 = session
+            .session
+            .state
+            .live
+            .source_model45_building_selectors
+            .clone();
+        let mut expected_current_census = ordinary_houses.clone();
+        expected_current_census.extend([21, 21]);
+        expected_current_census.sort_unstable();
+        let mut current_census = session
+            .session
+            .state
+            .live
+            .economy
+            .rebuilt_model45_building_selectors();
+        current_census.sort_unstable();
+        assert_eq!(current_census, expected_current_census);
+
+        // A zero-pass outer turn must not rebuild the source list. The two
+        // newly born targets are visible in current rows but remain absent
+        // from the last UpdateEntities membership until a real pass starts.
+        session.session.state.live.source_frame_timing_index = 14;
+        session.step_outer_turn(PlayerCommand::default(), 3);
+        assert_eq!(session.source_frame_timing_index, 15);
+        assert_eq!(
+            session.session.state.live.source_model45_building_selectors,
+            frozen_before_group8
+        );
+
+        // Start the final objective with a due source frame. The model-45
+        // callbacks hide both target rows, but the frozen pass-start list must
+        // still block completion for this frame.
+        {
+            let live = &mut session.session.state.live;
+            let objective = &mut live.core.runtime.objectives[0];
+            objective.stage_selectors.fill(0);
+            objective.stage_selectors[FINAL_STAGE] = 1;
+            objective.text_selector = FINAL_STAGE as u8;
+            objective.done = 0;
+            objective.is_level_end = 0;
+            live.level2_objective_pause = 0;
+            live.level2_objective_done = false;
+            live.source_frame_timing_index = 15;
+            // Deliberately disagree with the source-global cadence carrier.
+            // A player-turn alias would not be due on this frame.
+            live.core.players[0].turn = 3;
+        }
+        let phases_before = session
+            .economy()
+            .authored_model45()
+            .iter()
+            .map(|source| (source.source_entity_index, source.source_byte_3e))
+            .collect::<BTreeMap<_, _>>();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.source_frame_timing_index, 16);
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
+            1
+        );
+        let retained_after = session
+            .economy()
+            .authored_model45()
+            .iter()
+            .map(|source| {
+                (
+                    source.source_entity_index,
+                    (source.source_byte_3e, source.active, source.drawing_enabled),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(retained_after.len(), phases_before.len());
+        assert!(phases_before.iter().all(|(source_slot, phase)| {
+            retained_after.get(source_slot) == Some(&(phase.wrapping_add(1), true, false))
+        }));
+
+        // The next pass reclaims the hidden targets, but frame 17 is not a
+        // source cadence boundary, so absence alone is insufficient.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.source_frame_timing_index, 17);
+        assert!(session.economy().authored_model45().is_empty());
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
+            1
+        );
+
+        // Retarget one real imported class-10/model-45 row to the second
+        // package-bound chain member. This plants both the imported-list and
+        // successor-tail negatives without claiming an organic vault edit.
+        let (imported_target_slot, imported_original_selector) = ordinary_house_rows[0];
+        session.session.state.live.economy.entities[usize::from(imported_target_slot)]
+            .set_source_byte_46(54);
+        let hash_at_frame_17 = session.campaign_state_hash();
+        session.session.state.live.source_frame_timing_index = 31;
+        assert_ne!(session.campaign_state_hash(), hash_at_frame_17);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.source_frame_timing_index, 32);
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
+            1,
+            "the imported selector-54 chain tail must block completion"
+        );
+        session.session.state.live.economy.entities[usize::from(imported_target_slot)]
+            .set_source_byte_46(imported_original_selector);
+        session.session.state.live.source_frame_timing_index = 47;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.source_frame_timing_index, 48);
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
+            2
+        );
+        assert_eq!(session.runtime().objectives[0].is_level_end, 1);
+        assert_eq!(
+            session
+                .ordinary()
+                .houses()
+                .iter()
+                .filter(|house| house.active)
+                .count(),
+            22,
+            "ordinary Houses are not members of the package-bound [21,54] target chain"
+        );
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
+        )));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 37,
+                group: 31,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == GROUP31_ROWS
+        )));
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), baseline_hash);
+        let reset = campaign.level2_compatibility();
+        assert_eq!(reset.source_frame_timing_index, 0);
+        assert_eq!(reset.runtime().objectives[0].is_level_end, 0);
+        assert!(
+            reset
+                .entities()
+                .get(usize::from(group31_root))
+                .is_some_and(|root| root.active && !root.drawing_disabled())
+        );
     }
 
     #[test]

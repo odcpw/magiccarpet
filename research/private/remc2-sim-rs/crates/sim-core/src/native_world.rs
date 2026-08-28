@@ -3166,6 +3166,13 @@ pub struct Level2LiveState {
     pub(crate) goats: GoatFamily,
     pub(crate) mission: MissionContentSession,
     pub(crate) nyphur_dispatcher: NyphurCapability,
+    /// Source `FrameTimingIndex_26`, advanced once by PlayerEvents before
+    /// UpdateEntities and kept distinct from every player's turn byte.
+    pub(crate) source_frame_timing_index: u8,
+    /// Last source `dword_38527` class-10/model-45 membership rebuild.
+    /// Unsupported speed bytes skip UpdateEntities and therefore retain this
+    /// frozen list instead of rescanning current rows.
+    pub(crate) source_model45_building_selectors: Vec<u8>,
     /// Source `sub_11900` player damage mailbox.  The Bee contact writes this
     /// during its source-slot callback; the local-player route consumes it on
     /// the next source-ordered visit.

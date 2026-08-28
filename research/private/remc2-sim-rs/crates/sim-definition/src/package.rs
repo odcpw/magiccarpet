@@ -131,6 +131,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
                 "Package-bound complete-lifecycle creature absence objective evaluation.",
             ),
             (
+                "engine.objective.no_standing_buildings",
+                "Package-bound standing-building absence objective evaluation.",
+            ),
+            (
                 "engine.presentation.indexed_asset",
                 "Typed indexed presentation-asset binding.",
             ),

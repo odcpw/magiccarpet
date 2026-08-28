@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 9.0 milestone, this is a binding target with
+As of the semantic-contract 10.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -347,8 +347,12 @@ partial real implementation, not a completion claim:
   conditions, the Level 1/3 `CastleManaPercent` conditions, and all six
   package-present `NoLivingCreatures` conditions. The ordinary Castle and
   complete-lifecycle creature-absence evaluators plus their following-pass
-  authored-group gates consume those authored values; only the rival-wizard
-  and standing-buildings conditions remain read-only;
+  authored-group gates consume those authored values. The Level 2
+  `NoStandingBuildings` condition is now evaluated, but remains read-only, from
+  its package-bound private BLDGPRM chain, distinct source frame cadence, and
+  frozen pass-start model-45 membership before its following-turn exit-group
+  consumer. It and the rival-wizard condition remain the two read-only
+  objective conditions;
 - every package-present `AbsenceCountdown` in the first three levels has a
   stable instance ID and a typed `arming_ticks` descriptor; guarded
   `SetMechanicCountdown` publication is consumed by both dynamically authored

@@ -556,6 +556,41 @@ impl SourceArena {
             .map(|source_slots| !source_slots.is_empty())
     }
 
+    /// Rebuild remc2's source-ordered class-10/model-45 membership as the
+    /// raw `byte_0x46` selectors consumed by the type-9 objective service.
+    /// Drawing state is deliberately ignored: a callback may hide a member
+    /// after this pass-start list has been built, but reclaim occurs only at
+    /// the following UpdateEntities prologue.
+    #[must_use]
+    pub(crate) fn rebuilt_model45_building_selectors(&self) -> Vec<u8> {
+        let dynamic_slots = self
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .map(|(source_slot, _)| source_slot)
+            .collect::<BTreeSet<_>>();
+        let mut rows = self
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && !dynamic_slots.contains(&entity.index)
+                    && entity.class == 10
+                    && entity.model == 45
+            })
+            .map(|entity| (entity.index, entity.record_bytes()[74]))
+            .chain(
+                self.economy
+                    .authored_model45()
+                    .iter()
+                    .filter(|source| source.active)
+                    .map(|source| (source.source_entity_index, source.byte_0x46)),
+            )
+            .collect::<Vec<_>>();
+        rows.sort_unstable_by_key(|(source_slot, _)| *source_slot);
+        rows.into_iter().map(|(_, selector)| selector).collect()
+    }
+
     /// Rebuild remc2's source-ordered class-5 model lists from every live
     /// carrier.  Numeric callbacks consume this frozen pre-pass membership;
     /// same-pass births do not time-travel into it.
