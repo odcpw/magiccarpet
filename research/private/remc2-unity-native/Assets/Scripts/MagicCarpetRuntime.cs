@@ -530,6 +530,9 @@ namespace MagicCarpet.Native
 
         private NativeSession session;
         private NativeCampaignSession campaignSession;
+        private bool gameRuntimeMode;
+        private bool gameRuntimeStartupReady;
+        private EngineSessionTransport.CampaignSnapshotObservation gameRuntimeCampaignSnapshot;
         private NativeSim.CampaignWorldInfo campaignWorldInfo;
         private NativeSim.CampaignStepSnapshot level2StepSnapshot;
         private NativeSim.CampaignTerrainState level2TerrainState;
@@ -785,6 +788,7 @@ namespace MagicCarpet.Native
         private bool autoplay;
         private bool autoplayQuit;
         private bool engineSessionRequested;
+        private bool gameRuntimeRequested;
         private bool level1Autoplay;
         private bool level1AutoplayQuit;
         private bool level1AutoplayFast;
@@ -964,6 +968,21 @@ namespace MagicCarpet.Native
             string.IsNullOrEmpty(fatalError) &&
             campaignSession != null &&
             NativeCampaignSession.ActiveSessionCount == 1;
+
+        internal bool GameRuntimeProductionStartupReady =>
+            gameRuntimeMode &&
+            gameRuntimeStartupReady &&
+            string.IsNullOrEmpty(fatalError) &&
+            session != null &&
+            session.UsesGameRuntimeContract &&
+            campaignSession == null;
+
+        internal GameRuntimeTransport.Identity GameRuntimeProductionIdentity =>
+            session?.GameRuntimeIdentity() ?? throw new InvalidOperationException(
+                "game runtime production owner is not initialized");
+
+        internal EngineSessionTransport.CampaignSnapshotObservation
+            GameRuntimeProductionCampaignSnapshot => gameRuntimeCampaignSnapshot;
 
         internal NativeSim.CampaignWorldInfo Level2ProductionWorldInfo =>
             campaignWorldInfo;
@@ -2163,6 +2182,15 @@ namespace MagicCarpet.Native
                     OpenLevel2FromStartupArguments(arguments);
                     return;
                 }
+                if (gameRuntimeRequested)
+                {
+                    OpenAndValidateGameRuntimeProductionSession(
+                        GameRuntimePackagesFromArguments(arguments));
+                    Application.targetFrameRate = 120;
+                    Time.fixedDeltaTime = 1f / AuthoritativeSimulationHz;
+                    if (!Application.isBatchMode) CaptureMouse();
+                    return;
+                }
                 ResolveOwnerPaths(arguments, out packagePath, out closurePath);
                 var assetCachePath = OwnerAssetCache.ResolveOptionalPath(arguments);
                 if ((qualifiedMode || engineSessionRequested) && assetCachePath == null)
@@ -2317,6 +2345,30 @@ namespace MagicCarpet.Native
 
         private void FixedUpdate()
         {
+            if (gameRuntimeMode)
+            {
+                if (runtimeExitRequested) return;
+                try
+                {
+                    FixedUpdateGameRuntimeCampaign();
+                }
+                catch (Exception exception)
+                {
+                    runtimeExitRequested = true;
+                    fatalError = exception.ToString();
+                    Debug.LogError("MC_RUNTIME_FATAL " + fatalError);
+                    if (AutomatedInput || Application.isBatchMode)
+                    {
+                        DisposeSession();
+                        Application.Quit(3);
+                    }
+                    else
+                    {
+                        enabled = false;
+                    }
+                }
+                return;
+            }
             if (level2Mode)
             {
                 if (runtimeExitRequested) return;
@@ -2452,6 +2504,28 @@ namespace MagicCarpet.Native
             level2StepInputX = result.snapshot.x;
             level2StepInputY = result.snapshot.y;
             level2StepInputZ = result.snapshot.z;
+        }
+
+        private void FixedUpdateGameRuntimeCampaign()
+        {
+            if (!gameRuntimeStartupReady || session == null ||
+                !session.UsesGameRuntimeContract)
+            {
+                return;
+            }
+            var flags = ReadLiveMovementFlags();
+            appliedRoll = Cursor.lockState == CursorLockMode.Locked
+                ? ClampToSByte(steeringRoll)
+                : (sbyte)0;
+            appliedPitch = Cursor.lockState == CursorLockMode.Locked
+                ? ClampToSByte(steeringPitch)
+                : (sbyte)0;
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
+                appliedRoll,
+                appliedPitch,
+                unchecked((sbyte)flags),
+                0,
+                0);
         }
 
         private void PresentLevel2SpellEffects(
@@ -2715,6 +2789,12 @@ namespace MagicCarpet.Native
 
         private void Update()
         {
+            if (gameRuntimeMode)
+            {
+                if (!AutomatedInput && Input.GetMouseButtonDown(0))
+                    fireRequested = true;
+                return;
+            }
             if (level2Mode)
             {
                 UpdateLevel2SpellMenuKeyboardInput();
@@ -8390,6 +8470,57 @@ namespace MagicCarpet.Native
             DisposeSession();
         }
 
+        internal void QualificationInitializeGameRuntimeProductionFromArguments(
+            params string[] arguments)
+        {
+            Require(
+                !gameObject.activeInHierarchy &&
+                session == null &&
+                campaignSession == null,
+                "game runtime production route starts before Awake with no owner handle");
+            disposed = false;
+            fatalError = null;
+            gameRuntimeMode = false;
+            gameRuntimeStartupReady = false;
+            try
+            {
+                ConfigureStartupArguments(arguments);
+                Require(
+                    gameRuntimeRequested,
+                    "game runtime production qualification requires -mc-game-runtime");
+                OpenAndValidateGameRuntimeProductionSession(
+                    GameRuntimePackagesFromArguments(arguments));
+            }
+            catch (Exception exception)
+            {
+                fatalError = exception.ToString();
+                DisposeSession();
+                throw;
+            }
+        }
+
+        internal void QualificationDriveGameRuntimeFrames(int frameCount)
+        {
+            Require(
+                frameCount >= 0 && GameRuntimeProductionStartupReady,
+                "game runtime frame route requires a validated production owner");
+            for (var index = 0; index < frameCount; index++)
+            {
+                FixedUpdateGameRuntimeCampaign();
+                Require(
+                    string.IsNullOrEmpty(fatalError),
+                    $"game runtime frame {index} completed without a runtime failure");
+            }
+        }
+
+        internal void QualificationResetGameRuntimeProduction()
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "game runtime reset route requires a validated production owner");
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignReset();
+        }
+
         internal void QualificationInitializeLevel2Production(
             string package,
             string assetCache)
@@ -11566,6 +11697,7 @@ namespace MagicCarpet.Native
             autoplayQuit = HasArgument(arguments, "-mc-autoplay-quit");
             engineSessionRequested =
                 HasArgument(arguments, "-mc-engine-session");
+            gameRuntimeRequested = HasArgument(arguments, "-mc-game-runtime");
             level1Autoplay = HasArgument(arguments, "-mc-level1-autoplay");
             level1AutoplayQuit =
                 HasArgument(arguments, "-mc-level1-autoplay-quit");
@@ -11607,6 +11739,11 @@ namespace MagicCarpet.Native
             entityGallery = HasArgument(arguments, "-mc-entity-gallery");
             if (level2Mode)
             {
+                if (gameRuntimeRequested)
+                {
+                    throw new InvalidDataException(
+                        "-mc-level2 and -mc-game-runtime are mutually exclusive");
+                }
                 if (qualifiedRequested || debugMode || debugEntities || entityGallery)
                 {
                     throw new InvalidDataException(
@@ -11618,6 +11755,19 @@ namespace MagicCarpet.Native
                 {
                     throw new InvalidDataException(
                         "Level 2 startup rejects Level 1 autoplay and audio qualification");
+                }
+                qualifiedMode = false;
+                return;
+            }
+            if (gameRuntimeRequested)
+            {
+                if (qualifiedRequested || debugMode || debugEntities || entityGallery ||
+                    autoplay || level1Autoplay || engineSessionRequested ||
+                    localAudioQualificationMode || positionalAudioQualificationMode)
+                {
+                    throw new InvalidDataException(
+                        "-mc-game-runtime is a distinct headless production owner and " +
+                        "rejects legacy presentation, autoplay, and audio modes");
                 }
                 qualifiedMode = false;
                 return;
@@ -11685,6 +11835,76 @@ namespace MagicCarpet.Native
             params GameRuntimeTransport.InstalledPackageResource[] packages)
         {
             return NativeSession.OpenGameRuntime(packages);
+        }
+
+        private static GameRuntimeTransport.InstalledPackageResource[]
+            GameRuntimePackagesFromArguments(string[] arguments)
+        {
+            var packages = new List<GameRuntimeTransport.InstalledPackageResource>();
+            for (var index = 0; index < arguments.Length; index++)
+            {
+                if (arguments[index] != "-mc-runtime-package") continue;
+                if (++index >= arguments.Length ||
+                    string.IsNullOrWhiteSpace(arguments[index]))
+                {
+                    throw new InvalidDataException(
+                        "-mc-runtime-package requires a nonblank owner-local package path");
+                }
+                packages.Add(new GameRuntimeTransport.InstalledPackageResource
+                {
+                    package_dir = Path.GetFullPath(arguments[index]),
+                    owner_cache_path = null
+                });
+            }
+            if (packages.Count == 0)
+            {
+                throw new InvalidDataException(
+                    "-mc-game-runtime requires an unordered set of repeated " +
+                    "-mc-runtime-package paths");
+            }
+            return packages.ToArray();
+        }
+
+        private void OpenAndValidateGameRuntimeProductionSession(
+            GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
+            if (session != null || campaignSession != null)
+            {
+                throw new InvalidOperationException(
+                    "a native gameplay owner is already attached to this runtime");
+            }
+            var opened = OpenGameRuntimeSessionForPackages(packages);
+            try
+            {
+                var identity = opened.GameRuntimeIdentity();
+                var observation = opened.GameRuntimeCampaignSnapshot();
+                Require(
+                    identity.mode == GameRuntimeTransport.PlayingMode &&
+                    identity.active_runtime_flow != null &&
+                    identity.active_runtime_flow.bound_level_id ==
+                        identity.active_runtime_flow.entry_level_id,
+                    "resolver-derived game runtime opened its declared semantic entry");
+                Require(
+                    identity.session != null &&
+                    identity.session.session_id == opened.Handle.ToString() &&
+                    observation.identity.session_id == identity.session.session_id &&
+                    observation.identity.generation == identity.session.generation &&
+                    observation.identity.tick == identity.session.tick,
+                    "production game runtime snapshot is bound to the same nested session");
+                session = opened;
+                gameRuntimeCampaignSnapshot = observation;
+                gameRuntimeMode = true;
+                gameRuntimeStartupReady = true;
+                Debug.Log(
+                    $"MC_GAME_RUNTIME_STARTUP VERIFIED handle={opened.Handle} " +
+                    $"level={identity.active_runtime_flow.bound_level_id} " +
+                    $"definition={identity.session.definition_hash}");
+            }
+            catch
+            {
+                opened.Dispose();
+                throw;
+            }
         }
 
         private static NativeSession OpenSessionWithAssetCache(
@@ -12222,6 +12442,9 @@ namespace MagicCarpet.Native
             level2PresentationOrder.Clear();
             campaignSession?.Dispose();
             campaignSession = null;
+            gameRuntimeMode = false;
+            gameRuntimeStartupReady = false;
+            gameRuntimeCampaignSnapshot = null;
             level2StartupReady = false;
             level2Mode = false;
             spellMenuCommands.Clear();

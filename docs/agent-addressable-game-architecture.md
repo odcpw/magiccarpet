@@ -417,8 +417,11 @@ partial real implementation, not a completion claim:
   operations from the nested session on that same runtime handle, without a
   second session or destroy path. The production `NativeSession` facade can
   now own that resolver-derived handle and borrow the same generic gameplay
-  facet without opening either legacy registry; production presentation and
-  shell startup have not yet migrated to this owner;
+  facet without opening either legacy registry. `MagicCarpetRuntime` has an
+  explicit headless production mode that admits an unordered owner-local
+  package set, lets Rust select the semantic entry, and drives fixed-step/reset
+  through that same handle. Terrain, entity, HUD, audio and effects
+  presentation have not yet migrated to this owner;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed

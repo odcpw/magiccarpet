@@ -46,6 +46,18 @@ namespace MagicCarpet.Native.Tests
             };
         }
 
+        private static string[] RuntimeArguments(params string[] packages)
+        {
+            var arguments = new string[1 + packages.Length * 2];
+            arguments[0] = "-mc-game-runtime";
+            for (var index = 0; index < packages.Length; index++)
+            {
+                arguments[1 + index * 2] = "-mc-runtime-package";
+                arguments[2 + index * 2] = packages[index];
+            }
+            return arguments;
+        }
+
         private static byte[] PackageSetJson(
             params GameRuntimeTransport.InstalledPackageResource[] packages)
         {
@@ -316,6 +328,86 @@ namespace MagicCarpet.Native.Tests
             // one resolver-derived runtime handle and its generic gameplay
             // facet. It does not migrate MagicCarpetRuntime presentation,
             // completion transitions, later-level rendering, or shell input.
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProductionMagicCarpetRuntimeOwnsAndStepsOneResolverRuntimeHandle()
+        {
+            var nativeSessions = NativeSession.ActiveSessionCount;
+            var campaignSessions = NativeCampaignSession.ActiveSessionCount;
+            Assert.That(campaignSessions, Is.Zero);
+            var root = new GameObject("resolver runtime production owner");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            ulong handle = 0;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                var incomplete = Assert.Throws<GameRuntimeTransport.TransitionException>(() =>
+                    runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                        RuntimeArguments(LevelTwoPackage, LevelOnePackage)));
+                Assert.That(incomplete.Status, Is.EqualTo(NativeSim.ValidationFailed));
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.False);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
+                Assert.That(
+                    NativeCampaignSession.ActiveSessionCount,
+                    Is.EqualTo(campaignSessions));
+
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions + 1));
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));
+
+                var identity = runtime.GameRuntimeProductionIdentity;
+                handle = ulong.Parse(identity.session.session_id);
+                Assert.That(identity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(
+                    identity.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.night_spire"));
+                Assert.That(identity.session.session_id, Is.EqualTo(handle.ToString()));
+                Assert.That(identity.session.generation, Is.EqualTo("1"));
+                Assert.That(identity.session.tick, Is.EqualTo("0"));
+
+                var before = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(before.identity.session_id, Is.EqualTo(handle.ToString()));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var stepped = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(stepped.identity.tick, Is.EqualTo("1"));
+                runtime.QualificationResetGameRuntimeProduction();
+                var reset = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(reset.identity.generation, Is.EqualTo("2"));
+                Assert.That(reset.identity.tick, Is.EqualTo("0"));
+                Assert.That(reset.value.state_hash, Is.EqualTo(before.value.state_hash));
+
+                Assert.That(
+                    NativeSim.mc_game_session_destroy_v1(handle),
+                    Is.EqualTo(NativeSim.InvalidArgument));
+                Assert.That(
+                    runtime.GameRuntimeProductionIdentity.session.session_id,
+                    Is.EqualTo(handle.ToString()));
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));
+            if (handle != 0)
+            {
+                Assert.That(
+                    NativeSim.mc_game_runtime_identity_json_v1(
+                        handle, IntPtr.Zero, 0, out _),
+                    Is.EqualTo(NativeSim.UnknownHandle));
+            }
+
+            // No-Claim: this proves MagicCarpetRuntime owns one resolver-derived
+            // runtime handle and drives its generic fixed-step/reset facet. It
+            // does not migrate terrain/HUD/audio/entity presentation, expose
+            // completion transitions, discover packages, or render later levels.
         }
 
         [Test]
