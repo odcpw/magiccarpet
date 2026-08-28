@@ -13,7 +13,7 @@
 
 use crate::{FlightWorld, Position, Tile};
 
-use super::{
+use super::super::super::{
     EntitySnapshot, FireballProjectileOrigin,
     level2_dynamic_economy::Level2FireballProjectileLaunchPayload,
 };

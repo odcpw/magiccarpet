@@ -490,11 +490,12 @@ pub use world_types::*;
 mod ballistic_scenery;
 #[path = "campaign/level2.rs"]
 mod campaign;
-mod campaign_multipart;
 mod campaign_shared_families;
 mod countdown_switch;
+mod creatures;
 mod level2_nyphur;
 mod terrain_strip;
+use creatures::worm::imported as campaign_multipart;
 pub(crate) use level2_nyphur::level2_nyphur_source_identity_parts;
 pub use level2_nyphur::{
     Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchCall, Level2NyphurDispatchHelper,

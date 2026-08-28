@@ -6,7 +6,7 @@
 
 use crate::{FlightWorld, Position, Tile};
 
-use super::super::*;
+use super::super::super::*;
 
 const MODEL3_DESCRIPTOR_INDEX: u16 = 74;
 const MODEL3_DESCRIPTOR_FLAGS: u8 = 1;
@@ -161,7 +161,7 @@ impl Level2EconomyState {
     /// rows. Each successful child consumes its own NewEvent allocation/RNG
     /// seed, then `qmemcpy` overwrites the child's local RNG with the root's
     /// post-constructor RNG.
-    pub(super) fn allocate_model3_chain(
+    pub(in crate::native_world) fn allocate_model3_chain(
         &mut self,
         source: &mut Level2AuthoredClass5Source,
     ) -> Level2AuthoredClass5Model3State {
@@ -310,7 +310,7 @@ impl Level2EconomyState {
     /// Advance one model-3 root through the reachable source callbacks. The
     /// action-232 children are presentation rows copied by the constructor;
     /// no model-27 child callback is attached to them.
-    pub(super) fn step_authored_class5_model3(
+    pub(in crate::native_world) fn step_authored_class5_model3(
         &mut self,
         source: &mut Level2AuthoredClass5Source,
         target: Option<EntitySnapshot>,

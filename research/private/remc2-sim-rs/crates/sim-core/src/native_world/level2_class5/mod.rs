@@ -17,7 +17,6 @@ use super::*;
 pub(super) mod archer;
 pub(super) mod dragon;
 pub(super) mod firefly;
-mod model3;
 mod model9;
 pub(super) mod trader;
 
