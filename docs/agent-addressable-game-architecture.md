@@ -385,10 +385,12 @@ partial real implementation, not a completion claim:
   Firefly and Skeleton families writable across Levels 1-3. Their real group
   producers construct the ordinary shared-arena creature at the authored
   location; the focused causal proof follows a Level 1 Firefly through its
-  ordinary movement and map-chain visit after reopen/reset. Reset-live
-  Skeletons and Goat, Worm, Villager and Trader placements remain read-only
-  until their distinct placement authority is closed. All thirty-nine
-  package-present Experience Scroll placements across Levels 1-3
+  ordinary movement and map-chain visit after reopen/reset. The eleven
+  reset-live Level 3 Skeletons now relocate their exact imported carriers;
+  one focused causal proof reaches the ordinary model-9 movement and map-chain
+  consumer after reopen/reset. Goat, Worm, Villager and Trader placements
+  remain read-only until their distinct placement authority is closed. All
+  thirty-nine package-present Experience Scroll placements across Levels 1-3
   bind to their immutable authored-feature rows before construction; the
   ordinary class-14 pickup callback consumes the authored location through XP
   award, same-pass hide and following-pass reclaim. The three package-present

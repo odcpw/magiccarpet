@@ -555,6 +555,7 @@ fn move_entity_targets_are_package_projected() {
             "creature.dragon.at_107_150",
             "creature.bee.at_108_136",
             "creature.archer.at_30_97",
+            "creature.skeleton.at_75_140",
         ],
         "session_reset",
     );
@@ -583,10 +584,10 @@ fn move_entity_targets_are_package_projected() {
     );
     // No-Claim: this is the public package-projection gate. The already-focused
     // reset-live Shield, dynamic Castle, Stone, Tree, overlap-sensitive
-    // switches, complete-lifecycle grouped creatures, Experience Scroll, and
-    // Exit Portal authoring tests own publication/reopen/reset and their
-    // ordinary consumers; this test does not duplicate those lifecycles or
-    // claim reset-live/unsupported creature-family placements.
+    // switches, complete-lifecycle grouped/reset-live creatures, Experience
+    // Scroll, and Exit Portal authoring tests own publication/reopen/reset and
+    // their ordinary consumers; this test does not duplicate those lifecycles
+    // or claim unsupported creature-family placements.
 }
 
 #[test]

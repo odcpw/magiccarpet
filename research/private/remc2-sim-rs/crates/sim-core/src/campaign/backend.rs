@@ -1654,6 +1654,7 @@ mod tests {
     fn assert_package_content(
         root: &Path,
         expected_creatures: &[(CreatureKind, usize)],
+        expected_reset_live_creatures: &[(CreatureKind, usize)],
         expected_spells: &[(SpellKind, TilePosition, Option<u16>)],
         expected_scenery: &[(SceneryKind, usize)],
         expected_items: &[(ItemKind, usize)],
@@ -1678,6 +1679,20 @@ mod tests {
         for (kind, count) in expected_creatures {
             assert_eq!(level.authored_creature_count(*kind), *count);
         }
+        for (kind, count) in expected_reset_live_creatures {
+            assert_eq!(
+                level
+                    .entities()
+                    .iter()
+                    .filter(|entity| {
+                        entity.kind() == LevelEntityKind::Creature(*kind)
+                            && entity.activation_group().is_none()
+                            && entity.position_access() == LevelEntityPositionAccess::SessionReset
+                    })
+                    .count(),
+                *count
+            );
+        }
         for entity in level
             .entities()
             .iter()
@@ -1686,8 +1701,12 @@ mod tests {
             let LevelEntityKind::Creature(kind) = entity.kind() else {
                 unreachable!("filtered to semantic creatures")
             };
-            let expected_access = if entity.activation_group().is_some()
-                && supports_complete_creature_lifecycle(kind)
+            let reset_live = entity.activation_group().is_none()
+                && expected_reset_live_creatures
+                    .iter()
+                    .any(|(expected, _)| *expected == kind);
+            let expected_access = if supports_complete_creature_lifecycle(kind)
+                && (entity.activation_group().is_some() || reset_live)
             {
                 LevelEntityPositionAccess::SessionReset
             } else {
@@ -1831,6 +1850,7 @@ mod tests {
                 (CreatureKind::Villager, 28),
                 (CreatureKind::Firefly, 6),
             ],
+            &[],
             &[
                 (SpellKind::Castle, TilePosition { x: 194, y: 213 }, Some(1)),
                 (SpellKind::Speed, TilePosition { x: 202, y: 212 }, Some(11)),
@@ -1999,6 +2019,7 @@ mod tests {
                 (CreatureKind::Villager, 29),
                 (CreatureKind::Trader, 27),
             ],
+            &[],
             &[
                 (SpellKind::Shield, TilePosition { x: 138, y: 219 }, Some(22)),
                 (
@@ -2133,6 +2154,7 @@ mod tests {
                 (CreatureKind::Archer, 18),
                 (CreatureKind::Skeleton, 11),
             ],
+            &[(CreatureKind::Skeleton, 11)],
             &[
                 (SpellKind::Shield, TilePosition { x: 85, y: 85 }, None),
                 (
@@ -2198,7 +2220,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 97);
+        assert_eq!(level_three_movable.len(), 108);
         for (kind, expected) in [
             (CreatureKind::Archer, 18),
             (CreatureKind::Bee, 6),
@@ -4339,6 +4361,189 @@ mod tests {
         // consumption, and reset. It does not re-prove creature combat/death,
         // each family's distinct callback, organic prior objectives, reset-live
         // Skeleton placement, unsupported creature families, save/replay, or
+        // Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_three_reset_skeleton_before_ordinary_model9_visit_after_reopen()
+     {
+        const SKELETON_SLOT: u16 = 93;
+
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let skeleton =
+            sim_definition::adapter::stable_entity_id("creature.skeleton.at_75_140").unwrap();
+        let package_tile = TilePosition { x: 75, y: 140 };
+        let authored_tile = TilePosition { x: 90, y: 150 };
+        let package_entity = base.level_definition().unwrap().entity(&skeleton).unwrap();
+        assert_eq!(
+            package_entity.kind(),
+            LevelEntityKind::Creature(CreatureKind::Skeleton)
+        );
+        assert_eq!(package_entity.position(), package_tile);
+        assert!(package_entity.activation_group().is_none());
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-reset-skeleton-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-reset-skeleton-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            79,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let package_source = session.backend().campaign.level2_compatibility().entities()
+            [usize::from(SKELETON_SLOT)]
+        .clone();
+        assert_eq!(
+            (
+                package_source.class,
+                package_source.model,
+                package_source.action
+            ),
+            (5, 9, 72)
+        );
+        assert_eq!(
+            (
+                package_source.position.x >> 8,
+                package_source.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y)
+        );
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-reset-skeleton-placement",
+            &base,
+            "move-level-three-reset-skeleton",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(skeleton.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(published.revision(), 2);
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()
+                [usize::from(SKELETON_SLOT)]
+            .position,
+            package_source.position,
+            "publication must not mutate the already-open package authority"
+        );
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let authored_position = crate::Position {
+            x: (authored_tile.x << 8) | (package_source.position.x & 0xff),
+            y: (authored_tile.y << 8) | (package_source.position.y & 0xff),
+            z: package_source.position.z,
+        };
+        let authored_reset_hash = session.backend().campaign.state_hash();
+        {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let source = &compatibility.entities()[usize::from(SKELETON_SLOT)];
+            assert_eq!(source.position, authored_position);
+            assert_eq!((source.class, source.model, source.action), (5, 9, 72));
+            assert_eq!(
+                compatibility
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .map_chains()
+                    .tile_of(SKELETON_SLOT),
+                u16::from_le_bytes([authored_tile.x as u8, authored_tile.y as u8])
+            );
+        }
+
+        for _ in 0..24 {
+            if session.backend().campaign.level2_compatibility().entities()
+                [usize::from(SKELETON_SLOT)]
+            .action
+                == 79
+            {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let movement_start = session.backend().campaign.level2_compatibility().entities()
+            [usize::from(SKELETON_SLOT)]
+        .clone();
+        assert_eq!(
+            movement_start.action, 79,
+            "the real reset Skeleton must reach its ordinary movement callback"
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let moved = &compatibility.entities()[usize::from(SKELETON_SLOT)];
+        assert_eq!((moved.class, moved.model), (5, 9));
+        assert!(moved.active && !moved.drawing_disabled());
+        assert_ne!(moved.position, movement_start.position);
+        assert_eq!(moved.phase, movement_start.phase.wrapping_add(1));
+        assert!(
+            compatibility
+                .session
+                .state
+                .live
+                .economy
+                .map_chains()
+                .is_linked(SKELETON_SLOT)
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot: SKELETON_SLOT,
+                        ..
+                    }
+                ))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = &session.backend().campaign.level2_compatibility().entities()
+            [usize::from(SKELETON_SLOT)];
+        assert_eq!(reset.position, authored_position);
+        assert_eq!((reset.class, reset.model, reset.action), (5, 9, 72));
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 3 complete-lifecycle
+        // Skeleton placement crosses guarded publication, explicit reopen,
+        // its ordinary model-9 movement/map-chain consumer, and reset. It does
+        // not re-prove Skeleton combat/death/objective cleanup, grouped creature
+        // construction, Goat/Worm/Villager/Trader placement, save/replay, or
         // Unity presentation.
     }
 

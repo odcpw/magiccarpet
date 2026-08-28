@@ -1223,6 +1223,11 @@ impl CampaignDefinition {
                     continue;
                 };
                 let kind_matches = match entity.kind() {
+                    LevelEntityKind::Creature(expected) => {
+                        Mc2LevelDefinition::creature_for_reset_selector(
+                            row.class, row.model, row.action,
+                        ) == Some(expected)
+                    }
                     LevelEntityKind::Switch(expected) => {
                         Mc2LevelDefinition::switch_for_reset_selector(
                             row.class, row.model, row.action,

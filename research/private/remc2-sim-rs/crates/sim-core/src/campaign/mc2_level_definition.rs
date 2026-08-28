@@ -820,6 +820,11 @@ fn bind_private_entity(
             {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
+            LevelEntityKind::Creature(kind)
+                if feature.activation_group == 0 && supports_complete_creature_lifecycle(kind) =>
+            {
+                Mc2MovableRuntimeHint::ResetKindAndPosition
+            }
             LevelEntityKind::Switch(_) if feature.activation_group != 0 => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
