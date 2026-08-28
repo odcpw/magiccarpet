@@ -3058,48 +3058,6 @@ fn step_level2_campaign_once(
     (snapshot, events, event_count as usize)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct RecordedCampaignStep {
-    input: McCampaignStepInputV2,
-    snapshot: McCampaignStepSnapshotV2,
-    events: Vec<McCampaignEventV2>,
-}
-
-thread_local! {
-    static CAMPAIGN_STEP_RECORDER: RefCell<Option<(u64, Vec<RecordedCampaignStep>)>> =
-        const { RefCell::new(None) };
-}
-
-fn start_campaign_step_recording(handle: u64) {
-    CAMPAIGN_STEP_RECORDER.with(|recorder| {
-        assert!(
-            recorder.replace(Some((handle, Vec::new()))).is_none(),
-            "one test thread records at most one campaign stream"
-        );
-    });
-}
-
-fn finish_campaign_step_recording(handle: u64) -> Vec<RecordedCampaignStep> {
-    CAMPAIGN_STEP_RECORDER.with(|recorder| {
-        let (recorded_handle, steps) = recorder
-            .replace(None)
-            .expect("campaign stream recording was started");
-        assert_eq!(recorded_handle, handle);
-        steps
-    })
-}
-
-fn normalize_recorded_campaign_step(
-    mut snapshot: McCampaignStepSnapshotV2,
-    mut events: Vec<McCampaignEventV2>,
-) -> (McCampaignStepSnapshotV2, Vec<McCampaignEventV2>) {
-    snapshot.generation = 0;
-    for event in &mut events {
-        event.generation = 0;
-    }
-    (snapshot, events)
-}
-
 /// Test-only C-ABI route for production Level 2 turns.  Possession and
 /// Castle proofs deliberately use this rather than mutating a reset
 /// session, a holder, or an economy row behind the native boundary.
@@ -3108,7 +3066,10 @@ fn step_level2_campaign_public(
     input: McCampaignStepInputV2,
 ) -> (McCampaignStepSnapshotV2, Vec<McCampaignEventV2>) {
     let mut snapshot = McCampaignStepSnapshotV2::default();
-    let mut events = [McCampaignEventV2::default(); 1024];
+    let event_capacity = 1024_usize.saturating_mul(usize::from(
+        sim_core::entity_passes_for_speed_index(input.speed_index).max(1),
+    ));
+    let mut events = vec![McCampaignEventV2::default(); event_capacity];
     let mut event_count = 0;
     assert_eq!(
         mc_native_campaign_session_step(
@@ -3123,19 +3084,7 @@ fn step_level2_campaign_public(
         ),
         MC_STATUS_OK
     );
-    let events = events[..event_count as usize].to_vec();
-    CAMPAIGN_STEP_RECORDER.with(|recorder| {
-        if let Some((recorded_handle, steps)) = recorder.borrow_mut().as_mut()
-            && *recorded_handle == handle
-        {
-            steps.push(RecordedCampaignStep {
-                input,
-                snapshot,
-                events: events.clone(),
-            });
-        }
-    });
-    (snapshot, events)
+    (snapshot, events[..event_count as usize].to_vec())
 }
 
 fn campaign_day_hud_public(handle: u64, generation: u64, tick: u64) -> McCampaignDayHudSnapshotV2 {
@@ -3195,22 +3144,33 @@ fn campaign_players_public(handle: u64) -> Vec<McCampaignPlayerSnapshotV2> {
 }
 
 fn campaign_mana_spheres_public(handle: u64, generation: u64) -> Vec<McManaSphereSnapshotV2> {
-    let mut rows = [McManaSphereSnapshotV2::default(); 64];
-    let mut batch = McCampaignManaBatchV2::default();
-    assert_eq!(
-        mc_native_campaign_mana_spheres_copy(
-            handle,
-            generation,
-            0,
-            rows.as_mut_ptr(),
-            rows.len() as u32,
-            struct_size::<McManaSphereSnapshotV2>(),
-            &raw mut batch,
-            struct_size::<McCampaignManaBatchV2>(),
-        ),
-        MC_STATUS_OK
-    );
-    rows[..batch.written as usize].to_vec()
+    let mut result = Vec::new();
+    let mut start_ordinal = 0_u32;
+    loop {
+        let mut rows = [McManaSphereSnapshotV2::default(); 64];
+        let mut batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_mana_spheres_copy(
+                handle,
+                generation,
+                start_ordinal,
+                rows.as_mut_ptr(),
+                rows.len() as u32,
+                struct_size::<McManaSphereSnapshotV2>(),
+                &raw mut batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(batch.start_ordinal, start_ordinal);
+        result.extend_from_slice(&rows[..batch.written as usize]);
+        if batch.has_more == 0 {
+            assert_eq!(result.len(), batch.total_count as usize);
+            return result;
+        }
+        assert_ne!(batch.written, 0, "paged mana-sphere copy must advance");
+        start_ordinal = start_ordinal.saturating_add(batch.written);
+    }
 }
 
 fn campaign_spell_pickups_public(
@@ -3243,23 +3203,6 @@ fn campaign_invisible_state_public(handle: u64, generation: u64) -> McCampaignIn
             generation,
             &raw mut state,
             struct_size::<McCampaignInvisibleSnapshotV2>(),
-        ),
-        MC_STATUS_OK
-    );
-    state
-}
-
-fn campaign_beyond_sight_state_public(
-    handle: u64,
-    generation: u64,
-) -> McCampaignBeyondSightSnapshotV2 {
-    let mut state = McCampaignBeyondSightSnapshotV2::default();
-    assert_eq!(
-        mc_native_campaign_beyond_sight_state(
-            handle,
-            generation,
-            &raw mut state,
-            struct_size::<McCampaignBeyondSightSnapshotV2>(),
         ),
         MC_STATUS_OK
     );
@@ -3301,6 +3244,7 @@ struct Level2PublicPossessionClaimRoute {
     player_entity_index: u16,
     new_claimed_group1_sphere_ids: BTreeSet<u32>,
     merge_lineage: BTreeSet<(u32, u32)>,
+    castle_defender_events: Vec<McCampaignEconomyEventV2>,
 }
 
 /// Shared public route used by the Possession predecessor proof and the
@@ -3358,7 +3302,8 @@ fn drive_level2_public_group1_possession_claims_with_expected(
         .entity_index;
     let mut observed_claim_receipt_ids = BTreeSet::new();
     let mut observed_merge_lineage = BTreeSet::new();
-    let capture_public_economy_receipts =
+    let mut castle_defender_events = Vec::new();
+    let mut capture_public_economy_receipts =
         |receipts: &mut BTreeSet<u32>, merge_lineage: &mut BTreeSet<(u32, u32)>| {
             for event in campaign_economy_events_public(handle) {
                 if event.code == MC_CAMPAIGN_ECONOMY_MANA_SPHERE_CLAIMED
@@ -3371,6 +3316,12 @@ fn drive_level2_public_group1_possession_claims_with_expected(
                     // the a2/secondary sphere. Ownership lineage therefore
                     // flows from the claimed source into the surviving target.
                     merge_lineage.insert((event.secondary_id, event.primary_id));
+                } else if matches!(
+                    event.code,
+                    MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_COLLECTED_SPHERE
+                        | MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED
+                ) {
+                    castle_defender_events.push(event);
                 }
             }
         };
@@ -3790,6 +3741,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
         player_entity_index,
         new_claimed_group1_sphere_ids: observed_claim_receipt_ids,
         merge_lineage: observed_merge_lineage,
+        castle_defender_events,
     }
 }
 

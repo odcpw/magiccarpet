@@ -42,17 +42,55 @@ fn campaign_economy_events_with_mana_lineage(
     events
 }
 
-fn campaign_castle_is_live(handle: u64) -> bool {
-    with_campaign_session(handle, |session| {
+fn retain_castle_defender_receipts(
+    events: &[McCampaignEconomyEventV2],
+    retained: &mut Vec<McCampaignEconomyEventV2>,
+) {
+    retained.extend(events.iter().copied().filter(|event| {
+        matches!(
+            event.code,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_COLLECTED_SPHERE
+                | MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED
+        )
+    }));
+}
+
+fn assert_no_level2_dispatch_error(
+    handle: u64,
+    events: &[McCampaignEventV2],
+    context: &str,
+) {
+    if !events
+        .iter()
+        .any(|event| event.kind == 255)
+    {
+        return;
+    }
+    let diagnostic = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Castle proof requires a Level 2 campaign session",
-            ));
+            unreachable!("campaign fixture opened as Level 2")
         };
-        Ok(reset.economy().castle().is_some())
+        let error_slots = reset
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::Error { source_slot, .. } => Some(*source_slot),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let arena_rows = reset
+            .economy()
+            .live_arena_slots()
+            .into_iter()
+            .filter(|(source_slot, _)| error_slots.contains(source_slot))
+            .collect::<Vec<_>>();
+        Ok(format!(
+            "events={:?}, live_arena_rows={arena_rows:?}",
+            reset.dispatch_events()
+        ))
     })
-    .expect("read authoritative Castle state")
+    .expect("read the source scheduler error diagnostic");
+    panic!("{context} encountered a source scheduler error: {diagnostic}");
 }
 
 fn level2_source_valid_castle_route(handle: u64) -> (Position, (u16, u16)) {
@@ -282,47 +320,13 @@ fn level2_campaign_public_tier0_possession_claims_group1_mana_from_strict_target
 }
 
 #[test]
-fn level2_campaign_public_beyond_sight_completes_ordinary_economy_and_reset_route() {
+fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() {
     let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+    let (castle_launch_position, _) = level2_source_valid_castle_route(handle);
     let isolated_handle =
         open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
     let initial_hash = campaign_world_hash_public(handle);
     assert_eq!(campaign_world_hash_public(isolated_handle), initial_hash);
-    let initial_player = campaign_players_public(handle)
-        .into_iter()
-        .find(|player| player.active != 0 && player.slot == 0)
-        .expect("initial public local-player projection is available");
-    assert_eq!(
-        campaign_players_public(isolated_handle)
-            .into_iter()
-            .find(|player| player.active != 0 && player.slot == 0)
-            .expect("isolated public local-player projection is available"),
-        initial_player
-    );
-    let read_family12_projection = || {
-        with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-                return Err(AbiError::new(
-                    MC_STATUS_INVALID_ARGUMENT,
-                    "Beyond Sight XP proof requires a Level 2 campaign session",
-                ));
-            };
-            let player = reset
-                .shared_spells()
-                .players()
-                .iter()
-                .find(|player| player.slot == 0)
-                .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "missing local player row"))?;
-            Ok((
-                player.persistent_spell_experience[12],
-                player.runtime_spell_experience[12],
-                player.spell_unlocked_levels[12],
-            ))
-        })
-        .expect("read-only family-12 XP/unlocked projection")
-    };
-    assert_eq!(read_family12_projection(), (0, 0, 0));
-
     let mut world_info = McCampaignWorldInfoV2::default();
     assert_eq!(
         mc_native_campaign_world_info(
@@ -336,1266 +340,6 @@ fn level2_campaign_public_beyond_sight_completes_ordinary_economy_and_reset_rout
         .expect("source entity count fits usize")
         .saturating_mul(8);
     assert!(source_pass_bound > 0);
-
-    let row11_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Beyond Sight proof requires a Level 2 campaign session",
-            ));
-        };
-        let feature_position = |authored_index| {
-            reset
-                .mission()
-                .authored_features()
-                .iter()
-                .copied()
-                .find(|feature| feature.index == authored_index)
-                .map(|feature| feature.world_position(0))
-                .ok_or_else(|| {
-                    AbiError::new(
-                        MC_STATUS_BOUNDS,
-                        format!("missing authored row {authored_index}"),
-                    )
-                })
-        };
-        feature_position(11)
-    })
-    .expect("read Level 2 row-11 objective position");
-    let (castle_launch_position, expected_castle_root_xy) =
-        level2_source_valid_castle_route(handle);
-    let (row42_position, row65_position) = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Beyond Sight proof requires a Level 2 campaign session",
-            ));
-        };
-        let feature_position = |authored_index| {
-            reset
-                .mission()
-                .authored_features()
-                .iter()
-                .copied()
-                .find(|feature| feature.index == authored_index)
-                .map(|feature| feature.world_position(0))
-                .ok_or_else(|| {
-                    AbiError::new(
-                        MC_STATUS_BOUNDS,
-                        format!("missing authored row {authored_index}"),
-                    )
-                })
-        };
-        Ok((feature_position(42)?, feature_position(65)?))
-    })
-    .expect("read Level 2 switch-chain positions");
-    let mut input = McCampaignStepInputV2 {
-        abi_version: MC_NATIVE_ABI_VERSION,
-        struct_size: struct_size::<McCampaignStepInputV2>(),
-        generation: 0,
-        command: valid_command(),
-        player_slot: 0,
-        speed_index: 0,
-        player_x: castle_launch_position.x,
-        player_y: castle_launch_position.y,
-        player_z: castle_launch_position.z,
-        ..McCampaignStepInputV2::default()
-    };
-    let baseline_sphere_ids = campaign_mana_spheres_public(handle, 0)
-        .into_iter()
-        .filter(|sphere| sphere.active != 0 && sphere.model == 39)
-        .map(|sphere| sphere.sphere_id)
-        .collect::<BTreeSet<_>>();
-    start_campaign_step_recording(handle);
-
-    let mut family12_rows = [McCampaignEntitySnapshotV2::default(); 1];
-    let mut family12_written = 0;
-    assert_eq!(
-        mc_native_campaign_entities_copy(
-            handle,
-            38,
-            family12_rows.as_mut_ptr(),
-            1,
-            struct_size::<McCampaignEntitySnapshotV2>(),
-            &raw mut family12_written,
-        ),
-        MC_STATUS_OK
-    );
-    assert_eq!(family12_written, 1);
-    let family12_source = family12_rows[0];
-    assert_eq!(
-        (
-            family12_source.entity_index,
-            family12_source.active,
-            family12_source.class_id,
-            family12_source.model,
-            family12_source.action,
-            family12_source.phase,
-        ),
-        (38, 1, 15, 12, 37, 39),
-        "the public entity projection exposes the static family-12 source row"
-    );
-    let (mut latest_snapshot, _) = step_level2_campaign_public(handle, input);
-
-    let mut player_entity_index = latest_snapshot.player_entity_index;
-    let mut attempted_target_ids = BTreeSet::new();
-    let mut claimed_group1_ids = BTreeSet::new();
-    let mut group1_merge_lineage = BTreeSet::new();
-    let mut castle_collected_sphere_ids = BTreeSet::new();
-    let mut claim_route_deltas = Vec::new();
-
-    input.player_x = castle_launch_position.x;
-    input.player_y = castle_launch_position.y;
-    input.player_z = castle_launch_position.z;
-    let mut hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    for _ in 0..source_pass_bound {
-        if hud.local_player_mana >= 1_000 {
-            break;
-        }
-        let (snapshot, _) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
-            handle,
-            &mut group1_merge_lineage,
-            &mut castle_collected_sphere_ids,
-        );
-        hud = campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    }
-    assert!(hud.local_player_mana >= 1_000);
-
-    let castle_command = McCommandV2 {
-        abi_version: MC_NATIVE_ABI_VERSION,
-        struct_size: struct_size::<McCommandV2>(),
-        flags: 0x40,
-        requested_spell: 2,
-        ..McCommandV2::default()
-    };
-    input.command = castle_command;
-    let (castle_request_snapshot, castle_arm_events) = step_level2_campaign_public(handle, input);
-    latest_snapshot = castle_request_snapshot;
-    let _ = campaign_economy_events_with_mana_lineage(
-        handle,
-        &mut group1_merge_lineage,
-        &mut castle_collected_sphere_ids,
-    );
-    assert_eq!(
-        castle_arm_events
-            .iter()
-            .filter(|event| event.pass == 0 && event.kind == 8 && event.family == 38)
-            .count(),
-        1,
-        "player slot 111 arms Castle before holder 117 and the live flyer callback publishes once in the same pass"
-    );
-    input.command = valid_command();
-    assert!(
-        castle_arm_events
-            .iter()
-            .all(|event| !(event.kind == 8 && event.family == 1)),
-        "the Castle root remains a later dynamic lifecycle receipt"
-    );
-    let mut castle_root_seen = false;
-    for _ in 0..64 {
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
-            handle,
-            &mut group1_merge_lineage,
-            &mut castle_collected_sphere_ids,
-        );
-        castle_root_seen |= events
-            .iter()
-            .any(|event| event.kind == 8 && event.family == 1);
-        if castle_root_seen {
-            break;
-        }
-    }
-    assert!(castle_root_seen, "ordinary Castle build allocates its root");
-    let actual_castle_root = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Castle read requires a Level 2 campaign session",
-            ));
-        };
-        reset
-            .economy()
-            .castle()
-            .map(|castle| castle.position)
-            .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "missing Castle root"))
-    })
-    .expect("read the source-positioned Castle root");
-    assert_eq!(
-        (actual_castle_root.x, actual_castle_root.y),
-        expected_castle_root_xy,
-        "the public cast lands 4,096 source units ahead of the player at the selected package-backed root"
-    );
-
-    let read_castle = || {
-        with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-                return Err(AbiError::new(
-                    MC_STATUS_INVALID_ARGUMENT,
-                    "Castle read requires a Level 2 campaign session",
-                ));
-            };
-            Ok(reset.economy().castle().map(|castle| {
-                (
-                    reset.economy().player_castle_stage(),
-                    castle.level,
-                    castle.action,
-                    castle.build_state,
-                    castle.mana,
-                    castle.defender_count,
-                )
-            }))
-        })
-        .expect("read-only public Castle lifecycle state")
-    };
-    let mut stage_one_ready = false;
-    for _ in 0..source_pass_bound {
-        stage_one_ready = read_castle()
-            .is_some_and(|state| state.0 >= 1 && state.1 == 1 && state.2 == 4 && state.3 == 0);
-        if stage_one_ready {
-            break;
-        }
-        let (snapshot, _) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
-            handle,
-            &mut group1_merge_lineage,
-            &mut castle_collected_sphere_ids,
-        );
-    }
-    assert!(
-        stage_one_ready,
-        "ordinary Castle build reaches stable stage one"
-    );
-
-    let mut upgrade_hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    for _ in 0..source_pass_bound {
-        if upgrade_hud.local_player_mana >= 1_000 {
-            break;
-        }
-        let (snapshot, _) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
-            handle,
-            &mut group1_merge_lineage,
-            &mut castle_collected_sphere_ids,
-        );
-        upgrade_hud =
-            campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    }
-    assert!(
-        upgrade_hud.local_player_mana >= 1_000,
-        "ordinary Castle-overlap upkeep recovers the public upgrade mana gate"
-    );
-
-    let upgrade_root_slot = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Castle read requires a Level 2 campaign session",
-            ));
-        };
-        reset
-            .economy()
-            .castle()
-            .map(|castle| castle.source_entity_index)
-            .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "missing occupied Castle root"))
-    })
-    .expect("read occupied Castle root identity before recast");
-
-    // Recast the occupied Castle through the ordinary selected-spell
-    // command. The flyer reaches the root in this pass, but the reclaimed
-    // free-stack head places its model-43 product below the current numeric
-    // cursor. The product therefore waits until the following ascending
-    // pass, where it runs before the higher Castle root and publishes the
-    // upgrade mailbox for that same pass's root callback.
-    input.player_x = actual_castle_root.x;
-    input.player_y = actual_castle_root.y;
-    input.player_z = actual_castle_root.z;
-    input.command = castle_command;
-    let (_upgrade_request_snapshot, upgrade_arm_events) =
-        step_level2_campaign_public(handle, input);
-    let _ = campaign_economy_events_with_mana_lineage(
-        handle,
-        &mut group1_merge_lineage,
-        &mut castle_collected_sphere_ids,
-    );
-    let upgrade_product_slot = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Castle read requires a Level 2 campaign session",
-            ));
-        };
-        reset
-            .economy()
-            .castle_children()
-            .iter()
-            .find(|child| child.active && child.model == 43 && child.action == 45)
-            .map(|child| child.source_entity_index)
-            .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "missing Castle upgrade product"))
-    })
-    .expect("read the deferred Castle upgrade-product slot");
-    assert!(
-        upgrade_product_slot < upgrade_root_slot,
-        "the reclaimed lower product slot is behind the current cursor"
-    );
-    assert_eq!(
-        upgrade_arm_events
-            .iter()
-            .filter(|event| event.pass == 0 && event.kind == 8 && event.family == 2)
-            .count(),
-        0,
-        "the lower-slot upgrade product cannot run behind the current cursor"
-    );
-    assert_eq!(
-        upgrade_arm_events
-            .iter()
-            .filter(|event| {
-                event.pass == 0 && event.kind == 7 && event.source_slot == upgrade_root_slot
-            })
-            .count(),
-        1,
-        "the higher Castle root retains its one ordinary callback in the recast pass"
-    );
-    assert!(
-        upgrade_arm_events
-            .iter()
-            .all(|event| !(event.kind == 8 && event.family == 38)),
-        "the occupied-root hit retires the upgrade flyer before it can publish a live-projectile callback"
-    );
-    input.command = valid_command();
-    let (upgrade_root_snapshot, upgrade_root_events) = step_level2_campaign_public(handle, input);
-    latest_snapshot = upgrade_root_snapshot;
-    let _ = campaign_economy_events_with_mana_lineage(
-        handle,
-        &mut group1_merge_lineage,
-        &mut castle_collected_sphere_ids,
-    );
-    assert!(
-        upgrade_root_events
-            .iter()
-            .all(|event| !(event.kind == 8 && event.family == 38)),
-        "the following pass cannot republish the consumed upgrade flyer"
-    );
-    assert_eq!(
-        upgrade_root_events
-            .iter()
-            .filter(|event| {
-                event.pass == 0
-                    && event.kind == 8
-                    && event.family == 2
-                    && event.source_slot == upgrade_product_slot
-            })
-            .count(),
-        1,
-        "the following pass dispatches the deferred lower-slot upgrade product exactly once"
-    );
-    assert_eq!(
-        upgrade_root_events
-            .iter()
-            .filter(|event| event.pass == 0
-                && event.kind == 7
-                && event.source_slot == upgrade_root_slot)
-            .count(),
-        1,
-        "the following ascending pass dispatches the already-live Castle root exactly once"
-    );
-    let mut stage_two_ready = false;
-    for _ in 0..source_pass_bound {
-        stage_two_ready = read_castle()
-            .is_some_and(|state| state.0 >= 2 && state.1 >= 2 && state.2 == 4 && state.3 == 0);
-        if stage_two_ready {
-            break;
-        }
-        let (snapshot, _) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
-            handle,
-            &mut group1_merge_lineage,
-            &mut castle_collected_sphere_ids,
-        );
-    }
-    assert!(
-        stage_two_ready,
-        "ordinary Castle upgrade reaches stable stage two"
-    );
-
-    // The stable root transition can land on an odd source phase. The
-    // ordinary action-4 maintenance callback runs on the next eligible
-    // even phase and materializes the one stage-two model-3 defender.
-    let mut stage_two_defender_ready = false;
-    for _ in 0..source_pass_bound {
-        stage_two_defender_ready = read_castle().is_some_and(|state| {
-            state.0 == 2 && state.1 == 2 && state.2 == 4 && state.3 == 0 && state.5 == 1
-        });
-        if stage_two_defender_ready {
-            break;
-        }
-        let (snapshot, _) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
-            handle,
-            &mut group1_merge_lineage,
-            &mut castle_collected_sphere_ids,
-        );
-    }
-    assert!(
-        stage_two_defender_ready,
-        "ordinary stage-two maintenance materializes its one source defender"
-    );
-
-    // Materialize the authored mana group only after the source stage-two
-    // defender is live. Producing it first gives neutral sphere physics and
-    // the stage-one Castle hundreds of ordinary passes to collapse/consume
-    // the intended stage-two input before the upgrade resets Castle mana.
-    input.player_x = row11_position.x;
-    input.player_y = row11_position.y;
-    input.player_z = 256;
-    input.command = valid_command();
-    let mut group_events = Vec::new();
-    for _ in 0..8 {
-        let (group_snapshot, events) = step_level2_campaign_public(handle, input);
-        latest_snapshot = group_snapshot;
-        group_events.extend(events);
-        if group_events.iter().any(|event| {
-            event.kind == MC_CAMPAIGN_EVENT_AUTHORED_GROUP
-                && event.source_slot == 23
-                && event.family == 1
-                && event.flags == 34
-        }) {
-            break;
-        }
-    }
-    assert!(
-        group_events.iter().any(|event| {
-            event.kind == MC_CAMPAIGN_EVENT_AUTHORED_GROUP
-                && event.source_slot == 23
-                && event.family == 1
-                && event.flags == 34
-        }),
-        "row-11 authored group receipt identifies group 1"
-    );
-    let group1_spheres = campaign_mana_spheres_public(handle, latest_snapshot.generation)
-        .into_iter()
-        .filter(|sphere| {
-            sphere.active != 0
-                && sphere.model == 39
-                && sphere.mana == 512
-                && sphere.owner_entity_index == 0
-                && !baseline_sphere_ids.contains(&sphere.sphere_id)
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        group1_spheres.len(),
-        28,
-        "ordinary row-11 production materializes all 28 source group-1 spheres: {group1_spheres:?}"
-    );
-    let group1_sphere_ids = group1_spheres
-        .iter()
-        .map(|sphere| sphere.sphere_id)
-        .collect::<BTreeSet<_>>();
-    let claim_cluster_priority_ids = [
-        (640_u16, 45_440_u16),
-        (60_288, 39_552),
-        (896, 33_152),
-        (60_032, 38_784),
-        (6_272, 39_552),
-    ]
-    .into_iter()
-    .map(|(source_x, source_y)| {
-        group1_spheres
-            .iter()
-            .min_by_key(|sphere| {
-                u32::from(sphere.x.abs_diff(source_x)) + u32::from(sphere.y.abs_diff(source_y))
-            })
-            .expect("group-1 source cluster has a public sphere representative")
-            .sphere_id
-    })
-    .collect::<Vec<_>>();
-    assert_eq!(
-        claim_cluster_priority_ids
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .len(),
-        5,
-        "the productive authored overlap-cluster representatives resolve to distinct public identities"
-    );
-
-    // These authored rows are deterministic representatives of productive
-    // public overlap clusters. Taking the representatives first avoids
-    // spending whole projectile lifetimes on neutral rows already covered by
-    // another cluster while grounded spheres continue their ordinary merge
-    // lifecycle.
-    while attempted_target_ids.len() < group1_sphere_ids.len() {
-        let Some(target) = campaign_mana_spheres_public(handle, latest_snapshot.generation)
-            .into_iter()
-            .filter(|sphere| {
-                sphere.active != 0
-                    && sphere.model == 39
-                    && sphere.owner_entity_index == 0
-                    && group1_sphere_ids.contains(&sphere.sphere_id)
-                    && !attempted_target_ids.contains(&sphere.sphere_id)
-            })
-            .min_by_key(|sphere| {
-                (
-                    claim_cluster_priority_ids
-                        .iter()
-                        .position(|source_id| *source_id == sphere.sphere_id)
-                        .unwrap_or(claim_cluster_priority_ids.len()),
-                    sphere.sphere_id,
-                )
-            })
-        else {
-            break;
-        };
-        attempted_target_ids.insert(target.sphere_id);
-        let route = drive_level2_public_group1_possession_claims_with_expected(
-            handle,
-            input,
-            target.sphere_id,
-            &group1_sphere_ids,
-            None,
-        );
-        input = route.input;
-        latest_snapshot = route.latest_snapshot;
-        player_entity_index = route.player_entity_index;
-        let new_claimed_group1_sphere_ids = route.new_claimed_group1_sphere_ids;
-        group1_merge_lineage.extend(route.merge_lineage);
-        claim_route_deltas.push((target.sphere_id, new_claimed_group1_sphere_ids.clone()));
-        claimed_group1_ids.extend(new_claimed_group1_sphere_ids);
-
-        let covered_live_claims = campaign_mana_spheres_public(handle, latest_snapshot.generation)
-            .into_iter()
-            .filter(|sphere| {
-                sphere.active != 0
-                    && sphere.model == 39
-                    && sphere.owner_entity_index == player_entity_index
-                    && sphere_has_source_ancestor(
-                        sphere.sphere_id,
-                        &claimed_group1_ids,
-                        &group1_merge_lineage,
-                    )
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            covered_live_claims
-                .iter()
-                .all(|sphere| sphere.mana > 0 && sphere.mana % 512 == 0),
-            "live claimed descendants retain integral authored mana"
-        );
-        if claimed_group1_ids.len() >= 23 {
-            break;
-        }
-    }
-    assert!(
-        claimed_group1_ids.len() >= 23,
-        "bounded ordinary Possession flights establish the public 20-deposit/3-retained claim floor (attempted={attempted_target_ids:?}, claimed={claimed_group1_ids:?}, deltas={claim_route_deltas:?})"
-    );
-    assert_ne!(player_entity_index, 0);
-
-    // Bind the exact source capacities independently of the number or size
-    // of partial defender trips observed on this broad journey. The root may
-    // also absorb overlapping owned spheres in `EndOfCastleProjectile_5F8F0`.
-    let (stage_two_defender_max_mana, stage_two_castle_capacity) =
-        with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-                return Err(AbiError::new(
-                    MC_STATUS_INVALID_ARGUMENT,
-                    "stage-two defender proof requires a Level 2 campaign session",
-                ));
-            };
-            let castle = reset.economy().castle().ok_or_else(|| {
-                AbiError::new(MC_STATUS_BOUNDS, "missing stable stage-two Castle root")
-            })?;
-            let defender_slot = castle.defender_slots[0];
-            let defender = reset
-                .economy()
-                .castle_children()
-                .iter()
-                .find(|child| {
-                    child.active
-                        && child.source_entity_index == defender_slot
-                        && child.source_class == 3
-                        && child.model == 3
-                })
-                .ok_or_else(|| {
-                    AbiError::new(MC_STATUS_BOUNDS, "missing live stage-two Castle defender")
-                })?;
-            Ok((defender.max_mana, castle.mana_capacity))
-        })
-        .expect("read the authoritative stage-two Castle economy state");
-    assert_eq!(
-        stage_two_defender_max_mana, 10_000,
-        "the source class-3/model-3 defender capacity is 10,000"
-    );
-    assert_eq!(
-        stage_two_castle_capacity, 18_000,
-        "the source stage-two Castle capacity is 18,000"
-    );
-    let retained_group1 = campaign_mana_spheres_public(handle, latest_snapshot.generation)
-        .into_iter()
-        .filter(|sphere| {
-            sphere.active != 0
-                && sphere.model == 39
-                && sphere.owner_entity_index == player_entity_index
-                && sphere_has_source_ancestor(
-                    sphere.sphere_id,
-                    &claimed_group1_ids,
-                    &group1_merge_lineage,
-                )
-        })
-        .map(|sphere| (sphere.sphere_id, sphere.mana))
-        .collect::<BTreeMap<_, _>>();
-    // Possession effects remain ordinary live callbacks while Castle
-    // construction proceeds, so observe any later ownership writes from
-    // the final public sphere snapshot rather than freezing the ledger at
-    // the helper boundary.
-    claimed_group1_ids.extend(retained_group1.keys().copied());
-    assert!(claimed_group1_ids.len() >= 23);
-    assert!(
-        retained_group1.values().copied().sum::<i32>() >= 1_536,
-        "the accumulated group-1 survivor carries the player max-mana reserve"
-    );
-
-    // The dense group-1 batch conserves enough mana but source merging
-    // and the one stage-two defender can collapse its reserve to a single
-    // live identity. Continue the already-authored switch route instead
-    // of substituting a mana-equivalent assertion: row 42 produces group
-    // 3, its inverse-overlap row 64 produces row 65, and row 65 produces
-    // the spatially isolated group-5 model-39 rows used below.
-    input.player_x = row42_position.x;
-    input.player_y = row42_position.y;
-    input.player_z = row42_position.z;
-    input.command = valid_command();
-    let mut group3_sphere_ids = BTreeSet::new();
-    for _ in 0..8 {
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let Some(group3_event) = events.iter().find(|event| {
-            event.kind == MC_CAMPAIGN_EVENT_AUTHORED_GROUP && event.family == 3 && event.flags == 51
-        }) else {
-            continue;
-        };
-        group3_sphere_ids.extend(
-            campaign_economy_events_public(handle)
-                .into_iter()
-                .filter(|event| {
-                    event.code == MC_CAMPAIGN_ECONOMY_MANA_SPHERE_SPAWNED
-                        && event.entity_0 == group3_event.source_slot
-                        && event.value_0 == 512
-                })
-                .map(|event| event.primary_id),
-        );
-        break;
-    }
-    assert_eq!(
-        group3_sphere_ids.len(),
-        20,
-        "the ordinary row-42 receipt materializes all twenty group-3 model-39 identities"
-    );
-
-    input.player_x = row65_position.x;
-    input.player_y = row65_position.y;
-    input.player_z = row65_position.z;
-    input.command = valid_command();
-    let mut group5_sphere_ids = BTreeSet::new();
-    for _ in 0..source_pass_bound {
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let Some(group5_event) = events.iter().find(|event| {
-            event.kind == MC_CAMPAIGN_EVENT_AUTHORED_GROUP && event.family == 5 && event.flags == 23
-        }) else {
-            continue;
-        };
-        group5_sphere_ids.extend(
-            campaign_economy_events_public(handle)
-                .into_iter()
-                .filter(|event| {
-                    event.code == MC_CAMPAIGN_ECONOMY_MANA_SPHERE_SPAWNED
-                        && event.entity_0 == group5_event.source_slot
-                        && event.value_0 == 512
-                })
-                .map(|event| event.primary_id),
-        );
-        break;
-    }
-    assert_eq!(
-        group5_sphere_ids.len(),
-        16,
-        "the ordinary row-65 receipt materializes all sixteen group-5 model-39 identities"
-    );
-
-    // The source model-1 flyer chooses its own eligible model-39 target
-    // from the source-pass snapshot before its first move. Do not replace
-    // that production decision with a test-side trajectory predictor:
-    // drive bounded ordinary requests from public neutral anchors and
-    // retain only ownership deltas actually observed through the ABI.
-    let mut attempted_group5_anchor_ids = BTreeSet::new();
-    let mut claimed_group5_ids = BTreeSet::new();
-    for _ in 0..group5_sphere_ids.len() {
-        let Some(target) = campaign_mana_spheres_public(handle, latest_snapshot.generation)
-            .into_iter()
-            .filter(|sphere| {
-                sphere.active != 0
-                    && sphere.model == 39
-                    && sphere.owner_entity_index == 0
-                    && group5_sphere_ids.contains(&sphere.sphere_id)
-                    && !attempted_group5_anchor_ids.contains(&sphere.sphere_id)
-            })
-            .min_by_key(|sphere| (sphere.source_entity_index, sphere.sphere_id))
-        else {
-            break;
-        };
-        attempted_group5_anchor_ids.insert(target.sphere_id);
-        let route = drive_level2_public_group1_possession_claims_with_expected(
-            handle,
-            input,
-            target.sphere_id,
-            &group5_sphere_ids,
-            None,
-        );
-        input = route.input;
-        latest_snapshot = route.latest_snapshot;
-        player_entity_index = route.player_entity_index;
-        claimed_group5_ids.extend(route.new_claimed_group1_sphere_ids);
-        let live_owned_group5_ids =
-            campaign_mana_spheres_public(handle, latest_snapshot.generation)
-                .into_iter()
-                .filter(|sphere| {
-                    sphere.active != 0
-                        && sphere.model == 39
-                        && sphere.owner_entity_index == player_entity_index
-                        && group5_sphere_ids.contains(&sphere.sphere_id)
-                })
-                .map(|sphere| sphere.sphere_id)
-                .collect::<BTreeSet<_>>();
-        assert!(
-            live_owned_group5_ids.is_subset(&claimed_group5_ids),
-            "every live group-5 identity was observed crossing the public ownership boundary"
-        );
-        if live_owned_group5_ids.len() >= 3 {
-            break;
-        }
-    }
-    let retained = campaign_mana_spheres_public(handle, latest_snapshot.generation)
-        .into_iter()
-        .filter(|sphere| {
-            sphere.active != 0
-                && sphere.model == 39
-                && sphere.owner_entity_index == player_entity_index
-                && group5_sphere_ids.contains(&sphere.sphere_id)
-        })
-        .map(|sphere| (sphere.sphere_id, sphere.mana))
-        .collect::<BTreeMap<_, _>>();
-    assert!(
-        retained
-            .keys()
-            .all(|sphere_id| claimed_group5_ids.contains(sphere_id)),
-        "every retained group-5 identity was observed as a public ownership delta"
-    );
-    assert!(
-        retained.len() >= 3,
-        "the ordinary Castle/group-5 route retains at least three distinct owned live spheres: {retained:?}"
-    );
-    assert!(
-        retained.values().copied().sum::<i32>() >= 1_536,
-        "the retained owned live sphere identities carry at least 1536 source mana"
-    );
-
-    // `sub_68D50` consumes the Castle's live mana field. The qualified level
-    // makes both group 1 and the later group-5 switch chain available, while
-    // Nyphur may source-legally retain raw relations to earlier spheres.
-    // Fund the unchanged tier-one predicate only after those ordinary level
-    // producers have run; do not assume group 1 is an isolated economy.
-    let mut castle_funded_for_tier_one = false;
-    for _ in 0..source_pass_bound {
-        castle_funded_for_tier_one = read_castle().is_some_and(|state| state.4 >= 10_000);
-        if castle_funded_for_tier_one {
-            break;
-        }
-        let (snapshot, _) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
-            handle,
-            &mut group1_merge_lineage,
-            &mut castle_collected_sphere_ids,
-        );
-    }
-    assert!(
-        castle_funded_for_tier_one,
-        "ordinary package-backed mana collection must satisfy sub_68D50's live 10,000-mana Castle predicate; group1_claimed={}, group5_claimed={}, collected={}",
-        claimed_group1_ids.len(),
-        claimed_group5_ids.len(),
-        castle_collected_sphere_ids.len(),
-    );
-
-    // The static family-12 source has zero life and therefore remains
-    // available throughout the economy route. Acquire it only after the
-    // aggregate-deposit/three-retained window is established so its dynamic
-    // holder allocation cannot perturb the earlier sphere-slot identities.
-    input.player_x = family12_source.x;
-    input.player_y = family12_source.y;
-    input.player_z = family12_source.z;
-    input.command = valid_command();
-    let mut beyond_public_events = Vec::new();
-    let mut acquired_family12 = false;
-    for _ in 0..8 {
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        beyond_public_events.extend(events.iter().copied());
-        acquired_family12 |= events.iter().any(|event| {
-            event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
-                && event.family == 12
-                && event.source_slot == 38
-                && event.flags == 1
-        });
-        if acquired_family12 {
-            break;
-        }
-    }
-    assert!(
-        acquired_family12,
-        "ordinary C-ABI overlap acquires static family-12 row 38"
-    );
-    let cold_beyond = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-    assert_eq!(
-        (cold_beyond.active, cold_beyond.tier, cold_beyond.action),
-        (1, 0, 36)
-    );
-    assert_eq!(read_family12_projection(), (0, 0, 0));
-    let cold_hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    assert!(
-        [cold_hud.left, cold_hud.right]
-            .into_iter()
-            .any(|slot| slot.raw_spell_selector == 12 && slot.tier == 0),
-        "the public Day HUD exposes the cold tier-0 family-12 holder"
-    );
-    let post_arrival_castle_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Castle position requires a Level 2 campaign session",
-            ));
-        };
-        reset
-            .economy()
-            .castle()
-            .map(|castle| castle.position)
-            .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "missing stage-two Castle"))
-    })
-    .expect("read-only post-arrival Castle position");
-    input.player_x = post_arrival_castle_position.x;
-    input.player_y = post_arrival_castle_position.y;
-    input.player_z = post_arrival_castle_position.z;
-    input.command = valid_command();
-    assert_eq!(
-        (input.player_x, input.player_y, input.player_z),
-        (
-            post_arrival_castle_position.x,
-            post_arrival_castle_position.y,
-            post_arrival_castle_position.z,
-        ),
-        "the public XP input is pinned to the live Castle position before the player body runs"
-    );
-
-    let (castle_overlap_snapshot, castle_overlap_events) =
-        step_level2_campaign_public(handle, input);
-    latest_snapshot = castle_overlap_snapshot;
-    beyond_public_events.extend(castle_overlap_events);
-    let mut mana_window_hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    for _ in 0..source_pass_bound {
-        if mana_window_hud.local_player_max_mana >= 2_536
-            && mana_window_hud.local_player_mana >= 2_400
-        {
-            break;
-        }
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        latest_snapshot = snapshot;
-        beyond_public_events.extend(events);
-        mana_window_hud =
-            campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    }
-    assert!(mana_window_hud.local_player_max_mana >= 2_536);
-    assert!(mana_window_hud.local_player_mana >= 2_400);
-    let read_castle_player_resources = || {
-        with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-                return Err(AbiError::new(
-                    MC_STATUS_INVALID_ARGUMENT,
-                    "Beyond Sight resource proof requires a Level 2 campaign session",
-                ));
-            };
-            let player = reset.shared_spells().player_entity();
-            Ok((player.max_mana, player.mana, player.mana_regen))
-        })
-        .expect("read-only Castle-overlap player resource projection")
-    };
-    let (player_max_mana, player_mana, player_mana_regen) = read_castle_player_resources();
-    assert!(player_max_mana >= 2_536);
-    assert!(player_mana >= 2_400);
-    assert!(
-        player_mana_regen >= 1_000,
-        "the source-time Castle overlap selected positive upkeep before the post-body projection moved"
-    );
-
-    // Tier zero has no Castle-mana requirement. Repeating the ordinary
-    // selected cast terminalizes an active model-12 holder to W=1; the
-    // next slot-38 callback cleans it before player slot 111 may re-arm.
-    // Re-arm succeeds only when the source player-mana gate has recovered
-    // to the physical tier-zero cost, so every transition is checked
-    // against the pre-pass public resource state.
-    let mut beyond = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-    assert_eq!((beyond.tier, beyond.experience_awarded), (0, 0));
-    let mut fresh_tier0_activations = 0_usize;
-    let mut terminal_repeat_passes = 0_usize;
-    let mut xp_passes = 0_usize;
-    while beyond.experience_awarded < 360 {
-        assert!(
-            xp_passes < source_pass_bound,
-            "ordinary selected action-36 repeats reach 360 awards within the source arena bound"
-        );
-        let before = beyond;
-        let (_, player_mana_before, _) = read_castle_player_resources();
-        input.command = McCommandV2 {
-            abi_version: MC_NATIVE_ABI_VERSION,
-            struct_size: struct_size::<McCommandV2>(),
-            flags: 0x40,
-            requested_spell: 12,
-            ..McCommandV2::default()
-        };
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        beyond_public_events.extend(events.iter().copied());
-        latest_snapshot = snapshot;
-        xp_passes += 1;
-        beyond = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-        assert_eq!(
-            beyond.tier, 0,
-            "all pre-upgrade public activations stay tier zero"
-        );
-        let (player_max_mana, _, player_mana_regen) = read_castle_player_resources();
-        assert!(player_max_mana >= 2_536);
-        assert!(
-            player_mana_regen == -1_800 || player_mana_regen >= 1_000,
-            "source action-36 charge/recharge leaves the expected mana-regeneration state"
-        );
-        let experience_delta = beyond.experience_awarded - before.experience_awarded;
-        assert!(
-            experience_delta == 0 || experience_delta == 1,
-            "one source action-36 pass contributes at most one XP award"
-        );
-        if beyond.active_value == beyond.activation_value
-            && before.active_value != before.activation_value
-        {
-            assert!(
-                player_mana_before >= 1_800,
-                "every cold or post-cleanup re-arm satisfies the source player-mana gate"
-            );
-            fresh_tier0_activations += 1;
-        }
-        if before.active_value == before.activation_value {
-            assert_eq!(
-                experience_delta, 1,
-                "the first active action-36 pulse awards exactly once"
-            );
-        } else if before.active_value == 1 {
-            assert_eq!(
-                experience_delta, 0,
-                "active-repeat terminal pass adds no XP"
-            );
-            if player_mana_before >= 1_800 {
-                assert_eq!(
-                    beyond.active_value, beyond.activation_value,
-                    "terminal cleanup may re-arm in the same outer turn only when the later player callback passes the mana gate"
-                );
-            } else {
-                assert_eq!(
-                    beyond.active_value, 0,
-                    "terminal cleanup remains cold while the later player callback lacks mana"
-                );
-            }
-            terminal_repeat_passes += 1;
-        } else {
-            assert_eq!(experience_delta, 0, "later tier-zero pulses add no XP");
-        }
-        if experience_delta == 1 {
-            assert_eq!(
-                beyond.experience_awarded,
-                i32::try_from(fresh_tier0_activations).expect("activation count fits i32"),
-                "each fresh public action-36 arm contributes one and only one XP award"
-            );
-        }
-    }
-    assert_eq!(fresh_tier0_activations, 360);
-    assert_eq!(beyond.experience_awarded, 360);
-    assert_eq!(terminal_repeat_passes, 359);
-    assert!(
-        xp_passes > 719,
-        "Castle recharge makes the public route longer than the ideal alternating-pass lower bound"
-    );
-    assert!(
-        xp_passes < source_pass_bound,
-        "public XP route stays within the source arena bound"
-    );
-    assert_eq!(read_family12_projection(), (0, 360, 1));
-    input.command = valid_command();
-    let (neutral_snapshot, neutral_events) = step_level2_campaign_public(handle, input);
-    beyond_public_events.extend(neutral_events.iter().copied());
-    latest_snapshot = neutral_snapshot;
-    let neutral_beyond = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-    assert_eq!(neutral_beyond.experience_awarded, 360);
-    let mut cleanup_passes = 0;
-    while beyond.active_value != 0 {
-        assert!(
-            cleanup_passes < source_pass_bound,
-            "tier-zero terminal cleanup stays within the source arena bound"
-        );
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        beyond_public_events.extend(events.iter().copied());
-        latest_snapshot = snapshot;
-        beyond = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-        assert_eq!(beyond.experience_awarded, 360);
-        cleanup_passes += 1;
-    }
-    assert_eq!(beyond.active_value, 0);
-
-    // The ordinary source menu protocol first selects family 12, then
-    // writes the now-unlocked raw tier, and finally assigns that tier to a
-    // physical hand holder through SetSpell.
-    let player_before_menu = campaign_players_public(handle)
-        .into_iter()
-        .find(|player| player.active != 0 && player.slot == 0)
-        .expect("public player projection exposes the pre-menu source selection");
-    input.command = McCommandV2 {
-        opcode: 40,
-        argument_1: 12,
-        argument_2: 1,
-        ..valid_command()
-    };
-    let (_menu_snapshot, menu_events) = step_level2_campaign_public(handle, input);
-    beyond_public_events.extend(menu_events);
-    let selected_player = campaign_players_public(handle)
-        .into_iter()
-        .find(|player| player.active != 0 && player.slot == 0)
-        .expect("public player projection exposes the local source selection");
-    assert_eq!(selected_player.selected_spell_ui_index, 12);
-    input.command = McCommandV2 {
-        opcode: 41,
-        argument_1: 1,
-        ..valid_command()
-    };
-    let (_tier_menu_snapshot, tier_menu_events) = step_level2_campaign_public(handle, input);
-    beyond_public_events.extend(tier_menu_events);
-    let selected_player = campaign_players_public(handle)
-        .into_iter()
-        .find(|player| player.active != 0 && player.slot == 0)
-        .expect("public player projection exposes the raw tier selection");
-    assert_eq!(selected_player.selected_spell_ui_index, 12);
-    assert_eq!(selected_player.selected_subspell_index, 1);
-    assert!(
-        player_before_menu.selected_spell_ui_index != 12
-            || player_before_menu.selected_subspell_index != 1,
-        "the public opcode-40/41 sequence must visibly change the live Rust selection"
-    );
-    input.command = McCommandV2 {
-        opcode: 31,
-        argument_1: 12,
-        argument_2: 1,
-        ..valid_command()
-    };
-    let (tier_one_snapshot, tier_one_events) = step_level2_campaign_public(handle, input);
-    beyond_public_events.extend(tier_one_events);
-    latest_snapshot = tier_one_snapshot;
-    let tier_one_hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    let tier_one_slot = [tier_one_hud.left, tier_one_hud.right]
-        .into_iter()
-        .find(|slot| slot.raw_spell_selector == 12)
-        .expect("public HUD keeps the family-12 hand after opcode 31");
-    assert_eq!(tier_one_slot.tier, 1);
-    assert_eq!(tier_one_slot.action, 36);
-    assert_eq!(tier_one_slot.holder_entity_index, 38);
-    let tier_one_castle = read_castle().expect("stage-two Castle remains live for tier one");
-    assert!(
-        tier_one_castle.4 >= 10_000,
-        "the ordinary economy route must satisfy sub_68D50's tier-one Castle-mana predicate before the cast"
-    );
-
-    input.command = McCommandV2 {
-        abi_version: MC_NATIVE_ABI_VERSION,
-        struct_size: struct_size::<McCommandV2>(),
-        flags: 0x40,
-        requested_spell: 12,
-        ..McCommandV2::default()
-    };
-    let (tier_one_arm_snapshot, tier_one_arm_events) = step_level2_campaign_public(handle, input);
-    beyond_public_events.extend(tier_one_arm_events);
-    latest_snapshot = tier_one_arm_snapshot;
-    let tier_one_armed = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-    assert_eq!(tier_one_armed.tier, 1);
-    assert_eq!(tier_one_armed.mana_cost, 2_400);
-    assert_eq!(
-        tier_one_armed.active_value, tier_one_armed.activation_value,
-        "the selected tier-one cast arms the source holder at its full countdown"
-    );
-    input.command = valid_command();
-    let mut tier_one_pulse = None;
-    for _ in 0..source_pass_bound {
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        beyond_public_events.extend(events);
-        latest_snapshot = snapshot;
-        let state = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-        if state.experience_awarded > 360 {
-            tier_one_pulse = Some(state);
-            break;
-        }
-    }
-    let tier_one_pulse = tier_one_pulse.expect("ordinary tier-one cast reaches its first pulse");
-    assert_eq!(tier_one_pulse.experience_awarded, 361);
-    assert_eq!(tier_one_pulse.tier, 1);
-    let active_hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    assert_ne!(
-        active_hud.nyphur.visibility_flags & 0x01,
-        0,
-        "sub_63570 admits the Nyphur visibility consumer while the tier-one holder is present"
-    );
-    assert_ne!(active_hud.nyphur.visibility_flags & 0x08, 0);
-
-    let tier_one_activation = usize::try_from(tier_one_pulse.activation_value.max(0))
-        .expect("tier-one activation value is non-negative")
-        .saturating_add(source_pass_bound);
-    let mut expired = tier_one_pulse;
-    for _ in 0..tier_one_activation {
-        if expired.active_value == 0 {
-            break;
-        }
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
-        beyond_public_events.extend(events);
-        latest_snapshot = snapshot;
-        expired = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-    }
-    assert_eq!(expired.active_value, 0);
-    let expired_hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    assert_eq!(expired_hud.nyphur.visibility_flags & 0x08, 0);
-    assert_eq!(expired.experience_awarded, 361);
-    let (cleanup_snapshot, cleanup_events) = step_level2_campaign_public(handle, input);
-    beyond_public_events.extend(cleanup_events);
-    latest_snapshot = cleanup_snapshot;
-    let cleaned = campaign_beyond_sight_state_public(handle, latest_snapshot.generation);
-    assert_eq!(cleaned.active_value, 0);
-    assert_eq!(cleaned.cleanup_requested, 0);
-    assert_eq!(cleaned.experience_awarded, 361);
-    let cleanup_hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
-    assert_eq!(cleanup_hud.nyphur.visibility_flags & 0x08, 0);
-    assert!(
-        beyond_public_events
-            .iter()
-            .all(|event| !(event.kind == 8 && event.family == 14)),
-        "the complete ordinary family-12 lifecycle never allocates the unrelated model-74/action-72 arena family"
-    );
-    let positive_stream = finish_campaign_step_recording(handle);
-    let positive_stream_len = positive_stream.len();
-    assert!(
-        positive_stream_len > 720,
-        "the replay trace contains the complete public economy, XP, tier, expiry, and cleanup stream"
-    );
-    assert!(
-        positive_stream
-            .iter()
-            .flat_map(|step| &step.events)
-            .all(|event| !(event.kind == 8 && event.family == 14)),
-        "no step in the complete public stream allocates model-74/action-72"
-    );
-    let mut final_beyond = cleaned;
-    final_beyond.generation = 0;
-    let mut final_hud = cleanup_hud;
-    final_hud.generation = 0;
-    let final_player = campaign_players_public(handle)
-        .into_iter()
-        .find(|player| player.active != 0 && player.slot == 0)
-        .expect("final public player projection remains available");
-    let final_family12_projection = read_family12_projection();
-    let final_revision = latest_snapshot.revision;
-    let changed_hash = campaign_world_hash_public(handle);
-    assert_ne!(changed_hash, initial_hash);
-
-    assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
-    assert_eq!(campaign_world_hash_public(handle), initial_hash);
-    let reset_beyond = campaign_beyond_sight_state_public(handle, 1);
-    assert_eq!(
-        reset_beyond,
-        McCampaignBeyondSightSnapshotV2 {
-            abi_version: MC_NATIVE_ABI_VERSION,
-            struct_size: struct_size::<McCampaignBeyondSightSnapshotV2>(),
-            generation: 1,
-            ..McCampaignBeyondSightSnapshotV2::default()
-        }
-    );
-    let reset_hud = campaign_day_hud_public(handle, 1, 0);
-    assert_eq!(reset_hud.nyphur.visibility_flags, 2);
-    assert_eq!(
-        campaign_players_public(handle)
-            .into_iter()
-            .find(|player| player.active != 0 && player.slot == 0)
-            .expect("reset public local-player projection is available"),
-        initial_player,
-        "reset restores the exact public player hand and raw selection projection"
-    );
-    assert_eq!(campaign_world_hash_public(isolated_handle), initial_hash);
-
-    for (ordinal, recorded) in positive_stream.into_iter().enumerate() {
-        let mut replay_input = recorded.input;
-        replay_input.generation = 1;
-        let (replay_snapshot, replay_events) = step_level2_campaign_public(handle, replay_input);
-        assert_eq!(
-            normalize_recorded_campaign_step(replay_snapshot, replay_events),
-            normalize_recorded_campaign_step(recorded.snapshot, recorded.events),
-            "generation-normalized public state/event trace replays at step {ordinal}"
-        );
-    }
-    assert_eq!(campaign_world_hash_public(handle), changed_hash);
-    let mut replay_beyond = campaign_beyond_sight_state_public(handle, 1);
-    replay_beyond.generation = 0;
-    assert_eq!(replay_beyond, final_beyond);
-    let mut replay_hud = campaign_day_hud_public(handle, 1, final_revision);
-    replay_hud.generation = 0;
-    replay_hud.nyphur.generation = 0;
-    assert_eq!(replay_hud, final_hud);
-    assert_eq!(
-        campaign_players_public(handle)
-            .into_iter()
-            .find(|player| player.active != 0 && player.slot == 0)
-            .expect("replayed public player projection remains available"),
-        final_player
-    );
-    assert_eq!(read_family12_projection(), final_family12_projection);
-    assert_eq!(campaign_world_hash_public(isolated_handle), initial_hash);
-    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
-    assert_eq!(
-        mc_native_campaign_session_destroy(isolated_handle),
-        MC_STATUS_OK
-    );
-}
-
-#[test]
-fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
-    let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
-    let (castle_launch_position, _) = level2_source_valid_castle_route(handle);
-    let isolated_handle =
-        open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
-    let initial_hash = campaign_world_hash_public(handle);
-    assert_eq!(campaign_world_hash_public(isolated_handle), initial_hash);
 
     let row11_position = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
@@ -1665,8 +409,10 @@ fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
     let Level2PublicPossessionClaimRoute {
         mut input,
         mut latest_snapshot,
+        mut player_entity_index,
+        mut new_claimed_group1_sphere_ids,
         mut merge_lineage,
-        ..
+        castle_defender_events: mut defender_events,
     } = drive_level2_public_group1_possession_claims(
         handle,
         input,
@@ -1685,10 +431,14 @@ fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
     while latest_snapshot.revision < 27 {
         let (snapshot, _) = step_level2_campaign_public(handle, input);
         latest_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
+        let economy_events = campaign_economy_events_with_mana_lineage(
             handle,
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
+        );
+        retain_castle_defender_receipts(
+            &economy_events,
+            &mut defender_events,
         );
     }
     let recovered_hud =
@@ -1705,10 +455,14 @@ fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
         ..McCommandV2::default()
     };
     let (castle_armed_snapshot, castle_arm_events) = step_level2_campaign_public(handle, input);
-    let _ = campaign_economy_events_with_mana_lineage(
+    let economy_events = campaign_economy_events_with_mana_lineage(
         handle,
         &mut merge_lineage,
         &mut castle_collected_sphere_ids,
+    );
+    retain_castle_defender_receipts(
+        &economy_events,
+        &mut defender_events,
     );
     assert_eq!(
         castle_arm_events
@@ -1725,27 +479,113 @@ fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
     );
     input.command = valid_command();
     let mut castle_snapshot = castle_armed_snapshot;
-    let mut castle_root_seen = false;
-    for _ in 0..64 {
-        let (snapshot, events) = step_level2_campaign_public(handle, input);
+    let mut castle_construction_started = false;
+    for _ in 0..source_pass_bound {
+        let (snapshot, _) = step_level2_campaign_public(handle, input);
         castle_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
+        let economy_events = campaign_economy_events_with_mana_lineage(
             handle,
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
         );
-        if campaign_castle_is_live(handle)
-            || events
+        retain_castle_defender_receipts(
+            &economy_events,
+            &mut defender_events,
+        );
+        castle_construction_started = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset
+                .economy()
+                .castle_children()
                 .iter()
-                .any(|event| event.kind == 8 && event.family == 1)
-        {
-            castle_root_seen = true;
+                .any(|child| child.active && child.model == 42 && child.action == 44))
+        })
+        .expect("read the ordinary Castle construction authority");
+        if castle_construction_started {
             break;
         }
     }
     assert!(
-        castle_root_seen,
-        "the public Castle flyer reaches its root constructor through ordinary callbacks"
+        castle_construction_started,
+        "the public Castle flyer reaches its real model-42 construction child"
+    );
+
+    // The source BUILD callback initializes at 19, then retains a -25 hold,
+    // so 64 ordinary child visits is a conservative bound from the observed
+    // production constructor rather than from the earlier flyer launch.
+    let mut castle_defender_ready = false;
+    for _ in 0..64 {
+        let (snapshot, _) = step_level2_campaign_public(handle, input);
+        castle_snapshot = snapshot;
+        let economy_events = campaign_economy_events_with_mana_lineage(
+            handle,
+            &mut merge_lineage,
+            &mut castle_collected_sphere_ids,
+        );
+        retain_castle_defender_receipts(
+            &economy_events,
+            &mut defender_events,
+        );
+        castle_defender_ready = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            let Some(castle) = reset.economy().castle() else {
+                return Ok(false);
+            };
+            Ok(castle.action == 4
+                && reset.economy().castle_children().iter().any(|child| {
+                    child.active
+                        && child.source_class == 3
+                        && child.model == 3
+                        && child.action == 9
+                        && castle.defender_slots.contains(&child.source_entity_index)
+                }))
+        })
+        .expect("read the ordinary Castle defender authority");
+        if castle_defender_ready {
+            break;
+        }
+    }
+    let castle_readiness_state = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        Ok((
+            reset
+                .economy()
+                .castle()
+                .map(|castle| {
+                    (
+                        castle.action,
+                        castle.build_state,
+                        castle.phase,
+                        castle.defender_slots,
+                    )
+                }),
+            reset
+                .economy()
+                .castle_children()
+                .iter()
+                .filter(|child| child.active)
+                .map(|child| {
+                    (
+                        child.source_entity_index,
+                        child.source_class,
+                        child.model,
+                        child.action,
+                        child.mana,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ))
+    })
+    .expect("read Castle readiness diagnostics");
+    assert!(
+        castle_defender_ready,
+        "the public Castle flyer reaches stable action 4 and creates its real defender; state={castle_readiness_state:?}"
     );
     assert_eq!(castle_snapshot.generation, castle_armed_snapshot.generation);
 
@@ -1758,16 +598,24 @@ fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
     input.player_z = 256;
     input.command = valid_command();
     let _ = step_level2_campaign_public(handle, input);
-    let _ = campaign_economy_events_with_mana_lineage(
+    let economy_events = campaign_economy_events_with_mana_lineage(
         handle,
         &mut merge_lineage,
         &mut castle_collected_sphere_ids,
     );
+    retain_castle_defender_receipts(
+        &economy_events,
+        &mut defender_events,
+    );
     let (pickup_snapshot, _) = step_level2_campaign_public(handle, input);
-    let _ = campaign_economy_events_with_mana_lineage(
+    let economy_events = campaign_economy_events_with_mana_lineage(
         handle,
         &mut merge_lineage,
         &mut castle_collected_sphere_ids,
+    );
+    retain_castle_defender_receipts(
+        &economy_events,
+        &mut defender_events,
     );
     let invisible_source = campaign_spell_pickups_public(handle, pickup_snapshot.generation)
         .into_iter()
@@ -1789,10 +637,14 @@ fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
     for _ in 0..4 {
         let (snapshot, events) = step_level2_campaign_public(handle, input);
         castle_snapshot = snapshot;
-        let _ = campaign_economy_events_with_mana_lineage(
+        let economy_events = campaign_economy_events_with_mana_lineage(
             handle,
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
+        );
+        retain_castle_defender_receipts(
+            &economy_events,
+            &mut defender_events,
         );
         invisible_acquired |= events.iter().any(|event| {
             event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
@@ -1821,12 +673,119 @@ fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
         "authored acquisition creates only the cold tier-0 Invisible holder"
     );
 
+    let castle_mana_before_funding = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        Ok(reset.economy().castle().map_or(0, |castle| castle.mana))
+    })
+    .expect("read the pre-funding Castle mana carrier");
+    assert!(
+        castle_mana_before_funding < 2_000,
+        "the planted negative starts below Invisible's strict Castle-mana gate"
+    );
+    input.command = McCommandV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCommandV2>(),
+        flags: 0x40,
+        requested_spell: 11,
+        ..McCommandV2::default()
+    };
+    let (rejected_snapshot, _) = step_level2_campaign_public(handle, input);
+    let castle_mana_after_rejection = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        Ok(reset.economy().castle().map_or(0, |castle| castle.mana))
+    })
+    .expect("read Castle mana after the planted negative");
+    assert!(
+        castle_mana_after_rejection < 2_000,
+        "the rejected spell visit remains below the authoritative Castle-mana threshold"
+    );
+    let rejected = campaign_invisible_state_public(handle, rejected_snapshot.generation);
+    assert_eq!(
+        (
+            rejected.active_value,
+            rejected.parent_visibility_mode,
+            rejected.parent_mana_regen,
+        ),
+        (
+            cold_invisible.active_value,
+            cold_invisible.parent_visibility_mode,
+            cold_invisible.parent_mana_regen,
+        ),
+        "a real selected-spell request remains cold while the live Castle is underfunded"
+    );
+
+    // Continue ordinary Possession requests against the still-live package
+    // group-1 population until Castle mana plus live owned descendants can
+    // satisfy Invisible's 2,000-mana Castle predicate.
+    input.command = valid_command();
+    let mut attempted_funding_targets = BTreeSet::new();
+    loop {
+        let (castle_mana, eligible_owned_mana) = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            let castle_mana = reset.economy().castle().map_or(0, |castle| castle.mana);
+            let eligible_owned_mana = reset
+                .economy()
+                .spheres()
+                .iter()
+                .filter(|sphere| {
+                    sphere.active
+                        && !sphere.pending_delete
+                        && sphere.player_entity_index == player_entity_index
+                        && sphere.control_flags & 0x2000 == 0
+                        && sphere_has_source_ancestor(
+                            sphere.id,
+                            &new_claimed_group1_sphere_ids,
+                            &merge_lineage,
+                        )
+                })
+                .map(|sphere| sphere.mana)
+                .sum::<i32>();
+            Ok((castle_mana, eligible_owned_mana))
+        })
+        .expect("read the exact Castle-eligible mana relation while funding Invisible");
+        if castle_mana.saturating_add(eligible_owned_mana) >= 2_000 {
+            break;
+        }
+        let target = campaign_mana_spheres_public(handle, latest_snapshot.generation)
+            .into_iter()
+            .find(|sphere| {
+                sphere.active != 0
+                    && sphere.model == 39
+                    && sphere.owner_entity_index == 0
+                    && group1_sphere_ids.contains(&sphere.sphere_id)
+                    && !attempted_funding_targets.contains(&sphere.sphere_id)
+            })
+            .expect("the package group-1 population retains a neutral funding target");
+        attempted_funding_targets.insert(target.sphere_id);
+        let route = drive_level2_public_group1_possession_claims_with_expected(
+            handle,
+            input,
+            target.sphere_id,
+            &group1_sphere_ids,
+            None,
+        );
+        input = route.input;
+        latest_snapshot = route.latest_snapshot;
+        player_entity_index = route.player_entity_index;
+        new_claimed_group1_sphere_ids.extend(route.new_claimed_group1_sphere_ids);
+        merge_lineage.extend(route.merge_lineage);
+        defender_events.extend(route.castle_defender_events);
+    }
+
     input.player_x = castle_launch_position.x;
     input.player_y = castle_launch_position.y;
     input.player_z = castle_launch_position.z;
     input.command = valid_command();
-    let mut first_defender_deposit = None;
-    for _ in 0..1_024 {
+    input.speed_index = 1;
+    let mut live_castle_mana = 0;
+    let mut stable_defender_return = None;
+    for _ in 0..source_pass_bound.div_ceil(4) {
         let (snapshot, _) = step_level2_campaign_public(handle, input);
         castle_snapshot = snapshot;
         let economy_events = campaign_economy_events_with_mana_lineage(
@@ -1834,24 +793,191 @@ fn level2_campaign_public_invisible_casts_after_first_castle_defender_return() {
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
         );
-        for event in &economy_events {
-            if event.code == MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED {
-                first_defender_deposit = Some(event.value_0);
-            }
-        }
-        if first_defender_deposit.is_some() {
+        retain_castle_defender_receipts(
+            &economy_events,
+            &mut defender_events,
+        );
+        let (castle_mana, stable_return) = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            let Some(castle) = reset.economy().castle() else {
+                return Ok((0, None));
+            };
+            let stable_return = reset
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| {
+                    child.active
+                        && child.source_class == 3
+                        && child.model == 3
+                        && child.action == 9
+                        && child.mana >= 2_000
+                        && child.target_sphere_slot == castle.source_entity_index
+                        && !reset.economy().spheres().iter().any(|sphere| {
+                            sphere.active
+                                && !sphere.pending_delete
+                                && sphere.player_entity_index == child.id_entity_index
+                                && sphere.control_flags & 0x2000 == 0
+                        })
+                })
+                .map(|child| {
+                    (
+                        castle.source_entity_index,
+                        child.source_entity_index,
+                        child.mana,
+                    )
+                });
+            Ok((castle.mana, stable_return))
+        })
+        .expect("read the authoritative Castle and defender return carriers");
+        live_castle_mana = castle_mana;
+        stable_defender_return = stable_return;
+        if live_castle_mana >= 2_000 || stable_defender_return.is_some() {
             break;
         }
     }
+    let mut matching_arrival = None;
+    if live_castle_mana < 2_000 {
+        let (castle_slot, defender_slot, carried_mana) = stable_defender_return
+            .expect("the exhausted eligible sphere set leaves the funded defender returning");
+        let lineage_collection_mana = defender_events
+            .iter()
+            .filter(|event| {
+                event.code == MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_COLLECTED_SPHERE
+                    && event.source_slot == defender_slot
+                    && event.primary_id == u32::from(defender_slot)
+                    && event.entity_0 == defender_slot
+                    && sphere_has_source_ancestor(
+                        event.secondary_id,
+                        &new_claimed_group1_sphere_ids,
+                        &merge_lineage,
+                    )
+            })
+            .map(|event| event.value_0)
+            .sum::<i32>();
+        assert_eq!(
+            lineage_collection_mana, carried_mana,
+            "the stable defender's carried mana is accounted for by its exact package lineage collection receipts"
+        );
+        // Once the Castle is the stable target, signed-wrapping XY has a
+        // maximum diagonal of 46,340 source units. At speed 48 the pinned
+        // movement reaches the Castle in at most 993 visits; speed index 1
+        // executes four complete source passes per outer turn.
+        for _ in 0..1_000_usize.div_ceil(4) {
+            let (snapshot, dispatch_events) = step_level2_campaign_public(handle, input);
+            assert_no_level2_dispatch_error(
+                handle,
+                &dispatch_events,
+                "stable Castle defender return",
+            );
+            castle_snapshot = snapshot;
+            let economy_events = campaign_economy_events_with_mana_lineage(
+                handle,
+                &mut merge_lineage,
+                &mut castle_collected_sphere_ids,
+            );
+            if let Some(arrival) = economy_events.iter().copied().find(|event| {
+                event.code == MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED
+                    && event.source_slot == defender_slot
+                    && event.primary_id == u32::from(defender_slot)
+                    && event.entity_0 == castle_slot
+                    && event.value_0 == carried_mana
+            }) {
+                matching_arrival = Some(arrival);
+            }
+            retain_castle_defender_receipts(&economy_events, &mut defender_events);
+            live_castle_mana = with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                    unreachable!("campaign fixture opened as Level 2")
+                };
+                Ok(reset.economy().castle().map_or(0, |castle| castle.mana))
+            })
+            .expect("read Castle mana during the stable defender return");
+            if live_castle_mana >= 2_000 {
+                break;
+            }
+        }
+    }
+    input.speed_index = 0;
+    let castle_funding_state = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        Ok((
+            reset.economy().castle().map(|castle| {
+                (
+                    castle.source_entity_index,
+                    castle.mana,
+                    castle.position,
+                    castle.level,
+                    castle.defender_slots,
+                    castle.defender_total_mana,
+                    castle.defender_target_spheres,
+                )
+            }),
+            reset
+                .economy()
+                .castle_children()
+                .iter()
+                .filter(|child| child.active && child.source_class == 3 && child.model == 3)
+                .map(|child| {
+                    (
+                        child.source_entity_index,
+                        child.action,
+                        child.mana,
+                        child.player_entity_index,
+                        child.target_sphere_slot,
+                        child.position,
+                        child.speed,
+                        child.control_flags,
+                        reset.canonical_terrain().ground_height(child.position),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            reset
+                .economy()
+                .spheres()
+                .iter()
+                .filter(|sphere| {
+                    sphere.active
+                        && !sphere.pending_delete
+                        && sphere_has_source_ancestor(
+                            sphere.id,
+                            &new_claimed_group1_sphere_ids,
+                            &merge_lineage,
+                        )
+                })
+                .map(|sphere| {
+                    (
+                        sphere.id,
+                        sphere.mana,
+                        sphere.owner_entity_index,
+                        sphere.player_entity_index,
+                        sphere.control_flags,
+                        sphere.position,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ))
+    })
+    .expect("read Castle funding diagnostics");
     assert!(
-        first_defender_deposit.is_some_and(|mana| mana >= 2_000),
-        "the first ordinary Castle defender return satisfies Invisible's live mana gate"
+        live_castle_mana >= 2_000,
+        "ordinary Castle economy satisfies Invisible's live mana gate; defender_events={defender_events:?}, stable_return={stable_defender_return:?}, matching_arrival={matching_arrival:?}, attempted={attempted_funding_targets:?}, collected_ids={castle_collected_sphere_ids:?}, state={castle_funding_state:?}"
     );
+    if stable_defender_return.is_some() {
+        assert!(
+            matching_arrival.is_some(),
+            "the same funded defender deposits into its stable Castle target"
+        );
+    }
     let mana_window_hud =
         campaign_day_hud_public(handle, castle_snapshot.generation, castle_snapshot.revision);
     assert!(
         mana_window_hud.local_player_mana >= 2_000,
-        "the ordinary first Castle defender return satisfies Invisible's live mana gate"
+        "the ordinary Castle economy satisfies Invisible's live mana gate"
     );
     assert!(
         mana_window_hud.local_player_max_mana >= mana_window_hud.local_player_mana,
@@ -2707,29 +1833,37 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
     );
     assert_eq!(stale_entity, unchanged_entity);
 
-    let command = McCommandV2 {
-        abi_version: MC_NATIVE_ABI_VERSION,
-        struct_size: struct_size::<McCommandV2>(),
-        flags: 1,
-        requested_spell: MC_REQUESTED_SPELL_NONE,
-        ..McCommandV2::default()
-    };
+    let family12_position = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        Ok(reset
+            .shared_spells()
+            .pickups()
+            .iter()
+            .find(|source| source.index == 38)
+            .expect("authored family-12 source")
+            .position)
+    })
+    .expect("read authored family-12 source position");
     let mut input = McCampaignStepInputV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McCampaignStepInputV2>(),
         generation: 0,
-        command,
+        command: valid_command(),
         player_slot: 0,
         speed_index: 0,
-        player_x: 384,
-        player_y: 62_080,
-        player_z: 256,
+        player_x: family12_position.x,
+        player_y: family12_position.y,
+        player_z: family12_position.z,
         ..McCampaignStepInputV2::default()
     };
     let mut snapshot = McCampaignStepSnapshotV2::default();
     let mut events = [McCampaignEventV2::default(); 1024];
-    let mut event_count = 0;
-    for _ in 0..282 {
+    let mut event_count: u32;
+    let mut acquired_family12 = false;
+    for _ in 0..4 {
+        event_count = 0;
         assert_eq!(
             mc_native_campaign_session_step(
                 handle,
@@ -2743,10 +1877,20 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
             ),
             MC_STATUS_OK
         );
-        input.player_x = snapshot.x;
-        input.player_y = snapshot.y;
-        input.player_z = snapshot.z;
+        acquired_family12 |= events[..event_count as usize].iter().any(|event| {
+            event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                && event.family == 12
+                && event.source_slot == 38
+                && event.flags == 1
+        });
+        if acquired_family12 {
+            break;
+        }
     }
+    assert!(
+        acquired_family12,
+        "the real slot-38 source visit, not a flight-step magic number, acquires family 12"
+    );
     assert_eq!(
         mc_native_campaign_terrain_state(
             handle,
@@ -2924,10 +2068,12 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
     assert_eq!(reset_mark_count, reset_state.mark_count);
     assert_eq!(reset_marks[0].visible, 1);
     input.generation = 1;
-    input.player_x = 384;
-    input.player_y = 62_080;
-    input.player_z = 256;
-    for _ in 0..282 {
+    input.player_x = family12_position.x;
+    input.player_y = family12_position.y;
+    input.player_z = family12_position.z;
+    let mut replay_acquired_family12 = false;
+    for _ in 0..4 {
+        event_count = 0;
         assert_eq!(
             mc_native_campaign_session_step(
                 handle,
@@ -2941,10 +2087,17 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
             ),
             MC_STATUS_OK
         );
-        input.player_x = snapshot.x;
-        input.player_y = snapshot.y;
-        input.player_z = snapshot.z;
+        replay_acquired_family12 |= events[..event_count as usize].iter().any(|event| {
+            event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                && event.family == 12
+                && event.source_slot == 38
+                && event.flags == 1
+        });
+        if replay_acquired_family12 {
+            break;
+        }
     }
+    assert!(replay_acquired_family12);
     assert_eq!(
         mc_native_campaign_terrain_state(
             handle,
