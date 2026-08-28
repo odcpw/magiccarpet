@@ -21,6 +21,7 @@ pub mod enhanced_presentation;
 pub mod firefly_tmap;
 pub mod frozen_actor_tmap;
 pub mod game_definition;
+pub mod game_runtime;
 pub mod game_session;
 pub mod goat;
 pub mod goat_draw_admission;
