@@ -604,7 +604,9 @@ impl Level2EconomyState {
 
         if matches!(
             projectile.origin,
-            FireballProjectileOrigin::Firefly | FireballProjectileOrigin::Dragon
+            FireballProjectileOrigin::Firefly
+                | FireballProjectileOrigin::Dragon
+                | FireballProjectileOrigin::Worm
         ) {
             if let Some(target) =
                 imported_entities.get(usize::from(projectile.target_source_entity_index))

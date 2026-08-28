@@ -104,6 +104,16 @@ impl Level2EconomyState {
             .unwrap_or(0)
     }
 
+    pub(crate) fn decrement_source_creature_population(&mut self) {
+        if self.source_creature_population != 0 {
+            self.source_creature_population -= 1;
+        }
+    }
+
+    pub(crate) fn increment_source_creature_population(&mut self) {
+        self.source_creature_population = self.source_creature_population.saturating_add(1);
+    }
+
     /// Run the phase-gated `sub_1F850 -> KillEntity_1C930` tail for an
     /// action-21 Bee.  Phases 1..7 remain live and consume no allocations or
     /// RNG; the source's byte-0x3E epilogue advances after this helper and
@@ -191,9 +201,9 @@ impl Level2EconomyState {
             9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
             _ => return None,
         };
-        // The model-3 constructor is a root-plus-sixteen allocation.  Keep
-        // the whole constructor transactional so an exhausted arena cannot
-        // strand a root, a partial chain, a generation, or an RNG sidecar.
+        // Retain a snapshot only for failure before the model-3 root itself
+        // is published. Once the root exists, sub_4B6F0 keeps any prefix of
+        // body rows created before NewEvent exhaustion.
         let state_before = (model == 3).then(|| self.clone());
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
@@ -232,8 +242,6 @@ impl Level2EconomyState {
         // pose: rotation_speed/2 = 125 and speed/2 = 66.
         let (yaw, pitch, roll, fov) = if model == 4 {
             (125, 66, 66, 125)
-        } else if model == 3 {
-            (90, 414, 414, 108)
         } else {
             (0, 0, 0, 0)
         };
@@ -290,10 +298,22 @@ impl Level2EconomyState {
             } else {
                 0
             },
-            yaw,
-            pitch,
-            roll,
-            fov,
+            yaw: if model == 3 {
+                i16::try_from(entity_rng & 0x07ff).expect("11-bit Worm yaw") - 1
+            } else {
+                yaw
+            },
+            pitch: if model == 3 {
+                i16::try_from(entity_rng & 0x07ff).expect("11-bit Worm pitch") - 1
+            } else {
+                pitch
+            },
+            roll: if model == 3 {
+                i16::try_from(entity_rng & 0x07ff).expect("11-bit Worm roll") - 1
+            } else {
+                roll
+            },
+            fov: if model == 3 { 0 } else { fov },
             shift_rot_x: if model == crate::goat::GOAT_MODEL {
                 crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT
             } else if model == 4 {
@@ -319,16 +339,31 @@ impl Level2EconomyState {
         };
         self.source_rng.insert(source_entity_index, entity_rng);
         let model3_state = if model == 3 {
-            match self.allocate_model3_chain(&mut source) {
-                Some(state) => Some(state),
-                None => {
-                    *self = state_before.expect("model-3 allocation snapshot");
-                    return None;
-                }
-            }
+            Some(self.allocate_model3_chain(&mut source))
         } else {
             None
         };
+        if model == 3 {
+            // `sub_4B6F0` links every body before it links the root. Reinsert
+            // the already-tracked root so the final authoritative same-tile
+            // topology is root -> last body -> ... -> first body.
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_entity_index,
+                    active: false,
+                    x: position.x,
+                    y: position.y,
+                })
+                .expect("Worm root unlinks from the map chain");
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_entity_index,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .expect("Worm root relinks at the map-chain head");
+        }
         if model == crate::goat::GOAT_MODEL {
             self.source_owner.insert(source_entity_index, 0);
             self.authored_class5_runtime

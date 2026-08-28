@@ -212,7 +212,9 @@ impl SourceArena {
         slots.extend(
             self.entities
                 .iter()
-                .filter(|source| source.active && source.class == 5 && source.action == 232)
+                .filter(|source| {
+                    source.active && source.class == 5 && matches!(source.action, 29 | 232)
+                })
                 .map(|source| source.index),
         );
         slots.extend(
@@ -274,7 +276,10 @@ impl SourceArena {
             source_slot,
             generation: self.economy.slot_generation(source_slot),
         };
-        if source.class == 5 && source.action == 232 {
+        if source.class == 5
+            && matches!(source.action, 29 | 232)
+            && !initial_bindings.contains_key(&source_slot)
+        {
             let root_slot = source.source_id;
             let &kind = initial_bindings.get(&root_slot)?;
             return Some(CreatureRuntimeIdentity {
@@ -426,7 +431,10 @@ impl SourceArena {
         if !source.active || !matches!(self.resolve(handle), Some(SourceEntityView::Imported(_))) {
             return None;
         }
-        if source.class == 5 && source.action == 232 {
+        if source.class == 5
+            && matches!(source.action, 29 | 232)
+            && !initial_bindings.contains_key(&source_slot)
+        {
             let root_slot = source.source_id;
             let &kind = initial_bindings.get(&root_slot)?;
             return Some(CreatureRuntimeIdentity {

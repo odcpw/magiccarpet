@@ -815,6 +815,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 // rebuilding lists or dispatching any callback.
                 economy.reclaim_hidden_castle_rows_at_source_boundary();
                 economy.reclaim_hidden_archer_rows_at_source_boundary();
+                economy.reclaim_hidden_worm_rows_at_source_boundary();
                 economy.reclaim_inactive_slots_at_source_boundary();
             }
             PassPhase::RebuildMemberships => {
@@ -4813,6 +4814,113 @@ impl Level2ResetSession {
         hidden
     }
 
+    /// Stage source mailbox damage on the five real imported Level-3 Worm
+    /// roots. Their action-31 callbacks, action-28/29 death tail, epilogues,
+    /// and following-pass reclaim remain production-owned.
+    #[cfg(test)]
+    pub(crate) fn stage_imported_worm_root_mailbox_for_test(
+        &mut self,
+        source_slot: u16,
+        attacker_slot: u16,
+        lethal: bool,
+    ) -> bool {
+        let Some(source) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(source_slot))
+            .filter(|source| {
+                source.active
+                    && source.class == 5
+                    && source.model == 3
+                    && matches!(source.action, 25..=31)
+            })
+        else {
+            return false;
+        };
+        let damage = if lethal {
+            source.life.saturating_add(1)
+        } else {
+            1
+        };
+        source.record[98..102].copy_from_slice(&damage.to_le_bytes());
+        source.record[102..104].copy_from_slice(&attacker_slot.to_le_bytes());
+        true
+    }
+
+    /// Stage one real imported Worm body mailbox. The ordinary action-232
+    /// callback still owns predecessor following, damage consumption, map
+    /// synchronization, and its scheduler epilogue.
+    #[cfg(test)]
+    pub(crate) fn stage_imported_worm_child_mailbox_for_test(
+        &mut self,
+        root_slot: u16,
+        child_ordinal: u16,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> Option<u16> {
+        let child_slot = root_slot.checked_add(child_ordinal)?.checked_add(1)?;
+        let child = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(child_slot))
+            .filter(|child| {
+                child.active
+                    && child.class == 5
+                    && child.model == 3
+                    && child.action == 232
+                    && child.source_id == root_slot
+            })?;
+        child.record[98..102].copy_from_slice(&damage.to_le_bytes());
+        child.record[102..104].copy_from_slice(&attacker_slot.to_le_bytes());
+        Some(child_slot)
+    }
+
+    /// Put an imported action-26 Worm on its real cadence next to the bound
+    /// target. The callback still owns the Fireball transaction and epilogue.
+    #[cfg(test)]
+    pub(crate) fn stage_imported_worm_attack_cadence_for_test(
+        &mut self,
+        source_slot: u16,
+        target_slot: u16,
+    ) -> bool {
+        let Some(target) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(target_slot))
+            .filter(|target| target.active && target.life >= 0)
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(source) = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(source_slot))
+            .filter(|source| {
+                source.active && source.class == 5 && source.model == 3 && source.action == 26
+            })
+        else {
+            return false;
+        };
+        source.set_phase(30);
+        source.position = target.position;
+        source.position.x = source.position.x.wrapping_sub(0x0100);
+        source.record[154..156].copy_from_slice(&target_slot.to_le_bytes());
+        true
+    }
+
     /// Evaluate every participating owner's remaining Level 2 objective
     /// stage after the entity pass. This mirrors the source
     /// `sub_58F00_game_objectives` walk: stage selectors at one are eligible,
@@ -6493,6 +6601,50 @@ impl Level2EconomyTestView<'_> {
             .retire_authored_multipart_prerequisite_for_test(authored_index)
     }
 
+    pub(crate) fn stage_authored_worm_child_mailbox_for_test(
+        &mut self,
+        authored_index: u16,
+        child_ordinal: u8,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> Option<(u16, u16)> {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .stage_authored_worm_child_mailbox_for_test(
+                authored_index,
+                child_ordinal,
+                attacker_slot,
+                damage,
+            )
+    }
+
+    pub(crate) fn stage_authored_worm_attack_for_test(
+        &mut self,
+        authored_index: u16,
+        target_slot: u16,
+    ) -> Option<u16> {
+        let target = self
+            .session
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(target_slot))?
+            .clone();
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .stage_authored_worm_attack_for_test(authored_index, target)
+    }
+
     pub(crate) fn exhaust_new_event_capacity_for_test(&mut self) -> Option<u16> {
         let baseline_slot = std::sync::Arc::make_mut(&mut self.session.session.baseline)
             .economy
@@ -7745,6 +7897,15 @@ impl Level2ResetSession {
                 .authored_features_consumed
                 .insert(feature.index);
             consumed.push(feature.index);
+            if feature.kind == 5
+                && (feature.subtype < 12 || (feature.subtype > 15 && feature.subtype != 22))
+            {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .increment_source_creature_population();
+            }
             match (feature.kind, feature.subtype) {
                 (2, 0) => {
                     if self.allocate_level2_authored_tree(feature.index).is_some() {
@@ -9772,7 +9933,10 @@ impl Level2ResetSession {
                         && matches!(
                             (entity.class, entity.action),
                             (2, 0 | 3 | 21)
-                                | (5, 31 | 72 | 74 | 76 | 77 | 79 | 232)
+                                | (
+                                    5,
+                                    25 | 26 | 27 | 28 | 29 | 31 | 72 | 74 | 76 | 77 | 79 | 232
+                                )
                                 | (10, 68 | 69)
                                 | (11, 0 | 1 | 16 | 32)
                                 | (14, 6)
@@ -12673,6 +12837,23 @@ impl Level2ResetSession {
             .ok_or_else(|| format!("multipart callback lost source slot {source_slot}"))?;
 
         match selector {
+            25 => {
+                let external = campaign_multipart::step_raw_multipart_action25(
+                    &mut self.session.state.live.economy.entities,
+                    source_slot,
+                    &self.session.state.live.terrain,
+                )
+                .map_err(|error| error.to_string())?;
+                if external
+                    == campaign_multipart::MultipartRootExternalEffect::DecrementLiveEntityCounter
+                {
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .decrement_source_creature_population();
+                }
+            }
             31 => {
                 let stage_target = {
                     let source =
@@ -12795,9 +12976,157 @@ impl Level2ResetSession {
                 if outcome.external_effect
                     == campaign_multipart::MultipartRootExternalEffect::DecrementLiveEntityCounter
                 {
-                    return Err(format!(
-                        "multipart source slot {source_slot} reached the source creature-counter decrement before that shared carrier was imported"
-                    ));
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .decrement_source_creature_population();
+                }
+            }
+            26 => {
+                let outcome = campaign_multipart::step_raw_multipart_action26(
+                    &mut self.session.state.live.economy.entities,
+                    source_slot,
+                    &self.session.state.live.terrain,
+                )
+                .map_err(|error| error.to_string())?;
+                if outcome.external_effect
+                    == campaign_multipart::MultipartRootExternalEffect::DecrementLiveEntityCounter
+                {
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .decrement_source_creature_population();
+                }
+                if let Some(launch) = outcome.launch {
+                    let spawned = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .spawn_fireball_projectile_with_payload(launch, 0);
+                    if spawned.is_some() {
+                        let _ = Level2EconomyState::apply_creature_fireball_target_feedback(
+                            &mut self.session.state.live.economy.entities,
+                            launch.target_source_entity_index,
+                        );
+                        mark_source_audio_call(SourceAudioCallTag::MultipartAttackAction26);
+                        self.push_flight_effect(FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::MultipartAttack,
+                            entity_index: source_slot,
+                            player_index: -1,
+                            sound_id: 8,
+                        });
+                    }
+                }
+            }
+            27 => {
+                let external = campaign_multipart::step_raw_multipart_action27(
+                    &mut self.session.state.live.economy.entities,
+                    source_slot,
+                    &self.session.state.live.terrain,
+                )
+                .map_err(|error| error.to_string())?;
+                if external
+                    == campaign_multipart::MultipartRootExternalEffect::DecrementLiveEntityCounter
+                {
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .decrement_source_creature_population();
+                }
+            }
+            28 => {
+                let outcome = campaign_multipart::step_raw_multipart_action28(
+                    &mut self.session.state.live.economy.entities,
+                    source_slot,
+                )
+                .map_err(|error| error.to_string())?;
+                let qualifying_killer = outcome.killer_slot != 0
+                    && self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .entities
+                        .get(usize::from(outcome.killer_slot))
+                        .is_some_and(|entity| {
+                            entity.class == 3
+                                && entity.model == 0
+                                && entity.source_id
+                                    != self.session.state.live.economy.entities
+                                        [usize::from(source_slot)]
+                                    .source_id
+                        });
+                if qualifying_killer {
+                    let _ = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .record_authored_creature_kill(outcome.killer_slot);
+                }
+            }
+            29 => {
+                let source = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get(usize::from(source_slot))
+                    .filter(|source| {
+                        source.active
+                            && source.index == source_slot
+                            && source.class == 5
+                            && source.model == 3
+                            && source.action == 29
+                    })
+                    .cloned()
+                    .ok_or_else(|| format!("Worm kill callback lost source slot {source_slot}"))?;
+                if source.phase & 7 == 0 {
+                    let source_rng = if source.mana > 0 {
+                        campaign_shared_families::next_source_rng16(source.entity_rng)
+                    } else {
+                        source.entity_rng
+                    };
+                    if source.mana > 0 {
+                        let terrain = &self.session.state.live.terrain;
+                        let _ = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .spawn_mana_sphere_from_death(
+                                source_slot,
+                                source.position,
+                                source.yaw,
+                                source_rng,
+                                source.mana,
+                                source.source_player_entity_index(),
+                                terrain,
+                            );
+                    }
+                    if source.control_flags & 0x0010_0000 == 0 {
+                        let _ = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .spawn_death_burst_from_death_with_id(
+                                source_slot,
+                                source.source_id,
+                                source.position,
+                            );
+                    }
+                    let source =
+                        &mut self.session.state.live.economy.entities[usize::from(source_slot)];
+                    source.set_entity_rng(source_rng);
+                    source.set_source_player_entity_index(0);
+                    source.disable_drawing();
                 }
             }
             232 => {
@@ -15960,11 +16289,10 @@ impl Level2ResetSession {
                         self.apply_level2_archer_target(target);
                     }
                     if let Some(entity_index) = step.effects.target_feedback_entity {
-                        self.session
-                            .state
-                            .live
-                            .nyphur_dispatcher
-                            .apply_class5_player_feedback(entity_index);
+                        if let Some(dispatcher) = self.session.state.live.nyphur_dispatcher.as_mut()
+                        {
+                            let _ = dispatcher.apply_class5_player_feedback(entity_index);
+                        }
                     }
                     return step.map_synced;
                 }
@@ -16008,11 +16336,10 @@ impl Level2ResetSession {
                         self.apply_level2_trader_target(target);
                     }
                     if let Some(entity_index) = step.effects.player_feedback_entity {
-                        self.session
-                            .state
-                            .live
-                            .nyphur_dispatcher
-                            .apply_class5_player_feedback(entity_index);
+                        if let Some(dispatcher) = self.session.state.live.nyphur_dispatcher.as_mut()
+                        {
+                            let _ = dispatcher.apply_class5_player_feedback(entity_index);
+                        }
                     }
                     return step.map_synced;
                 }
@@ -16038,8 +16365,12 @@ impl Level2ResetSession {
                         .flatten()
                 });
                 if source.is_some_and(|source| {
-                    source.model == 3 && matches!(source.action, 25 | 26 | 27 | 28 | 30)
+                    source.model == 3 && matches!(source.action, 25 | 26 | 27 | 28 | 29)
                 }) {
+                    let pre_kill_credit = source
+                        .filter(|source| source.action == 28)
+                        .map(|source| source.word_0x24)
+                        .filter(|killer| *killer != 0);
                     let event_start = self.session.state.live.economy.events.len();
                     let hit_target = source
                         .filter(|source| source.action == 26)
@@ -16051,6 +16382,39 @@ impl Level2ResetSession {
                         .live
                         .economy
                         .step_authored_class5_model3_slot_with_target(source_slot, target, terrain);
+                    let entered_kill = self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .authored_class5()
+                        .iter()
+                        .any(|source| {
+                            source.source_entity_index == source_slot && source.action == 29
+                        });
+                    if entered_kill && let Some(killer_entity_index) = pre_kill_credit {
+                        let qualifying_killer = self
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .entities
+                            .iter()
+                            .any(|entity| {
+                                entity.index == killer_entity_index
+                                    && entity.class == 3
+                                    && entity.model == 0
+                                    && entity.source_id != source_slot
+                            });
+                        if qualifying_killer {
+                            let _ = self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .record_authored_creature_kill(killer_entity_index);
+                        }
+                    }
                     let hit = self.session.state.live.economy.events[event_start..]
                         .iter()
                         .any(|event| {
@@ -16064,11 +16428,10 @@ impl Level2ResetSession {
                         });
                     if hit {
                         if let Some(target_index) = hit_target {
-                            self.session
-                                .state
-                                .live
-                                .nyphur_dispatcher
-                                .apply_class5_player_feedback(target_index);
+                            let _ = Level2EconomyState::apply_creature_fireball_target_feedback(
+                                &mut self.session.state.live.economy.entities,
+                                target_index,
+                            );
                         }
                     }
                     return live;
@@ -16088,12 +16451,35 @@ impl Level2ResetSession {
                     .economy
                     .step_authored_dragon_part_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::AuthoredClass5Model3Child => self
-                .session
-                .state
-                .live
-                .economy
-                .step_authored_class5_model3_child_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredClass5Model3Child => {
+                let predecessor_fallback = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .authored_class5_model3_children()
+                    .iter()
+                    .find(|child| child.source_entity_index == source_slot)
+                    .and_then(|child| {
+                        self.session
+                            .state
+                            .live
+                            .economy
+                            .entities
+                            .get(usize::from(child.word_0x32))
+                    })
+                    .cloned();
+                let terrain = &self.session.state.live.terrain;
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_class5_model3_child_slot(
+                        source_slot,
+                        predecessor_fallback,
+                        terrain,
+                    )
+            }
             Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
                 let terrain = &self.session.state.live.terrain;
                 self.session

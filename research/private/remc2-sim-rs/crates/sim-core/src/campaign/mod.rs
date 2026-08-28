@@ -317,8 +317,8 @@ mod tests {
             spec::{BehaviorSelector, CampaignDefinition, ValidationStage},
         },
         native_world::{
-            EntitySpecialRelation, Level2AuthoredClass5Source, Level2DispatchEvent,
-            Level2EconomyEvent, Level2NyphurDispatchCall, NativeWorld,
+            EntitySpecialRelation, FireballProjectileOrigin, Level2AuthoredClass5Source,
+            Level2DispatchEvent, Level2EconomyEvent, Level2NyphurDispatchCall, NativeWorld,
         },
     };
     use std::{
@@ -4166,10 +4166,12 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens through the shared engine");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
-        session
+        campaign
+            .level2_compatibility_mut()
             .activate_authored_group_prerequisite_for_test(4)
             .expect("real package group 4 materializes through the shared arena");
+        let mut allocation_failure = campaign.clone();
+        let session = campaign.level2_compatibility_mut();
 
         let first_worm = session
             .economy()
@@ -4212,12 +4214,259 @@ mod tests {
             0
         );
 
-        assert!(
+        let attacker_slot = session
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.active
+                    && entity.class == 3
+                    && entity.model == 0
+                    && !entity.drawing_disabled()
+            })
+            .map(|entity| entity.index)
+            .expect("the qualified package retains a real player attacker");
+
+        let projectile_count = session.economy().fireball_projectiles().len();
+
+        // The nearest wrong action-26 implementation clears the target or
+        // emits feedback/sound even when NewEvent has no row. Prove failure is
+        // silent and retryable on a clone of this exact package state.
+        {
+            let failure = allocation_failure.level2_compatibility_mut();
+            assert_eq!(
+                failure
+                    .economy_mut()
+                    .stage_authored_worm_attack_for_test(307, attacker_slot),
+                Some(first_worm.source_entity_index)
+            );
+            assert!(
+                failure
+                    .economy_mut()
+                    .exhaust_new_event_capacity_for_test()
+                    .is_some()
+            );
+            let before_projectiles = failure.economy().fireball_projectiles().len();
+            let before_feedback =
+                failure.entities()[usize::from(attacker_slot)].record_bytes()[58..60].to_vec();
+            failure.step_outer_turn(PlayerCommand::default(), 0);
+            let retained = failure
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == 307)
+                .expect("allocation failure retains the attacking Worm");
+            assert_eq!(
+                (retained.action, retained.word_0x96_150),
+                (26, attacker_slot)
+            );
+            assert_eq!(
+                failure.economy().fireball_projectiles().len(),
+                before_projectiles
+            );
+            assert_eq!(
+                &failure.entities()[usize::from(attacker_slot)].record_bytes()[58..60],
+                before_feedback.as_slice(),
+                "failed NewEvent must not publish target feedback"
+            );
+            assert!(failure.dispatch_events().iter().all(|event| !matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    event: Level2EconomyEvent::AuthoredClass5Model3Sound { .. },
+                    ..
+                }
+            )));
+        }
+
+        assert_eq!(
             session
                 .economy_mut()
-                .retire_authored_multipart_prerequisite_for_test(307)
+                .stage_authored_worm_attack_for_test(307, attacker_slot),
+            Some(first_worm.source_entity_index)
         );
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let projectile = session
+            .economy()
+            .fireball_projectiles()
+            .get(projectile_count)
+            .expect("ordinary Worm action 26 allocates a real Fireball row");
+        assert_eq!(
+            (
+                projectile.origin,
+                projectile.owner_entity_index,
+                projectile.source_subspell_index,
+                projectile.payload,
+                projectile.target_source_entity_index,
+            ),
+            (
+                FireballProjectileOrigin::Worm,
+                first_worm.source_entity_index,
+                500,
+                500,
+                attacker_slot,
+            )
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Economy {
+                source_slot,
+                event: Level2EconomyEvent::AuthoredClass5Model3Sound {
+                    source_entity_index,
+                    sound_id: 8,
+                },
+                ..
+            } if *source_slot == first_worm.source_entity_index
+                && *source_entity_index == first_worm.source_entity_index
+        )));
+        assert_eq!(
+            u16::from_le_bytes(
+                session.entities()[usize::from(attacker_slot)].record_bytes()[58..60]
+                    .try_into()
+                    .unwrap()
+            ),
+            100,
+            "successful Worm Fireball applies source target feedback"
+        );
+
+        let child_before = session
+            .economy()
+            .authored_class5_model3_children()
+            .iter()
+            .find(|child| {
+                child.parent_entity_index == first_worm.source_entity_index
+                    && child.particle_index == 101
+            })
+            .copied()
+            .expect("the real Worm owns its thirteenth source-ordered body row");
+        let mut family_slots = session
+            .economy()
+            .authored_class5_model3_children()
+            .iter()
+            .filter(|child| child.parent_entity_index == first_worm.source_entity_index)
+            .map(|child| child.source_entity_index)
+            .collect::<Vec<_>>();
+        family_slots.push(first_worm.source_entity_index);
+        assert_eq!(
+            session
+                .economy_mut()
+                .stage_authored_worm_child_mailbox_for_test(
+                    307,
+                    12,
+                    attacker_slot,
+                    child_before.life.saturating_add(1),
+                ),
+            Some((
+                first_worm.source_entity_index,
+                child_before.source_entity_index
+            ))
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let child_after = session
+            .economy()
+            .authored_class5_model3_children()
+            .iter()
+            .find(|child| child.source_entity_index == child_before.source_entity_index)
+            .copied()
+            .expect("the lethal body remains through its action-232 epilogue");
+        assert!(child_after.life < 0);
+        assert_eq!(child_after.pending_word_0x62, 0);
+        assert_eq!(child_after.word_0x26, attacker_slot);
+        assert_ne!(child_after.position, child_before.position);
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == 307)
+                .expect("root visits before the later body row")
+                .action,
+            25
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == 307)
+                .expect("root observes the lower-life body on the following pass")
+                .action,
+            28
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == 307)
+                .expect("pre-kill retains the root through the pass")
+                .action,
+            29
+        );
+        assert!(
+            session
+                .economy()
+                .authored_class5_model3_children()
+                .iter()
+                .filter(|child| child.parent_entity_index == first_worm.source_entity_index)
+                .all(|child| child.action == 29)
+        );
+
+        let mut saw_mana_sphere = false;
+        let mut saw_death_burst = false;
+        let mut saw_body_root_identity = false;
+        let mut armed = false;
+        for _ in 0..10 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            saw_mana_sphere |= session.economy().events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::ManaSphereSpawned {
+                        source_entity_index,
+                        ..
+                    } if family_slots.contains(source_entity_index)
+                )
+            });
+            saw_death_burst |= session.economy().events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::DeathBurstSpawned {
+                        parent_entity_index,
+                        ..
+                    } if family_slots.contains(parent_entity_index)
+                )
+            });
+            saw_body_root_identity |= session.economy().events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::DeathBurstSpawned {
+                        parent_entity_index,
+                        id_entity_index,
+                        ..
+                    } if *parent_entity_index == child_before.source_entity_index
+                        && *id_entity_index == first_worm.source_entity_index
+                )
+            });
+            let timer = session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.source_entity_index == countdown.source_entity_index)
+                .expect("countdown remains live while the family dies")
+                .dword_0x10;
+            if timer == 16 {
+                armed = true;
+                break;
+            }
+            assert_eq!(timer, 0, "dying action-29 bodies still block absence");
+        }
+        assert!(saw_mana_sphere && saw_death_burst);
+        assert!(
+            saw_body_root_identity,
+            "a Worm body death burst retains the root identity copied by qmemcpy"
+        );
+        assert!(armed, "the following-pass cleanup exposes Worm absence");
         assert_eq!(
             session
                 .economy()
@@ -4230,18 +4479,38 @@ mod tests {
         );
 
         for expected in (1..16).rev() {
-            session.step_outer_turn(PlayerCommand::default(), 0);
-            let source = session
-                .economy()
-                .authored_switch_producers()
-                .iter()
-                .find(|source| source.source_entity_index == countdown.source_entity_index)
-                .expect("countdown remains live before its fire visit");
-            assert_eq!(source.dword_0x10, expected);
-            assert!(session.dispatch_events().iter().all(|event| !matches!(
-                event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 34, .. }
-            )));
+            let mut observed = None;
+            for _ in 0..8 {
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(
+                    session
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    "countdown pass rolled back: {:?}",
+                    session.dispatch_events()
+                );
+                assert!(session.dispatch_events().iter().all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 34, .. }
+                )));
+                let timer = session
+                    .economy()
+                    .authored_switch_producers()
+                    .iter()
+                    .find(|source| source.source_entity_index == countdown.source_entity_index)
+                    .expect("countdown remains live before its fire visit")
+                    .dword_0x10;
+                if timer == expected {
+                    observed = Some(timer);
+                    break;
+                }
+            }
+            assert_eq!(
+                observed,
+                Some(expected),
+                "the clear-family countdown must make bounded progress"
+            );
         }
 
         let journal_start = session.effect_journal().records().len();
@@ -4318,8 +4587,8 @@ mod tests {
                 .iter()
                 .all(|source| source.source_entity_index != countdown.source_entity_index)
         );
-        // No-Claim: the staging seam does not prove Worm combat/death. This
-        // gate proves the real absence countdown and group-34 construction.
+        // No-Claim: this proves the package-present dynamic Worm carrier used
+        // by Levels 1/2, not every target geometry or absent action 30.
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
     }
@@ -4832,11 +5101,14 @@ mod tests {
 
     #[test]
     fn cf14_level3_multipart_shares_stage_target_on_eight_phase_cadence() {
+        const ROOT_SLOTS: [u16; 5] = [133, 150, 167, 184, 201];
+        const GROUP11_ROWS: [u16; 10] = [247, 248, 249, 250, 251, 252, 253, 254, 255, 256];
         let mut campaign = CampaignSession::open(
             level_three_descriptor_fixture_path(),
             CampaignSelection::LEVEL3,
         )
         .expect("qualified Level 3 descriptor opens");
+        let reset_hash = campaign.state_hash();
         let entities = &campaign
             .level2_compatibility()
             .session
@@ -4897,6 +5169,349 @@ mod tests {
             event,
             crate::native_world::Level2DispatchEvent::Error { .. }
         )));
+
+        let attacker_slot = campaign
+            .level2_compatibility()
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.active
+                    && entity.class == 3
+                    && entity.model == 0
+                    && !entity.drawing_disabled()
+            })
+            .map(|entity| entity.index)
+            .expect("qualified Level 3 retains a real player attacker");
+
+        let child_before = campaign.level2_compatibility().entities()[202].clone();
+        assert_eq!(
+            campaign
+                .level2_compatibility_mut()
+                .stage_imported_worm_child_mailbox_for_test(201, 0, attacker_slot, 7,),
+            Some(202)
+        );
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let child_after = &campaign.level2_compatibility().entities()[202];
+        assert_eq!(child_after.life, child_before.life - 7);
+        assert_eq!(
+            u16::from_le_bytes(child_after.record_bytes()[102..104].try_into().unwrap()),
+            0
+        );
+        assert_ne!(child_after.position, child_before.position);
+        assert_eq!(child_after.phase, child_before.phase.wrapping_add(1));
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .stage_imported_worm_root_mailbox_for_test(201, attacker_slot, false)
+        );
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let attacked = &campaign.level2_compatibility().entities()[201];
+        assert_eq!(attacked.action, 26);
+        assert_eq!(attacked.record_bytes()[77], 10);
+        assert_eq!(
+            u16::from_le_bytes(attacked.record_bytes()[154..156].try_into().unwrap()),
+            attacker_slot
+        );
+
+        let mut imported_allocation_failure = campaign.clone();
+        {
+            let failure = imported_allocation_failure.level2_compatibility_mut();
+            assert!(failure.stage_imported_worm_attack_cadence_for_test(201, attacker_slot));
+            assert!(
+                failure
+                    .economy_mut()
+                    .exhaust_new_event_capacity_for_test()
+                    .is_some()
+            );
+            let before_projectiles = failure.economy().fireball_projectiles().len();
+            let before_feedback =
+                failure.entities()[usize::from(attacker_slot)].record_bytes()[58..60].to_vec();
+            let journal_start = failure.effect_journal().records().len();
+            failure.step_outer_turn(PlayerCommand::default(), 0);
+            let retained = &failure.entities()[201];
+            assert_eq!(retained.action, 26);
+            assert_eq!(
+                u16::from_le_bytes(retained.record_bytes()[154..156].try_into().unwrap()),
+                attacker_slot
+            );
+            assert_eq!(
+                failure.economy().fireball_projectiles().len(),
+                before_projectiles
+            );
+            assert_eq!(
+                &failure.entities()[usize::from(attacker_slot)].record_bytes()[58..60],
+                before_feedback.as_slice()
+            );
+            assert!(
+                failure.effect_journal().records()[journal_start..]
+                    .iter()
+                    .all(|record| !matches!(
+                        record.effect,
+                        crate::campaign::journal::CampaignEffect::Flight(
+                            FlightEvent::PrepareSound {
+                                entity_index: 201,
+                                sound_id: 8,
+                                ..
+                            }
+                        )
+                    ))
+            );
+        }
+
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .stage_imported_worm_attack_cadence_for_test(201, attacker_slot)
+        );
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+            "imported action-26 pass rolled back: {:?}",
+            campaign.events()
+        );
+        let projectile = campaign
+            .level2_compatibility()
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .rev()
+            .find(|projectile| {
+                projectile.origin == FireballProjectileOrigin::Worm
+                    && projectile.owner_entity_index == 201
+                    && projectile.target_source_entity_index == attacker_slot
+            })
+            .copied()
+            .unwrap_or_else(|| {
+                let compatibility = campaign.level2_compatibility();
+                let root = &compatibility.entities()[201];
+                panic!(
+                    "imported action 26 did not allocate: root=({},{},{},{:?}) projectiles={:?} events={:?}",
+                    root.action,
+                    root.phase,
+                    u16::from_le_bytes(root.record_bytes()[154..156].try_into().unwrap()),
+                    root.position,
+                    compatibility.economy().fireball_projectiles(),
+                    campaign.events(),
+                )
+            });
+        assert_eq!(
+            (
+                projectile.origin,
+                projectile.owner_entity_index,
+                projectile.source_subspell_index,
+                projectile.payload,
+                projectile.target_source_entity_index,
+            ),
+            (FireballProjectileOrigin::Worm, 201, 500, 500, attacker_slot)
+        );
+        assert!(
+            campaign
+                .level2_compatibility()
+                .effect_journal()
+                .records()
+                .iter()
+                .any(|record| matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index: 201,
+                        sound_id: 8,
+                        ..
+                    })
+                ))
+        );
+
+        for root_slot in ROOT_SLOTS {
+            assert!(
+                campaign
+                    .level2_compatibility_mut()
+                    .stage_imported_worm_root_mailbox_for_test(root_slot, attacker_slot, true,)
+            );
+        }
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        assert!(ROOT_SLOTS.iter().all(|slot| {
+            campaign.level2_compatibility().entities()[usize::from(*slot)].action == 28
+        }));
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let root_actions = ROOT_SLOTS
+            .iter()
+            .map(|slot| {
+                let row = &campaign.level2_compatibility().entities()[usize::from(*slot)];
+                (
+                    *slot, row.active, row.class, row.model, row.action, row.phase,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            root_actions
+                .iter()
+                .all(|(_, active, class, model, action, _)| {
+                    *active && *class == 5 && *model == 3 && *action == 29
+                }),
+            "imported pre-kill roots diverged: {root_actions:?}; events={:?}",
+            campaign.events()
+        );
+        for root_slot in ROOT_SLOTS {
+            assert!((1..=16).all(|offset| {
+                campaign.level2_compatibility().entities()[usize::from(root_slot + offset)].action
+                    == 29
+            }));
+        }
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .creature_runtime_census()
+                .entries()
+                .iter()
+                .filter(|identity| {
+                    identity.kind == crate::level_definition::CreatureKind::Worm
+                        && identity.role
+                            == crate::campaign::source_arena::CreatureRuntimeRole::MultipartPart
+                })
+                .count(),
+            80,
+            "the semantic census retains every imported body during action 29"
+        );
+
+        let family_slots = ROOT_SLOTS
+            .iter()
+            .flat_map(|root| {
+                let root = *root;
+                std::iter::once(root).chain((1..=16).map(move |offset| root + offset))
+            })
+            .collect::<Vec<_>>();
+        let mut saw_mana_sphere = false;
+        let mut saw_death_burst = false;
+        let mut saw_countdown_armed = false;
+        for _ in 0..10 {
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            assert!(
+                campaign
+                    .events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+            );
+            saw_mana_sphere |= campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        event,
+                        Level2EconomyEvent::ManaSphereSpawned {
+                            source_entity_index,
+                            ..
+                        } if family_slots.contains(source_entity_index)
+                    )
+                });
+            saw_death_burst |= campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        event,
+                        Level2EconomyEvent::DeathBurstSpawned {
+                            parent_entity_index,
+                            ..
+                        } if family_slots.contains(parent_entity_index)
+                    )
+                });
+            saw_countdown_armed |= i32::from_le_bytes(
+                campaign.level2_compatibility().entities()[247].record_bytes()[20..24]
+                    .try_into()
+                    .unwrap(),
+            ) == 16;
+            if family_slots.iter().all(|slot| {
+                let row = &campaign.level2_compatibility().entities()[usize::from(*slot)];
+                !row.active || row.class == 0
+            }) {
+                break;
+            }
+        }
+        assert!(saw_mana_sphere && saw_death_burst);
+        assert!(family_slots.iter().all(|slot| {
+            let row = &campaign.level2_compatibility().entities()[usize::from(*slot)];
+            !row.active || row.class == 0
+        }));
+
+        fn countdown_timer(source: &crate::native_world::EntitySnapshot) -> i32 {
+            i32::from_le_bytes(source.record_bytes()[20..24].try_into().unwrap())
+        }
+        let mut timer = countdown_timer(&campaign.level2_compatibility().entities()[247]);
+        for _ in 0..8 {
+            if saw_countdown_armed {
+                break;
+            }
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            timer = countdown_timer(&campaign.level2_compatibility().entities()[247]);
+            saw_countdown_armed |= timer == 16;
+        }
+        assert!(
+            saw_countdown_armed,
+            "the imported absence countdown arms at 16"
+        );
+        while timer > 1 {
+            let expected = timer - 1;
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            timer = countdown_timer(&campaign.level2_compatibility().entities()[247]);
+            assert_eq!(timer, expected);
+        }
+        assert_eq!(timer, 1);
+        let journal_start = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let records = &campaign.level2_compatibility().effect_journal().records()[journal_start..];
+        let sound = records
+            .iter()
+            .position(|record| {
+                matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index: 247,
+                        sound_id: 41,
+                        ..
+                    })
+                )
+            })
+            .expect("the imported countdown emits sound 41");
+        let activation = records
+            .iter()
+            .position(|record| {
+                matches!(
+                    &record.effect,
+                    crate::campaign::journal::CampaignEffect::Dispatch(
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot: 247,
+                            group: 11,
+                            authored_indices,
+                            ..
+                        }
+                    ) if authored_indices.as_ref() == GROUP11_ROWS
+                )
+            })
+            .expect("the imported countdown releases exact group 11");
+        assert!(sound < activation);
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        assert!(!campaign.level2_compatibility().entities()[247].active);
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), reset_hash);
+        // No-Claim: this proves the imported Level-3 Worm carrier only; it
+        // does not claim absent action 30 or later-level multipart families.
     }
 
     #[test]

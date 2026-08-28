@@ -1031,6 +1031,7 @@ pub enum FireballProjectileOrigin {
     PlayerSpell,
     Firefly,
     Dragon,
+    Worm,
 }
 
 /// The shared class-9/model-0 Fireball flyer. Its callback owns target
@@ -2550,6 +2551,12 @@ pub struct Level2AuthoredClass5Model3State {
     pub word_0x2c: i16,
     pub descriptor_index: u16,
     pub last_child_root_phase: u8,
+    /// Particle-array pose installed by `SetEntityIndexAndRot_49CD0`; this is
+    /// collision/render configuration, not the root entity orientation.
+    pub render_yaw: i16,
+    pub render_pitch: i16,
+    pub render_roll: i16,
+    pub render_fov: i16,
 }
 
 /// A linked child allocated by `sub_4B6F0` for a class-5/model-3 root.  The
@@ -2564,6 +2571,9 @@ pub struct Level2AuthoredClass5Model3Child {
     /// tail, so this provenance belongs to each child at construction.
     pub root_authored_index: u16,
     pub entity_rng: u16,
+    /// Source player-owner relation copied by qmemcpy and cleared by the
+    /// per-body KillEntity callback after its mana conversion attempt.
+    pub player_owner_entity_index: u16,
     pub parent_entity_index: u16,
     pub word_0x32: u16,
     pub word_0x34: u16,
@@ -2584,6 +2594,9 @@ pub struct Level2AuthoredClass5Model3Child {
     pub model: u8,
     pub action: u8,
     pub source_byte_3e: u8,
+    /// Source byte 0x39 copied from the root by `sub_4B6F0` before the
+    /// constructor applies the child-specific action/phase overrides.
+    pub source_byte_39: u8,
     pub byte_0x3b: u8,
     pub byte_0x43: u8,
     pub byte_0x44: u8,
@@ -2594,6 +2607,10 @@ pub struct Level2AuthoredClass5Model3Child {
     pub pitch: i16,
     pub roll: i16,
     pub fov: i16,
+    pub render_yaw: i16,
+    pub render_pitch: i16,
+    pub render_roll: i16,
+    pub render_fov: i16,
     pub shift_rot_x: i16,
     pub shift_rot_y: i16,
     pub position: Position,
@@ -2923,6 +2940,10 @@ pub struct Level2EconomyState {
     bee_model2_constructor_phase: u8,
 
     authored_bee_kill_census: BTreeMap<u16, u32>,
+    /// Source `str_0x364D2.dword_0x364D2`: the campaign creature-total
+    /// denominator. Ordinary kills do not lower it; only a constructor/AI
+    /// row that fatally blocks before becoming a valid target decrements it.
+    source_creature_population: u32,
     deferred_bee_reclaims: BTreeSet<u16>,
 
     authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,

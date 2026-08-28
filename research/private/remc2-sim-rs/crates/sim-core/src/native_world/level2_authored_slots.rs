@@ -70,6 +70,17 @@ impl Level2EconomyState {
             .iter()
             .find(|entity| entity.index == 0)
             .map_or(0, |entity| entity.entity_rng);
+        let source_creature_population = entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.class == 5
+                    && entity.action != 232
+                    && (entity.model < 12 || (entity.model > 15 && entity.model != 22))
+            })
+            .count()
+            .try_into()
+            .expect("source creature population fits u32");
         let raw_map_entries =
             raw_source_map_chain_entries(&terrain.planes().entity_indices, |source_entity_index| {
                 entities
@@ -169,6 +180,8 @@ impl Level2EconomyState {
             bee_model2_constructor_phase: 0,
 
             authored_bee_kill_census: BTreeMap::new(),
+
+            source_creature_population,
             deferred_bee_reclaims: BTreeSet::new(),
 
             authored_switch_producers: Vec::new(),
@@ -812,6 +825,81 @@ impl Level2EconomyState {
             }
         }
         true
+    }
+
+    /// Stage one source-authored Worm body mailbox for a focused scheduler
+    /// lifecycle test. The ordinary action-232 callback still owns following,
+    /// damage consumption, attacker propagation, and its common epilogue.
+    #[cfg(test)]
+    pub(super) fn stage_authored_worm_child_mailbox_for_test(
+        &mut self,
+        authored_index: u16,
+        child_ordinal: u8,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> Option<(u16, u16)> {
+        let root = self.authored_class5.iter_mut().find(|source| {
+            source.active && source.authored_index == authored_index && source.model == 3
+        })?;
+        root.action = 25;
+        root.pending_word_0x62 = 0;
+        root.word_0x26 = 0;
+        root.source_byte_3e = 1;
+        root.phase = 1;
+        let root_slot = root.source_entity_index;
+        let mut child_slot = self
+            .authored_class5_model3
+            .iter()
+            .find(|state| state.source_entity_index == root_slot)?
+            .word_0x34;
+        for _ in 0..child_ordinal {
+            child_slot = self
+                .authored_class5_model3_children
+                .iter()
+                .find(|child| child.active && child.source_entity_index == child_slot)?
+                .word_0x34;
+        }
+        let child = self
+            .authored_class5_model3_children
+            .iter_mut()
+            .find(|child| child.active && child.source_entity_index == child_slot)?;
+        child.action = 232;
+        child.pending_word_0x62 = attacker_slot;
+        child.damage_dword_0x5e_94 = damage;
+        child.word_0x26 = 0;
+        Some((root_slot, child.source_entity_index))
+    }
+
+    /// Stage the already-constructed Worm root on its source action-26
+    /// cadence beside a real live target. The production callback still owns
+    /// guidance, allocation, feedback, sound, and the common epilogue.
+    #[cfg(test)]
+    pub(super) fn stage_authored_worm_attack_for_test(
+        &mut self,
+        authored_index: u16,
+        target: EntitySnapshot,
+    ) -> Option<u16> {
+        if !target.active || target.life < 0 {
+            return None;
+        }
+        let root = self.authored_class5.iter_mut().find(|source| {
+            source.active && source.authored_index == authored_index && source.model == 3
+        })?;
+        root.action = 26;
+        root.word_0x96_150 = target.index;
+        root.word_0x26 = target.index;
+        root.source_byte_3e = 0;
+        root.phase = 0;
+        root.position = target.position;
+        root.position.x = root.position.x.wrapping_sub(0x0100);
+        let root_slot = root.source_entity_index;
+        let _ = self.map_chains.sync_entity(RenderableMapSeed {
+            entity_index: root_slot,
+            active: true,
+            x: root.position.x,
+            y: root.position.y,
+        });
+        Some(root_slot)
     }
 
     /// Remove every currently modeled `NewEvent` allocation candidate for a
@@ -5987,6 +6075,51 @@ impl Level2EconomyState {
         }
     }
 
+    /// Reclaim Worm roots and bodies whose independent action-29 callback (or
+    /// invalid predecessor check) disabled drawing during the prior source
+    /// pass. The fixed rows remain active and map-linked through their common
+    /// epilogue, then this following-boundary service unlinks and releases
+    /// them in numeric-slot order.
+    pub(super) fn reclaim_hidden_worm_rows_at_source_boundary(&mut self) {
+        let hidden_roots = self
+            .authored_class5
+            .iter()
+            .filter(|source| source.active && source.model == 3 && !source.drawing_enabled)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_class5
+            .retain(|source| source.model != 3 || source.drawing_enabled);
+        self.authored_class5_model3.retain(|state| {
+            !hidden_roots
+                .iter()
+                .any(|(slot, _)| *slot == state.source_entity_index)
+        });
+
+        let hidden_children = self
+            .authored_class5_model3_children
+            .iter()
+            .filter(|child| child.active && !child.drawing_enabled)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_class5_model3_children
+            .retain(|child| child.drawing_enabled);
+
+        let mut hidden = hidden_roots
+            .into_iter()
+            .chain(hidden_children)
+            .collect::<Vec<_>>();
+        hidden.sort_unstable_by_key(|(slot, _)| *slot);
+        for (slot, entity_rng) in hidden {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+    }
+
     /// Apply UpdateEntities' invalid-selector branch to the retained Archer
     /// projectile. There is no callback and therefore no phase/byte-0x3E
     /// epilogue on this visit.
@@ -6469,11 +6602,9 @@ impl Level2EconomyState {
             .filter(|source| !source.active)
             .map(|source| source.source_entity_index)
             .collect::<BTreeSet<_>>();
-        for child in &mut self.authored_class5_model3_children {
-            if inactive_class5_roots.contains(&child.parent_entity_index) {
-                child.active = false;
-            }
-        }
+        // Worm body rows own independent action-29 phase gates. A hidden root
+        // must not atomically erase body rows which have not yet reached their
+        // own KillEntity callback.
         for part in &mut self.authored_dragon_parts {
             if inactive_class5_roots.contains(&part.parent_entity_index) {
                 part.active = false;
@@ -7430,6 +7561,7 @@ impl Level2EconomyState {
             hasher.update([u8::from(source.active)]);
         }
         hasher.update(b"authored-class5-v5");
+        hasher.update(self.source_creature_population.to_le_bytes());
         hasher.update([
             self.class5_model0_constructor_phase,
             self.class5_model1_constructor_phase,
@@ -7541,7 +7673,7 @@ impl Level2EconomyState {
             hasher.update(part.position.z.to_le_bytes());
             hasher.update([u8::from(part.drawing_enabled), u8::from(part.active)]);
         }
-        hasher.update(b"authored-class5-model3-v1");
+        hasher.update(b"authored-class5-model3-v3");
         for state in &self.authored_class5_model3 {
             hasher.update(state.source_entity_index.to_le_bytes());
             hasher.update(state.damage_dword_0x5e_94.to_le_bytes());
@@ -7553,11 +7685,16 @@ impl Level2EconomyState {
             hasher.update(state.word_0x2c.to_le_bytes());
             hasher.update(state.descriptor_index.to_le_bytes());
             hasher.update([state.last_child_root_phase]);
+            hasher.update(state.render_yaw.to_le_bytes());
+            hasher.update(state.render_pitch.to_le_bytes());
+            hasher.update(state.render_roll.to_le_bytes());
+            hasher.update(state.render_fov.to_le_bytes());
         }
         for child in &self.authored_class5_model3_children {
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.root_authored_index.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
+            hasher.update(child.player_owner_entity_index.to_le_bytes());
             hasher.update(child.parent_entity_index.to_le_bytes());
             hasher.update(child.word_0x32.to_le_bytes());
             hasher.update(child.word_0x34.to_le_bytes());
@@ -7579,6 +7716,7 @@ impl Level2EconomyState {
                 child.model,
                 child.action,
                 child.source_byte_3e,
+                child.source_byte_39,
                 child.byte_0x3b,
                 child.byte_0x43,
                 child.byte_0x44,
@@ -7590,6 +7728,10 @@ impl Level2EconomyState {
             hasher.update(child.pitch.to_le_bytes());
             hasher.update(child.roll.to_le_bytes());
             hasher.update(child.fov.to_le_bytes());
+            hasher.update(child.render_yaw.to_le_bytes());
+            hasher.update(child.render_pitch.to_le_bytes());
+            hasher.update(child.render_roll.to_le_bytes());
+            hasher.update(child.render_fov.to_le_bytes());
             hasher.update(child.shift_rot_x.to_le_bytes());
             hasher.update(child.shift_rot_y.to_le_bytes());
             hasher.update(child.position.x.to_le_bytes());
@@ -7728,6 +7870,9 @@ impl Level2EconomyState {
                 }
                 FireballProjectileOrigin::Dragon => {
                     hasher.update(b"dragon-fireball-origin-v1");
+                }
+                FireballProjectileOrigin::Worm => {
+                    hasher.update(b"worm-fireball-origin-v1");
                 }
             }
             hasher.update(projectile.source_entity_index.to_le_bytes());

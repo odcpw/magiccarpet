@@ -59,12 +59,12 @@ fn model3_slope_measure<W: FlightWorld>(position: Position, world: &W) -> i32 {
 }
 
 fn model3_sub102d0_probe_blocked<W: FlightWorld>(
-    source: &Level2AuthoredClass5Source,
+    model3: &Level2AuthoredClass5Model3State,
     candidate: Position,
     heading: i16,
     world: &W,
 ) -> bool {
-    let maximum_extent = i32::from(source.pitch.max(source.roll)).max(0);
+    let maximum_extent = i32::from(model3.render_pitch.max(model3.render_roll)).max(0);
     let mut probe = candidate;
     let mut distance = 0;
     while distance <= maximum_extent {
@@ -80,7 +80,7 @@ fn model3_sub102d0_probe_blocked<W: FlightWorld>(
                 y: probe.y.to_be_bytes()[0],
             };
             if world.angle_flags(tile) & 8 != 0
-                || i32::from(source.fov)
+                || i32::from(model3.render_fov)
                     + i32::from(world.ground_height(probe))
                     + MODEL3_SOURCE_CAVE_CLEARANCE
                     > i32::from(ceiling)
@@ -95,12 +95,12 @@ fn model3_sub102d0_probe_blocked<W: FlightWorld>(
 }
 
 fn model3_candidate_blocked<W: FlightWorld>(
-    source: &Level2AuthoredClass5Source,
+    model3: &Level2AuthoredClass5Model3State,
     candidate: Position,
     heading: i16,
     world: &W,
 ) -> bool {
-    model3_sub102d0_probe_blocked(source, candidate, heading, world)
+    model3_sub102d0_probe_blocked(model3, candidate, heading, world)
         || model3_slope_measure(candidate, world) >= MODEL3_SOURCE_SLOPE_LIMIT
 }
 
@@ -156,22 +156,29 @@ struct Model3Peer {
 }
 
 impl Level2EconomyState {
-    /// Reproduce `sub_4B6F0`'s ordered child allocation.  The caller owns the
-    /// transaction: a missing slot or a map-link failure returns `None`, and
-    /// the root allocator restores the pre-constructor snapshot.
+    /// Reproduce `sub_4B6F0`'s ordered child allocation. `NewEvent` failure
+    /// ends the loop but does not roll back the root or already-created body
+    /// rows. Each successful child consumes its own NewEvent allocation/RNG
+    /// seed, then `qmemcpy` overwrites the child's local RNG with the root's
+    /// post-constructor RNG.
     pub(super) fn allocate_model3_chain(
         &mut self,
         source: &mut Level2AuthoredClass5Source,
-    ) -> Option<Level2AuthoredClass5Model3State> {
+    ) -> Level2AuthoredClass5Model3State {
+        // `NewEvent` clears the root record before `sub_4B6F0` copies it into
+        // the body rows. A reused arena slot must not leak its prior owner.
+        self.source_owner.insert(source.source_entity_index, 0);
         source.source_byte_39 = MODEL3_DESCRIPTOR_CADENCE
             .wrapping_sub(source.source_byte_3e % MODEL3_DESCRIPTOR_CADENCE)
             .wrapping_add(4);
         let mut previous_slot = 0;
         let mut first_slot = 0;
         for child_index in 0..MODEL3_CHILD_COUNT {
-            let child_slot = self.allocate_slot()?;
-            let initial_rng = self.new_event_rng(child_slot);
-            let entity_rng = level2_next_rng16(initial_rng);
+            let Some(child_slot) = self.allocate_slot() else {
+                break;
+            };
+            let _new_event_rng = self.new_event_rng(child_slot);
+            let entity_rng = source.entity_rng;
             let speed = MODEL3_CHILD_SPEEDS[child_index];
             let rotation_speed = MODEL3_CHILD_ROTATIONS[child_index];
             let axis = speed * 65 / 100;
@@ -192,12 +199,13 @@ impl Level2EconomyState {
                 .is_err()
             {
                 self.release_slot(child_slot, Some(entity_rng));
-                return None;
+                break;
             }
             let child = Level2AuthoredClass5Model3Child {
                 source_entity_index: child_slot,
                 root_authored_index: source.authored_index,
                 entity_rng,
+                player_owner_entity_index: self.source_owner(source.source_entity_index),
                 parent_entity_index: source.source_entity_index,
                 // qmemcpy copies the root's word 0x32; the constructor then
                 // writes the previous linked entity into every new child.
@@ -224,16 +232,21 @@ impl Level2EconomyState {
                 model: source.model,
                 action: 232,
                 source_byte_3e: u8::try_from(child_index).expect("model-3 child index fits"),
+                source_byte_39: source.source_byte_39,
                 byte_0x3b: 0,
                 byte_0x43: 10,
                 byte_0x44: 0,
                 byte_0x46: 0,
                 word_0x2c: 0,
                 particle_index: MODEL3_CHILD_PARTICLES[child_index],
-                yaw: rotation_speed / 2,
-                pitch: axis,
-                roll: axis,
-                fov,
+                yaw: source.yaw,
+                pitch: source.pitch,
+                roll: source.roll,
+                fov: source.fov,
+                render_yaw: rotation_speed / 2,
+                render_pitch: axis,
+                render_roll: axis,
+                render_fov: fov,
                 shift_rot_x: 0,
                 shift_rot_y: 0,
                 position: source.position,
@@ -254,7 +267,7 @@ impl Level2EconomyState {
             self.authored_class5_model3_children.push(child);
             previous_slot = child_slot;
         }
-        Some(Level2AuthoredClass5Model3State {
+        Level2AuthoredClass5Model3State {
             source_entity_index: source.source_entity_index,
             damage_dword_0x5e_94: 0,
             word_0x32: 0,
@@ -266,7 +279,11 @@ impl Level2EconomyState {
             word_0x2c: 0,
             descriptor_index: MODEL3_DESCRIPTOR_INDEX,
             last_child_root_phase: u8::MAX,
-        })
+            render_yaw: 90,
+            render_pitch: 414,
+            render_roll: 414,
+            render_fov: 108,
+        }
     }
 
     #[inline]
@@ -308,6 +325,7 @@ impl Level2EconomyState {
             26 => self.step_model3_action26(source, &mut model3, target, terrain),
             27 => self.step_model3_action27(source, &mut model3, terrain),
             28 => self.step_model3_action28(source, &model3),
+            29 => self.step_model3_action29(source, &mut model3, terrain),
             30 => self.step_model3_action30(source, &mut model3),
             // 216..220 are model-27 actions owned by sub_4D000. A malformed
             // model-3 row is intentionally inert rather than borrowing that
@@ -369,6 +387,7 @@ impl Level2EconomyState {
         let state = self.model3_source_prepass(source, model3);
         if state == 2 {
             source.action = 28;
+            self.model3_source_terrain_settle(source, terrain);
             return;
         }
         if state == 1 {
@@ -385,6 +404,7 @@ impl Level2EconomyState {
         // sub_1B8C0 runs before the descriptor cadence gate.
         let _ = self.model3_step_source_movement(source, model3, terrain);
         if source.source_byte_3e % MODEL3_DESCRIPTOR_CADENCE != 0 {
+            self.model3_source_terrain_settle(source, terrain);
             return;
         }
         let first = level2_next_rng16(source.entity_rng);
@@ -395,6 +415,7 @@ impl Level2EconomyState {
         source.roll = ((i32::from(source.roll) + delta) & 0x07ff) as i16;
 
         if source.source_byte_39 == 0 {
+            self.model3_source_terrain_settle(source, terrain);
             return;
         }
         let target = target
@@ -425,6 +446,7 @@ impl Level2EconomyState {
                 source.action = 27;
             }
         }
+        self.model3_source_terrain_settle(source, terrain);
     }
 
     /// Port `sub_1F990 -> sub_1C310`. The native-world caller supplies the
@@ -481,18 +503,33 @@ impl Level2EconomyState {
             return;
         }
 
-        // sub_1CC20 may fail to allocate its temporary sphere when the source
-        // arena is exhausted. Preserve that branch by making the sound and
-        // feedback conditional on an available arena row.
-        if !self.free_slots.is_empty() {
+        let (yaw, pitch) =
+            crate::level1_mission::projectile_guidance_angles(source.position, target.position);
+        let mut launch_position = source.position;
+        launch_position.z = launch_position.z.wrapping_add(source.fov);
+        let spawned = self.spawn_fireball_projectile_with_payload(
+            level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                origin: FireballProjectileOrigin::Worm,
+                position: launch_position,
+                yaw,
+                pitch,
+                axis_position: target.position,
+                source_id_entity_index: source.source_entity_index,
+                holder_entity_index: 0,
+                source_subspell_index: 500,
+                source_mana: 0,
+                source_dword_0x10: 0,
+                target_source_entity_index: target.index,
+            },
+            0,
+        );
+        if spawned.is_some() {
             self.events
                 .push(Level2EconomyEvent::AuthoredClass5Model3Sound {
                     source_entity_index: source.source_entity_index,
                     sound_id: 8,
                 });
         }
-        source.word_0x96_150 = source.word_0x26;
-        self.model3_source_terrain_settle(source, terrain);
     }
 
     /// Port `sub_1F9E0 -> sub_1C560`, using the model-3 root sidecar for the
@@ -503,6 +540,10 @@ impl Level2EconomyState {
         model3: &mut Level2AuthoredClass5Model3State,
         terrain: &SessionTerrain,
     ) {
+        if model3.word_0x32 == 0 {
+            source.action = 25;
+            return;
+        }
         let peer = self.model3_peer_info(model3.word_0x32);
         let peer_valid = peer.is_some_and(|peer| {
             peer.life >= 0
@@ -549,10 +590,7 @@ impl Level2EconomyState {
                 source.roll = i16::try_from(heading_for_positions(source.position, peer.position))
                     .expect("model-3 peer heading fits");
                 self.model3_retarget_heading_nearby(source, 256);
-                source.actual_speed = source
-                    .actual_speed
-                    .wrapping_add(peer.maximum_speed)
-                    .wrapping_add(peer.actual_speed);
+                source.actual_speed = peer.maximum_speed.wrapping_add(peer.actual_speed);
             }
             2 => {
                 source.word_0x96_150 = peer.word_0x96;
@@ -563,14 +601,11 @@ impl Level2EconomyState {
                 model3.word_0x32 = peer.word_0x32;
                 let heading_target = self
                     .model3_position_for_slot(peer.word_0x32)
-                    .unwrap_or(peer.position);
+                    .expect("the source arena retains the sentinel and live peer rows");
                 source.roll = i16::try_from(heading_for_positions(source.position, heading_target))
                     .expect("model-3 chained peer heading fits");
                 self.model3_retarget_heading_nearby(source, 256);
-                source.actual_speed = source
-                    .actual_speed
-                    .wrapping_add(peer.maximum_speed)
-                    .wrapping_add(peer.actual_speed);
+                source.actual_speed = peer.maximum_speed.wrapping_add(peer.actual_speed);
             }
             6 => {
                 source.word_0x96_150 = peer.word_0x96;
@@ -606,6 +641,40 @@ impl Level2EconomyState {
         source.action = 29;
     }
 
+    fn step_model3_action29(
+        &mut self,
+        source: &mut Level2AuthoredClass5Source,
+        model3: &mut Level2AuthoredClass5Model3State,
+        terrain: &SessionTerrain,
+    ) {
+        if source.source_byte_3e & 7 != 0 {
+            return;
+        }
+        if source.mana > 0 {
+            source.entity_rng = level2_next_rng16(source.entity_rng);
+            let player_owner = self.source_owner(source.source_entity_index);
+            let _ = self.spawn_mana_sphere_from_death(
+                source.source_entity_index,
+                source.position,
+                source.yaw,
+                source.entity_rng,
+                source.mana,
+                player_owner,
+                terrain,
+            );
+        }
+        self.source_owner.insert(source.source_entity_index, 0);
+        if model3.control_flags & 0x0010_0000 == 0 {
+            let _ = self.spawn_death_burst_from_death_with_id(
+                source.source_entity_index,
+                source.source_entity_index,
+                source.position,
+            );
+        }
+        source.drawing_enabled = false;
+        model3.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+    }
+
     /// Model-3 descriptor 74 starts with the default stage value, so the
     /// action-30 `sub_1D5D0` switch has no case and returns without mutation.
     fn step_model3_action30(
@@ -637,7 +706,7 @@ impl Level2EconomyState {
             return 1;
         }
 
-        if !model3_candidate_blocked(source, predicted, source.yaw, terrain) {
+        if !model3_candidate_blocked(model3, predicted, source.yaw, terrain) {
             source.position = predicted;
             model3.control_flags &= !MODEL3_RAW_MOTION_COLLISION_BIT;
             source.yaw = model3_heading_after_turn(source.yaw, source.roll);
@@ -651,7 +720,7 @@ impl Level2EconomyState {
             let mut candidate = before;
             model3_source_settle_position(&mut candidate, terrain);
             crate::move_entity(&mut candidate, heading, 0, source.actual_speed);
-            if !model3_candidate_blocked(source, candidate, heading, terrain) {
+            if !model3_candidate_blocked(model3, candidate, heading, terrain) {
                 source.position = candidate;
                 source.yaw = model3_heading_after_turn(heading, source.roll);
                 return 3;
@@ -673,6 +742,10 @@ impl Level2EconomyState {
     }
 
     fn model3_position_for_slot(&self, source_slot: u16) -> Option<Position> {
+        if source_slot == 0 {
+            // Source entity zero is the permanently zeroed sentinel row.
+            return Some(Position::default());
+        }
         self.authored_class5
             .iter()
             .find(|source| {
@@ -795,13 +868,122 @@ impl Level2EconomyState {
         }
     }
 
-    /// The sixteen constructor children remain action 232. `sub_29A90` is a
-    /// model-27 action-233 callback and must not run on this carrier, whether
-    /// the child is reached from the root chain or exposed by the arena.
-    pub(crate) fn step_authored_class5_model3_child_slot(&mut self, source_slot: u16) -> bool {
-        self.authored_class5_model3_children.iter().any(|child| {
-            child.active && child.source_entity_index == source_slot && child.model == 3
-        })
+    /// Run the source action-232 predecessor follower or the action-29
+    /// phase-gated death conversion for one typed Worm body row.
+    pub(crate) fn step_authored_class5_model3_child_slot(
+        &mut self,
+        source_slot: u16,
+        predecessor_fallback: Option<EntitySnapshot>,
+        terrain: &SessionTerrain,
+    ) -> bool {
+        let Some(child_index) = self
+            .authored_class5_model3_children
+            .iter()
+            .position(|child| {
+                child.active && child.source_entity_index == source_slot && child.model == 3
+            })
+        else {
+            return false;
+        };
+        let mut child = self.authored_class5_model3_children[child_index];
+        match child.action {
+            232 => {
+                let predecessor = self
+                    .authored_class5
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == child.word_0x32)
+                    .map(|source| (5, source.position, source.yaw))
+                    .or_else(|| {
+                        self.authored_class5_model3_children
+                            .iter()
+                            .find(|source| {
+                                source.active && source.source_entity_index == child.word_0x32
+                            })
+                            .map(|source| (5, source.position, source.yaw))
+                    })
+                    .or_else(|| {
+                        predecessor_fallback
+                            .map(|source| (source.class, source.position, source.yaw))
+                    });
+                let Some((predecessor_class, predecessor_position, predecessor_yaw)) = predecessor
+                else {
+                    return false;
+                };
+                if predecessor_class != 5 {
+                    child.drawing_enabled = false;
+                    child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+                }
+                if child.source_byte_39 != 0 {
+                    let yaw =
+                        i16::try_from(heading_for_positions(child.position, predecessor_position))
+                            .expect("Worm body heading fits i16");
+                    let horizontal = crate::legacy_sqrt(model3_distance_squared_2d(
+                        child.position,
+                        predecessor_position,
+                    ));
+                    let pitch = crate::pitch_for_delta(
+                        i32::try_from(horizontal).expect("wrapped Worm distance fits i32"),
+                        i32::from(predecessor_position.z.wrapping_sub(child.position.z)),
+                    );
+                    let mut position = predecessor_position;
+                    crate::move_entity(&mut position, yaw, pitch, child.word_0x36.wrapping_neg());
+                    child.position = position;
+                    child.yaw = yaw;
+                    child.pitch = pitch;
+                    if child.pending_word_0x62 != 0 {
+                        child.life = child.life.wrapping_sub(child.damage_dword_0x5e_94);
+                        child.word_0x26 = child.pending_word_0x62;
+                        child.pending_word_0x62 = 0;
+                    } else {
+                        child.word_0x26 = 0;
+                    }
+                } else if child.source_byte_3e & 3 == 0 {
+                    child.position = predecessor_position;
+                    child.yaw = predecessor_yaw;
+                }
+            }
+            29 => {
+                if child.source_byte_3e & 7 == 0 {
+                    if child.mana > 0 {
+                        child.entity_rng = level2_next_rng16(child.entity_rng);
+                        let _ = self.spawn_mana_sphere_from_death(
+                            source_slot,
+                            child.position,
+                            child.yaw,
+                            child.entity_rng,
+                            child.mana,
+                            child.player_owner_entity_index,
+                            terrain,
+                        );
+                    }
+                    child.player_owner_entity_index = 0;
+                    if child.control_flags & 0x0010_0000 == 0 {
+                        let _ = self.spawn_death_burst_from_death_with_id(
+                            source_slot,
+                            child.parent_entity_index,
+                            child.position,
+                        );
+                    }
+                    child.drawing_enabled = false;
+                    child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+                }
+            }
+            _ => return false,
+        }
+        self.source_rng.insert(source_slot, child.entity_rng);
+        self.authored_class5_model3_children[child_index] = child;
+        if child.active {
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: child.position.x,
+                    y: child.position.y,
+                })
+                .is_ok()
+        } else {
+            true
+        }
     }
 
     /// Dispatch the model-3 family through the same source cursor bookkeeping

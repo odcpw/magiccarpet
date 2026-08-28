@@ -942,791 +942,212 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
 }
 
 #[test]
-fn level_two_model3_actions_25_26_27_28_30_are_source_complete() {
+fn model3_constructor_retains_allocated_prefix_on_partial_exhaustion() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
     let mut session = inspection
         .level2_reset_session()
-        .expect("Level 2 model-3 action session");
+        .expect("Level 2 Worm constructor session");
     let baseline_hash = session.campaign_state_hash();
-    let authored_features = session.mission().authored_features().to_vec();
-    let feature_position = |index: u16| {
-        authored_features
-            .iter()
-            .copied()
-            .find(|feature| feature.index == index)
-            .expect("authored model-3 feature")
-            .world_position(0)
-    };
 
-    // Group 22 is the direct authored production witness for row 238.  The
-    // constructor must expose one root sidecar and the complete sixteen-row
-    // linked chain through the ordinary source cursor.
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let root_slot = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.authored_index == 238)
-        .map(|source| source.source_entity_index)
-        .expect("group-22 model-3 root");
-    let root_state = session
+    {
+        let economy = &mut session.economy_mut();
+        economy.replacement_cursor_exclusions.extend(1_u16..=999);
+        // allocate_slot pops the tail: root 700, then body rows 701..703.
+        economy.free_slots = vec![703, 702, 701, 700];
+    }
+    let root = session
+        .economy_mut()
+        .allocate_authored_class5(
+            238,
+            3,
+            Position {
+                x: 0x4000,
+                y: 0x5000,
+                z: 0,
+            },
+        )
+        .expect("Worm root remains published after body exhaustion");
+    assert_eq!(root.source_entity_index, 700);
+    assert_eq!(root.action, 25);
+    assert_eq!(root.model, 3);
+    assert_eq!(root.fov, 0);
+
+    let state = session
         .economy()
         .authored_class5_model3()
         .iter()
-        .find(|state| state.source_entity_index == root_slot)
+        .find(|state| state.source_entity_index == root.source_entity_index)
         .copied()
-        .expect("model-3 root sidecar");
-    assert_eq!(root_state.descriptor_index, 74);
+        .expect("partial Worm retains its root sidecar");
+    assert_eq!(state.word_0x34, 701);
     assert_eq!(
-        session
-            .economy()
-            .authored_class5_model3_children()
-            .iter()
-            .filter(|child| child.parent_entity_index == root_slot)
-            .count(),
-        16
+        (
+            state.render_yaw,
+            state.render_pitch,
+            state.render_roll,
+            state.render_fov
+        ),
+        (90, 414, 414, 108)
     );
-    let chain = session
+
+    let children = session
         .economy()
         .authored_class5_model3_children()
         .iter()
-        .filter(|child| child.parent_entity_index == root_slot)
+        .filter(|child| child.parent_entity_index == root.source_entity_index)
         .copied()
         .collect::<Vec<_>>();
-    assert_eq!(chain[0].word_0x32, root_slot);
-    for pair in chain.windows(2) {
-        assert_eq!(pair[0].word_0x34, pair[1].source_entity_index);
-        assert_eq!(pair[1].word_0x32, pair[0].source_entity_index);
-    }
-    assert_eq!(chain.last().expect("model-3 chain tail").word_0x34, 0);
-    assert!(chain.iter().all(|child| child.action == 232));
+    assert_eq!(children.len(), 3);
+    assert_eq!(
+        children
+            .iter()
+            .map(|child| child.source_entity_index)
+            .collect::<Vec<_>>(),
+        vec![701, 702, 703]
+    );
+    assert_eq!(children[0].word_0x32, 700);
+    assert_eq!(children[0].word_0x34, 702);
+    assert_eq!(children[1].word_0x32, 701);
+    assert_eq!(children[1].word_0x34, 703);
+    assert_eq!(children[2].word_0x32, 702);
+    assert_eq!(children[2].word_0x34, 0);
     assert!(
-        session
-            .economy()
-            .live_arena_slots()
+        children
             .iter()
-            .filter(|(_, kind)| *kind == Level2DynamicArenaKind::AuthoredClass5Model3Child)
-            .count()
-            >= 16
+            .all(|child| child.entity_rng == root.entity_rng)
     );
-
-    let expected_roll = |initial_rng: u16, initial_roll: i16| {
-        let first = level2_next_rng16(initial_rng);
-        let second = level2_next_rng16(first);
-        let direction = 2 * (i32::from(first % 0x009d) / 79) - 1;
-        let delta = (i32::from(second & 0x00ff) + 85) * direction;
-        (i32::from(initial_roll).wrapping_add(delta) & 0x07ff) as i16
-    };
-
-    let player_slot = session.state.entity_index;
-    let root_position = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .expect("model-3 root remains live")
-        .position;
-
-    // The real class-3 projection is reduced to one qualified target.  At
-    // the descriptor cadence, source action 25 consumes two draws, writes
-    // word 0x96, and enters action 26 because row 74's descriptor byte flag
-    // is 0x01 (the source action-30 branch is not selected).
-    for entity in &mut session.economy.entities {
-        if entity.class == 3 {
-            entity.control_flags |= MODEL3_RAW_SOURCE_DISABLED_BIT;
-        }
-    }
-    session
-        .set_level2_entity_position(player_slot, root_position)
-        .expect("qualified player target position");
-    session
-        .economy
-        .entities
-        .get_mut(usize::from(player_slot))
-        .expect("qualified player target")
-        .control_flags &= !MODEL3_RAW_SOURCE_DISABLED_BIT;
-    let initial_rng = 0x2468;
-    {
-        let mut economy_view = session.economy_mut();
-        let root = economy_view
-            .authored_class5
-            .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root for qualified target");
-        root.action = 25;
-        root.source_byte_3e = 0;
-        root.source_byte_39 = 1;
-        root.actual_speed = 0;
-        root.yaw = 0;
-        root.entity_rng = initial_rng;
-        root.roll = 0;
-        root.life = root.max_life;
-        root.pending_word_0x62 = 0;
-        root.word_0x96_150 = 0;
-    }
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_qualified_target = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after qualified target");
-    assert_eq!(after_qualified_target.action, 26);
-    assert_eq!(after_qualified_target.word_0x96_150, player_slot);
+    assert!(
+        children
+            .iter()
+            .all(|child| child.source_byte_39 == root.source_byte_39)
+    );
     assert_eq!(
-        after_qualified_target.entity_rng,
-        level2_next_rng16(level2_next_rng16(initial_rng))
+        children
+            .iter()
+            .map(|child| child.source_byte_3e)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
     );
-    assert_eq!(after_qualified_target.roll, expected_roll(initial_rng, 0));
-    let action26_phase = after_qualified_target.phase;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_action26 = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after shared class-5 cursor handoff");
-    assert_eq!(after_action26.action, 26);
-    assert_eq!(after_action26.phase, action26_phase.wrapping_add(1));
-
-    // A mailbox hit followed by a lower-life linked child transfers the
-    // child's attacker relation to the root and takes the same action-26
-    // handoff without consuming the cadence RNG.
-    let child_slot = chain[0].source_entity_index;
-    let child_attacker = 0x4242;
-    let child_life = 8_900;
-    {
-        let mut economy_view = session.economy_mut();
-        let root = economy_view
-            .authored_class5
-            .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root for child transfer");
-        root.action = 25;
-        root.source_byte_3e = 0;
-        root.entity_rng = initial_rng;
-        root.life = root.max_life;
-        root.pending_word_0x62 = 0x1111;
-        root.word_0x96_150 = 0;
-        root.position.z = root_position.z.wrapping_add(128);
-    }
-    session
-        .economy_mut()
-        .authored_class5_model3
-        .iter_mut()
-        .find(|state| state.source_entity_index == root_slot)
-        .expect("model-3 sidecar for child transfer")
-        .damage_dword_0x5e_94 = 7;
-    session
-        .economy_mut()
-        .authored_class5_model3_children
-        .iter_mut()
-        .find(|child| child.source_entity_index == child_slot)
-        .expect("model-3 child for lower-life transfer")
-        .life = child_life;
-    session
-        .economy_mut()
-        .authored_class5_model3_children
-        .iter_mut()
-        .find(|child| child.source_entity_index == child_slot)
-        .expect("model-3 child attacker relation")
-        .word_0x26 = child_attacker;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_child_transfer = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after child transfer");
-    assert_eq!(after_child_transfer.life, child_life);
-    assert_eq!(after_child_transfer.word_0x26, child_attacker);
-    assert_eq!(after_child_transfer.word_0x96_150, child_attacker);
-    assert_eq!(after_child_transfer.action, 26);
-    assert_eq!(
-        after_child_transfer.position.z,
-        root_position.z.wrapping_add(64)
+    assert!(children.iter().all(|child| child.yaw == root.yaw));
+    assert_eq!(session.economy().source_owner(root.source_entity_index), 0);
+    assert!(
+        children
+            .iter()
+            .all(|child| child.player_owner_entity_index == 0)
     );
-    assert_eq!(after_child_transfer.entity_rng, initial_rng);
+    let tile = session
+        .economy()
+        .map_chains
+        .tile_of(root.source_entity_index);
     assert_eq!(
         session
             .economy()
-            .authored_class5_model3()
-            .iter()
-            .find(|state| state.source_entity_index == root_slot)
-            .expect("model-3 sidecar after child transfer")
-            .damage_dword_0x5e_94,
-        7
+            .map_chains
+            .entity_chain((tile & 0xff) as u8, (tile >> 8) as u8)
+            .into_iter()
+            .take(4)
+            .collect::<Vec<_>>(),
+        vec![700, 703, 702, 701],
+        "source links the root last, ahead of its reverse body allocation order"
     );
-
-    // A negative root life records word 0x24 and selects the source
-    // pre-kill handoff without movement or RNG draws.
-    let death_attacker = 0x5151;
-    {
-        let mut economy_view = session.economy_mut();
-        let root = economy_view
-            .authored_class5
-            .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root for negative-life handoff");
-        root.action = 25;
-        root.source_byte_3e = 0;
-        root.entity_rng = initial_rng;
-        root.roll = 0;
-        root.life = 1;
-        root.pending_word_0x62 = death_attacker;
+    for slot in 700_u16..=703 {
+        assert!(session.economy().map_chains.is_linked(slot));
+        assert!(!session.economy().free_slots.contains(&slot));
     }
-    session
+
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_hash);
+}
+
+#[test]
+fn model3_action27_uses_original_peer_speed_and_sentinel_chain_target() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 Worm peer session");
+    let baseline_hash = session.campaign_state_hash();
+    let root = session
         .economy_mut()
-        .authored_class5_model3
-        .iter_mut()
-        .find(|state| state.source_entity_index == root_slot)
-        .expect("model-3 sidecar for negative-life handoff")
-        .damage_dword_0x5e_94 = 2;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_negative_life = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after negative-life handoff");
-    assert_eq!(after_negative_life.life, -1);
-    assert_eq!(after_negative_life.word_0x24, death_attacker);
-    assert_eq!(after_negative_life.action, 28);
-    assert_eq!(after_negative_life.entity_rng, initial_rng);
-    assert_eq!(
-        session
-            .economy()
-            .authored_class5_model3()
-            .iter()
-            .find(|state| state.source_entity_index == root_slot)
-            .expect("model-3 sidecar after negative-life handoff")
-            .damage_dword_0x5e_94,
-        2
-    );
-
-    // With the class-3 projection rejected, the same-model source chain
-    // selects the nearest eligible model-3 peer and enters action 27.
-    for entity in &mut session.economy.entities {
-        if entity.class == 3 {
-            entity.control_flags |= MODEL3_RAW_SOURCE_DISABLED_BIT;
-        }
-    }
+        .allocate_authored_class5(
+            900,
+            3,
+            Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0,
+            },
+        )
+        .expect("first focused Worm root");
     let peer = session
         .economy_mut()
-        .allocate_authored_class5(164, 3, root_position)
-        .expect("model-3 peer constructor");
-    let peer_slot = peer.source_entity_index;
-    {
-        let mut economy_view = session.economy_mut();
-        let root = economy_view
-            .authored_class5
-            .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root for peer selection");
-        root.action = 25;
-        root.source_byte_3e = 0;
-        root.source_byte_39 = 1;
-        root.actual_speed = 0;
-        root.yaw = 0;
-        root.entity_rng = initial_rng;
-        root.roll = 0;
-        root.life = root.max_life;
-        root.pending_word_0x62 = 0;
-        root.word_0x96_150 = 0;
-    }
-    let root_max_life = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .expect("model-3 root life for peer selection")
-        .max_life;
-    for child in &mut session.economy_mut().authored_class5_model3_children {
-        if child.parent_entity_index == root_slot {
-            child.life = root_max_life;
-            child.word_0x26 = 0;
-        }
-    }
-    assert!(session.economy_mut().step_authored_class5_slot(root_slot));
-    let after_peer_selection = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after peer selection");
-    assert_eq!(after_peer_selection.action, 27);
-    assert_eq!(
-        session
-            .economy()
-            .authored_class5_model3()
-            .iter()
-            .find(|state| state.source_entity_index == root_slot)
-            .expect("model-3 sidecar after peer selection")
-            .word_0x32,
-        peer_slot
-    );
-
-    // Both source scans are nested under byte 0x39. An eligible peer must
-    // not win when that gate is clear, although cadence still consumes its
-    // two RNG draws.
-    {
-        let mut economy_view = session.economy_mut();
-        let root = economy_view
-            .authored_class5
-            .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root for byte-39 gate");
-        root.action = 25;
-        root.source_byte_3e = 0;
-        root.source_byte_39 = 0;
-        root.actual_speed = 0;
-        root.entity_rng = initial_rng;
-        root.roll = 0;
-        root.life = root.max_life;
-        root.pending_word_0x62 = 0;
-        root.word_0x96_150 = 0;
-    }
-    session
-        .economy_mut()
-        .authored_class5_model3
-        .iter_mut()
-        .find(|state| state.source_entity_index == root_slot)
-        .expect("model-3 sidecar for byte-39 gate")
-        .word_0x32 = 0;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_byte39_gate = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after byte-39 gate");
-    assert_eq!(after_byte39_gate.action, 25);
-    assert_eq!(
-        session
-            .economy()
-            .authored_class5_model3()
-            .iter()
-            .find(|state| state.source_entity_index == root_slot)
-            .expect("model-3 sidecar after byte-39 gate")
-            .word_0x32,
-        0
-    );
-    assert_eq!(
-        after_byte39_gate.entity_rng,
-        level2_next_rng16(level2_next_rng16(initial_rng))
-    );
-
-    // Out-of-range, disabled, and out-of-FOV class-3 candidates never win,
-    // but each cadence still consumes exactly the two source LCG draws and
-    // applies the masked roll update.
-    let rejected_target_cases = [
-        (
-            "out-of-range",
+        .allocate_authored_class5(
+            901,
+            3,
             Position {
-                x: root_position.x.wrapping_add(0x2000),
-                y: root_position.y,
-                z: root_position.z,
+                x: 20_000,
+                y: 10_000,
+                z: 0,
             },
-            false,
-        ),
-        ("disabled", root_position, true),
-        (
-            "out-of-fov",
-            Position {
-                x: root_position.x,
-                y: root_position.y.wrapping_add(1_024),
-                z: root_position.z,
-            },
-            false,
-        ),
-    ];
-    for (label, target_position, disabled) in rejected_target_cases {
-        for entity in &mut session.economy.entities {
-            if entity.class == 3 {
-                entity.control_flags |= MODEL3_RAW_SOURCE_DISABLED_BIT;
-            }
-        }
-        session
-            .set_level2_entity_position(player_slot, target_position)
-            .expect("rejected class-3 target position");
-        if !disabled {
-            session
-                .economy
-                .entities
-                .get_mut(usize::from(player_slot))
-                .expect("rejected class-3 target")
-                .control_flags &= !MODEL3_RAW_SOURCE_DISABLED_BIT;
-        }
-        let target_heading = heading_for_positions(root_position, target_position);
-        let initial_rng = 0x1357;
-        {
-            let mut economy_view = session.economy_mut();
-            let root = economy_view
-                .authored_class5
-                .iter_mut()
-                .find(|source| source.source_entity_index == root_slot)
-                .expect("model-3 root for rejected target");
-            root.action = 25;
-            root.source_byte_3e = 0;
-            root.source_byte_39 = 1;
-            root.actual_speed = 0;
-            root.yaw = if label == "out-of-fov" {
-                i16::try_from((target_heading + 0x0400) & 0x07ff)
-                    .expect("rejected target heading fits")
-            } else {
-                0
-            };
-            root.entity_rng = initial_rng;
-            root.roll = 0;
-            root.life = root.max_life;
-            root.pending_word_0x62 = 0;
-            root.word_0x96_150 = 0;
-        }
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        let after_rejection = session
-            .economy()
-            .authored_class5()
-            .iter()
-            .find(|source| source.source_entity_index == root_slot)
-            .copied()
-            .expect("model-3 root after rejected target");
-        assert_ne!(after_rejection.action, 26, "{label} target must not win");
-        assert_eq!(after_rejection.word_0x96_150, 0, "{label} target relation");
-        assert_eq!(
-            after_rejection.entity_rng,
-            level2_next_rng16(level2_next_rng16(initial_rng)),
-            "{label} RNG draw count"
-        );
-        assert_eq!(
-            after_rejection.roll,
-            expected_roll(initial_rng, 0),
-            "{label} roll update"
-        );
-    }
-
-    // The model-27 action family is not a model-3 carrier. A malformed
-    // action-217 selector must fail closed and roll back the complete outer
-    // turn; it is not a friendly no-op route. Snapshot the child immediately
-    // before that turn so prior valid action-232 phase advances are not
-    // confused with mutation by the rejected selector.
-    let child_slot = chain[0].source_entity_index;
+        )
+        .expect("second focused Worm root");
+    let expected_speed = peer.maximum_speed.wrapping_add(peer.actual_speed);
     {
-        let mut economy_view = session.economy_mut();
-        let root = economy_view
+        let economy = &mut session.economy_mut();
+        let source = economy
             .authored_class5
             .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root for negative model-27 exclusion");
-        root.action = 217;
-        root.dword_0x10 = 9;
-    }
-    let child_before = session
-        .economy()
-        .authored_class5_model3_children()
-        .iter()
-        .find(|child| child.source_entity_index == child_slot)
-        .copied()
-        .expect("model-3 child before rejected selector");
-    let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(evidence.is_empty());
-    let inert_root = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("inert model-3 root remains live");
-    assert_eq!(inert_root.action, 217);
-    assert_eq!(inert_root.dword_0x10, 9);
-    let inert_child = session
-        .economy()
-        .authored_class5_model3_children()
-        .iter()
-        .find(|child| child.source_entity_index == child_slot)
-        .copied()
-        .expect("model-3 child remains live");
-    assert_eq!(inert_child, child_before);
-    assert!(
-        session
-            .economy()
-            .authored_class5_model3_children()
-            .iter()
-            .filter(|child| child.parent_entity_index == root_slot)
-            .all(|child| child.action == 232)
-    );
-    assert!(!session.dispatch_events().iter().any(|event| matches!(
-        event,
-        Level2DispatchEvent::Economy {
-            event: Level2EconomyEvent::AuthoredClass5Model3Sound {
-                source_entity_index,
-                ..
-            },
-            ..
-        } if *source_entity_index == root_slot
-    )));
-    assert!(session.dispatch_events().iter().any(|event| matches!(
-        event,
-        Level2DispatchEvent::Error {
-            source_slot,
-            message,
-            ..
-        } if *source_slot == root_slot
-            && message.contains("unregistered UpdateEntities selector 5:217")
-    )));
-
-    // Action 26 is reached through the ordinary production arena route. At
-    // cadence it consumes no RNG, emits source sound 8, and leaves the root
-    // in the action-26 callback after the source settle.
-    {
-        let mut economy_view = session.economy_mut();
-        let root = economy_view
+            .find(|source| source.source_entity_index == root.source_entity_index)
+            .expect("first Worm root remains live");
+        source.action = 27;
+        source.source_byte_3e = 0;
+        source.phase = 0;
+        source.actual_speed = 0;
+        let linked = economy
             .authored_class5
             .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root for action 26");
-        root.action = 26;
-        root.source_byte_3e = 30;
-        root.entity_rng = initial_rng;
-        root.word_0x96_150 = player_slot;
-        root.life = root.max_life;
-        root.pending_word_0x62 = 0;
-    }
-    session
-        .economy
-        .entities
-        .get_mut(usize::from(player_slot))
-        .expect("action-26 target")
-        .control_flags &= !(ENTITY_DRAW_DISABLED_BIT | MODEL3_RAW_SOURCE_DISABLED_BIT);
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_action26_cadence = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 action-26 root");
-    assert_eq!(after_action26_cadence.action, 26);
-    assert_eq!(after_action26_cadence.entity_rng, initial_rng);
-    assert!(session.dispatch_events().iter().any(|event| matches!(
-        event,
-        Level2DispatchEvent::Economy {
-            event: Level2EconomyEvent::AuthoredClass5Model3Sound {
-                source_entity_index,
-                sound_id: 8,
-            },
-            ..
-        } if *source_entity_index == root_slot
-    )));
-
-    // A live peer in action 26 drives action 27's case-2 handoff, preserving
-    // the peer target relation and clearing the source peer word in order.
-    {
-        let mut economy = session.economy_mut();
-        economy
-            .authored_class5
-            .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 source for action-27 handoff")
-            .action = 27;
-        let peer = economy
-            .authored_class5
-            .iter_mut()
-            .find(|source| source.source_entity_index == peer_slot)
-            .expect("model-3 peer for action-27 handoff");
-        peer.action = 26;
-        peer.word_0x96_150 = player_slot;
-        economy
+            .find(|source| source.source_entity_index == peer.source_entity_index)
+            .expect("second Worm root remains live");
+        linked.action = 27;
+        let source_state = economy
             .authored_class5_model3
             .iter_mut()
-            .find(|state| state.source_entity_index == root_slot)
-            .expect("model-3 source sidecar for action-27 handoff")
-            .word_0x32 = peer_slot;
-        economy
-            .authored_class5
+            .find(|state| state.source_entity_index == root.source_entity_index)
+            .expect("first Worm peer sidecar");
+        source_state.word_0x32 = peer.source_entity_index;
+        let peer_state = economy
+            .authored_class5_model3
             .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 source cadence for action-27 handoff")
-            .source_byte_3e = 30;
+            .find(|state| state.source_entity_index == peer.source_entity_index)
+            .expect("second Worm peer sidecar");
+        peer_state.word_0x32 = 0;
     }
+
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_action27 = session
+
+    let root_after = session
         .economy()
         .authored_class5()
         .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after action-27 handoff");
-    assert_eq!(after_action27.action, 26);
-    assert_eq!(after_action27.word_0x96_150, player_slot);
-    assert_eq!(
-        session
-            .economy()
-            .authored_class5_model3()
-            .iter()
-            .find(|state| state.source_entity_index == root_slot)
-            .expect("model-3 sidecar after action-27 handoff")
-            .word_0x32,
-        0
-    );
-
-    // Action 28 is the source pre-kill callback: it transfers the last linked
-    // child word 0x24 and moves the entire chain to action 29.
-    session
-        .economy_mut()
-        .authored_class5
-        .iter_mut()
-        .find(|source| source.source_entity_index == root_slot)
-        .expect("model-3 root for action 28")
-        .action = 28;
-    session
-        .economy_mut()
-        .authored_class5_model3_children
-        .iter_mut()
-        .find(|child| child.source_entity_index == child_slot)
-        .expect("model-3 child for action-28 transfer")
-        .word_0x24 = 0x6a6a;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_action28 = session
+        .find(|source| source.source_entity_index == root.source_entity_index)
+        .expect("linked Worm remains after its ordinary scheduler visit");
+    let state_after = session
         .economy()
-        .authored_class5()
+        .authored_class5_model3()
         .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after action 28");
-    assert_eq!(
-        (after_action28.action, after_action28.word_0x24),
-        (29, 0x6a6a)
-    );
+        .find(|state| state.source_entity_index == root.source_entity_index)
+        .expect("linked Worm sidecar remains");
+    assert_eq!(root_after.action, 27);
+    assert_eq!(state_after.word_0x32, 0);
+    assert_eq!(root_after.actual_speed, expected_speed);
     assert!(
         session
-            .economy()
-            .authored_class5_model3_children()
+            .dispatch_events()
             .iter()
-            .filter(|child| child.parent_entity_index == root_slot)
-            .all(|child| child.action == 29)
+            .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
     );
 
-    // The default descriptor stage makes action 30 a source no-op; the live
-    // cursor still advances its byte/phase exactly once.
-    {
-        let mut economy_view = session.economy_mut();
-        let root = economy_view
-            .authored_class5
-            .iter_mut()
-            .find(|source| source.source_entity_index == root_slot)
-            .expect("model-3 root for action 30");
-        root.action = 30;
-        root.source_byte_3e = 4;
-    }
-    let before_action30 = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 action-30 source");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let after_action30 = session
-        .economy()
-        .authored_class5()
-        .iter()
-        .find(|source| source.source_entity_index == root_slot)
-        .copied()
-        .expect("model-3 root after action 30");
-    assert_eq!(after_action30.action, 30);
-    assert_eq!(after_action30.position, before_action30.position);
-    assert_eq!(
-        after_action30.source_byte_3e,
-        before_action30.source_byte_3e.wrapping_add(1)
-    );
-
-    // The other authored constructor rows are reached by ordinary group-1
-    // production, while rows 164/165 are checked through their group-keyed
-    // constructor inputs. All six rows must share the same sixteen-child
-    // model-3 carrier and no alternate Level-N API.
-    session.reset();
-    let local_player = session.state.entity_index;
-    session
-        .set_level2_entity_position(local_player, feature_position(11))
-        .expect("row-11 production position");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    for authored_index in [167_u16, 168, 169] {
-        let source = session
-            .economy()
-            .authored_class5()
-            .iter()
-            .find(|source| source.authored_index == authored_index)
-            .copied()
-            .expect("group-1 model-3 source");
-        assert!(
-            session
-                .economy()
-                .authored_class5_model3()
-                .iter()
-                .any(|state| state.source_entity_index == source.source_entity_index)
-        );
-        assert_eq!(
-            session
-                .economy()
-                .authored_class5_model3_children()
-                .iter()
-                .filter(|child| child.parent_entity_index == source.source_entity_index)
-                .count(),
-            16
-        );
-    }
-    for authored_index in [164_u16, 165] {
-        let source = session
-            .economy_mut()
-            .allocate_authored_class5(authored_index, 3, feature_position(authored_index))
-            .expect("group-keyed model-3 constructor row");
-        assert_eq!(source.authored_index, authored_index);
-        assert_eq!(
-            session
-                .economy()
-                .authored_class5_model3_children()
-                .iter()
-                .filter(|child| child.parent_entity_index == source.source_entity_index)
-                .count(),
-            16
-        );
-    }
-    assert!(
-        session
-            .economy()
-            .authored_class5()
-            .iter()
-            .all(|source| source.model != 27 && !matches!(source.action, 216..=220))
-    );
-    assert!(
-        session
-            .economy()
-            .authored_class5_model3_children()
-            .iter()
-            .all(|child| child.model != 27 && child.action == 232)
-    );
-
-    // A full arena rejects the root-plus-sixteen constructor transactionally.
-    session.reset();
-    session.economy_mut().free_slots.clear();
-    let economy_before_failure = session.economy().clone();
-    assert!(
-        session
-            .economy_mut()
-            .allocate_authored_class5(238, 3, feature_position(238))
-            .is_none()
-    );
-    assert_eq!(session.economy(), &economy_before_failure);
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }

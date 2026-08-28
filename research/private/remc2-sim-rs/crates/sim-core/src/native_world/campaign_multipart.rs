@@ -13,7 +13,10 @@
 
 use crate::{FlightWorld, Position, Tile};
 
-use super::EntitySnapshot;
+use super::{
+    EntitySnapshot, FireballProjectileOrigin,
+    level2_dynamic_economy::Level2FireballProjectileLaunchPayload,
+};
 
 const MULTIPART_CLASS: u8 = 5;
 const MULTIPART_MODEL: u8 = 3;
@@ -21,6 +24,9 @@ const MULTIPART_STAGE_ACTION: u8 = 31;
 const MULTIPART_CHILD_ACTION: u8 = 232;
 const MULTIPART_ATTACK_ACTION: u8 = 26;
 const MULTIPART_PRE_KILL_ACTION: u8 = 28;
+const MULTIPART_KILL_ACTION: u8 = 29;
+const MULTIPART_IDLE_ACTION: u8 = 25;
+const MULTIPART_LINKED_ACTION: u8 = 27;
 const MULTIPART_DESCRIPTOR_RANGE: u32 = 0x1400;
 const MULTIPART_DESCRIPTOR_TURN_LIMIT: i16 = 0x22;
 const MULTIPART_DESCRIPTOR_SLOPE_LIMIT: i32 = 0x14;
@@ -155,6 +161,20 @@ pub(crate) struct MultipartChildStep {
     pub followed_predecessor: bool,
     pub consumed_mailbox_owner: Option<u16>,
     pub drawing_disabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MultipartAttackStep {
+    pub source_slot: u16,
+    pub launch: Option<Level2FireballProjectileLaunchPayload>,
+    pub external_effect: MultipartRootExternalEffect,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MultipartPreKillStep {
+    pub source_slot: u16,
+    pub killer_slot: u16,
+    pub child_count: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -447,6 +467,424 @@ pub(crate) fn step_raw_multipart_action31<W: FlightWorld>(
         completed_stage_target,
         external_effect,
     })
+}
+
+/// Execute the package-reachable action-26 attack callback. Allocation,
+/// target feedback and sound remain outer-session effects so a failed
+/// `NewEvent` cannot be mistaken for a successful Fireball launch.
+pub(crate) fn step_raw_multipart_action26<W: FlightWorld>(
+    entities: &mut [EntitySnapshot],
+    source_slot: u16,
+    world: &W,
+) -> Result<MultipartAttackStep, MultipartCallbackError> {
+    let source_index = checked_slot(entities, source_slot)?;
+    let source_before = RawEntityView::read(&entities[source_index]);
+    validate_carrier(source_before, MULTIPART_ATTACK_ACTION)?;
+
+    let prelude = read_root_prelude(entities, source_slot)?;
+    apply_root_prelude(&mut entities[source_index], prelude);
+    if prelude.life < 0 {
+        write_u16(&mut entities[source_index], 40, prelude.attacker);
+        entities[source_index].set_source_action(MULTIPART_PRE_KILL_ACTION);
+        return Ok(MultipartAttackStep {
+            source_slot,
+            launch: None,
+            external_effect: MultipartRootExternalEffect::None,
+        });
+    }
+    if prelude.state == 1 {
+        write_u16(&mut entities[source_index], 154, prelude.attacker);
+        settle_to_terrain(&mut entities[source_index], world);
+        return Ok(MultipartAttackStep {
+            source_slot,
+            launch: None,
+            external_effect: MultipartRootExternalEffect::None,
+        });
+    }
+
+    let motion = step_root_motion(&mut entities[source_index], world);
+    let external_effect =
+        if motion == MultipartMotionResult::Blocked && entities[source_index].life < 0 {
+            MultipartRootExternalEffect::DecrementLiveEntityCounter
+        } else {
+            MultipartRootExternalEffect::None
+        };
+    let target_slot = read_u16(&entities[source_index], 154);
+    let target = if target_slot == 0 {
+        None
+    } else {
+        let target_index = checked_relation(entities, source_slot, "word-0x96", target_slot)?;
+        Some(RawEntityView::read(&entities[target_index]))
+    };
+    let Some(target) = target.filter(|target| {
+        target.active
+            && target.life >= 0
+            && !entities[usize::from(target.slot)].drawing_disabled()
+            && wrapped_distance_3d(entities[source_index].position, target.position)
+                < MULTIPART_DESCRIPTOR_RANGE
+    }) else {
+        entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
+        return Ok(MultipartAttackStep {
+            source_slot,
+            launch: None,
+            external_effect,
+        });
+    };
+
+    if entities[source_index].phase & 3 == 0 {
+        let source_position = entities[source_index].position;
+        set_roll(
+            &mut entities[source_index],
+            heading(source_position, target.position),
+        );
+        if let Some(peer) = first_nearby_same_model(
+            entities,
+            source_slot,
+            RawEntityView::read(&entities[source_index]),
+        ) {
+            set_roll(
+                &mut entities[source_index],
+                heading(peer.position, source_position),
+            );
+        }
+    }
+
+    let launch = if entities[source_index].phase % 30 == 0 {
+        let position = entities[source_index].position;
+        let (yaw, pitch) =
+            crate::level1_mission::projectile_guidance_angles(position, target.position);
+        let mut launch_position = position;
+        launch_position.z = launch_position.z.wrapping_add(entities[source_index].fov);
+        Some(Level2FireballProjectileLaunchPayload {
+            origin: FireballProjectileOrigin::Worm,
+            position: launch_position,
+            yaw,
+            pitch,
+            axis_position: target.position,
+            source_id_entity_index: entities[source_index].source_id,
+            holder_entity_index: 0,
+            source_subspell_index: 500,
+            source_mana: 0,
+            source_dword_0x10: 0,
+            target_source_entity_index: target.slot,
+        })
+    } else {
+        None
+    };
+    Ok(MultipartAttackStep {
+        source_slot,
+        launch,
+        external_effect,
+    })
+}
+
+/// Execute package-reachable free-roam action 25. The pass-start imported
+/// entity slice is already in numeric source order, so the first eligible
+/// player/peer match preserves remc2 tie ordering.
+pub(crate) fn step_raw_multipart_action25<W: FlightWorld>(
+    entities: &mut [EntitySnapshot],
+    source_slot: u16,
+    world: &W,
+) -> Result<MultipartRootExternalEffect, MultipartCallbackError> {
+    let source_index = checked_slot(entities, source_slot)?;
+    let source_before = RawEntityView::read(&entities[source_index]);
+    validate_carrier(source_before, MULTIPART_IDLE_ACTION)?;
+    let prelude = read_root_prelude(entities, source_slot)?;
+    apply_root_prelude(&mut entities[source_index], prelude);
+    if prelude.life < 0 {
+        write_u16(&mut entities[source_index], 40, prelude.attacker);
+        entities[source_index].set_source_action(MULTIPART_PRE_KILL_ACTION);
+        settle_to_terrain(&mut entities[source_index], world);
+        return Ok(MultipartRootExternalEffect::None);
+    }
+    if prelude.state == 1 {
+        write_u16(&mut entities[source_index], 154, prelude.attacker);
+        entities[source_index].set_source_action(MULTIPART_ATTACK_ACTION);
+        settle_to_terrain(&mut entities[source_index], world);
+        return Ok(MultipartRootExternalEffect::None);
+    }
+    let motion = step_root_motion(&mut entities[source_index], world);
+    let external = if motion == MultipartMotionResult::Blocked && entities[source_index].life < 0 {
+        MultipartRootExternalEffect::DecrementLiveEntityCounter
+    } else {
+        MultipartRootExternalEffect::None
+    };
+    if entities[source_index].phase % 30 != 0 {
+        settle_to_terrain(&mut entities[source_index], world);
+        return Ok(external);
+    }
+    let first = next_rng(entities[source_index].entity_rng);
+    let second = next_rng(first);
+    entities[source_index].set_entity_rng(second);
+    let direction = 2 * (i32::from(first % 157) / 79) - 1;
+    let delta = direction * (i32::from(second & 0xff) + 85);
+    let roll = (i32::from(entities[source_index].source_roll()) + delta) & 0x07ff;
+    set_roll(
+        &mut entities[source_index],
+        i16::try_from(roll).expect("11-bit Worm roll"),
+    );
+    if entities[source_index].record_bytes()[61] == 0 {
+        settle_to_terrain(&mut entities[source_index], world);
+        return Ok(external);
+    }
+    let source = RawEntityView::read(&entities[source_index]);
+    let target = entities
+        .iter()
+        .map(RawEntityView::read)
+        .filter(|candidate| {
+            candidate.slot != 0
+                && candidate.active
+                && candidate.class == 3
+                && entities[usize::from(candidate.slot)].control_flags & 0x20 == 0
+                && wrapped_distance_2d(source.position, candidate.position)
+                    <= MULTIPART_DESCRIPTOR_RANGE
+                && crate::angle_distance(
+                    i32::from(source.yaw),
+                    i32::from(heading(source.position, candidate.position)),
+                ) < crate::native_world::MODEL3_TARGET_HALF_ANGLE
+        })
+        .min_by_key(|candidate| wrapped_distance_2d(source.position, candidate.position));
+    if let Some(target) = target {
+        write_u16(&mut entities[source_index], 154, target.slot);
+        entities[source_index].set_source_action(MULTIPART_ATTACK_ACTION);
+        settle_to_terrain(&mut entities[source_index], world);
+        return Ok(external);
+    }
+    if let Some(peer) = entities
+        .iter()
+        .map(RawEntityView::read)
+        .filter(|candidate| {
+            candidate.slot != source_slot
+                && candidate.active
+                && candidate.class == MULTIPART_CLASS
+                && candidate.model == MULTIPART_MODEL
+                && !matches!(candidate.action, MULTIPART_CHILD_ACTION | 180 | 234)
+                && read_u16(&entities[usize::from(candidate.slot)], 54) == 0
+                && wrapped_distance_2d(source.position, candidate.position)
+                    <= MULTIPART_DESCRIPTOR_RANGE
+                && crate::angle_distance(
+                    i32::from(source.yaw),
+                    i32::from(heading(candidate.position, source.position)),
+                ) < crate::native_world::MODEL3_TARGET_HALF_ANGLE
+        })
+        .min_by_key(|candidate| wrapped_distance_2d(source.position, candidate.position))
+    {
+        write_u16(&mut entities[source_index], 54, peer.slot);
+        entities[source_index].set_source_action(MULTIPART_LINKED_ACTION);
+    }
+    settle_to_terrain(&mut entities[source_index], world);
+    Ok(external)
+}
+
+/// Execute package-reachable peer-follow action 27.
+pub(crate) fn step_raw_multipart_action27<W: FlightWorld>(
+    entities: &mut [EntitySnapshot],
+    source_slot: u16,
+    world: &W,
+) -> Result<MultipartRootExternalEffect, MultipartCallbackError> {
+    let source_index = checked_slot(entities, source_slot)?;
+    let source_before = RawEntityView::read(&entities[source_index]);
+    validate_carrier(source_before, MULTIPART_LINKED_ACTION)?;
+    let peer_slot = read_u16(&entities[source_index], 54);
+    if peer_slot == 0 {
+        entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
+        return Ok(MultipartRootExternalEffect::None);
+    }
+    let peer_index = checked_relation(entities, source_slot, "word-0x32 peer", peer_slot)?;
+    let peer = RawEntityView::read(&entities[peer_index]);
+    let peer_valid = peer.active
+        && peer.life >= 0
+        && peer.class == MULTIPART_CLASS
+        && peer.model == MULTIPART_MODEL
+        && !entities[peer_index].drawing_disabled();
+    let prelude = read_root_prelude(entities, source_slot)?;
+    apply_root_prelude(&mut entities[source_index], prelude);
+    if prelude.life < 0 {
+        if peer_valid {
+            write_u16(&mut entities[peer_index], 154, prelude.attacker);
+            write_u16(&mut entities[peer_index], 54, 0);
+            entities[peer_index].set_source_action(MULTIPART_ATTACK_ACTION);
+        }
+        write_u16(&mut entities[source_index], 54, 0);
+        write_u16(&mut entities[source_index], 40, prelude.attacker);
+        entities[source_index].set_source_action(MULTIPART_PRE_KILL_ACTION);
+        return Ok(MultipartRootExternalEffect::None);
+    }
+    if prelude.state == 1 {
+        if peer_valid {
+            write_u16(&mut entities[peer_index], 154, prelude.attacker);
+            write_u16(&mut entities[peer_index], 54, 0);
+            entities[peer_index].set_source_action(MULTIPART_ATTACK_ACTION);
+        }
+        write_u16(&mut entities[source_index], 54, 0);
+        write_u16(&mut entities[source_index], 154, prelude.attacker);
+        entities[source_index].set_source_action(MULTIPART_ATTACK_ACTION);
+        settle_to_terrain(&mut entities[source_index], world);
+        return Ok(MultipartRootExternalEffect::None);
+    }
+    let motion = step_root_motion(&mut entities[source_index], world);
+    let external = if motion == MultipartMotionResult::Blocked && entities[source_index].life < 0 {
+        MultipartRootExternalEffect::DecrementLiveEntityCounter
+    } else {
+        MultipartRootExternalEffect::None
+    };
+    if !peer_valid {
+        write_u16(&mut entities[source_index], 54, 0);
+        entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
+        return Ok(external);
+    }
+    if entities[source_index].phase % 30 != 0 {
+        return Ok(external);
+    }
+    let mut followed = None;
+    match peer.action.wrapping_sub(24) {
+        0 | 1 => followed = Some(peer),
+        2 => {
+            write_u16(&mut entities[source_index], 154, peer.word_96);
+            write_u16(&mut entities[source_index], 54, 0);
+            entities[source_index].set_source_action(MULTIPART_ATTACK_ACTION);
+        }
+        3 => {
+            let peer_relation = read_u16(&entities[peer_index], 54);
+            write_u16(&mut entities[source_index], 54, peer_relation);
+            if peer_relation == 0 {
+                followed = Some(RawEntityView::read(&entities[0]));
+            } else {
+                let relation_index = checked_relation(
+                    entities,
+                    source_slot,
+                    "chained word-0x32 peer",
+                    peer_relation,
+                )?;
+                followed = Some(RawEntityView::read(&entities[relation_index]));
+            }
+        }
+        _ => {
+            write_u16(&mut entities[source_index], 54, 0);
+            entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
+        }
+    }
+    if let Some(followed) = followed {
+        let source_position = entities[source_index].position;
+        set_roll(
+            &mut entities[source_index],
+            heading(source_position, followed.position),
+        );
+        if let Some(nearby) = first_nearby_same_model(
+            entities,
+            source_slot,
+            RawEntityView::read(&entities[source_index]),
+        ) {
+            set_roll(
+                &mut entities[source_index],
+                heading(nearby.position, source_position),
+            );
+        }
+        let peer_maximum_speed = read_i16(&entities[peer_index], 138);
+        entities[source_index]
+            .set_actual_speed(peer_maximum_speed.wrapping_add(entities[peer_index].actual_speed));
+    }
+    Ok(external)
+}
+
+/// Execute `PreKillEntity_1C890` for one imported Worm root. The root and all
+/// sixteen body rows retain their fixed source slots and enter action 29; the
+/// scheduler owns their independent later visits and epilogues.
+pub(crate) fn step_raw_multipart_action28(
+    entities: &mut [EntitySnapshot],
+    source_slot: u16,
+) -> Result<MultipartPreKillStep, MultipartCallbackError> {
+    let source_index = checked_slot(entities, source_slot)?;
+    let source_before = RawEntityView::read(&entities[source_index]);
+    validate_carrier(source_before, MULTIPART_PRE_KILL_ACTION)?;
+    let mut killer_slot = read_u16(&entities[source_index], 40);
+    let mut child_slot = source_before.word_34;
+    let mut child_count = 0_u8;
+    while child_slot != 0 {
+        let child_index = checked_relation(entities, source_slot, "word-0x34", child_slot)?;
+        if entities[child_index].class != MULTIPART_CLASS
+            || entities[child_index].model != MULTIPART_MODEL
+        {
+            return Err(MultipartCallbackError::UnexpectedCarrier {
+                source_slot: child_slot,
+                class: entities[child_index].class,
+                model: entities[child_index].model,
+                action: entities[child_index].action,
+            });
+        }
+        let next = read_u16(&entities[child_index], 56);
+        let child_killer = read_u16(&entities[child_index], 40);
+        if child_killer != 0 {
+            killer_slot = child_killer;
+        }
+        entities[child_index].set_source_action(MULTIPART_KILL_ACTION);
+        child_count = child_count.saturating_add(1);
+        if usize::from(child_count) > entities.len() {
+            return Err(MultipartCallbackError::ChildChainCycle { source_slot });
+        }
+        child_slot = next;
+    }
+    write_u16(&mut entities[source_index], 40, killer_slot);
+    entities[source_index].set_source_action(MULTIPART_KILL_ACTION);
+    Ok(MultipartPreKillStep {
+        source_slot,
+        killer_slot,
+        child_count,
+    })
+}
+
+fn read_root_prelude(
+    entities: &[EntitySnapshot],
+    source_slot: u16,
+) -> Result<RootPrelude, MultipartCallbackError> {
+    let source_index = checked_slot(entities, source_slot)?;
+    let source = RawEntityView::read(&entities[source_index]);
+    let mailbox_owner = read_u16(&entities[source_index], 102);
+    let mut prelude = RootPrelude {
+        life: source.life,
+        attacker: 0,
+        mailbox_owner,
+        state: 0,
+    };
+    if mailbox_owner != 0 {
+        prelude.life = prelude
+            .life
+            .wrapping_sub(read_i32(&entities[source_index], 98));
+        prelude.attacker = mailbox_owner;
+        prelude.state = 1;
+    }
+    let mut child_slot = source.word_34;
+    let mut visited = 0_usize;
+    while child_slot != 0 {
+        let child_index = checked_relation(entities, source_slot, "word-0x34", child_slot)?;
+        let child = RawEntityView::read(&entities[child_index]);
+        if child.life < prelude.life {
+            prelude.life = child.life;
+            prelude.attacker = child.word_26;
+            prelude.state = 1;
+            break;
+        }
+        child_slot = child.word_34;
+        visited += 1;
+        if visited > entities.len() {
+            return Err(MultipartCallbackError::ChildChainCycle { source_slot });
+        }
+    }
+    if prelude.life < 0 {
+        prelude.state = 2;
+    }
+    if prelude.attacker != 0 {
+        let _ = checked_relation(entities, source_slot, "word-0x26", prelude.attacker)?;
+    }
+    Ok(prelude)
+}
+
+fn apply_root_prelude(source: &mut EntitySnapshot, prelude: RootPrelude) {
+    source.set_life(prelude.life);
+    write_u16(source, 42, prelude.attacker);
+    if prelude.mailbox_owner != 0 {
+        source.clear_source_upkeep_owner();
+    }
 }
 
 /// Execute `sub_1B6B0` for one raw action-232 child.
@@ -1047,6 +1485,161 @@ mod tests {
             (entities[2].position, entities[2].yaw),
             (entities[1].position, 777)
         );
+    }
+
+    #[test]
+    fn action25_selects_nearest_source_eligible_player() {
+        let source_position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 1,
+        };
+        let mut entities = arena(5);
+        entities[1] = entity(1, 5, 3, 25, source_position);
+        entities[1].set_phase(0);
+        entities[1].set_actual_speed(0);
+        entities[1].set_yaw(512);
+        set_roll(&mut entities[1], 512);
+        entities[1].record[61] = 1;
+
+        entities[2] = entity(
+            2,
+            3,
+            0,
+            0,
+            Position {
+                x: 11_000,
+                ..source_position
+            },
+        );
+        entities[2].set_life(-1);
+        entities[2].disable_drawing();
+        entities[3] = entity(
+            3,
+            3,
+            0,
+            0,
+            Position {
+                x: 10_100,
+                ..source_position
+            },
+        );
+        let disabled_flags = entities[3].control_flags | 0x20;
+        entities[3].set_control_flags(disabled_flags);
+        entities[4] = entity(
+            4,
+            3,
+            0,
+            0,
+            Position {
+                x: 10_500,
+                ..source_position
+            },
+        );
+
+        step_raw_multipart_action25(&mut entities, 1, &FlatWorld).expect("valid idle Worm");
+
+        assert_eq!(entities[1].action, 26);
+        assert_eq!(read_u16(&entities[1], 154), 4);
+    }
+
+    #[test]
+    fn action27_propagates_peer_state_and_honors_entry_zero_relation() {
+        let mut entities = arena(4);
+        entities[1] = entity(
+            1,
+            5,
+            3,
+            27,
+            Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0,
+            },
+        );
+        entities[1].set_phase(0);
+        entities[1].set_actual_speed(0);
+        write_u16(&mut entities[1], 54, 2);
+        entities[2] = entity(
+            2,
+            5,
+            3,
+            27,
+            Position {
+                x: 20_000,
+                y: 10_000,
+                z: 0,
+            },
+        );
+        write_u16(&mut entities[2], 54, 0);
+        entities[2].record[138..140].copy_from_slice(&40_i16.to_le_bytes());
+        entities[2].set_actual_speed(7);
+
+        step_raw_multipart_action27(&mut entities, 1, &FlatWorld).expect("valid linked Worm");
+
+        assert_eq!(read_u16(&entities[1], 54), 0);
+        assert_eq!(entities[1].action, 27);
+        assert_eq!(entities[1].actual_speed, 47);
+        assert_eq!(
+            read_i16(&entities[1], 36),
+            heading(entities[1].position, entities[0].position)
+        );
+
+        entities[1].set_source_action(27);
+        write_u16(&mut entities[1], 54, 0);
+        entities[1].record[98..102].copy_from_slice(&100_i32.to_le_bytes());
+        write_u16(&mut entities[1], 102, 3);
+        let life_before = entities[1].life;
+        step_raw_multipart_action27(&mut entities, 1, &FlatWorld)
+            .expect("zero relation returns to idle before the prelude");
+        assert_eq!(entities[1].action, 25);
+        assert_eq!(entities[1].life, life_before);
+        assert_eq!(read_u16(&entities[1], 102), 3);
+    }
+
+    #[test]
+    fn action25_nearest_peer_flows_through_action27_to_attack() {
+        let source_position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        let mut entities = arena(5);
+        entities[1] = entity(1, 5, 3, 25, source_position);
+        entities[1].set_phase(0);
+        entities[1].set_actual_speed(0);
+        entities[1].set_yaw(1536);
+        set_roll(&mut entities[1], 512);
+        entities[1].record[61] = 1;
+        entities[2] = entity(
+            2,
+            5,
+            3,
+            25,
+            Position {
+                x: 11_000,
+                ..source_position
+            },
+        );
+        entities[3] = entity(
+            3,
+            5,
+            3,
+            26,
+            Position {
+                x: 10_500,
+                ..source_position
+            },
+        );
+        write_u16(&mut entities[3], 154, 4);
+
+        step_raw_multipart_action25(&mut entities, 1, &FlatWorld).expect("valid idle Worm");
+        assert_eq!((entities[1].action, read_u16(&entities[1], 54)), (27, 3));
+
+        step_raw_multipart_action27(&mut entities, 1, &FlatWorld).expect("valid linked Worm");
+        assert_eq!(entities[1].action, 26);
+        assert_eq!(read_u16(&entities[1], 54), 0);
+        assert_eq!(read_u16(&entities[1], 154), 4);
     }
 
     #[test]
