@@ -369,6 +369,9 @@ partial real implementation, not a completion claim:
   kind-and-position binding covers all twelve reset-live Level 3 ordinary
   Stones and all thirty-seven reset-live ordinary Trees; their callbacks
   consume the authored location through terrain ground/material projections.
+  One reset-imported Level 3 area-entry trigger also consumes its authored
+  location through the ordinary overlap cadence and exact group-8 constructor;
+  the other reset and dynamically authored switches remain read-only.
   Movement preserves sub-tile position and map membership, plus the shared
   spell projection for pickups. Every other placement remains read-only until
   its own runtime materialization binding is implemented;

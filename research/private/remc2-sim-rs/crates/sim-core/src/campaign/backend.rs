@@ -2049,7 +2049,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 51);
+        assert_eq!(level_three_movable.len(), 52);
         assert_eq!(
             level_three_movable
                 .iter()
@@ -2074,6 +2074,19 @@ mod tests {
                 })
                 .count(),
             37
+        );
+        assert_eq!(
+            level_three_movable
+                .iter()
+                .filter(|entity| {
+                    matches!(
+                        entity.kind(),
+                        LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger)
+                    )
+                })
+                .map(|entity| entity.id().as_str())
+                .collect::<Vec<_>>(),
+            vec!["switch.area_entry_trigger.at_218_93"]
         );
         let level = definition
             .level_definition()
@@ -4121,6 +4134,241 @@ mod tests {
         // map relocation, explicit reopen/reset, and its dry-land ground callback.
         // It does not prove water hiding/splash, damage/death allocation, authored
         // group Trees, other scenery, save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_three_area_trigger_and_runs_ordinary_group8() {
+        const TRIGGER_SLOT: u16 = 224;
+        const GROUP8_ROWS: &[u16] = &[208, 209, 210, 211, 212, 213, 214, 215];
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let trigger =
+            sim_definition::adapter::stable_entity_id("switch.area_entry_trigger.at_218_93")
+                .unwrap();
+        let package_tile = TilePosition { x: 218, y: 93 };
+        let authored_tile = TilePosition { x: 200, y: 80 };
+        let package_entity = base.level_definition().unwrap().entity(&trigger).unwrap();
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-l3-area-trigger-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-l3-area-trigger-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            75,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let package_position = session.backend().campaign.level2_compatibility().entities()
+            [usize::from(TRIGGER_SLOT)]
+        .position;
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-l3-area-trigger-placement",
+            &base,
+            "move-level-three-area-trigger",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(trigger.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(published.revision(), 2);
+        assert_eq!(
+            published
+                .level_definition()
+                .unwrap()
+                .entity(&trigger)
+                .unwrap()
+                .position(),
+            authored_tile
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let authored_position = crate::Position {
+            x: (authored_tile.x << 8) | (package_position.x & 0xff),
+            y: (authored_tile.y << 8) | (package_position.y & 0xff),
+            z: package_position.z,
+        };
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .entity_index;
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, authored_position)
+            .unwrap();
+        for _ in 0..8 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(session.backend().campaign.events().iter().all(|event| {
+            !matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
+            )
+        }));
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(TRIGGER_SLOT)]
+                .position,
+            package_position,
+            "publication must not mutate the already-open package authority"
+        );
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let authored_reset_hash = session.backend().campaign.state_hash();
+        {
+            let live = &session.backend().campaign.level2.session.state.live;
+            assert_eq!(
+                live.economy.entities[usize::from(TRIGGER_SLOT)].position,
+                authored_position
+            );
+            assert_eq!(
+                live.level2_imported_switch_roots
+                    .iter()
+                    .find(|root| root.source_slot == TRIGGER_SLOT)
+                    .unwrap()
+                    .position,
+                authored_position
+            );
+            assert_eq!(
+                live.economy.map_chains().tile_of(TRIGGER_SLOT),
+                u16::from_le_bytes([authored_tile.x as u8, authored_tile.y as u8])
+            );
+        }
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, package_position)
+            .unwrap();
+        for _ in 0..8 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(session.backend().campaign.events().iter().all(|event| {
+            !matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
+            )
+        }));
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, authored_position)
+            .unwrap();
+        for _ in 0..8 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            if session.backend().campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: TRIGGER_SLOT,
+                        group: 8,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == GROUP8_ROWS
+                )
+            }) {
+                break;
+            }
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(compatibility.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot: TRIGGER_SLOT,
+                    group: 8,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == GROUP8_ROWS
+            )
+        }));
+        assert!(
+            compatibility
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        let live = &compatibility.session.state.live;
+        assert_eq!(
+            live.level2_model39_activated,
+            BTreeSet::from([208, 209, 210, 211])
+        );
+        assert_eq!(
+            live.level2_mana_attraction_activated,
+            BTreeSet::from([212, 213, 214, 215])
+        );
+        assert_eq!(compatibility.economy().spheres().len(), 4);
+        assert_eq!(
+            compatibility
+                .economy()
+                .mana_attraction_fields()
+                .iter()
+                .map(|field| field.authored_index)
+                .collect::<Vec<_>>(),
+            vec![212, 213, 214, 215]
+        );
+        let fired = &live.economy.entities[usize::from(TRIGGER_SLOT)];
+        assert!(fired.active && fired.drawing_disabled());
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = &session.backend().campaign.level2.session.state.live;
+        assert_eq!(
+            reset.economy.entities[usize::from(TRIGGER_SLOT)].position,
+            authored_position
+        );
+        assert!(!reset.economy.entities[usize::from(TRIGGER_SLOT)].drawing_disabled());
+        assert!(reset.level2_model39_activated.is_empty());
+        assert!(reset.level2_mana_attraction_activated.is_empty());
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-imported Level 3 area trigger,
+        // explicit reopen/reset, ordinary overlap cadence, and exact group-8
+        // model-39/model-54 construction. It does not make the other area
+        // triggers movable or prove groups 9/10, dynamic switches, save/replay,
+        // or Unity presentation.
     }
 
     #[test]

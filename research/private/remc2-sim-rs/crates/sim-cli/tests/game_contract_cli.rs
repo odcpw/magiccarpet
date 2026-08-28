@@ -499,8 +499,14 @@ fn reset_live_move_entity_targets_are_package_projected() {
             "spell_pickup.invisibility.at_136_85",
             "scenery.stone.at_219_93",
             "scenery.tree.at_100_149",
+            "switch.area_entry_trigger.at_218_93",
         ],
         "session_reset",
+    );
+    assert_position_access(
+        level_three,
+        &["switch.area_entry_trigger.at_110_110"],
+        "read_only",
     );
     let level_one = level_one_campaign_fixture();
     let level_one = level_one.to_str().expect("UTF-8 campaign path");
@@ -510,8 +516,9 @@ fn reset_live_move_entity_targets_are_package_projected() {
         "read_only",
     );
     // No-Claim: this is the public package-projection gate. The already-focused
-    // Shield, Stone, and Tree authoring tests own publication/reopen/reset and
-    // their ordinary consumers; this test does not duplicate those lifecycles.
+    // Shield, Stone, Tree, and imported-trigger authoring tests own
+    // publication/reopen/reset and their ordinary consumers; this test does
+    // not duplicate those lifecycles.
 }
 
 #[test]
