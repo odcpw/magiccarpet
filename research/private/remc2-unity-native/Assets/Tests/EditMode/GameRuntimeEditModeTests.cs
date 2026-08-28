@@ -67,7 +67,20 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(title.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
                 Assert.That(title.generation, Is.EqualTo("1"));
                 Assert.That(title.pending_definition.definition_hash, Is.Null.Or.Empty);
+                Assert.That(
+                    title.pending_definition.runtime_flow?.game_id,
+                    Is.Null.Or.Empty);
+                Assert.That(title.active_runtime_flow?.game_id, Is.Null.Or.Empty);
                 Assert.That(title.session.session_id, Is.Null.Or.Empty);
+
+                title.pending_definition.runtime_flow =
+                    new GameRuntimeTransport.RuntimeFlowDefinition
+                    {
+                        bound_level_id = "level.partial.binding"
+                    };
+                Assert.Throws<InvalidOperationException>(() =>
+                    GameRuntimeTransport.ValidateIdentity(title, runtime.Handle));
+                title = runtime.IdentitySnapshot();
 
                 title.mode = GameRuntimeTransport.PlayingMode;
                 Assert.That(
@@ -88,11 +101,39 @@ namespace MagicCarpet.Native.Tests
                     runtime.IdentitySnapshot().mode,
                     Is.EqualTo(GameRuntimeTransport.TitleMode));
 
+                using (var laterRuntime = new GameRuntimeTransport())
+                {
+                    var later = Assert.Throws<GameRuntimeTransport.TransitionException>(
+                        () => laterRuntime.NewGame(LevelTwoPackage));
+                    Assert.That(later.Status, Is.EqualTo(NativeSim.ValidationFailed));
+                    Assert.That(
+                        laterRuntime.IdentitySnapshot().mode,
+                        Is.EqualTo(GameRuntimeTransport.TitleMode));
+                }
+
                 var loading = runtime.NewGame(LevelOnePackage);
                 Assert.That(loading.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
                 Assert.That(loading.generation, Is.EqualTo("2"));
                 Assert.That(loading.pending_definition.definition_hash, Is.Not.Empty);
+                Assert.That(
+                    loading.pending_definition.runtime_flow.game_id,
+                    Is.EqualTo("game.magic_carpet_2"));
+                Assert.That(
+                    loading.pending_definition.runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.night_spire"));
+                Assert.That(
+                    loading.pending_definition.runtime_flow.entries.Length,
+                    Is.EqualTo(3));
+                Assert.That(loading.active_runtime_flow?.game_id, Is.Null.Or.Empty);
                 Assert.That(loading.session.session_id, Is.Null.Or.Empty);
+
+                loading.active_runtime_flow = new GameRuntimeTransport.RuntimeFlowDefinition
+                {
+                    bound_level_id = "level.partial.binding"
+                };
+                Assert.Throws<InvalidOperationException>(() =>
+                    GameRuntimeTransport.ValidateIdentity(loading, runtime.Handle));
+                loading = runtime.IdentitySnapshot();
 
                 var repeatedNewGame = Assert.Throws<GameRuntimeTransport.TransitionException>(
                     () => runtime.NewGame(LevelTwoPackage));
@@ -106,9 +147,33 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(playing.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
                 Assert.That(playing.generation, Is.EqualTo("3"));
                 Assert.That(playing.pending_definition.definition_hash, Is.Null.Or.Empty);
+                Assert.That(
+                    playing.pending_definition.runtime_flow?.game_id,
+                    Is.Null.Or.Empty);
+                Assert.That(
+                    playing.active_runtime_flow.game_id,
+                    Is.EqualTo("game.magic_carpet_2"));
+                Assert.That(
+                    playing.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.night_spire"));
                 Assert.That(playing.session.session_id, Is.EqualTo(runtime.Handle.ToString()));
                 Assert.That(playing.session.generation, Is.EqualTo("1"));
                 Assert.That(playing.session.tick, Is.EqualTo("0"));
+
+                playing.pending_definition.runtime_flow =
+                    new GameRuntimeTransport.RuntimeFlowDefinition
+                    {
+                        bound_level_id = "level.partial.binding"
+                    };
+                Assert.Throws<InvalidOperationException>(() =>
+                    GameRuntimeTransport.ValidateIdentity(playing, runtime.Handle));
+                playing = runtime.IdentitySnapshot();
+
+                playing.active_runtime_flow.bound_level_id =
+                    "level.magic_carpet_2.payahandra_ruins";
+                Assert.That(
+                    runtime.IdentitySnapshot().active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.night_spire"));
 
                 var snapshot = runtime.CampaignSnapshot();
                 Assert.That(snapshot.identity.session_id, Is.EqualTo(playing.session.session_id));
@@ -124,6 +189,11 @@ namespace MagicCarpet.Native.Tests
                 runtime.Dispose();
                 runtime.Dispose();
                 Assert.Throws<ObjectDisposedException>(() => runtime.IdentitySnapshot());
+
+                // No-Claim: this proves definition-bound observational flow
+                // identity only. It does not detect completion, select or
+                // resolve the next package, accept transitions, execute
+                // Results/return-to-title, save/load, or wire the Unity shell.
             }
             finally
             {
@@ -146,6 +216,9 @@ namespace MagicCarpet.Native.Tests
             Assert.That(paused.session.session_id, Is.EqualTo(playing.session.session_id));
             Assert.That(paused.session.generation, Is.EqualTo("2"));
             Assert.That(paused.session.tick, Is.EqualTo("0"));
+            Assert.That(
+                paused.active_runtime_flow.bound_level_id,
+                Is.EqualTo(playing.active_runtime_flow.bound_level_id));
             Assert.That(
                 paused.session.definition_hash,
                 Is.EqualTo(playing.session.definition_hash));
@@ -183,6 +256,9 @@ namespace MagicCarpet.Native.Tests
             Assert.That(resumed.generation, Is.EqualTo("5"));
             Assert.That(resumed.session.generation, Is.EqualTo("3"));
             Assert.That(resumed.session.tick, Is.EqualTo("0"));
+            Assert.That(
+                resumed.active_runtime_flow.bound_level_id,
+                Is.EqualTo(playing.active_runtime_flow.bound_level_id));
             Assert.That(
                 NativeSim.mc_game_session_step_json_v1(
                     runtime.Handle,

@@ -16,9 +16,9 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v2";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v3";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v2";
+            "carpet-flight-native-game-runtime-json/v3";
         internal const string TitleMode = "title";
         internal const string LoadingMode = "loading";
         internal const string PlayingMode = "playing";
@@ -38,7 +38,16 @@ namespace MagicCarpet.Native
             public string[] transitions;
             public string playing_session_transport;
             public string package_profile;
+            public RuntimeFlowContract runtime_flow;
             public Limits limits;
+        }
+
+        [Serializable]
+        internal sealed class RuntimeFlowContract
+        {
+            public string title;
+            public string loading;
+            public string playing_and_paused;
         }
 
         [Serializable]
@@ -54,6 +63,31 @@ namespace MagicCarpet.Native
             public string package_graph_hash;
             public string definition_hash;
             public string definition_revision;
+            public RuntimeFlowDefinition runtime_flow;
+        }
+
+        [Serializable]
+        internal sealed class RuntimeFlowDestination
+        {
+            public string kind;
+            public string level_id;
+            public string node_id;
+        }
+
+        [Serializable]
+        internal sealed class RuntimeFlowEntry
+        {
+            public string level_id;
+            public RuntimeFlowDestination completion_destination;
+        }
+
+        [Serializable]
+        internal sealed class RuntimeFlowDefinition
+        {
+            public string game_id;
+            public string bound_level_id;
+            public string entry_level_id;
+            public RuntimeFlowEntry[] entries;
         }
 
         [Serializable]
@@ -64,6 +98,7 @@ namespace MagicCarpet.Native
             public string generation;
             public string mode;
             public DefinitionIdentity pending_definition;
+            public RuntimeFlowDefinition active_runtime_flow;
             public EngineSessionTransport.Identity session;
         }
 
@@ -160,7 +195,8 @@ namespace MagicCarpet.Native
                 "begin new game");
             var identity = IdentitySnapshot();
             if (identity.mode != LoadingMode || !HasDefinitionIdentity(identity) ||
-                HasSessionIdentity(identity))
+                HasSessionIdentityData(identity.session) ||
+                HasRuntimeFlowData(identity.active_runtime_flow))
             {
                 throw new InvalidOperationException("new game did not enter semantic Loading");
             }
@@ -169,15 +205,18 @@ namespace MagicCarpet.Native
 
         internal Identity OpenLevel()
         {
+            var pendingFlow = Current?.pending_definition?.runtime_flow;
             Check(
                 NativeSim.mc_game_runtime_open_level_v1(
                     RequireHandle(),
                     ParseCounter(Current.generation, "generation")),
                 "open pending level");
             var identity = IdentitySnapshot();
-            if (identity.mode != PlayingMode || HasDefinitionIdentity(identity) ||
+            if (identity.mode != PlayingMode ||
+                HasDefinitionIdentityData(identity.pending_definition) ||
                 !HasSessionIdentity(identity) ||
-                ParseCounter(identity.session.session_id, "session_id") != Handle)
+                ParseCounter(identity.session.session_id, "session_id") != Handle ||
+                !SameRuntimeFlow(pendingFlow, identity.active_runtime_flow))
             {
                 throw new InvalidOperationException("open level did not enter bound Playing");
             }
@@ -235,6 +274,7 @@ namespace MagicCarpet.Native
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
                 !PreservesSessionBinding(before.session, identity.session) ||
+                !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow) ||
                 ParseCounter(identity.session.generation, "session_generation") !=
                     beforeSessionGeneration ||
                 ParseCounter(identity.session.tick, "tick") != checked(beforeTick + 1))
@@ -279,6 +319,7 @@ namespace MagicCarpet.Native
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
                 !PreservesSessionBinding(before.session, identity.session) ||
+                !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow) ||
                 ParseCounter(identity.session.generation, "session_generation") !=
                     checked(beforeSessionGeneration + 1) ||
                 ParseCounter(identity.session.tick, "tick") != 0)
@@ -311,12 +352,16 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 2 ||
+                contract.transport_version != 3 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
                     "mc_game_session_*_v1 on the same handle" ||
                 contract.package_profile != EngineSessionTransport.CampaignProfile ||
+                contract.runtime_flow == null ||
+                contract.runtime_flow.title != "absent" ||
+                contract.runtime_flow.loading != "pending_definition.runtime_flow" ||
+                contract.runtime_flow.playing_and_paused != "active_runtime_flow" ||
                 contract.limits == null ||
                 contract.limits.maximum_output_json_bytes != 16 * 1024 * 1024 ||
                 contract.limits.json_length_type != "u32" ||
@@ -338,7 +383,7 @@ namespace MagicCarpet.Native
                 "read game runtime contract");
         }
 
-        private static void ValidateIdentity(Identity identity, ulong handle)
+        internal static void ValidateIdentity(Identity identity, ulong handle)
         {
             if (identity == null || identity.runtime_contract != RuntimeContract ||
                 ParseCounter(identity.runtime_id, "runtime_id") != handle ||
@@ -351,14 +396,18 @@ namespace MagicCarpet.Native
             switch (identity.mode)
             {
                 case TitleMode:
-                    if (HasDefinitionIdentity(identity) || HasSessionIdentity(identity))
+                    if (HasDefinitionIdentityData(identity.pending_definition) ||
+                        HasSessionIdentityData(identity.session) ||
+                        HasRuntimeFlowData(identity.active_runtime_flow))
                     {
                         throw new InvalidOperationException(
                             "Title runtime identity carries an unexpected binding");
                     }
                     break;
                 case LoadingMode:
-                    if (!HasDefinitionIdentity(identity) || HasSessionIdentity(identity) ||
+                    if (!HasDefinitionIdentity(identity) ||
+                        HasSessionIdentityData(identity.session) ||
+                        HasRuntimeFlowData(identity.active_runtime_flow) ||
                         string.IsNullOrWhiteSpace(
                             identity.pending_definition.package_graph_hash))
                     {
@@ -368,15 +417,19 @@ namespace MagicCarpet.Native
                     ParseCounter(
                         identity.pending_definition.definition_revision,
                         "definition_revision");
+                    ValidateRuntimeFlow(identity.pending_definition.runtime_flow);
                     break;
                 case PlayingMode:
                 case PausedMode:
-                    if (HasDefinitionIdentity(identity) || !HasSessionIdentity(identity))
+                    if (HasDefinitionIdentityData(identity.pending_definition) ||
+                        !HasSessionIdentity(identity) ||
+                        !HasRuntimeFlowData(identity.active_runtime_flow))
                     {
                         throw new InvalidOperationException(
                             "Playing runtime identity is incomplete");
                     }
                     EngineSessionTransport.ValidateIdentity(identity.session);
+                    ValidateRuntimeFlow(identity.active_runtime_flow);
                     break;
             }
         }
@@ -408,6 +461,7 @@ namespace MagicCarpet.Native
                 identity.session.package_graph_hash != before.session.package_graph_hash ||
                 identity.session.definition_hash != before.session.definition_hash ||
                 identity.session.definition_revision != before.session.definition_revision ||
+                !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow) ||
                 ParseCounter(identity.session.generation, "session_generation") !=
                     checked(beforeSessionGeneration + 1) ||
                 ParseCounter(identity.session.tick, "tick") != beforeTick)
@@ -460,9 +514,172 @@ namespace MagicCarpet.Native
             return !string.IsNullOrEmpty(identity?.pending_definition?.definition_hash);
         }
 
+        private static bool HasDefinitionIdentityData(DefinitionIdentity identity)
+        {
+            return identity != null &&
+                (!string.IsNullOrEmpty(identity.package_graph_hash) ||
+                    !string.IsNullOrEmpty(identity.definition_hash) ||
+                    !string.IsNullOrEmpty(identity.definition_revision) ||
+                    HasRuntimeFlowData(identity.runtime_flow));
+        }
+
         private static bool HasSessionIdentity(Identity identity)
         {
             return !string.IsNullOrEmpty(identity?.session?.session_id);
+        }
+
+        private static bool HasSessionIdentityData(EngineSessionTransport.Identity identity)
+        {
+            return identity != null &&
+                (!string.IsNullOrEmpty(identity.engine_contract) ||
+                    !string.IsNullOrEmpty(identity.package_graph_hash) ||
+                    !string.IsNullOrEmpty(identity.definition_hash) ||
+                    !string.IsNullOrEmpty(identity.definition_revision) ||
+                    !string.IsNullOrEmpty(identity.session_id) ||
+                    !string.IsNullOrEmpty(identity.generation) ||
+                    !string.IsNullOrEmpty(identity.tick));
+        }
+
+        private static bool HasRuntimeFlowData(RuntimeFlowDefinition flow)
+        {
+            return flow != null &&
+                (!string.IsNullOrEmpty(flow.game_id) ||
+                    !string.IsNullOrEmpty(flow.bound_level_id) ||
+                    !string.IsNullOrEmpty(flow.entry_level_id) ||
+                    flow.entries != null);
+        }
+
+        private static void ValidateRuntimeFlow(RuntimeFlowDefinition flow)
+        {
+            if (flow == null || !IsSemanticId(flow.game_id, "game") ||
+                !IsSemanticId(flow.bound_level_id, "level") ||
+                !IsSemanticId(flow.entry_level_id, "level") ||
+                flow.entries == null || flow.entries.Length == 0)
+            {
+                throw new InvalidOperationException("runtime flow identity is incomplete");
+            }
+            var levelIds = flow.entries.Select(entry => entry?.level_id).ToArray();
+            if (levelIds.Any(levelId => !IsSemanticId(levelId, "level")) ||
+                levelIds.Distinct(StringComparer.Ordinal).Count() != levelIds.Length ||
+                flow.entry_level_id != levelIds[0] ||
+                !levelIds.Contains(flow.bound_level_id))
+            {
+                throw new InvalidOperationException("runtime flow level identity is invalid");
+            }
+            for (var index = 0; index < levelIds.Length; index++)
+            {
+                var entry = flow.entries[index];
+                if (entry?.completion_destination == null)
+                {
+                    throw new InvalidOperationException("runtime flow entry is incomplete");
+                }
+                if (index + 1 < levelIds.Length)
+                {
+                    if (entry.completion_destination.kind != "level" ||
+                        entry.completion_destination.level_id != levelIds[index + 1] ||
+                        !string.IsNullOrEmpty(entry.completion_destination.node_id))
+                    {
+                        throw new InvalidOperationException(
+                            "runtime flow level destination is invalid");
+                    }
+                }
+                else if (entry.completion_destination.kind != "title" ||
+                    !IsSemanticId(entry.completion_destination.node_id, "flow") ||
+                    !string.IsNullOrEmpty(entry.completion_destination.level_id))
+                {
+                    throw new InvalidOperationException(
+                        "runtime flow Title destination is invalid");
+                }
+            }
+        }
+
+        private static bool IsSemanticId(string value, string expectedNamespace)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return false;
+            }
+            var segments = value.Split('.');
+            if (segments.Length < 2 || segments[0] != expectedNamespace ||
+                value.Contains("level1") || value.Contains("level2") ||
+                value.Contains("source_slot"))
+            {
+                return false;
+            }
+            foreach (var segment in segments)
+            {
+                if (segment.Length == 0 || segment[0] < 'a' || segment[0] > 'z' ||
+                    segment.Any(character =>
+                        (character < 'a' || character > 'z') &&
+                        (character < '0' || character > '9') && character != '_') ||
+                    IsPrivateSourceIdentitySegment(segment))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool IsPrivateSourceIdentitySegment(string segment)
+        {
+            var components = segment.Split('_');
+            for (var index = 0; index < components.Length; index++)
+            {
+                var component = components[index];
+                if (component == "source" || component == "raw" ||
+                    HasNumericSuffix(component, "source") ||
+                    HasNumericSuffix(component, "raw") ||
+                    HasNumericSuffix(component, "level") ||
+                    new[] { "class", "model", "action", "selector", "family", "slot" }
+                        .Any(prefix => component == prefix ||
+                            HasNumericSuffix(component, prefix)) ||
+                    (component == "level" && index + 1 < components.Length &&
+                        components[index + 1].All(char.IsDigit)))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool HasNumericSuffix(string value, string prefix)
+        {
+            return value.StartsWith(prefix, StringComparison.Ordinal) &&
+                value.Length > prefix.Length &&
+                value.Substring(prefix.Length).All(char.IsDigit);
+        }
+
+        private static bool SameRuntimeFlow(
+            RuntimeFlowDefinition left,
+            RuntimeFlowDefinition right)
+        {
+            if (left == null || right == null ||
+                left.game_id != right.game_id ||
+                left.bound_level_id != right.bound_level_id ||
+                left.entry_level_id != right.entry_level_id ||
+                left.entries == null || right.entries == null ||
+                left.entries.Length != right.entries.Length)
+            {
+                return false;
+            }
+            for (var index = 0; index < left.entries.Length; index++)
+            {
+                var leftEntry = left.entries[index];
+                var rightEntry = right.entries[index];
+                if (leftEntry?.completion_destination == null ||
+                    rightEntry?.completion_destination == null ||
+                    leftEntry.level_id != rightEntry.level_id ||
+                    leftEntry.completion_destination.kind !=
+                        rightEntry.completion_destination.kind ||
+                    leftEntry.completion_destination.level_id !=
+                        rightEntry.completion_destination.level_id ||
+                    leftEntry.completion_destination.node_id !=
+                        rightEntry.completion_destination.node_id)
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private ulong RequireHandle()

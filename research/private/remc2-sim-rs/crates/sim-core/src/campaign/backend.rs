@@ -17,7 +17,11 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use sim_definition::adapter::{
-    artifact_node, definition_error, game_package, owner_provenance, with_level_definition,
+    artifact_node, definition_error, game_package, owner_provenance, with_level_and_runtime_flow,
+};
+use sim_definition::runtime_flow::{
+    RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
+    SemanticGameId, SemanticLevelId,
 };
 
 use crate::{
@@ -218,8 +222,89 @@ pub fn load_mc2_campaign(
         Vec::new(),
         owner_provenance(&descriptor.package_sha256)?,
     )?;
-    GameDefinition::from_package(package, &engine_capabilities()?, catalog)
-        .map(|definition| with_level_definition(definition, descriptor.level_definition().clone()))
+    let runtime_flow = mc2_runtime_flow(selection, descriptor.level_definition())?;
+    GameDefinition::from_package(package, &engine_capabilities()?, catalog).map(|definition| {
+        with_level_and_runtime_flow(
+            definition,
+            descriptor.level_definition().clone(),
+            runtime_flow,
+        )
+    })
+}
+
+fn mc2_runtime_flow(
+    selection: CampaignSelection,
+    level: &sim_definition::level_definition::LevelDefinition,
+) -> crate::game_definition::Result<RuntimeFlowDefinition> {
+    let (bound_level, witnesses): (&str, &[&str]) = match selection {
+        CampaignSelection::LEVEL1 => (
+            "level.magic_carpet_2.night_spire",
+            &[
+                "objective.reach.foot_of_spire",
+                "objective.clear.spire_archers",
+            ],
+        ),
+        CampaignSelection::LEVEL2 => (
+            "level.magic_carpet_2.payahandra_ruins",
+            &[
+                "objective.defeat.nyphur",
+                "objective.reach.payahandra_ruins",
+            ],
+        ),
+        CampaignSelection::LEVEL3 => (
+            "level.magic_carpet_2.revealed_way",
+            &[
+                "objective.clear.guardian_dragons",
+                "objective.charge.reveal_entrance",
+            ],
+        ),
+        _ => {
+            return Err(definition_error(
+                DefinitionErrorCode::InvalidSchema,
+                "mc2_campaign.runtime_flow",
+                "campaign selection has no qualified semantic runtime-flow binding",
+            ));
+        }
+    };
+    for witness in witnesses {
+        let objective = sim_definition::adapter::stable_objective_id(witness)?;
+        if level.objective(&objective).is_none() {
+            return Err(definition_error(
+                DefinitionErrorCode::InvalidSchema,
+                "mc2_campaign.runtime_flow",
+                format!("semantic level binding is missing package witness {witness}"),
+            ));
+        }
+    }
+
+    let spire = SemanticLevelId::parse("level.magic_carpet_2.night_spire")?;
+    let payahandra = SemanticLevelId::parse("level.magic_carpet_2.payahandra_ruins")?;
+    let entrance = SemanticLevelId::parse("level.magic_carpet_2.revealed_way")?;
+    RuntimeFlowDefinition::new(
+        SemanticGameId::parse("game.magic_carpet_2")?,
+        SemanticLevelId::parse(bound_level)?,
+        spire.clone(),
+        vec![
+            RuntimeFlowEntry::new(
+                spire,
+                RuntimeFlowDestination::Level {
+                    level_id: payahandra.clone(),
+                },
+            ),
+            RuntimeFlowEntry::new(
+                payahandra,
+                RuntimeFlowDestination::Level {
+                    level_id: entrance.clone(),
+                },
+            ),
+            RuntimeFlowEntry::new(
+                entrance,
+                RuntimeFlowDestination::Title {
+                    node_id: RuntimeFlowNodeId::parse("flow.magic_carpet_2.return_to_title")?,
+                },
+            ),
+        ],
+    )
 }
 
 fn campaign_package_bytes(root: &Path) -> crate::game_definition::Result<(u64, u64)> {
@@ -714,7 +799,7 @@ mod tests {
     };
     use sim_definition::adapter::{
         build_level_definition, entity_definition, objective_definition, reissue_at_revision,
-        with_replacement,
+        with_level_definition, with_replacement,
     };
     use std::{
         collections::BTreeSet,
@@ -1433,6 +1518,98 @@ mod tests {
             }
         }
         assert_eq!(writable, 13);
+    }
+
+    #[test]
+    fn semantic_runtime_flow_binds_the_first_three_packages_without_source_identity() {
+        let catalog = default_catalog().unwrap();
+        let cases = [
+            (
+                level_one_descriptor_fixture_path(),
+                "level.magic_carpet_2.night_spire",
+            ),
+            (
+                descriptor_fixture_path(),
+                "level.magic_carpet_2.payahandra_ruins",
+            ),
+            (
+                level_three_descriptor_fixture_path(),
+                "level.magic_carpet_2.revealed_way",
+            ),
+        ];
+        let expected_levels = [
+            "level.magic_carpet_2.night_spire",
+            "level.magic_carpet_2.payahandra_ruins",
+            "level.magic_carpet_2.revealed_way",
+        ];
+        let mut definitions = Vec::new();
+        for (root, expected_bound) in cases {
+            let definition = load_mc2_campaign(root, &catalog).unwrap();
+            let flow = definition
+                .runtime_flow()
+                .expect("qualified campaign definitions carry semantic runtime flow");
+            assert_eq!(flow.game_id().as_str(), "game.magic_carpet_2");
+            assert_eq!(flow.bound_level_id().as_str(), expected_bound);
+            assert_eq!(flow.entry_level_id().as_str(), expected_levels[0]);
+            assert_eq!(
+                flow.entries()
+                    .iter()
+                    .map(|entry| entry.level_id().as_str())
+                    .collect::<Vec<_>>(),
+                expected_levels
+            );
+            assert!(matches!(
+                flow.entries()[0].completion_destination(),
+                RuntimeFlowDestination::Level { level_id }
+                    if level_id.as_str() == expected_levels[1]
+            ));
+            assert!(matches!(
+                flow.entries()[1].completion_destination(),
+                RuntimeFlowDestination::Level { level_id }
+                    if level_id.as_str() == expected_levels[2]
+            ));
+            assert!(matches!(
+                flow.entries()[2].completion_destination(),
+                RuntimeFlowDestination::Title { node_id }
+                    if node_id.as_str() == "flow.magic_carpet_2.return_to_title"
+            ));
+            let public_json = serde_json::to_string(flow).unwrap();
+            for private in [
+                "external_level",
+                "internal_level",
+                "map_type",
+                "package_path",
+                "level1",
+                "level2",
+                "level3",
+                "source_slot",
+            ] {
+                assert!(!public_json.contains(private), "{private}: {public_json}");
+            }
+            definitions.push(definition);
+        }
+
+        let base = &definitions[0];
+        let mut rebound_json = serde_json::to_value(base.runtime_flow().unwrap()).unwrap();
+        rebound_json["bound_level_id"] = serde_json::json!("level.magic_carpet_2.payahandra_ruins");
+        let rebound_flow: RuntimeFlowDefinition = serde_json::from_value(rebound_json).unwrap();
+        let rebound = with_level_and_runtime_flow(
+            base.clone(),
+            base.level_definition().unwrap().clone(),
+            rebound_flow,
+        );
+        assert_ne!(rebound.definition_hash(), base.definition_hash());
+        assert!(rebound.verify_semantic_variant_of(base, &catalog).is_err());
+
+        let mut skipped_json = serde_json::to_value(base.runtime_flow().unwrap()).unwrap();
+        skipped_json["entries"][0]["completion_destination"]["level_id"] =
+            serde_json::json!("level.magic_carpet_2.revealed_way");
+        assert!(serde_json::from_value::<RuntimeFlowDefinition>(skipped_json).is_err());
+
+        // No-Claim: this binds one immutable three-level semantic catalog and
+        // the currently selected level. It does not consume completion, find
+        // the next package, execute transitions/results, or prove save/replay
+        // and client presentation.
     }
 
     fn guard(session: &GameSession<Mc2CampaignBackend>) -> SessionGuard {

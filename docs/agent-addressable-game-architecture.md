@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 7.0 milestone, this is a binding target with
+As of the semantic-contract 8.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -351,12 +351,17 @@ partial real implementation, not a completion claim:
   `Title -> Loading -> Playing <-> Paused`, opens a real qualified Level 1
   `GameSession`, rejects a mismatched package without changing runtime state,
   and freezes that same session behind generation-invalidating pause/resume
-  boundaries. The quiescent boundary does not yet implement `paused_frame`,
-  so the MC2 pre-gate RNG/objective/presentation work, semantic flow
-  definitions, presentation bindings and later transitions remain open. Its
-  Unity transport now borrows snapshot, step, event and reset operations from
-  the nested session on that same runtime handle, without a second session or
-  destroy path; production presentation has not yet migrated to this owner;
+  boundaries. Each qualified Level 1-3 definition now carries the same closed,
+  ordered semantic campaign flow plus its bound semantic level; `new_game`
+  admits only the declared entry and Loading/Playing/Paused observations retain
+  that definition-owned identity. Completion detection, next-package
+  resolution, transition acceptance and results execution remain open. The
+  quiescent boundary also does not yet implement `paused_frame`, so the MC2
+  pre-gate RNG/objective/presentation work remains open. Its Unity transport
+  now validates that flow identity and borrows snapshot, step, event and reset
+  operations from the nested session on that same runtime handle, without a
+  second session or destroy path; production presentation has not yet migrated
+  to this owner;
 - placement/spawn/behavior/asset authoring and the remaining objective fields
   are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed

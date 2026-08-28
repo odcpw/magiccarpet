@@ -4,6 +4,7 @@
 //! remains the sole gameplay authority once a level is playing.
 
 use crate::game_definition::GameDefinition;
+use crate::game_definition::RuntimeFlowDefinition;
 use crate::game_session::{
     GameAdapter, GameSession, GameSessionBackend, OpenSessionError, SessionGuardError,
     SessionIdentity,
@@ -11,7 +12,7 @@ use crate::game_session::{
 use serde::Serialize;
 use std::{error::Error, fmt, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v2";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v3";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -49,6 +50,8 @@ pub struct RuntimeDefinitionIdentity {
     pub definition_hash: String,
     #[serde(serialize_with = "serialize_u64_decimal")]
     pub definition_revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_flow: Option<RuntimeFlowDefinition>,
 }
 
 impl RuntimeDefinitionIdentity {
@@ -57,6 +60,7 @@ impl RuntimeDefinitionIdentity {
             package_graph_hash: definition.package_graph_hash().to_owned(),
             definition_hash: definition.definition_hash().to_owned(),
             definition_revision: definition.revision(),
+            runtime_flow: definition.runtime_flow().cloned(),
         }
     }
 }
@@ -81,6 +85,8 @@ pub struct RuntimeIdentity {
     pub mode: RuntimeMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_definition: Option<RuntimeDefinitionIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_runtime_flow: Option<RuntimeFlowDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionIdentity>,
 }
@@ -145,6 +151,9 @@ pub enum RuntimeTransitionError {
         expected: RuntimeMode,
         actual: RuntimeMode,
     },
+    InvalidRuntimeFlow {
+        message: String,
+    },
     GenerationExhausted,
 }
 
@@ -160,6 +169,9 @@ impl fmt::Display for RuntimeTransitionError {
                 expected.as_str(),
                 actual.as_str()
             ),
+            Self::InvalidRuntimeFlow { message } => {
+                write!(formatter, "INVALID_RUNTIME_FLOW: {message}")
+            }
             Self::GenerationExhausted => {
                 formatter.write_str("GENERATION_EXHAUSTED: runtime generation overflow")
             }
@@ -226,11 +238,12 @@ impl<B: GameSessionBackend> GameRuntime<B> {
 
     #[must_use]
     pub fn identity(&self) -> RuntimeIdentity {
-        let (mode, pending_definition, session) = match &self.state {
-            RuntimeState::Title => (RuntimeMode::Title, None, None),
+        let (mode, pending_definition, active_runtime_flow, session) = match &self.state {
+            RuntimeState::Title => (RuntimeMode::Title, None, None, None),
             RuntimeState::Loading { definition } => (
                 RuntimeMode::Loading,
                 Some(RuntimeDefinitionIdentity::from_definition(definition)),
+                None,
                 None,
             ),
             RuntimeState::Playing { session, paused } => (
@@ -240,6 +253,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     RuntimeMode::Playing
                 },
                 None,
+                session.definition().runtime_flow().cloned(),
                 Some(session.identity()),
             ),
         };
@@ -249,6 +263,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             generation: self.generation,
             mode,
             pending_definition,
+            active_runtime_flow,
             session,
         }
     }
@@ -271,6 +286,20 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             return Err(RuntimeTransitionError::InvalidMode {
                 expected: RuntimeMode::Title,
                 actual: self.identity().mode,
+            });
+        }
+        let runtime_flow = definition.runtime_flow().ok_or_else(|| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "new-game definition has no semantic runtime flow".to_owned(),
+            }
+        })?;
+        if runtime_flow.bound_level_id() != runtime_flow.entry_level_id() {
+            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                message: format!(
+                    "new-game definition binds {}, but flow entry is {}",
+                    runtime_flow.bound_level_id().as_str(),
+                    runtime_flow.entry_level_id().as_str()
+                ),
             });
         }
         let next_generation = self.next_generation()?;
@@ -433,6 +462,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game_definition::{
+        RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
+        SemanticGameId, SemanticLevelId,
+    };
     use crate::{
         campaign::{
             backend::{
@@ -491,12 +524,88 @@ mod tests {
         ));
         assert_eq!(runtime.identity(), title);
 
+        let later_definition = Arc::new(load_mc2_campaign(level_two_package(), &catalog).unwrap());
+        let later_result = runtime.new_game(title.guard(), later_definition);
+        assert!(matches!(
+            later_result,
+            Err(RuntimeTransitionError::InvalidRuntimeFlow { .. })
+        ));
+        assert_eq!(runtime.identity(), title);
+
+        let semantic_level = definition.level_definition().unwrap().clone();
+        let spire = SemanticLevelId::parse("level.magic_carpet_2.night_spire").unwrap();
+        let payahandra = SemanticLevelId::parse("level.magic_carpet_2.payahandra_ruins").unwrap();
+        let revealed = SemanticLevelId::parse("level.magic_carpet_2.revealed_way").unwrap();
+        let reordered = RuntimeFlowDefinition::new(
+            SemanticGameId::parse("game.magic_carpet_2").unwrap(),
+            spire.clone(),
+            spire.clone(),
+            vec![
+                RuntimeFlowEntry::new(
+                    spire,
+                    RuntimeFlowDestination::Level {
+                        level_id: revealed.clone(),
+                    },
+                ),
+                RuntimeFlowEntry::new(
+                    revealed,
+                    RuntimeFlowDestination::Level {
+                        level_id: payahandra.clone(),
+                    },
+                ),
+                RuntimeFlowEntry::new(
+                    payahandra,
+                    RuntimeFlowDestination::Title {
+                        node_id: RuntimeFlowNodeId::parse("flow.magic_carpet_2.return_to_title")
+                            .unwrap(),
+                    },
+                ),
+            ],
+        )
+        .unwrap();
+        let reordered_definition = Arc::new(sim_definition::adapter::with_level_and_runtime_flow(
+            definition.as_ref().clone(),
+            semantic_level,
+            reordered,
+        ));
+        let mut tampered_runtime = GameRuntime::<Mc2CampaignBackend>::title(42).unwrap();
+        let tampered_loading = tampered_runtime
+            .new_game(tampered_runtime.identity().guard(), reordered_definition)
+            .unwrap();
+        let rejected = tampered_runtime.open_level(
+            tampered_loading.guard(),
+            &Mc2CampaignAdapter,
+            Mc2CampaignInputs::new(&level_one),
+            74,
+        );
+        let Err(OpenLevelError::Session(OpenSessionError::Adapter(
+            CampaignBackendError::Definition(error),
+        ))) = rejected
+        else {
+            panic!("real L1 open must reject a reordered semantic flow")
+        };
+        assert_eq!(error.code, DefinitionErrorCode::HashMismatch);
+        assert_eq!(error.path_or_id, "definition.runtime_flow");
+        assert_eq!(tampered_runtime.identity(), tampered_loading);
+        assert!(tampered_runtime.session().is_none());
+
         let loading = runtime
             .new_game(title.guard(), Arc::clone(&definition))
             .unwrap();
         assert_eq!(loading.mode, RuntimeMode::Loading);
         assert_eq!(loading.generation, 2);
         assert_eq!(loading.pending_definition, Some(expected_definition));
+        let loading_flow = loading
+            .pending_definition
+            .as_ref()
+            .and_then(|identity| identity.runtime_flow.as_ref())
+            .expect("loading identity carries the immutable semantic runtime flow");
+        assert_eq!(loading_flow.game_id().as_str(), "game.magic_carpet_2");
+        assert_eq!(
+            loading_flow.bound_level_id().as_str(),
+            "level.magic_carpet_2.night_spire"
+        );
+        assert!(loading.active_runtime_flow.is_none());
         assert!(loading.session.is_none());
 
         let before_mismatch = runtime.identity();
@@ -528,6 +637,10 @@ mod tests {
         assert_eq!(playing.mode, RuntimeMode::Playing);
         assert_eq!(playing.generation, 3);
         assert!(playing.pending_definition.is_none());
+        assert_eq!(
+            playing.active_runtime_flow.as_ref(),
+            definition.runtime_flow()
+        );
         let session_identity = playing.session.as_ref().unwrap();
         assert_eq!(session_identity.session_id, 73);
         assert_eq!(session_identity.generation, 1);
@@ -576,6 +689,7 @@ mod tests {
         assert_eq!(paused_session.session_id, before.identity.session_id);
         assert_eq!(paused_session.generation, 2);
         assert_eq!(paused_session.tick, before.identity.tick);
+        assert_eq!(paused.active_runtime_flow, playing.active_runtime_flow);
         assert_eq!(
             paused_session.definition_hash,
             before.identity.definition_hash
@@ -607,6 +721,7 @@ mod tests {
         assert_eq!(runtime.identity(), before_stale_pause);
 
         let resumed = runtime.resume(paused.guard()).unwrap();
+        assert_eq!(resumed.active_runtime_flow, playing.active_runtime_flow);
         assert_eq!(resumed.mode, RuntimeMode::Playing);
         assert_eq!(resumed.generation, 5);
         let resumed_session = resumed.session.as_ref().unwrap();

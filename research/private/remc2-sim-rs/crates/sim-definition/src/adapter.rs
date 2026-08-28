@@ -14,6 +14,7 @@ use crate::{
         LevelObjectiveConditionAccess, LevelObjectiveDefinition, LevelObjectiveId,
         ObjectiveCondition, TilePosition,
     },
+    runtime_flow::RuntimeFlowDefinition,
 };
 
 #[must_use]
@@ -31,6 +32,15 @@ pub fn with_level_definition(
     level_definition: LevelDefinition,
 ) -> GameDefinition {
     definition.with_level_definition(level_definition)
+}
+
+#[must_use]
+pub fn with_level_and_runtime_flow(
+    definition: GameDefinition,
+    level_definition: LevelDefinition,
+    runtime_flow: RuntimeFlowDefinition,
+) -> GameDefinition {
+    definition.with_level_and_runtime_flow(level_definition, runtime_flow)
 }
 
 pub fn with_replacement(

@@ -18,7 +18,7 @@ use sim_core::{
 };
 use sim_session::{GameSession, OpenSessionError};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v2";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v3";
 
 pub(super) struct RuntimeRecord {
     runtime: GameRuntime<Mc2CampaignBackend>,
@@ -256,6 +256,7 @@ fn map_transition_error(error: RuntimeTransitionError) -> AbiError {
         }
         RuntimeTransitionError::SessionGuard(_) => MC_STATUS_GENERATION_MISMATCH,
         RuntimeTransitionError::InvalidMode { .. } => MC_STATUS_INVALID_ARGUMENT,
+        RuntimeTransitionError::InvalidRuntimeFlow { .. } => MC_STATUS_VALIDATION_FAILED,
         RuntimeTransitionError::GenerationExhausted => MC_STATUS_GENERATION_MISMATCH,
     };
     AbiError::new(status, error.to_string())
@@ -300,13 +301,18 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 2,
+            "transport_version": 3,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "loading", "playing", "paused"],
             "transitions": ["new_game", "open_level", "pause", "resume"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
+            "runtime_flow": {
+                "title": "absent",
+                "loading": "pending_definition.runtime_flow",
+                "playing_and_paused": "active_runtime_flow"
+            },
             "limits": {
                 "maximum_output_json_bytes": super::game_session_abi::MAX_OUTPUT_JSON_BYTES,
                 "json_length_type": "u32"
@@ -441,6 +447,24 @@ mod tests {
         path.to_string_lossy().as_bytes().to_vec()
     }
 
+    fn copy_package_for_runtime_failure(source: &Path) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let destination = std::env::temp_dir().join(format!(
+            "carpet-flight-runtime-open-failure-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            assert!(entry.file_type().unwrap().is_file());
+            fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+        }
+        destination
+    }
+
     fn read_json(read: impl Fn(*mut u8, u32, *mut u32) -> i32) -> Value {
         let mut length = 0_u32;
         assert_eq!(
@@ -468,13 +492,13 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v2"
+            "carpet-flight-game-runtime/v3"
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v2"
+            "carpet-flight-native-game-runtime-json/v3"
         );
-        assert_eq!(contract["transport_version"], 2);
+        assert_eq!(contract["transport_version"], 3);
         assert_eq!(
             contract["modes"],
             serde_json::json!(["title", "loading", "playing", "paused"])
@@ -487,6 +511,14 @@ mod tests {
             contract["playing_session_transport"],
             "mc_game_session_*_v1 on the same handle"
         );
+        assert_eq!(
+            contract["runtime_flow"],
+            serde_json::json!({
+                "title": "absent",
+                "loading": "pending_definition.runtime_flow",
+                "playing_and_paused": "active_runtime_flow"
+            })
+        );
 
         let mut handle = 0_u64;
         assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
@@ -494,6 +526,7 @@ mod tests {
         let title = identity(handle);
         assert_eq!(title["mode"], "title");
         assert_eq!(title["generation"], "1");
+        assert!(title.get("active_runtime_flow").is_none());
 
         let package = utf8(&level_one_package());
         assert_eq!(
@@ -510,6 +543,15 @@ mod tests {
         let loading = identity(handle);
         assert_eq!(loading["mode"], "loading");
         assert_eq!(loading["generation"], "2");
+        assert_eq!(
+            loading["pending_definition"]["runtime_flow"]["game_id"],
+            "game.magic_carpet_2"
+        );
+        assert_eq!(
+            loading["pending_definition"]["runtime_flow"]["bound_level_id"],
+            "level.magic_carpet_2.night_spire"
+        );
+        assert!(loading.get("active_runtime_flow").is_none());
         assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
         let playing = identity(handle);
         assert_eq!(playing["mode"], "playing");
@@ -517,6 +559,10 @@ mod tests {
         assert_eq!(playing["session"]["session_id"], handle.to_string());
         assert_eq!(playing["session"]["generation"], "1");
         assert_eq!(playing["session"]["tick"], "0");
+        assert_eq!(
+            playing["active_runtime_flow"],
+            loading["pending_definition"]["runtime_flow"]
+        );
         assert_eq!(
             loading["pending_definition"]["package_graph_hash"],
             playing["session"]["package_graph_hash"]
@@ -556,6 +602,10 @@ mod tests {
             MC_STATUS_UNKNOWN_HANDLE
         );
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_UNKNOWN_HANDLE);
+
+        // No-Claim: this exposes definition-bound observational flow identity
+        // only. It does not detect completion, resolve/select the next package,
+        // accept transitions, execute Results/return-to-title, or save/load.
     }
 
     #[test]
@@ -600,6 +650,10 @@ mod tests {
         assert_eq!(paused["session"]["generation"], "2");
         assert_eq!(paused["session"]["tick"], "0");
         assert_eq!(
+            paused["active_runtime_flow"],
+            playing["active_runtime_flow"]
+        );
+        assert_eq!(
             paused["session"]["definition_hash"],
             playing["session"]["definition_hash"]
         );
@@ -632,6 +686,10 @@ mod tests {
         assert_eq!(resumed["generation"], "5");
         assert_eq!(resumed["session"]["generation"], "3");
         assert_eq!(resumed["session"]["tick"], "0");
+        assert_eq!(
+            resumed["active_runtime_flow"],
+            playing["active_runtime_flow"]
+        );
         assert_eq!(
             read_json(|buffer, capacity, length| {
                 mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
@@ -667,6 +725,20 @@ mod tests {
         assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
         let title = identity(handle);
         let package = utf8(&level_one_package());
+
+        let later_package = utf8(&level_two_package());
+        assert_eq!(
+            mc_game_runtime_new_game_v1(
+                handle,
+                1,
+                later_package.as_ptr(),
+                later_package.len() as u32,
+                std::ptr::null(),
+                0,
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(identity(handle), title);
 
         assert_eq!(
             mc_game_runtime_open_level_v1(handle, 2),
@@ -742,22 +814,22 @@ mod tests {
             mc_game_runtime_create_v1(&raw mut failed_open_handle),
             MC_STATUS_OK
         );
-        let failed_open_package = utf8(&level_two_package());
-        let missing_owner_cache = level_two_package().join("missing-owner-cache-for-runtime-test");
-        let missing_owner_cache = utf8(&missing_owner_cache);
+        let failed_open_root = copy_package_for_runtime_failure(&level_one_package());
+        let failed_open_package = utf8(&failed_open_root);
         assert_eq!(
             mc_game_runtime_new_game_v1(
                 failed_open_handle,
                 1,
                 failed_open_package.as_ptr(),
                 failed_open_package.len() as u32,
-                missing_owner_cache.as_ptr(),
-                missing_owner_cache.len() as u32,
+                std::ptr::null(),
+                0,
             ),
             MC_STATUS_OK
         );
         let failed_open_loading = identity(failed_open_handle);
         assert_eq!(failed_open_loading["mode"], "loading");
+        fs::remove_file(failed_open_root.join("runtime.bin")).unwrap();
         assert_eq!(
             mc_game_runtime_open_level_v1(failed_open_handle, 2),
             MC_STATUS_VALIDATION_FAILED
@@ -774,5 +846,6 @@ mod tests {
         );
         assert_eq!(identity(failed_open_handle), failed_open_loading);
         assert_eq!(mc_game_runtime_destroy_v1(failed_open_handle), MC_STATUS_OK);
+        fs::remove_dir_all(failed_open_root).unwrap();
     }
 }

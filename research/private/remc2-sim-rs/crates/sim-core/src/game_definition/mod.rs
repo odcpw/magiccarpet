@@ -9,6 +9,10 @@ mod runtime;
 
 pub use mc2_owned::{Mc2OwnedInputs, load_mc2_owned};
 pub use runtime::{DefinitionFlightBinding, PLAYER_MAX_FORWARD_SPEED_ID};
+pub use sim_definition::runtime_flow::{
+    RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
+    SemanticGameId, SemanticLevelId,
+};
 pub use sim_definition::{
     APPLY_RECEIPT_SCHEMA, Access, ApplyBinding, ApplyReceipt, ApplyStatus, ArtifactId,
     ArtifactKind, ArtifactNode, BoundPresentationAsset, CHANGE_SET_SCHEMA, ChangeSet,

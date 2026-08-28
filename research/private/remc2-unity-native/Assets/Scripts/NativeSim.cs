@@ -8,6 +8,7 @@ namespace MagicCarpet.Native
         internal const uint AbiVersion = 2;
         internal const int Ok = 0;
         internal const int InvalidArgument = 3;
+        internal const int ValidationFailed = 8;
         internal const int UnknownHandle = 9;
         internal const int Bounds = 10;
         internal const int BufferTooSmall = 11;

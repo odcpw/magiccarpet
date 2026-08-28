@@ -13,6 +13,7 @@ mod transaction;
 #[doc(hidden)]
 pub mod adapter;
 pub mod level_definition;
+pub mod runtime_flow;
 
 pub use catalog::{
     Access, ApplyBinding, DescriptorKind, MutationTiming, ReadBackBinding, ReadBinding,
@@ -47,10 +48,11 @@ use std::{
 };
 
 use level_definition::LevelDefinition;
+use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v4";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "7.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v5";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "8.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -177,6 +179,8 @@ pub struct GameDefinition {
     artifact_payloads: BTreeMap<String, Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     level_definition: Option<LevelDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_flow: Option<RuntimeFlowDefinition>,
     provenance: PackageProvenance,
 }
 
@@ -230,6 +234,7 @@ impl GameDefinition {
             artifacts: package.artifacts,
             artifact_payloads: package.artifact_payloads,
             level_definition: None,
+            runtime_flow: None,
             provenance: package.provenance,
         };
         definition.verify_bound_presentation_assets(catalog)?;
@@ -289,8 +294,26 @@ impl GameDefinition {
         self.level_definition.as_ref()
     }
 
+    /// Package-bound semantic identity and declared completion destination for
+    /// this playable definition, when its adapter supplies one.
+    #[must_use]
+    pub const fn runtime_flow(&self) -> Option<&RuntimeFlowDefinition> {
+        self.runtime_flow.as_ref()
+    }
+
     pub(crate) fn with_level_definition(mut self, level_definition: LevelDefinition) -> Self {
         self.level_definition = Some(level_definition);
+        self.definition_hash = self.compute_hash();
+        self
+    }
+
+    pub(crate) fn with_level_and_runtime_flow(
+        mut self,
+        level_definition: LevelDefinition,
+        runtime_flow: RuntimeFlowDefinition,
+    ) -> Self {
+        self.level_definition = Some(level_definition);
+        self.runtime_flow = Some(runtime_flow);
         self.definition_hash = self.compute_hash();
         self
     }
@@ -356,6 +379,13 @@ impl GameDefinition {
                 DefinitionErrorCode::HashMismatch,
                 "definition.package_graph_hash",
                 "semantic variant cannot substitute package, artifact, capability, or provenance roots",
+            ));
+        }
+        if self.runtime_flow != base.runtime_flow {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::HashMismatch,
+                "definition.runtime_flow",
+                "semantic variant cannot substitute game, level, or completion-flow identity",
             ));
         }
         match (&self.level_definition, &base.level_definition) {
@@ -857,6 +887,16 @@ impl GameDefinition {
                 "unsupported persisted definition schema",
             ));
         }
+        if self.runtime_flow.is_some() && self.level_definition.is_none() {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidSchema,
+                "definition.runtime_flow",
+                "runtime flow identity requires a playable level definition",
+            ));
+        }
+        if let Some(runtime_flow) = &self.runtime_flow {
+            runtime_flow.verify()?;
+        }
         if self.definition_hash != self.compute_hash() {
             return Err(DefinitionError::new(
                 DefinitionErrorCode::HashMismatch,
@@ -946,6 +986,15 @@ impl GameDefinition {
                     "level_definition".to_owned(),
                     serde_json::to_value(level_definition)
                         .expect("semantic level definition is serializable"),
+                );
+        }
+        if let Some(runtime_flow) = &self.runtime_flow {
+            definition_payload
+                .as_object_mut()
+                .expect("definition identity payload is an object")
+                .insert(
+                    "runtime_flow".to_owned(),
+                    serde_json::to_value(runtime_flow).expect("runtime flow is serializable"),
                 );
         }
         format!(
