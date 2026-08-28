@@ -18850,7 +18850,7 @@ mod tests {
     #[test]
     fn semantic_experience_scroll_collects_and_reclaims_through_the_source_scheduler() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("real Level 2 descriptor opens");
         let reset_hash = campaign.state_hash();
@@ -18977,7 +18977,7 @@ mod tests {
     #[test]
     fn semantic_objective_gate_activates_its_package_group_and_rejects_unbound_rows() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("real Level 2 descriptor opens");
         let reset_hash = campaign.state_hash();

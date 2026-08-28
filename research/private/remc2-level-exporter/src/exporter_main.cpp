@@ -24,6 +24,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <set>
@@ -57,6 +58,8 @@ constexpr std::size_t kFeatureAllocatorRelationCount = 1000;
 constexpr std::size_t kFeatureAllocatorTraceRecordBytes = 8;
 constexpr std::uint16_t kCollisionMaskHeaderBytes = 20;
 constexpr std::uint32_t kCollisionMaskRecordHeaderBytes = 12;
+constexpr std::size_t kBuildingParameterRecordCount = 76;
+constexpr std::size_t kBuildingParameterRecordBytes = 4;
 constexpr std::uint32_t kFeatureStartGlobalRng = 0x0000BFCA;
 constexpr std::array<std::uint32_t, 7> kFeatureGlobalRngBarriers = {
     0x1B712AE9,
@@ -266,7 +269,7 @@ struct Arguments {
     fs::path owner_root;
     fs::path output;
     mc2_exporter::ExternalLevelSelection level;
-    bool campaign_package_v1 = false;
+    bool campaign_package = false;
 };
 
 struct CampaignEmissionProfile;
@@ -288,14 +291,14 @@ Arguments parse_arguments(int argc, char** argv) {
             level_seen = true;
             result.level = mc2_exporter::parse_external_level(argv[++index]);
         }
-        else if (argument == "--campaign-package-v1") {
-            result.campaign_package_v1 = true;
+        else if (argument == "--campaign-package") {
+            result.campaign_package = true;
         }
         else if (argument == "--help") {
             std::cout << "usage: remc2-level-exporter --owner-root PATH --output PRIVATE_PATH "
-                         "[--level EXTERNAL_LEVEL] [--campaign-package-v1]\n"
+                         "[--level EXTERNAL_LEVEL] [--campaign-package]\n"
                          "  --level EXTERNAL_LEVEL  owner-data level 1..25 (default: 1)\n"
-                         "  --campaign-package-v1   emit the closed campaign envelope for a "
+                         "  --campaign-package      emit the profile-versioned campaign envelope for a "
                          "census-profiled level\n";
             std::exit(0);
         } else {
@@ -305,10 +308,10 @@ Arguments parse_arguments(int argc, char** argv) {
     if (result.owner_root.empty() || result.output.empty()) {
         throw std::runtime_error("--owner-root and --output are required");
     }
-    if (result.campaign_package_v1 &&
+    if (result.campaign_package &&
         campaign_emission_profile(result.level.external) == nullptr) {
         throw std::runtime_error(
-            "--campaign-package-v1 admits only census-profiled external levels 1, 2, and 3");
+            "--campaign-package admits only census-profiled external levels 1, 2, and 3");
     }
     return result;
 }
@@ -592,6 +595,31 @@ Bytes capture_feature_construction_inputs(
         result.u8(bitmap.height_5);
         result.u32(data_bytes);
         result.raw(bitmap.data, data_bytes);
+    }
+    return result;
+}
+
+Bytes capture_building_parameters(const fs::path& owner_root) {
+    const fs::path source_path = owner_root / "CD_Files/DATA/BLDGPRM.DAT";
+    if (!fs::is_regular_file(source_path) ||
+        fs::file_size(source_path) !=
+            kBuildingParameterRecordCount * kBuildingParameterRecordBytes) {
+        throw std::runtime_error("BLDGPRM.DAT has an unexpected owner extent");
+    }
+
+    Bytes result;
+    for (std::size_t index = 0; index < kBuildingParameterRecordCount; ++index) {
+        const auto& parameter = str_D93C0_bldgprmbuffer[index];
+        result.u16(parameter.word_0);
+        result.u8(parameter.byte_2);
+        result.u8(parameter.byte_3);
+    }
+
+    std::ifstream source(source_path, std::ios::binary);
+    std::vector<std::uint8_t> owner_bytes{
+        std::istreambuf_iterator<char>(source), std::istreambuf_iterator<char>()};
+    if (owner_bytes != result.data) {
+        throw std::runtime_error("live BLDGPRM rows differ from the owner source bytes");
     }
     return result;
 }
@@ -1452,7 +1480,8 @@ Bytes serialize_authored_level(const Type_Level_2FECE& level) {
 json make_owner_sources(
     const fs::path& owner_root,
     const MapTypeProfile& map_profile,
-    bool include_collision_masks) {
+    bool include_collision_masks,
+    bool include_building_parameters) {
     const std::string map_code(1, map_profile.asset_code);
     const std::string terrain_bank = "TMAPS" + std::to_string(map_profile.id) + "-0";
     const std::string medium_sprite = "MSPR" + map_code + "0-0";
@@ -1500,6 +1529,9 @@ json make_owner_sources(
     if (include_collision_masks) {
         candidates.push_back("CD_Files/DATA/MSPRD0-0.DAT");
         candidates.push_back("CD_Files/DATA/MSPRD0-0.TAB");
+    }
+    if (include_building_parameters) {
+        candidates.push_back("CD_Files/DATA/BLDGPRM.DAT");
     }
     json result = json::array();
     for (const std::string& logical_name : candidates) {
@@ -1818,7 +1850,9 @@ canonical_json campaign_source_facts(
     const json& file_manifest,
     const json& owner_sources,
     const std::vector<CampaignBehaviorRow>& behavior_rows,
-    bool include_collision_masks) {
+    const canonical_json& objective_operations,
+    bool include_collision_masks,
+    bool include_building_parameters) {
     canonical_json selector_provenance = canonical_json::array();
     for (const auto& row : behavior_rows) {
         if (row.has_initial_source_slot || row.class_id != 10 || row.subtype != 45 ||
@@ -1839,6 +1873,54 @@ canonical_json campaign_source_facts(
     }
 
     canonical_json facts = canonical_json::array();
+    if (include_building_parameters) {
+        const canonical_json* standing_operation = nullptr;
+        for (const auto& operation : objective_operations) {
+            const auto& operands = operation.at("operands");
+            if (operands.at("stage_index").get<int>() == 9) {
+                if (standing_operation != nullptr) {
+                    throw std::runtime_error(
+                        "Level 2 has multiple standing-building objective operations");
+                }
+                standing_operation = &operation;
+            }
+        }
+        if (standing_operation == nullptr ||
+            standing_operation->at("operands").at("objective_slot").get<int>() != 4 ||
+            standing_operation->at("operands").at("objective_selector").get<int>() != 153) {
+            throw std::runtime_error(
+                "Level 2 standing-building objective operation differs from its qualified binding");
+        }
+        const auto authored_record = standing_operation->at("operands")
+            .at("objective_selector").get<std::uint16_t>();
+        const auto objective = std::find_if(
+            behavior_rows.begin(), behavior_rows.end(), [authored_record](const auto& row) {
+                return row.authored_record == authored_record && !row.has_initial_source_slot;
+            });
+        if (objective == behavior_rows.end() || objective->class_id != 10 ||
+            objective->subtype != 45 || objective->model != 21) {
+            throw std::runtime_error(
+                "Level 2 standing-building objective lacks its exact BLDGPRM root provenance");
+        }
+        facts.push_back({
+            {"fact_id", "building-parameters"},
+            {"kind", 4},
+            {"lifetime", "immutable-through-session"},
+            {"member", "building-parameters.bin"},
+            {"member_sha256", file_manifest.at("building-parameters.bin").at("sha256")},
+            {"selector_provenance", canonical_json::array({{
+                {"authored_record", objective->authored_record},
+                {"selector_value", objective->model},
+                {"source_class", objective->class_id},
+                {"source_field", "par1_14"},
+                {"source_model", objective->model},
+                {"source_subtype", objective->subtype}
+            }})},
+            {"source_artifacts", campaign_source_artifacts(
+                owner_sources, {"CD_Files/DATA/BLDGPRM.DAT"})},
+            {"version", 1}
+        });
+    }
     if (include_collision_masks) {
         facts.push_back({
             {"fact_id", "collision-mask-bank"},
@@ -1942,13 +2024,14 @@ canonical_json build_campaign_definition(
         legacy_manifest.at("presentation_dependencies").dump());
     presentation_recipe["member"] = typed_campaign_member(
         file_manifest, "presentation.bin", "mc2-presentation-snapshot/v1");
+    const canonical_json objective_operations = campaign_objective_operations(authored, profile);
     return {
         {"campaign_spec", {
             {"authored_behavior_rows", campaign_behavior_rows_json(behavior_rows)},
             {"authored_records", authored_records},
             {"initial_activation", canonical_json::array()},
             {"initial_rng", initial_rng},
-            {"objectives", campaign_objective_operations(authored, profile)},
+            {"objectives", objective_operations},
             {"presentation_recipe", presentation_recipe},
             {"reset_sources", {
                 {"entities", reset_entities},
@@ -1966,13 +2049,17 @@ canonical_json build_campaign_definition(
             {"map_type_id", profile.map_type_id}
         }},
         {"required_behaviors", campaign_required_behaviors(behavior_rows)},
-        {"schema", "mc2-campaign-definition/v1"},
+        {"schema", profile.external == 2
+            ? "mc2-campaign-definition/v2"
+            : "mc2-campaign-definition/v1"},
         {"source", {{"remc2_commit", MC2_UPSTREAM_COMMIT}}},
         {"source_facts", campaign_source_facts(
             file_manifest,
             owner_sources,
             behavior_rows,
-            profile.includes_collision_masks)}
+            objective_operations,
+            profile.includes_collision_masks,
+            profile.external == 2)}
     };
 }
 
@@ -2363,6 +2450,10 @@ int run(const Arguments& arguments) {
             feature_building_selectors,
             authored_model_45_row_count,
             level_one);
+    Bytes building_parameters;
+    if (arguments.level.external == 2) {
+        building_parameters = capture_building_parameters(owner_root);
+    }
     CollisionMaskCapture collision_masks;
     if (!level_one) {
         collision_masks = capture_collision_masks(
@@ -2417,8 +2508,11 @@ int run(const Arguments& arguments) {
     fs::remove(runtime_config);
 
     std::vector<std::pair<const char*, const Bytes*>> files;
-    files.reserve(level_one ? 13 : 14);
+    files.reserve(level_one ? 13 : (arguments.level.external == 2 ? 15 : 14));
     files.emplace_back("authored-level.bin", &authored_bytes);
+    if (arguments.level.external == 2) {
+        files.emplace_back("building-parameters.bin", &building_parameters);
+    }
     if (!level_one) files.emplace_back("collision-masks.bin", &collision_masks.bytes);
     files.emplace_back("entities-post-features.bin", &feature_entities);
     files.emplace_back("entities.bin", &entities);
@@ -2881,7 +2975,11 @@ int run(const Arguments& arguments) {
             {"modified_paths", json::parse(MC2_UPSTREAM_STATUS_JSON)},
             {"modified_files", json::parse(MC2_MODIFIED_FILE_HASHES_JSON)},
             {"compiled_files", json::parse(MC2_SOURCE_INVENTORY_JSON)},
-            {"owner_files", make_owner_sources(owner_root, map_profile, !level_one)}
+            {"owner_files", make_owner_sources(
+                owner_root,
+                map_profile,
+                !level_one,
+                arguments.level.external == 2)}
         }},
         {"reference", {
             {"terrain_frame0_sha256", level_one ? kExpectedTerrainSha256 : sha256(terrain.data)},
@@ -2993,7 +3091,7 @@ int run(const Arguments& arguments) {
     // Night-specific expected state into an open Level 2 package; Level 2 gets
     // its own reset seal only when that corpus is qualified.
     if (!level_one) manifest.erase("reset_projection");
-    if (arguments.campaign_package_v1) {
+    if (arguments.campaign_package) {
         const CampaignEmissionProfile* campaign_profile =
             campaign_emission_profile(arguments.level.external);
         if (campaign_profile == nullptr) {
@@ -3057,9 +3155,10 @@ int run(const Arguments& arguments) {
                 {"package_sha256", campaign_package_identity(file_manifest)}
             };
         } else {
-            // Preserve the already-qualified Level 2/3 envelope bytes exactly.
             manifest = {
-                {"schema", "mc2-owner-campaign-package/v1"},
+                {"schema", arguments.level.external == 2
+                    ? "mc2-owner-campaign-package/v2"
+                    : "mc2-owner-campaign-package/v1"},
                 {"byte_order", "little-endian"},
                 {"level", {
                     {"external", arguments.level.external},

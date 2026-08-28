@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CF-02 production exports and planted campaign-package-v1 negatives."""
+"""Profile-versioned campaign exports and focused planted negatives."""
 
 from __future__ import annotations
 
@@ -121,13 +121,13 @@ def campaign_twins() -> tuple[Path, Path]:
     owner_root = Path(os.environ.get("MC2_OWNER_ROOT", str(ROOT / "research/private/remc2-native-runtime")))
     generated_root = ROOT / "research/private/generated"
     generated_root.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix="mc-cf02-package-v1-", dir=generated_root))
+    scratch = Path(tempfile.mkdtemp(prefix="mc-cf02-campaign-package-", dir=generated_root))
     first, second = scratch / "level2-a", scratch / "level2-b"
     command = [
         str(exporter),
         "--owner-root", str(owner_root),
         "--level", "2",
-        "--campaign-package-v1",
+        "--campaign-package",
     ]
     try:
         for output in (first, second):
@@ -144,7 +144,7 @@ def campaign_twins() -> tuple[Path, Path]:
         shutil.rmtree(scratch)
 
 
-def test_campaign_package_v1_twins_are_byte_identical(campaign_twins: tuple[Path, Path]) -> None:
+def test_campaign_package_twins_are_byte_identical(campaign_twins: tuple[Path, Path]) -> None:
     first, second = campaign_twins
     verify(first)
     verify(second)
@@ -158,6 +158,79 @@ def test_campaign_package_v1_twins_are_byte_identical(campaign_twins: tuple[Path
     ).read_bytes()
 
 
+def test_level_two_v2_binds_the_standing_objective_to_owner_building_parameters(
+    campaign_twins: tuple[Path, Path],
+) -> None:
+    package = campaign_twins[0]
+    manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    definition = json.loads(
+        (package / "campaign-definition.json").read_text(encoding="utf-8")
+    )
+    member = (package / "building-parameters.bin").read_bytes()
+    assert manifest["schema"] == "mc2-owner-campaign-package/v2"
+    assert definition["schema"] == "mc2-campaign-definition/v2"
+    assert len(member) == 304
+    assert hashlib.sha256(member).hexdigest() == (
+        "1c4a7fdef5d4b811f871441f0380faaacd6e5e689e73fc4628bf8c5b51ea6f00"
+    )
+    assert member[21 * 4 : 22 * 4] == bytes.fromhex("06000836")
+    assert member[54 * 4 : 55 * 4] == bytes.fromhex("08000800")
+    assert definition["source_facts"][0]["selector_provenance"] == [
+        {
+            "authored_record": 153,
+            "source_class": 10,
+            "source_field": "par1_14",
+            "source_model": 21,
+            "source_subtype": 45,
+            "selector_value": 21,
+        }
+    ]
+
+    authored = bytearray((package / "authored-level.bin").read_bytes())
+    struct.pack_into("<h", authored, 1091 + 153 * 20 + 14, 22)
+
+    def refresh_authored_row(definition: dict) -> None:
+        row = next(
+            row
+            for row in definition["campaign_spec"]["authored_behavior_rows"]
+            if row["authored_record"] == 153
+        )
+        row["model"] = 22
+
+    expect_rejected(
+        package,
+        lambda candidate: rewrite_member(
+            candidate,
+            "authored-level.bin",
+            bytes(authored),
+            refresh_authored_row,
+        ),
+        "standing-building objective provenance differs",
+    )
+
+    authored_stage = bytearray((package / "authored-level.bin").read_bytes())
+    struct.pack_into("<h", authored_stage, 25972 + 4 * 7 + 1, 163)
+
+    def refresh_objective_selector(definition: dict) -> None:
+        operation = next(
+            operation
+            for operation in definition["campaign_spec"]["objectives"]
+            if operation["operands"]["objective_slot"] == 4
+        )
+        operation["operands"]["objective_selector"] = 163
+
+    expect_rejected(
+        package,
+        lambda candidate: rewrite_member(
+            candidate,
+            "authored-level.bin",
+            bytes(authored_stage),
+            refresh_objective_selector,
+        ),
+        "standing-building objective operation differs",
+    )
+
+
 def expect_rejected(package: Path, mutate, expected: str, **verify_options) -> None:
     with tempfile.TemporaryDirectory(prefix="mc-cf02-negative-") as temporary:
         candidate = Path(temporary) / "package"
@@ -167,7 +240,7 @@ def expect_rejected(package: Path, mutate, expected: str, **verify_options) -> N
             verify(candidate, **verify_options)
 
 
-def test_campaign_package_v1_full_planted_negative_set(campaign_twins: tuple[Path, Path]) -> None:
+def test_campaign_package_full_planted_negative_set(campaign_twins: tuple[Path, Path]) -> None:
     package = campaign_twins[0]
 
     expect_rejected(
@@ -215,7 +288,7 @@ def test_campaign_package_v1_full_planted_negative_set(campaign_twins: tuple[Pat
     )
 
 
-def test_campaign_package_v1_additional_closed_union_and_carrier_negatives(
+def test_campaign_package_additional_closed_union_and_carrier_negatives(
     campaign_twins: tuple[Path, Path],
 ) -> None:
     package = campaign_twins[0]
@@ -343,7 +416,7 @@ def test_campaign_package_v1_additional_closed_union_and_carrier_negatives(
         )
 
 
-def test_campaign_package_v1_flag_is_census_profiled_only(tmp_path: Path) -> None:
+def test_campaign_package_flag_is_census_profiled_only(tmp_path: Path) -> None:
     exporter = Path(os.environ.get("MC2_LEVEL_EXPORTER_BIN", "/tmp/magiccarpet-remc2-level-exporter-build/remc2-level-exporter"))
     owner_root = Path(os.environ.get("MC2_OWNER_ROOT", str(ROOT / "research/private/remc2-native-runtime")))
     for level in ("4",):
@@ -351,7 +424,7 @@ def test_campaign_package_v1_flag_is_census_profiled_only(tmp_path: Path) -> Non
         result = subprocess.run(
             [
                 str(exporter), "--owner-root", str(owner_root), "--output", str(output),
-                "--level", level, "--campaign-package-v1",
+                "--level", level, "--campaign-package",
             ],
             capture_output=True,
             text=True,
@@ -389,7 +462,7 @@ def level1_campaign_exports() -> tuple[Path, Path, Path]:
         )
         for output in (first, second):
             subprocess.run(
-                common + ["--campaign-package-v1", "--output", str(output)],
+                common + ["--campaign-package", "--output", str(output)],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,
@@ -495,7 +568,7 @@ def level3_campaign_twins() -> tuple[Path, Path]:
         str(exporter),
         "--owner-root", str(owner_root),
         "--level", "3",
-        "--campaign-package-v1",
+        "--campaign-package",
     ]
     try:
         for output in (first, second):

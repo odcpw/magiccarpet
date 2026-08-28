@@ -17,7 +17,9 @@ SCHEMA_V3 = "mc2-owner-level-export/v3"
 SCHEMA_V4 = "mc2-owner-level-export/v4"
 SCHEMA_V5 = "mc2-owner-level-export/v5"
 CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v1"
+LEVEL2_CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v2"
 CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v1"
+LEVEL2_CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v2"
 SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5}
 STATE_SEQUENCE = (
     "remc2-regression-test/memimages/regressions/level1/"
@@ -55,6 +57,7 @@ V4_FILES = V3_FILES | {"collision-masks.bin"}
 V5_FILES = V4_FILES
 CAMPAIGN_ENVELOPE_FILES = {"campaign-definition.json", "owner-manifest.json"}
 CAMPAIGN_FILES = V5_FILES | {"campaign-definition.json"}
+LEVEL2_CAMPAIGN_FILES = CAMPAIGN_FILES | {"building-parameters.bin"}
 REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 # Census-proven per-level campaign profile facts keyed by the outer selection
 # (external, internal, map_type_id).  Level 2 values are the qualified Day
@@ -62,6 +65,8 @@ REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 # A selection without an entry fails closed before any member is decoded.
 CAMPAIGN_PROFILES = {
     (1, 0, 1): {
+        "package_schema": CAMPAIGN_PACKAGE_SCHEMA,
+        "definition_schema": CAMPAIGN_DEFINITION_SCHEMA,
         "map_type_name": "Night",
         "map_type_id": 1,
         "active_entities": 177,
@@ -81,6 +86,8 @@ CAMPAIGN_PROFILES = {
         },
     },
     (2, 1, 0): {
+        "package_schema": LEVEL2_CAMPAIGN_PACKAGE_SCHEMA,
+        "definition_schema": LEVEL2_CAMPAIGN_DEFINITION_SCHEMA,
         "map_type_name": "Day",
         "map_type_id": 0,
         "active_entities": 114,
@@ -95,14 +102,17 @@ CAMPAIGN_PROFILES = {
         "player_component_version": 4,
         "player_record_bytes": 663,
         "owner_manifest_schema": None,
-        "files": CAMPAIGN_FILES,
+        "files": LEVEL2_CAMPAIGN_FILES,
         "source_fact_ids": {
+            "building-parameters",
             "collision-mask-bank",
             "feature-construction-inputs",
             "level-records",
         },
     },
     (3, 2, 0): {
+        "package_schema": CAMPAIGN_PACKAGE_SCHEMA,
+        "definition_schema": CAMPAIGN_DEFINITION_SCHEMA,
         "map_type_name": "Day",
         "map_type_id": 0,
         "active_entities": 252,
@@ -126,6 +136,7 @@ CAMPAIGN_PROFILES = {
     },
 }
 CAMPAIGN_SOURCE_ARTIFACTS = {
+    "CD_Files/DATA/BLDGPRM.DAT": (304, "1c4a7fdef5d4b811f871441f0380faaacd6e5e689e73fc4628bf8c5b51ea6f00"),
     "CD_Files/DATA/BUILD0-0.DAT": (80064, "3db5d9a763dedafbe3077eeeef47431da0b5d397e311f6ee46719a0fc51e8e5d"),
     "CD_Files/DATA/BUILD0-0.TAB": (462, "e064a1520e96f65c13fde9a05918d240ee4f708ab6aefc793ec8b391f220c05e"),
     "CD_Files/DATA/MSPRD0-0.DAT": (49202, "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"),
@@ -1903,7 +1914,24 @@ def _campaign_decode_collision(content: bytes, authored_selectors: list[int]) ->
     return selectors
 
 
-def _campaign_validate_source_facts(package: Path, facts_value: object, files: dict, behavior_rows: list[dict], profile: dict) -> None:
+def _campaign_decode_building_parameters(content: bytes) -> list[tuple[int, int, int]]:
+    require(len(content) == 76 * 4, "building parameter owner extent changed")
+    rows = [
+        (u16(content, offset), content[offset + 2], content[offset + 3])
+        for offset in range(0, len(content), 4)
+    ]
+    require(rows[21] == (6, 8, 54) and rows[54] == (8, 8, 0), "qualified building objective chain changed")
+    selector, chain, seen = 21, [], set()
+    while selector:
+        require(len(chain) < 8 and selector not in seen and selector < len(rows), "building objective chain cycles or exceeds bounds")
+        seen.add(selector)
+        chain.append(selector)
+        selector = rows[selector][2]
+    require(chain == [21, 54], "qualified standing-building chain differs")
+    return rows
+
+
+def _campaign_validate_source_facts(package: Path, facts_value: object, files: dict, authored: bytes, behavior_rows: list[dict], profile: dict) -> None:
     require(isinstance(facts_value, list), "source_facts is not an array")
     facts = facts_value
     source_fact_ids = profile["source_fact_ids"]
@@ -1923,7 +1951,45 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
         for row in behavior_rows
         if row["initial_source_slot"] is None and row["class"] == 10 and row["subtype"] == 45 and row["action"] == 255
     ]
+    stage, standing_selector, _axis_x, _axis_y = struct.unpack_from(
+        "<bhhh", authored, 25972 + 4 * 7
+    )
+    if "building-parameters" in source_fact_ids:
+        require(
+            stage == 9 and standing_selector == 153,
+            "standing-building objective operation differs from qualified Level 2",
+        )
+    else:
+        standing_selector = None
+    building_objective_provenance = [
+        {
+            "authored_record": row["authored_record"],
+            "selector_value": row["model"],
+            "source_class": row["class"],
+            "source_field": "par1_14",
+            "source_model": row["model"],
+            "source_subtype": row["subtype"],
+        }
+        for row in behavior_rows
+        if row["authored_record"] == standing_selector
+        and row["initial_source_slot"] is None
+        and row["class"] == 10
+        and row["subtype"] == 45
+    ]
+    if "building-parameters" in source_fact_ids:
+        require(
+            building_objective_provenance == [{
+                "authored_record": 153,
+                "selector_value": 21,
+                "source_class": 10,
+                "source_field": "par1_14",
+                "source_model": 21,
+                "source_subtype": 45,
+            }],
+            "standing-building objective provenance differs from qualified Level 2",
+        )
     all_expected = {
+        "building-parameters": (4, "building-parameters.bin", building_objective_provenance, {"CD_Files/DATA/BLDGPRM.DAT"}),
         "collision-mask-bank": (3, "collision-masks.bin", authored_provenance, {"CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"}),
         "feature-construction-inputs": (2, "feature-construction-inputs.bin", authored_provenance, {"CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"}),
         "level-records": (1, "authored-level.bin", [], {"GAME/NETHERW/CLEVELS/LEVELS.DAT", "GAME/NETHERW/CLEVELS/LEVELS.TAB"}),
@@ -1974,9 +2040,17 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
             == profile["collision_bank_sha256"],
             "collision SourceFact differs from the census-qualified bytes",
         )
+    if "building-parameters" in source_fact_ids:
+        building_parameters = (package / "building-parameters.bin").read_bytes()
+        require(
+            hashlib.sha256(building_parameters).hexdigest()
+            == "1c4a7fdef5d4b811f871441f0380faaacd6e5e689e73fc4628bf8c5b51ea6f00",
+            "building parameter SourceFact differs from owner bytes",
+        )
+        _campaign_decode_building_parameters(building_parameters)
 
 
-def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, package: Path, profile: dict) -> None:
+def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, package: Path, profile: dict) -> list[dict]:
     require(spec["initial_activation"] == [], "schema-v1 has no proven initial-activation operation")
     expected_objectives = []
     inactive_seen = False
@@ -2005,6 +2079,7 @@ def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, pack
         require(_strict_equal((field["encoding"], field["member"], field_offset, field["sha256"]), (encoding, "feature-end.bin", offset, files["feature-end.bin"]["sha256"])), f"initial_rng.{name} source field differs")
     feature_end = (package / "feature-end.bin").read_bytes()
     require(len(feature_end) == 16, "initial RNG member extent changed")
+    return expected_objectives
 
 
 def _campaign_validate_presentation(
@@ -2173,7 +2248,7 @@ def verify_campaign_package(
     if level_one_envelope:
         manifest_keys.add("owner_export_package_sha256")
     _exact_object(manifest, manifest_keys, "campaign manifest")
-    require(manifest["schema"] == CAMPAIGN_PACKAGE_SCHEMA and manifest["byte_order"] == "little-endian", "campaign outer schema/byte order differs")
+    require(manifest["byte_order"] == "little-endian", "campaign outer byte order differs")
     level = _exact_object(manifest["level"], {"external", "internal", "map_type"}, "campaign manifest.level")
     map_type = _exact_object(level["map_type"], {"id", "name"}, "campaign manifest.level.map_type")
     outer_selection = (
@@ -2183,6 +2258,7 @@ def verify_campaign_package(
     )
     profile = CAMPAIGN_PROFILES.get(outer_selection)
     require(profile is not None, "campaign outer selection has no census-proven profile")
+    require(manifest["schema"] == profile["package_schema"], "campaign outer schema differs")
     require(
         (expected_selection is None or outer_selection == expected_selection)
         and map_type["name"] == profile["map_type_name"],
@@ -2230,7 +2306,7 @@ def verify_campaign_package(
         raise AssertionError(f"campaign definition is not canonical UTF-8 JSON: {error}") from error
     require(definition_bytes == _canonical_json_bytes(definition), "campaign definition bytes are not canonical")
     root = _exact_object(definition, {"schema", "source", "identity", "campaign_spec", "source_facts", "required_behaviors"}, "campaign definition")
-    require(root["schema"] == CAMPAIGN_DEFINITION_SCHEMA, "campaign definition schema differs")
+    require(root["schema"] == profile["definition_schema"], "campaign definition schema differs")
     source = _exact_object(root["source"], {"remc2_commit"}, "campaign definition.source")
     require(source["remc2_commit"] == REM_C2_COMMIT, "campaign source commit differs from pinned remc2")
     identity_value = _exact_object(root["identity"], {"external_level", "internal_level", "map_type_id"}, "campaign definition.identity")
@@ -2250,9 +2326,12 @@ def verify_campaign_package(
 
     # Stage 6: immutable SourceFacts; presentation output is never consulted.
     behavior_rows = spec["authored_behavior_rows"]
-    _campaign_validate_source_facts(package, root["source_facts"], files, behavior_rows, profile)
+    _campaign_validate_source_facts(
+        package, root["source_facts"], files, authored, behavior_rows, profile
+    )
 
-    # Stage 7: reviewed census-profiled operations only.
+    # Stage 7: reviewed operations must match the authored row that supplied
+    # the Stage-6 SourceFact provenance.
     _campaign_validate_operations(spec, authored, files, package, profile)
     _campaign_validate_presentation(
         spec["presentation_recipe"],
@@ -2287,7 +2366,7 @@ def verify(
     package = package.resolve(strict=True)
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema") == CAMPAIGN_PACKAGE_SCHEMA:
+    if manifest.get("schema") in {CAMPAIGN_PACKAGE_SCHEMA, LEVEL2_CAMPAIGN_PACKAGE_SCHEMA}:
         return verify_campaign_package(
             package,
             manifest,

@@ -718,7 +718,7 @@ mod tests {
             ),
             (
                 manifest_dir
-                    .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2"),
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2"),
                 CampaignSelection::LEVEL2,
                 vec![(CreatureKind::Goat, 36), (CreatureKind::Villager, 29)],
             ),

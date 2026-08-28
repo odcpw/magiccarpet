@@ -437,10 +437,10 @@ mod tests {
     }
 
     fn level_two_package() -> PathBuf {
-        std::env::var_os("MC_CAMPAIGN_PACKAGE_V1").map_or_else(
+        std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2")
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
             },
             PathBuf::from,
         )

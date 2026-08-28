@@ -6,11 +6,12 @@
 
 use super::mc2_level_definition::Mc2LevelDefinition;
 use super::source_facts::{
-    SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
+    SelectorProvenance, SourceFact, SourceFactContext, SourceField, decode_building_parameters,
+    validate_source_facts,
 };
 use crate::level_definition::{
     BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
-    MechanicKind, SceneryKind, SpellKind, SwitchKind,
+    LevelObjectiveId, MechanicKind, SceneryKind, SpellKind, SwitchKind,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -22,11 +23,32 @@ use std::{
 };
 
 pub const CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v1";
+pub const LEVEL2_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v2";
 pub const CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v1";
+pub const LEVEL2_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v2";
 pub const LEVEL2_REMC2_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 
 const FEATURE_CAMPAIGN_MEMBERS: [&str; 15] = [
     "authored-level.bin",
+    "campaign-definition.json",
+    "collision-masks.bin",
+    "entities-post-features.bin",
+    "entities.bin",
+    "feature-allocator.bin",
+    "feature-construction-inputs.bin",
+    "feature-end.bin",
+    "feature-start.bin",
+    "players.bin",
+    "presentation.bin",
+    "runtime.bin",
+    "terrain-post-features.bin",
+    "terrain-pre-features.bin",
+    "terrain.bin",
+];
+
+const LEVEL2_CAMPAIGN_MEMBERS: [&str; 16] = [
+    "authored-level.bin",
+    "building-parameters.bin",
     "campaign-definition.json",
     "collision-masks.bin",
     "entities-post-features.bin",
@@ -73,12 +95,15 @@ const PLAYER_COUNT: usize = 8;
 #[derive(Debug, Clone, Copy)]
 struct CampaignPackageProfile {
     members: &'static [&'static str],
+    package_schema: &'static str,
+    definition_schema: &'static str,
     player_schema: &'static str,
     player_version: u16,
     player_record_bytes: usize,
     feature_allocator_bytes: usize,
     feature_allocator_trace_count: u32,
     has_collision_bank: bool,
+    has_building_parameters: bool,
     has_owner_manifest: bool,
 }
 
@@ -112,26 +137,85 @@ fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPack
     match selection {
         CampaignSelection::LEVEL1 => Some(CampaignPackageProfile {
             members: &LEVEL1_CAMPAIGN_MEMBERS,
+            package_schema: CAMPAIGN_PACKAGE_SCHEMA,
+            definition_schema: CAMPAIGN_DEFINITION_SCHEMA,
             player_schema: "mc2-player-arena/v2",
             player_version: 2,
             player_record_bytes: 573,
             feature_allocator_bytes: 4_440,
             feature_allocator_trace_count: 51,
             has_collision_bank: false,
+            has_building_parameters: false,
             has_owner_manifest: true,
         }),
-        CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => Some(CampaignPackageProfile {
-            members: &FEATURE_CAMPAIGN_MEMBERS,
+        CampaignSelection::LEVEL2 => Some(CampaignPackageProfile {
+            members: &LEVEL2_CAMPAIGN_MEMBERS,
+            package_schema: LEVEL2_CAMPAIGN_PACKAGE_SCHEMA,
+            definition_schema: LEVEL2_CAMPAIGN_DEFINITION_SCHEMA,
             player_schema: "mc2-player-arena/v4",
             player_version: 4,
             player_record_bytes: 663,
             feature_allocator_bytes: 4_032,
             feature_allocator_trace_count: 0,
             has_collision_bank: true,
+            has_building_parameters: true,
+            has_owner_manifest: false,
+        }),
+        CampaignSelection::LEVEL3 => Some(CampaignPackageProfile {
+            members: &FEATURE_CAMPAIGN_MEMBERS,
+            package_schema: CAMPAIGN_PACKAGE_SCHEMA,
+            definition_schema: CAMPAIGN_DEFINITION_SCHEMA,
+            player_schema: "mc2-player-arena/v4",
+            player_version: 4,
+            player_record_bytes: 663,
+            feature_allocator_bytes: 4_032,
+            feature_allocator_trace_count: 0,
+            has_collision_bank: true,
+            has_building_parameters: false,
             has_owner_manifest: false,
         }),
         _ => None,
     }
+}
+
+fn building_objective_provenance(
+    has_building_parameters: bool,
+    authored: &[u8],
+    declared_rows: &[AuthoredBehaviorRow],
+) -> Result<Vec<SelectorProvenance>> {
+    if !has_building_parameters {
+        return Ok(Vec::new());
+    }
+    let offset = AUTHORED_STAGE_OFFSET + 4 * 7;
+    let stage = authored[offset] as i8;
+    let objective_selector = i16::from_le_bytes([authored[offset + 1], authored[offset + 2]]);
+    if stage != 9 || objective_selector != 153 {
+        return fail(
+            ValidationStage::SourceFacts,
+            "standing-building objective operation differs from the qualified Level 2 binding",
+        );
+    }
+    let authored_record = u16::try_from(objective_selector).map_err(|_| CampaignPackageError {
+        stage: ValidationStage::SourceFacts,
+        message: "standing-building objective selector is outside the authored arena".to_owned(),
+    })?;
+    Ok(declared_rows
+        .iter()
+        .filter(|row| {
+            row.authored_record == authored_record
+                && row.initial_source_slot.is_none()
+                && row.class == 10
+                && row.subtype == 45
+        })
+        .map(|row| SelectorProvenance {
+            authored_record: row.authored_record,
+            source_class: row.class,
+            source_model: row.model,
+            source_subtype: row.subtype,
+            source_field: SourceField::Par1_14,
+            selector_value: u32::from(row.model),
+        })
+        .collect())
 }
 
 fn campaign_map_type_name(map_type_id: u8) -> Option<&'static str> {
@@ -378,6 +462,7 @@ pub struct CampaignDefinition {
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
     mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
+    standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
     mechanic_entity_by_initial_source_slot: BTreeMap<u16, LevelEntityId>,
     movable_entity_bindings: BTreeMap<LevelEntityId, Mc2EntityRuntimeBinding>,
     local_player_fireball_mana_cost: Option<i32>,
@@ -492,9 +577,18 @@ impl CampaignDefinition {
             "manifest",
             ValidationStage::OuterManifest,
         )?;
+        let Some(profile) = campaign_package_profile(caller) else {
+            return fail(
+                ValidationStage::OuterManifest,
+                format!(
+                    "caller selection external {}/internal {}/map {} has no campaign package profile",
+                    caller.external_level, caller.internal_level, caller.map_type_id
+                ),
+            );
+        };
         require_string_eq(
             &manifest["schema"],
-            CAMPAIGN_PACKAGE_SCHEMA,
+            profile.package_schema,
             "manifest.schema",
             ValidationStage::OuterManifest,
         )?;
@@ -554,15 +648,6 @@ impl CampaignDefinition {
                 "caller/outer selection or map-type name mismatches the campaign profile",
             );
         }
-        let Some(profile) = campaign_package_profile(outer) else {
-            return fail(
-                ValidationStage::OuterManifest,
-                format!(
-                    "outer selection external {}/internal {}/map {} has no campaign package profile",
-                    outer.external_level, outer.internal_level, outer.map_type_id
-                ),
-            );
-        };
         let files_value = exact_object(
             &manifest["files"],
             profile.members,
@@ -720,7 +805,7 @@ impl CampaignDefinition {
         )?;
         require_string_eq(
             &definition["schema"],
-            CAMPAIGN_DEFINITION_SCHEMA,
+            profile.definition_schema,
             "campaign definition.schema",
             ValidationStage::Definition,
         )?;
@@ -888,12 +973,18 @@ impl CampaignDefinition {
                 selector_value: u32::from(row.model),
             })
             .collect::<Vec<_>>();
+        let building_objective_provenance = building_objective_provenance(
+            profile.has_building_parameters,
+            authored,
+            &declared_rows,
+        )?;
         let source_facts = validate_source_facts(
             &definition["source_facts"],
             &SourceFactContext {
                 files: &files,
                 members: &members,
                 authored_collision_provenance: &authored_collision_provenance,
+                building_objective_provenance: &building_objective_provenance,
                 collision_bank: profile.has_collision_bank.then(|| {
                     let collision = &files["collision-masks.bin"];
                     (
@@ -901,6 +992,7 @@ impl CampaignDefinition {
                         collision.1.as_str(),
                     )
                 }),
+                has_building_parameters: profile.has_building_parameters,
             },
         )
         .map_err(|message| CampaignPackageError {
@@ -908,15 +1000,28 @@ impl CampaignDefinition {
             message,
         })?;
 
-        // Stage 7: closed census-proven operations and RNG source fields.
+        // Stage 7: the declared operations must match the authored stage row
+        // that supplied the Stage-6 SourceFact provenance.
         let (initial_rng, objectives) =
             validate_operations(spec_value, authored, &files, &members)?;
-        let semantic_level =
-            Mc2LevelDefinition::from_authored_bytes(authored, &objectives, descriptor_selection)
-                .map_err(|message| CampaignPackageError {
-                    stage: ValidationStage::TypedOperations,
-                    message: format!("cannot derive semantic level content: {message}"),
-                })?;
+        let building_parameters = profile
+            .has_building_parameters
+            .then(|| decode_building_parameters(&members["building-parameters.bin"]))
+            .transpose()
+            .map_err(|message| CampaignPackageError {
+                stage: ValidationStage::TypedOperations,
+                message,
+            })?;
+        let semantic_level = Mc2LevelDefinition::from_authored_bytes(
+            authored,
+            &objectives,
+            descriptor_selection,
+            building_parameters.as_ref(),
+        )
+        .map_err(|message| CampaignPackageError {
+            stage: ValidationStage::TypedOperations,
+            message: format!("cannot derive semantic level content: {message}"),
+        })?;
         let creature_by_initial_source_slot = expected_rows
             .iter()
             .filter_map(|row| {
@@ -1189,6 +1294,7 @@ impl CampaignDefinition {
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
             mechanic_by_initial_source_slot,
             mechanic_entity_by_authored_record: semantic_level.mechanic_entity_by_authored_record,
+            standing_building_chains: semantic_level.standing_building_chains,
             mechanic_entity_by_initial_source_slot,
             movable_entity_bindings,
             local_player_fireball_mana_cost,
@@ -1274,6 +1380,10 @@ impl CampaignDefinition {
         &self.mechanic_entity_by_initial_source_slot
     }
 
+    pub(crate) fn standing_building_chains(&self) -> &BTreeMap<LevelObjectiveId, Box<[u8]>> {
+        &self.standing_building_chains
+    }
+
     pub(crate) fn movable_entity_binding(
         &self,
         entity_id: &LevelEntityId,
@@ -1299,7 +1409,7 @@ impl CampaignDefinition {
         for (name, expected_sha256) in &self.member_hashes {
             if matches!(
                 name.as_str(),
-                "campaign-definition.json" | "owner-manifest.json"
+                "building-parameters.bin" | "campaign-definition.json" | "owner-manifest.json"
             ) {
                 continue;
             }
@@ -3128,16 +3238,17 @@ fn parse_behavior_requirements(value: &Value) -> Result<Vec<BehaviorRequirement>
 #[cfg(test)]
 mod tests {
     use super::{
-        AUTHORED_RECORD_BYTES, AUTHORED_RECORD_COUNT, AUTHORED_RECORD_OFFSET, CampaignDefinition,
-        CampaignSelection, ValidationStage, decode_behavior_rows,
+        AUTHORED_RECORD_BYTES, AUTHORED_RECORD_COUNT, AUTHORED_RECORD_OFFSET,
+        AUTHORED_STAGE_OFFSET, AuthoredBehaviorRow, CampaignDefinition, CampaignSelection,
+        ValidationStage, building_objective_provenance, decode_behavior_rows,
     };
     use std::{fs, path::PathBuf};
 
     fn fixture() -> PathBuf {
-        std::env::var_os("MC_CAMPAIGN_PACKAGE_V1").map_or_else(
+        std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2")
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
             },
             PathBuf::from,
         )
@@ -3349,7 +3460,19 @@ mod tests {
                 .expect("qualified CF-02 descriptor preflights");
         assert_eq!(definition.completed_stage, ValidationStage::ResetState);
         assert!(definition.reset_state_receipt.structurally_validated);
-        assert_eq!(definition.source_facts.len(), 3);
+        assert_eq!(definition.source_facts.len(), 4);
+        assert_eq!(
+            definition
+                .standing_building_chains()
+                .get(
+                    &crate::level_definition::LevelObjectiveId::parse(
+                        "objective.clear.payahandra_vaults"
+                    )
+                    .expect("stable objective id parses")
+                )
+                .map(Box::as_ref),
+            Some(&[21, 54][..])
+        );
         assert_eq!(
             definition
                 .campaign_spec
@@ -3369,6 +3492,27 @@ mod tests {
         );
         assert_eq!(definition.campaign_spec.objectives.len(), 5);
         assert!(!definition.required_behaviors.is_empty());
+    }
+
+    #[test]
+    fn standing_building_source_fact_joins_the_typed_objective_selector() {
+        let mut authored = vec![0_u8; AUTHORED_STAGE_OFFSET + 8 * 7];
+        let offset = AUTHORED_STAGE_OFFSET + 4 * 7;
+        authored[offset] = 9;
+        authored[offset + 1..offset + 3].copy_from_slice(&163_i16.to_le_bytes());
+        let rows = [AuthoredBehaviorRow {
+            authored_record: 163,
+            initial_source_slot: None,
+            class: 10,
+            action: 8,
+            model: 26,
+            subtype: 45,
+            initial_dispatch_sites: vec![1, 2],
+        }];
+        let error = building_objective_provenance(true, &authored, &rows)
+            .expect_err("a different valid building row cannot replace the qualified objective");
+        assert_eq!(error.stage, ValidationStage::SourceFacts);
+        assert!(error.message.contains("objective operation differs"));
     }
 
     #[test]

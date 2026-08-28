@@ -77,10 +77,10 @@ namespace MagicCarpet.Native.Tests
                 "remc2-unity-native/qualification/level1-reference-corpus.json");
 
         private static string CampaignPackagePath =>
-            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_V1") ??
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE") ??
             Path.Combine(
                 PrivateRoot,
-                "generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+                "generated/mc-cf02-campaign-package-v2-b/qualified-level2");
 
         private static IReadOnlyDictionary<int, Checkpoint> Checkpoints()
         {

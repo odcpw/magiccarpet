@@ -14,6 +14,7 @@ pub enum SourceFactKind {
     AuthoredLevelRecords = 1,
     FeatureConstructionInputs = 2,
     CollisionMask = 3,
+    BuildingParameters = 4,
 }
 
 impl SourceFactKind {
@@ -22,6 +23,7 @@ impl SourceFactKind {
             1 => Ok(Self::AuthoredLevelRecords),
             2 => Ok(Self::FeatureConstructionInputs),
             3 => Ok(Self::CollisionMask),
+            4 => Ok(Self::BuildingParameters),
             _ => Err(format!("unknown SourceFact kind {value}")),
         }
     }
@@ -68,12 +70,19 @@ pub(crate) struct SourceFactContext<'a> {
     pub files: &'a BTreeMap<String, (u64, String)>,
     pub members: &'a BTreeMap<String, Vec<u8>>,
     pub authored_collision_provenance: &'a [SelectorProvenance],
+    pub building_objective_provenance: &'a [SelectorProvenance],
     /// Census-profiled identity of the collision bank when the selected owner
     /// package actually carries one.
     pub collision_bank: Option<(usize, &'a str)>,
+    pub has_building_parameters: bool,
 }
 
 const SOURCE_ARTIFACTS: &[(&str, u64, &str)] = &[
+    (
+        "CD_Files/DATA/BLDGPRM.DAT",
+        304,
+        "1c4a7fdef5d4b811f871441f0380faaacd6e5e689e73fc4628bf8c5b51ea6f00",
+    ),
     (
         "CD_Files/DATA/BUILD0-0.DAT",
         80_064,
@@ -371,6 +380,51 @@ fn decode_collision_masks(bytes: &[u8], expected: &[u16]) -> Result<(), String> 
     Ok(())
 }
 
+pub(crate) fn decode_building_parameters(
+    bytes: &[u8],
+) -> Result<BTreeMap<u8, crate::house::HouseParameter>, String> {
+    const RECORD_COUNT: usize = 76;
+    const RECORD_BYTES: usize = 4;
+    if bytes.len() != RECORD_COUNT * RECORD_BYTES {
+        return Err("building parameter owner extent changed".to_owned());
+    }
+    let mut result = BTreeMap::new();
+    for index in 0..RECORD_COUNT {
+        let offset = index * RECORD_BYTES;
+        let selector = u8::try_from(index).expect("BLDGPRM selector fits u8");
+        let parameter = crate::house::HouseParameter::from_source_record(
+            u16::from_le_bytes([bytes[offset], bytes[offset + 1]]),
+            bytes[offset + 2],
+            bytes[offset + 3],
+        );
+        result.insert(selector, parameter);
+    }
+    Ok(result)
+}
+
+pub(crate) fn building_parameter_chain(
+    parameters: &BTreeMap<u8, crate::house::HouseParameter>,
+    root: u8,
+) -> Result<Box<[u8]>, String> {
+    let mut selector = root;
+    let mut chain = Vec::new();
+    let mut seen = BTreeSet::new();
+    while selector != 0 {
+        if chain.len() == 8 || !seen.insert(selector) {
+            return Err("BLDGPRM chain cycles or exceeds eight rows".to_owned());
+        }
+        chain.push(selector);
+        selector = parameters
+            .get(&selector)
+            .ok_or_else(|| format!("BLDGPRM chain references missing row {selector}"))?
+            .destruction_successor;
+    }
+    if chain.is_empty() {
+        return Err("BLDGPRM chain is empty".to_owned());
+    }
+    Ok(chain.into_boxed_slice())
+}
+
 /// Parse and validate the complete, sorted SourceFact set for the package's
 /// real immutable carriers.
 pub(crate) fn validate_source_facts(
@@ -380,7 +434,33 @@ pub(crate) fn validate_source_facts(
     let rows = value
         .as_array()
         .ok_or_else(|| "source_facts is not an array".to_owned())?;
+    if context.has_building_parameters
+        && !matches!(
+            context.building_objective_provenance,
+            [SelectorProvenance {
+                authored_record: 153,
+                source_class: 10,
+                source_model: 21,
+                source_subtype: 45,
+                source_field: SourceField::Par1_14,
+                selector_value: 21,
+            }]
+        )
+    {
+        return Err(
+            "standing-building objective provenance differs from the qualified Level 2 binding"
+                .to_owned(),
+        );
+    }
     let mut expected = Vec::new();
+    if context.has_building_parameters {
+        expected.push((
+            "building-parameters",
+            SourceFactKind::BuildingParameters,
+            "building-parameters.bin",
+            &["CD_Files/DATA/BLDGPRM.DAT"][..],
+        ));
+    }
     if context.collision_bank.is_some() {
         expected.push((
             "collision-mask-bank",
@@ -493,10 +573,12 @@ pub(crate) fn validate_source_facts(
                 parse_selector_provenance(value, &format!("{label}.selector_provenance[{row}]"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let expected_provenance = if kind == SourceFactKind::AuthoredLevelRecords {
-            &[][..]
-        } else {
-            context.authored_collision_provenance
+        let expected_provenance = match kind {
+            SourceFactKind::AuthoredLevelRecords => &[][..],
+            SourceFactKind::BuildingParameters => context.building_objective_provenance,
+            SourceFactKind::FeatureConstructionInputs | SourceFactKind::CollisionMask => {
+                context.authored_collision_provenance
+            }
         };
         if selector_provenance != expected_provenance {
             return Err(format!(
@@ -556,12 +638,32 @@ pub(crate) fn validate_source_facts(
             return Err("collision SourceFact differs from the census-qualified bytes".to_owned());
         }
     }
+    if context.has_building_parameters {
+        let bytes = context
+            .members
+            .get("building-parameters.bin")
+            .ok_or_else(|| "building parameter member is absent".to_owned())?;
+        let parameters = decode_building_parameters(bytes)?;
+        if super::spec::sha256_hex(bytes)
+            != "1c4a7fdef5d4b811f871441f0380faaacd6e5e689e73fc4628bf8c5b51ea6f00"
+            || parameters.get(&21).is_none_or(|row| {
+                row.life_mana_scalar != 6 || row.flags != 8 || row.destruction_successor != 54
+            })
+            || parameters.get(&54).is_none_or(|row| {
+                row.life_mana_scalar != 8 || row.flags != 8 || row.destruction_successor != 0
+            })
+        {
+            return Err(
+                "building parameter owner bytes or qualified objective chain changed".to_owned(),
+            );
+        }
+    }
     Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::decode_collision_masks;
+    use super::{building_parameter_chain, decode_building_parameters, decode_collision_masks};
 
     #[test]
     fn empty_collision_carrier_matches_zero_authored_rows() {
@@ -573,10 +675,10 @@ mod tests {
 
     #[test]
     fn nonempty_collision_carrier_rejects_zero_authored_rows() {
-        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE_V1").map_or_else(
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2")
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
             },
             std::path::PathBuf::from,
         );
@@ -584,5 +686,34 @@ mod tests {
             .expect("qualified CF-02 package exists");
         let error = decode_collision_masks(&bytes, &[]).expect_err("nonempty/zero rejects");
         assert!(error.contains("empty/nonempty"));
+    }
+
+    #[test]
+    fn level_two_building_parameter_chain_is_owner_bound_and_cycle_closed() {
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+            },
+            std::path::PathBuf::from,
+        );
+        let bytes = std::fs::read(package.join("building-parameters.bin"))
+            .expect("qualified Level 2 BLDGPRM carrier exists");
+        let parameters = decode_building_parameters(&bytes).expect("owner carrier decodes");
+        assert_eq!(
+            &*building_parameter_chain(&parameters, 21).expect("chain closes"),
+            &[21, 54]
+        );
+
+        let mut cyclic = parameters;
+        cyclic
+            .get_mut(&54)
+            .expect("qualified successor row exists")
+            .destruction_successor = 21;
+        assert!(
+            building_parameter_chain(&cyclic, 21)
+                .expect_err("cycle must fail closed")
+                .contains("cycles")
+        );
     }
 }

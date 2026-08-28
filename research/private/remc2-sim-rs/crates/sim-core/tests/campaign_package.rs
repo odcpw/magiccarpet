@@ -1,4 +1,4 @@
-//! CF-02 contract-v1 integration gate over real exporter output.
+//! CF-02 profile-versioned campaign-package integration gate.
 
 use sha2::{Digest, Sha256};
 use sim_core::campaign::spec::{
@@ -15,10 +15,10 @@ static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 static SESSION_CONSTRUCTIONS: AtomicUsize = AtomicUsize::new(0);
 
 fn fixture() -> PathBuf {
-    std::env::var_os("MC_CAMPAIGN_PACKAGE_V1").map_or_else(
+    std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
         || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2")
+                .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
         },
         PathBuf::from,
     )

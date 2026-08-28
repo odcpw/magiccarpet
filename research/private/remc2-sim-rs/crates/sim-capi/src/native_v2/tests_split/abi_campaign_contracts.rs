@@ -2217,7 +2217,7 @@ fn campaign_day_indexed_frame_is_generation_bound_complete_and_fail_closed() {
 
 fn open_cf12_descriptor_campaign() -> u64 {
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+        .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
     let cache = qualified_level2_day_owner_cache();
     let package = package.to_string_lossy();
     let cache = cache.to_string_lossy();
@@ -2907,7 +2907,7 @@ fn cf12_generic_campaign_abi_failures_are_atomic() {
     assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
 
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-cf02-campaign-package-v1-a/qualified-level2");
+        .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
     let cache = qualified_level2_day_owner_cache();
     let package = package.to_string_lossy();
     let cache = cache.to_string_lossy();

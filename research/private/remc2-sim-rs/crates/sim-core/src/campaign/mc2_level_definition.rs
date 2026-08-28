@@ -12,6 +12,7 @@ use sim_definition::adapter::{
 };
 
 use crate::{
+    house::HouseParameter,
     level_definition::{
         BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
@@ -40,6 +41,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     pub(crate) mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) movable_source_id_by_entity_id: BTreeMap<LevelEntityId, u16>,
+    pub(crate) standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
 }
 
 impl Mc2LevelDefinition {
@@ -139,6 +141,7 @@ impl Mc2LevelDefinition {
         bytes: &[u8],
         objective_operations: &[ObjectiveOperation],
         selection: CampaignSelection,
+        building_parameters: Option<&BTreeMap<u8, HouseParameter>>,
     ) -> Result<Self, String> {
         let features = parse_authored_features(bytes)?;
         let mut stable_entity_ids = stable_entity_ids(selection.external_level)?;
@@ -155,6 +158,7 @@ impl Mc2LevelDefinition {
         let mut mechanic_entity_by_authored_record = BTreeMap::new();
         let mut authored_record_by_entity_id = BTreeMap::new();
         let mut movable_source_id_by_entity_id = BTreeMap::new();
+        let mut standing_building_chains = BTreeMap::new();
         let mut entities = Vec::new();
         let activation_groups = features
             .iter()
@@ -525,6 +529,26 @@ impl Mc2LevelDefinition {
                                 operation.objective_slot, building.kind, building.subtype
                             ));
                         }
+                        let parameters = building_parameters.ok_or_else(|| {
+                            format!(
+                                "building objective {} has no validated BLDGPRM carrier",
+                                operation.objective_slot
+                            )
+                        })?;
+                        let selector = u8::try_from(building.parameter_1).map_err(|_| {
+                            format!(
+                                "building objective {} root selector exceeds u8",
+                                operation.objective_slot
+                            )
+                        })?;
+                        let chain = super::source_facts::building_parameter_chain(
+                            parameters,
+                            selector,
+                        )
+                        .map_err(|error| {
+                            format!("building objective {} {error}", operation.objective_slot)
+                        })?;
+                        standing_building_chains.insert(id.clone(), chain);
                         ObjectiveCondition::NoStandingBuildings
                     }
                     kind => {
@@ -586,6 +610,7 @@ impl Mc2LevelDefinition {
             mechanic_by_authored_record,
             mechanic_entity_by_authored_record,
             movable_source_id_by_entity_id,
+            standing_building_chains,
         })
     }
 }

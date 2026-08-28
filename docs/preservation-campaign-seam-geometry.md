@@ -351,7 +351,7 @@ The managed consumer similarly stops growing `OpenLevelN` methods and per-level
 hash dictionaries. Today it pins a Level 2 file dictionary and calls
 `CampaignSelection.Level2Day()` (`research/private/remc2-unity-native/Assets/Scripts/NativeCampaignSession.cs:20-51`, `95-144`). The generic consumer validates the package/definition identity once, passes the existing selection triple, and selects presentation recipes from validated descriptor data. Level 2 wrappers remain adapters until their accepted tests retire them.
 
-## Contract v1: campaign package and SourceFacts schema
+## Campaign package contracts v1/v2 and SourceFacts schema
 
 ### Physical package envelope
 
@@ -377,6 +377,15 @@ validation (`exporter_main.cpp:1916-1930`; `native_world.rs:27165-27242`).
 `campaign-definition.json` is serialized with UTF-8, sorted object keys, no
 insignificant whitespace, decimal integers, and a trailing LF. Its ordinary
 member SHA-256 binds its exact bytes; there is no self-hash field.
+
+Qualified Level 2 uses `mc2-owner-campaign-package/v2` and
+`mc2-campaign-definition/v2`. This is the same closed envelope plus the exact
+304-byte `building-parameters.bin` owner member and its version-1
+`building-parameters` SourceFact. That private fact binds the standing-building
+objective's authored `par1_14` root to its bounded BLDGPRM successor chain.
+Levels 1 and 3 remain on the v1 envelope because they do not carry that source
+fact. The public semantic objective remains `NoStandingBuildings`; raw owner
+selectors do not cross the MC2 adapter.
 
 ### Definition schema
 

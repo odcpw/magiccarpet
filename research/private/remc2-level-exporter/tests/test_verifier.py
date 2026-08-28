@@ -13,6 +13,7 @@ import tempfile
 
 from verify_package import (
     CAMPAIGN_PACKAGE_SCHEMA,
+    LEVEL2_CAMPAIGN_PACKAGE_SCHEMA,
     LEVEL2_PLAYER_RECORD_BYTES,
     LEVEL2_V4_PLAYER_RECORD_BYTES,
     SCHEMA_V2,
@@ -201,7 +202,7 @@ def main() -> int:
     manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
     schema = manifest["schema"]
 
-    if schema == CAMPAIGN_PACKAGE_SCHEMA:
+    if schema in {CAMPAIGN_PACKAGE_SCHEMA, LEVEL2_CAMPAIGN_PACKAGE_SCHEMA}:
         if manifest["level"]["external"] == 1:
             verify_level1_campaign_negatives(package)
         print(f"PASS: valid {schema} package and schema-aware tamper suite rejected")

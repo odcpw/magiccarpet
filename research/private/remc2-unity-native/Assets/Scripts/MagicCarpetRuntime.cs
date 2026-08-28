@@ -11830,7 +11830,7 @@ namespace MagicCarpet.Native
             if (HasArgument(arguments, "-mc-level2"))
             {
                 package = ArgumentValue(arguments, "-mc-package") ??
-                          Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_V1") ??
+                          Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE") ??
                           Environment.GetEnvironmentVariable("MC_LEVEL2_PACKAGE_PATH");
                 closure = ArgumentValue(arguments, "-mc-closure") ??
                           Environment.GetEnvironmentVariable("MC_CLOSURE_PATH");
@@ -11842,7 +11842,7 @@ namespace MagicCarpet.Native
 #if UNITY_EDITOR
                 package ??= Path.GetFullPath(Path.Combine(
                     Application.dataPath,
-                    "../../generated/mc-cf02-campaign-package-v1-a/qualified-level2"));
+                    "../../generated/mc-cf02-campaign-package-v2-b/qualified-level2"));
 #endif
                 if (string.IsNullOrWhiteSpace(package))
                 {
