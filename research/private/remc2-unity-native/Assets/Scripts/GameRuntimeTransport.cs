@@ -18,7 +18,9 @@ namespace MagicCarpet.Native
     {
         internal const string RuntimeContract = "carpet-flight-game-runtime/v5";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v3";
+            "carpet-flight-native-game-runtime-json/v4";
+        internal const string InstalledPackageSetContract =
+            "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string TitleMode = "title";
         internal const string LoadingMode = "loading";
         internal const string PlayingMode = "playing";
@@ -38,8 +40,33 @@ namespace MagicCarpet.Native
             public string[] transitions;
             public string playing_session_transport;
             public string package_profile;
+            public InstalledPackageSetTransport installed_package_set;
             public RuntimeFlowContract runtime_flow;
             public Limits limits;
+        }
+
+        [Serializable]
+        internal sealed class InstalledPackageSetTransport
+        {
+            public string request_contract;
+            public string transport;
+            public string selection_authority;
+            public string input_order;
+            public string lifetime;
+        }
+
+        [Serializable]
+        internal sealed class InstalledPackageResource
+        {
+            public string package_dir;
+            public string owner_cache_path;
+        }
+
+        [Serializable]
+        internal sealed class InstalledPackageSetRequest
+        {
+            public string request_contract;
+            public InstalledPackageResource[] packages;
         }
 
         [Serializable]
@@ -54,6 +81,8 @@ namespace MagicCarpet.Native
         internal sealed class Limits
         {
             public uint maximum_output_json_bytes;
+            public uint maximum_installed_package_set_json_bytes;
+            public uint maximum_installed_package_count;
             public string json_length_type;
         }
 
@@ -174,25 +203,47 @@ namespace MagicCarpet.Native
             return identity;
         }
 
-        internal Identity NewGame(string packagePath, string ownerCachePath = null)
+        internal Identity BootstrapPackageSet(params InstalledPackageResource[] packages)
         {
-            if (string.IsNullOrWhiteSpace(packagePath))
+            if (packages == null || packages.Length == 0 ||
+                (uint)packages.Length >
+                    NegotiatedContract.limits.maximum_installed_package_count)
             {
-                throw new ArgumentException("campaign package path is required", nameof(packagePath));
+                throw new ArgumentException(
+                    "installed package resources must be nonempty and bounded",
+                    nameof(packages));
             }
-            var package = Encoding.UTF8.GetBytes(packagePath);
-            var cache = string.IsNullOrWhiteSpace(ownerCachePath)
-                ? Array.Empty<byte>()
-                : Encoding.UTF8.GetBytes(ownerCachePath);
+            foreach (var resource in packages)
+            {
+                if (resource == null || string.IsNullOrWhiteSpace(resource.package_dir) ||
+                    (resource.owner_cache_path != null &&
+                     string.IsNullOrWhiteSpace(resource.owner_cache_path)))
+                {
+                    throw new ArgumentException(
+                        "each installed package resource needs a package path and optional nonblank cache path",
+                        nameof(packages));
+                }
+            }
+            var request = Encoding.UTF8.GetBytes(JsonUtility.ToJson(
+                new InstalledPackageSetRequest
+                {
+                    request_contract = InstalledPackageSetContract,
+                    packages = packages
+                }));
+            if ((uint)request.Length >
+                NegotiatedContract.limits.maximum_installed_package_set_json_bytes)
+            {
+                throw new ArgumentException(
+                    "installed package-set request exceeds the negotiated bound",
+                    nameof(packages));
+            }
             Check(
-                NativeSim.mc_game_runtime_new_game_v1(
+                NativeSim.mc_game_runtime_bootstrap_package_set_json_v1(
                     RequireHandle(),
                     ParseCounter(Current.generation, "generation"),
-                    package,
-                    checked((uint)package.Length),
-                    cache,
-                    checked((uint)cache.Length)),
-                "begin new game");
+                    request,
+                    checked((uint)request.Length)),
+                "bootstrap installed package set");
             var identity = IdentitySnapshot();
             if (identity.mode != LoadingMode || !HasDefinitionIdentity(identity) ||
                 HasSessionIdentityData(identity.session) ||
@@ -352,24 +403,37 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 3 ||
+                contract.transport_version != 4 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
                     "mc_game_session_*_v1 on the same handle" ||
                 contract.package_profile != EngineSessionTransport.CampaignProfile ||
+                contract.installed_package_set == null ||
+                contract.installed_package_set.request_contract !=
+                    InstalledPackageSetContract ||
+                contract.installed_package_set.transport !=
+                    "mc_game_runtime_bootstrap_package_set_json_v1" ||
+                contract.installed_package_set.selection_authority !=
+                    "rust_owned_semantic_flow" ||
+                contract.installed_package_set.input_order !=
+                    "unordered_resource_locations" ||
+                contract.installed_package_set.lifetime !=
+                    "immutable_until_destroy" ||
                 contract.runtime_flow == null ||
                 contract.runtime_flow.title != "absent" ||
                 contract.runtime_flow.loading != "pending_definition.runtime_flow" ||
                 contract.runtime_flow.playing_and_paused != "active_runtime_flow" ||
                 contract.limits == null ||
                 contract.limits.maximum_output_json_bytes != 16 * 1024 * 1024 ||
+                contract.limits.maximum_installed_package_set_json_bytes != 64 * 1024 ||
+                contract.limits.maximum_installed_package_count != 16 ||
                 contract.limits.json_length_type != "u32" ||
                 contract.modes == null ||
                 !new[] { TitleMode, LoadingMode, PlayingMode, PausedMode }
                     .SequenceEqual(contract.modes) ||
                 contract.transitions == null ||
-                !new[] { "new_game", "open_level", "pause", "resume" }
+                !new[] { "bootstrap_package_set", "open_level", "pause", "resume" }
                     .SequenceEqual(contract.transitions))
             {
                 throw new InvalidOperationException("native game runtime contract is unsupported");

@@ -1325,10 +1325,9 @@ int32_t mc_game_runtime_create_v1(uint64_t *out_handle);
 int32_t mc_game_runtime_identity_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
-int32_t mc_game_runtime_new_game_v1(
+int32_t mc_game_runtime_bootstrap_package_set_json_v1(
     uint64_t handle, uint64_t generation,
-    const uint8_t *package_dir, uint32_t package_dir_len,
-    const uint8_t *owner_cache_path, uint32_t owner_cache_path_len);
+    const uint8_t *request_json, uint32_t request_json_len);
 int32_t mc_game_runtime_open_level_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_pause_v1(

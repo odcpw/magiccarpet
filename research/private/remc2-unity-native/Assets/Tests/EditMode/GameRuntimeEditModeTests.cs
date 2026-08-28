@@ -21,6 +21,42 @@ namespace MagicCarpet.Native.Tests
                 PrivateRoot,
                 "generated/mc-cf02-campaign-package-v2-b/qualified-level2");
 
+        private static string LevelThreePackage =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_LEVEL3_V1") ??
+            Path.Combine(
+                PrivateRoot,
+                "generated/mc-cf14-campaign-package-v1-a/qualified-level3");
+
+        private static GameRuntimeTransport.InstalledPackageResource Package(string path)
+        {
+            return new GameRuntimeTransport.InstalledPackageResource
+            {
+                package_dir = path,
+                owner_cache_path = null
+            };
+        }
+
+        private static GameRuntimeTransport.InstalledPackageResource[] ResolverPackages()
+        {
+            return new[]
+            {
+                Package(LevelThreePackage),
+                Package(LevelOnePackage),
+                Package(LevelTwoPackage)
+            };
+        }
+
+        private static byte[] PackageSetJson(
+            params GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
+            return Encoding.UTF8.GetBytes(JsonUtility.ToJson(
+                new GameRuntimeTransport.InstalledPackageSetRequest
+                {
+                    request_contract = GameRuntimeTransport.InstalledPackageSetContract,
+                    packages = packages
+                }));
+        }
+
         private static void AssertSameCampaignState(
             EngineSessionTransport.CampaignSnapshotObservation expected,
             EngineSessionTransport.CampaignSnapshotObservation actual)
@@ -63,6 +99,9 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     runtime.NegotiatedContract.runtime_contract,
                     Is.EqualTo(GameRuntimeTransport.RuntimeContract));
+                Assert.That(
+                    runtime.NegotiatedContract.installed_package_set.request_contract,
+                    Is.EqualTo(GameRuntimeTransport.InstalledPackageSetContract));
                 var title = runtime.IdentitySnapshot();
                 Assert.That(title.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
                 Assert.That(title.generation, Is.EqualTo("1"));
@@ -87,15 +126,13 @@ namespace MagicCarpet.Native.Tests
                     runtime.IdentitySnapshot().mode,
                     Is.EqualTo(GameRuntimeTransport.TitleMode));
 
-                var levelOne = Encoding.UTF8.GetBytes(LevelOnePackage);
+                var packageSet = PackageSetJson(ResolverPackages());
                 Assert.That(
-                    NativeSim.mc_game_runtime_new_game_v1(
+                    NativeSim.mc_game_runtime_bootstrap_package_set_json_v1(
                         runtime.Handle,
                         2,
-                        levelOne,
-                        checked((uint)levelOne.Length),
-                        Array.Empty<byte>(),
-                        0),
+                        packageSet,
+                        checked((uint)packageSet.Length)),
                     Is.EqualTo(NativeSim.GenerationMismatch));
                 Assert.That(
                     runtime.IdentitySnapshot().mode,
@@ -104,14 +141,16 @@ namespace MagicCarpet.Native.Tests
                 using (var laterRuntime = new GameRuntimeTransport())
                 {
                     var later = Assert.Throws<GameRuntimeTransport.TransitionException>(
-                        () => laterRuntime.NewGame(LevelTwoPackage));
+                        () => laterRuntime.BootstrapPackageSet(
+                            Package(LevelTwoPackage),
+                            Package(LevelOnePackage)));
                     Assert.That(later.Status, Is.EqualTo(NativeSim.ValidationFailed));
                     Assert.That(
                         laterRuntime.IdentitySnapshot().mode,
                         Is.EqualTo(GameRuntimeTransport.TitleMode));
                 }
 
-                var loading = runtime.NewGame(LevelOnePackage);
+                var loading = runtime.BootstrapPackageSet(ResolverPackages());
                 Assert.That(loading.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
                 Assert.That(loading.generation, Is.EqualTo("2"));
                 Assert.That(loading.pending_definition.definition_hash, Is.Not.Empty);
@@ -136,7 +175,7 @@ namespace MagicCarpet.Native.Tests
                 loading = runtime.IdentitySnapshot();
 
                 var repeatedNewGame = Assert.Throws<GameRuntimeTransport.TransitionException>(
-                    () => runtime.NewGame(LevelTwoPackage));
+                    () => runtime.BootstrapPackageSet(ResolverPackages()));
                 Assert.That(repeatedNewGame.Status, Is.EqualTo(NativeSim.InvalidArgument));
                 Assert.That(runtime.IdentitySnapshot().mode, Is.EqualTo(loading.mode));
                 Assert.That(
@@ -190,10 +229,11 @@ namespace MagicCarpet.Native.Tests
                 runtime.Dispose();
                 Assert.Throws<ObjectDisposedException>(() => runtime.IdentitySnapshot());
 
-                // No-Claim: this proves definition-bound observational flow
-                // identity only. It does not detect completion, select or
-                // resolve the next package, accept transitions, execute
-                // Results/return-to-title, save/load, or wire the Unity shell.
+                // No-Claim: this proves complete-set admission and a
+                // resolver-derived entry open only. It does not expose
+                // completion acceptance, materialize later L2/L3 sessions,
+                // discover/install packages, migrate production presentation,
+                // or implement save/load, replay, results, or shell wiring.
             }
             finally
             {
@@ -206,7 +246,7 @@ namespace MagicCarpet.Native.Tests
         public void RustGameRuntimePauseResumeFreezesTheSameLevelOneSession()
         {
             using var runtime = new GameRuntimeTransport();
-            runtime.NewGame(LevelOnePackage);
+            runtime.BootstrapPackageSet(ResolverPackages());
             var playing = runtime.OpenLevel();
             var before = runtime.CampaignSnapshot();
 
@@ -290,14 +330,14 @@ namespace MagicCarpet.Native.Tests
             var handle = runtime.Handle;
             try
             {
-                runtime.NewGame(LevelOnePackage);
+                runtime.BootstrapPackageSet(ResolverPackages());
                 var playing = runtime.OpenLevel();
                 Assert.That(playing.session.session_id, Is.EqualTo(handle.ToString()));
 
                 var initial = runtime.CampaignSnapshot();
                 using (var other = new GameRuntimeTransport())
                 {
-                    other.NewGame(LevelOnePackage);
+                    other.BootstrapPackageSet(ResolverPackages());
                     var otherPlaying = other.OpenLevel();
                     var otherInitial = other.CampaignSnapshot();
                     Assert.That(otherPlaying.session.generation, Is.EqualTo("1"));

@@ -371,7 +371,11 @@ partial real implementation, not a completion claim:
   Rust runtime consumes it exactly once. A Rust-owned installed-package
   resolver validates the complete unordered Level 1-3 resource set, derives
   every key from immutable semantic flow identity, and rejects mixed,
-  duplicate or incomplete sets before play. A focused real Level 1 route
+  duplicate or incomplete sets before play. The native runtime and its managed
+  Unity transport now bootstrap that complete resolver-owned set atomically
+  from unordered owner-local resource locations and open the resolver-derived
+  Level 1 entry on the same handle; neither client supplies a semantic entry or
+  next-level identity. A focused real Level 1 route
   accepts only its declared Level 2 edge without a caller level ID or path,
   opens that exact prevalidated definition/resource binding with a monotonic
   nested session generation, and rejects stale Level 1 guards. A separate
@@ -382,7 +386,8 @@ partial real implementation, not a completion claim:
   exact exit group and phase-12 carrier into the declared semantic Title node,
   then preserves the nested generation floor when the same handle starts a new
   Level 1 session so stale Level 3 guards cannot collide.
-  Native/Unity transition exposure, production package installation/discovery,
+  Native/Unity completion-transition exposure, production package discovery,
+  installation and shell wiring,
   an uninterrupted Level 1-to-Title playthrough, and Title/results presentation
   remain open. The
   quiescent boundary also does not yet implement `paused_frame`, so the MC2

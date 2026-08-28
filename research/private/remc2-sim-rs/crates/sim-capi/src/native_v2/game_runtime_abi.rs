@@ -6,11 +6,9 @@
 //! authority or a parallel step API.
 
 use super::*;
+use serde::Deserialize;
 use sim_core::{
-    campaign::backend::{
-        Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs, load_mc2_campaign,
-    },
-    game_definition::default_catalog,
+    campaign::backend::{Mc2CampaignBackend, Mc2CampaignInputs, Mc2RuntimePackageResolver},
     game_runtime::{
         GameRuntime, OpenLevelError, RuntimeGuard, RuntimeGuardError, RuntimeGuardErrorCode,
         RuntimeMode, RuntimeTransitionError,
@@ -18,11 +16,28 @@ use sim_core::{
 };
 use sim_session::{GameSession, OpenSessionError};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v3";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v4";
+const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
+const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
+const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstalledPackageSetRequest {
+    request_contract: String,
+    packages: Vec<InstalledPackageLocation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstalledPackageLocation {
+    package_dir: String,
+    owner_cache_path: Option<String>,
+}
 
 pub(super) struct RuntimeRecord {
     runtime: GameRuntime<Mc2CampaignBackend>,
-    pending_inputs: Option<Mc2CampaignInputs>,
+    resolver: Option<Mc2RuntimePackageResolver>,
     closed: bool,
 }
 
@@ -31,7 +46,7 @@ impl RuntimeRecord {
         let runtime = GameRuntime::title(runtime_id).map_err(map_transition_error)?;
         Ok(Self {
             runtime,
-            pending_inputs: None,
+            resolver: None,
             closed: false,
         })
     }
@@ -73,58 +88,55 @@ impl RuntimeRecord {
         })
     }
 
-    fn new_game(
+    fn bootstrap_package_set(
         &mut self,
         handle: u64,
         generation: u64,
-        inputs: Mc2CampaignInputs,
+        request_json: String,
+        request_json_len: u32,
     ) -> AbiResult<()> {
         self.validate_transition(handle, generation, RuntimeMode::Title)?;
-        let catalog = default_catalog().map_err(|error| {
+        if self.resolver.is_some() {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "PACKAGE_SET_ALREADY_INSTALLED: runtime package authority is immutable until destroy",
+            ));
+        }
+        let inputs = installed_package_set_inputs(request_json, request_json_len)?;
+        let resolver = Mc2RuntimePackageResolver::load(inputs).map_err(|error| {
             AbiError::new(
                 MC_STATUS_VALIDATION_FAILED,
-                format!("cannot construct game runtime semantic catalog: {error}"),
+                format!("cannot load installed game runtime package set: {error}"),
             )
         })?;
-        let definition = load_mc2_campaign(&inputs.package_root, &catalog).map_err(|error| {
-            AbiError::new(
-                MC_STATUS_VALIDATION_FAILED,
-                format!("cannot load game runtime campaign definition: {error}"),
-            )
-        })?;
-        self.runtime
+        resolver
             .new_game(
+                &mut self.runtime,
                 RuntimeGuard {
                     runtime_id: handle,
                     generation,
                 },
-                Arc::new(definition),
             )
             .map_err(map_transition_error)?;
-        self.pending_inputs = Some(inputs);
+        self.resolver = Some(resolver);
         Ok(())
     }
 
     fn open_level(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
         self.validate_transition(handle, generation, RuntimeMode::Loading)?;
-        let inputs = self.pending_inputs.clone().ok_or_else(|| {
+        let guard = RuntimeGuard {
+            runtime_id: handle,
+            generation,
+        };
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
             AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
-                "MISSING_RUNTIME_INPUT: loading runtime has no validated campaign input",
+                "MISSING_RUNTIME_RESOLVER: loading runtime has no installed package set",
             )
         })?;
-        self.runtime
-            .open_level(
-                RuntimeGuard {
-                    runtime_id: handle,
-                    generation,
-                },
-                &Mc2CampaignAdapter,
-                inputs,
-                handle,
-            )
+        resolver
+            .open_pending(&mut self.runtime, guard, handle)
             .map_err(map_open_level_error)?;
-        self.pending_inputs = None;
         Ok(())
     }
 
@@ -294,6 +306,71 @@ fn campaign_inputs(package: String, owner_cache: String) -> AbiResult<Mc2Campaig
     })
 }
 
+fn installed_package_set_inputs(
+    request_json: String,
+    request_json_len: u32,
+) -> AbiResult<Vec<Mc2CampaignInputs>> {
+    if request_json_len > MAX_INSTALLED_PACKAGE_SET_JSON_BYTES {
+        return Err(AbiError::new(
+            MC_STATUS_BOUNDS,
+            format!(
+                "installed package-set JSON is {request_json_len} bytes, maximum is {MAX_INSTALLED_PACKAGE_SET_JSON_BYTES}"
+            ),
+        ));
+    }
+    let request: InstalledPackageSetRequest =
+        serde_json::from_str(&request_json).map_err(|error| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!("invalid installed package-set JSON: {error}"),
+            )
+        })?;
+    if request.request_contract != INSTALLED_PACKAGE_SET_CONTRACT {
+        return Err(AbiError::new(
+            MC_STATUS_UNSUPPORTED_VERSION,
+            format!(
+                "unsupported installed package-set contract {}",
+                request.request_contract
+            ),
+        ));
+    }
+    if request.packages.is_empty() {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "installed package set must contain at least one resource location",
+        ));
+    }
+    if request.packages.len() > MAX_INSTALLED_PACKAGE_COUNT {
+        return Err(AbiError::new(
+            MC_STATUS_BOUNDS,
+            format!(
+                "installed package set must contain 1..={MAX_INSTALLED_PACKAGE_COUNT} resource locations"
+            ),
+        ));
+    }
+    request
+        .packages
+        .into_iter()
+        .map(|location| {
+            if location.package_dir.trim().is_empty()
+                || location
+                    .owner_cache_path
+                    .as_deref()
+                    .is_some_and(|path| !path.is_empty() && path.trim().is_empty())
+            {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "installed package resource paths must be nonblank",
+                ));
+            }
+            campaign_inputs(
+                location.package_dir,
+                location.owner_cache_path.unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_contract_json_v1(
     buffer: *mut u8,
@@ -304,13 +381,20 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 3,
+            "transport_version": 4,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "loading", "playing", "paused"],
-            "transitions": ["new_game", "open_level", "pause", "resume"],
+            "transitions": ["bootstrap_package_set", "open_level", "pause", "resume"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
+            "installed_package_set": {
+                "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+                "transport": "mc_game_runtime_bootstrap_package_set_json_v1",
+                "selection_authority": "rust_owned_semantic_flow",
+                "input_order": "unordered_resource_locations",
+                "lifetime": "immutable_until_destroy"
+            },
             "runtime_flow": {
                 "title": "absent",
                 "loading": "pending_definition.runtime_flow",
@@ -318,6 +402,8 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
             },
             "limits": {
                 "maximum_output_json_bytes": super::game_session_abi::MAX_OUTPUT_JSON_BYTES,
+                "maximum_installed_package_set_json_bytes": MAX_INSTALLED_PACKAGE_SET_JSON_BYTES,
+                "maximum_installed_package_count": MAX_INSTALLED_PACKAGE_COUNT,
                 "json_length_type": "u32"
             }
         });
@@ -360,20 +446,31 @@ pub extern "C" fn mc_game_runtime_identity_json_v1(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn mc_game_runtime_new_game_v1(
+pub extern "C" fn mc_game_runtime_bootstrap_package_set_json_v1(
     handle: u64,
     generation: u64,
-    package_dir: *const u8,
-    package_dir_len: u32,
-    owner_cache_path: *const u8,
-    owner_cache_path_len: u32,
+    request_json: *const u8,
+    request_json_len: u32,
 ) -> i32 {
     boundary(|| {
-        let package = utf8_input(package_dir, package_dir_len, "package_dir")?;
-        let owner_cache = utf8_input(owner_cache_path, owner_cache_path_len, "owner_cache_path")?;
-        let inputs = campaign_inputs(package, owner_cache)?;
+        if request_json.is_null() && request_json_len != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_NULL_POINTER,
+                "installed package-set JSON pointer is null",
+            ));
+        }
+        if request_json_len > MAX_INSTALLED_PACKAGE_SET_JSON_BYTES {
+            return Err(AbiError::new(
+                MC_STATUS_BOUNDS,
+                format!(
+                    "installed package-set JSON is {request_json_len} bytes, maximum is {MAX_INSTALLED_PACKAGE_SET_JSON_BYTES}"
+                ),
+            ));
+        }
+        let request_json =
+            utf8_input(request_json, request_json_len, "installed package-set JSON")?;
         with_runtime_mut(handle, |runtime| {
-            runtime.new_game(handle, generation, inputs)
+            runtime.bootstrap_package_set(handle, generation, request_json, request_json_len)
         })
     })
 }
@@ -403,7 +500,7 @@ pub extern "C" fn mc_game_runtime_destroy_v1(handle: u64) -> i32 {
         match &mut *guard {
             super::game_session_abi::NeutralSession::Runtime(runtime) if !runtime.closed => {
                 runtime.closed = true;
-                runtime.pending_inputs = None;
+                runtime.resolver = None;
             }
             _ => {
                 return Err(AbiError::new(
@@ -446,8 +543,38 @@ mod tests {
         )
     }
 
-    fn utf8(path: &Path) -> Vec<u8> {
-        path.to_string_lossy().as_bytes().to_vec()
+    fn level_three_package() -> PathBuf {
+        std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
+            },
+            PathBuf::from,
+        )
+    }
+
+    fn installed_package_set_json(packages: &[PathBuf]) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": packages
+                .iter()
+                .map(|package| serde_json::json!({
+                    "package_dir": package,
+                    "owner_cache_path": null
+                }))
+                .collect::<Vec<_>>()
+        }))
+        .unwrap()
+    }
+
+    fn bootstrap_package_set(handle: u64, generation: u64, packages: &[PathBuf]) -> i32 {
+        let request = installed_package_set_json(packages);
+        mc_game_runtime_bootstrap_package_set_json_v1(
+            handle,
+            generation,
+            request.as_ptr(),
+            request.len() as u32,
+        )
     }
 
     fn copy_package_for_runtime_failure(source: &Path) -> PathBuf {
@@ -489,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_handle_transitions_and_drives_real_campaign_session() {
+    fn runtime_resolver_owned_package_set_bootstraps_real_entry_on_same_handle() {
         let contract = read_json(|buffer, capacity, length| {
             mc_game_runtime_contract_json_v1(buffer, capacity, length)
         });
@@ -499,21 +626,36 @@ mod tests {
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v3"
+            "carpet-flight-native-game-runtime-json/v4"
         );
-        assert_eq!(contract["transport_version"], 3);
+        assert_eq!(contract["transport_version"], 4);
         assert_eq!(
             contract["modes"],
             serde_json::json!(["title", "loading", "playing", "paused"])
         );
         assert_eq!(
             contract["transitions"],
-            serde_json::json!(["new_game", "open_level", "pause", "resume"])
+            serde_json::json!(["bootstrap_package_set", "open_level", "pause", "resume"])
         );
         assert_eq!(
             contract["playing_session_transport"],
             "mc_game_session_*_v1 on the same handle"
         );
+        assert_eq!(
+            contract["installed_package_set"],
+            serde_json::json!({
+                "request_contract": "carpet-flight-installed-package-set-bootstrap/v1",
+                "transport": "mc_game_runtime_bootstrap_package_set_json_v1",
+                "selection_authority": "rust_owned_semantic_flow",
+                "input_order": "unordered_resource_locations",
+                "lifetime": "immutable_until_destroy"
+            })
+        );
+        assert_eq!(
+            contract["limits"]["maximum_installed_package_set_json_bytes"],
+            64 * 1024
+        );
+        assert_eq!(contract["limits"]["maximum_installed_package_count"], 16);
         assert_eq!(
             contract["runtime_flow"],
             serde_json::json!({
@@ -531,18 +673,62 @@ mod tests {
         assert_eq!(title["generation"], "1");
         assert!(title.get("active_runtime_flow").is_none());
 
-        let package = utf8(&level_one_package());
+        let forbidden_next = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [{
+                "package_dir": level_one_package(),
+                "owner_cache_path": null,
+                "next_package_dir": level_two_package()
+            }]
+        }))
+        .unwrap();
         assert_eq!(
-            mc_game_runtime_new_game_v1(
+            mc_game_runtime_bootstrap_package_set_json_v1(
                 handle,
                 1,
-                package.as_ptr(),
-                package.len() as u32,
-                std::ptr::null(),
-                0,
+                forbidden_next.as_ptr(),
+                forbidden_next.len() as u32,
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(identity(handle), title);
+
+        let incomplete = installed_package_set_json(&[level_two_package(), level_one_package()]);
+        assert_eq!(
+            mc_game_runtime_bootstrap_package_set_json_v1(
+                handle,
+                1,
+                incomplete.as_ptr(),
+                incomplete.len() as u32,
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(identity(handle), title);
+
+        let packages = installed_package_set_json(&[
+            level_three_package(),
+            level_one_package(),
+            level_two_package(),
+        ]);
+        assert_eq!(
+            mc_game_runtime_bootstrap_package_set_json_v1(
+                handle,
+                1,
+                packages.as_ptr(),
+                packages.len() as u32,
             ),
             MC_STATUS_OK
         );
+        drop(packages);
+        let installed_resolver = with_runtime(handle, |runtime| {
+            runtime.resolver.clone().ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_INTERNAL_PANIC,
+                    "successful bootstrap did not retain its resolver",
+                )
+            })
+        })
+        .unwrap();
         let loading = identity(handle);
         assert_eq!(loading["mode"], "loading");
         assert_eq!(loading["generation"], "2");
@@ -606,24 +792,43 @@ mod tests {
         );
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_UNKNOWN_HANDLE);
 
-        // No-Claim: this exposes definition-bound observational flow identity
-        // only. It does not detect completion, resolve/select the next package,
-        // accept transitions, execute Results/return-to-title, or save/load.
+        let mut returned_title = RuntimeRecord {
+            runtime: GameRuntime::title(991).unwrap(),
+            resolver: Some(installed_resolver),
+            closed: false,
+        };
+        let returned_title_before = returned_title.runtime.identity();
+        let replacement = returned_title
+            .bootstrap_package_set(991, 1, "not-json".to_owned(), 8)
+            .unwrap_err();
+        assert_eq!(replacement.status, MC_STATUS_INVALID_ARGUMENT);
+        assert!(
+            replacement
+                .message
+                .contains("PACKAGE_SET_ALREADY_INSTALLED")
+        );
+        assert_eq!(returned_title.runtime.identity(), returned_title_before);
+        assert!(returned_title.resolver.is_some());
+
+        // No-Claim: this proves only complete-set admission and resolver-derived
+        // entry opening. It does not expose completion acceptance, prove later
+        // L2/L3 materialization, discover/install packages, migrate production
+        // presentation, or implement paused frames, save/load, replay, or UI.
     }
 
     #[test]
     fn runtime_pause_resume_freezes_same_handle_campaign_session() {
         let mut handle = 0_u64;
         assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
-        let package = utf8(&level_one_package());
         assert_eq!(
-            mc_game_runtime_new_game_v1(
+            bootstrap_package_set(
                 handle,
                 1,
-                package.as_ptr(),
-                package.len() as u32,
-                std::ptr::null(),
-                0,
+                &[
+                    level_three_package(),
+                    level_one_package(),
+                    level_two_package()
+                ],
             ),
             MC_STATUS_OK
         );
@@ -723,22 +928,12 @@ mod tests {
     }
 
     #[test]
-    fn failed_runtime_transitions_preserve_identity_and_pending_binding() {
+    fn failed_runtime_transitions_preserve_identity_and_installed_resolver() {
         let mut handle = 0_u64;
         assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
         let title = identity(handle);
-        let package = utf8(&level_one_package());
-
-        let later_package = utf8(&level_two_package());
         assert_eq!(
-            mc_game_runtime_new_game_v1(
-                handle,
-                1,
-                later_package.as_ptr(),
-                later_package.len() as u32,
-                std::ptr::null(),
-                0,
-            ),
+            bootstrap_package_set(handle, 1, &[level_two_package(), level_one_package()],),
             MC_STATUS_VALIDATION_FAILED
         );
         assert_eq!(identity(handle), title);
@@ -749,55 +944,36 @@ mod tests {
         );
         assert_eq!(identity(handle), title);
 
+        let missing = level_one_package().join("missing-package-for-runtime-test");
         assert_eq!(
-            mc_game_runtime_new_game_v1(
-                handle,
-                2,
-                package.as_ptr(),
-                package.len() as u32,
-                std::ptr::null(),
-                0,
-            ),
+            bootstrap_package_set(handle, 2, &[missing]),
             MC_STATUS_GENERATION_MISMATCH
         );
         assert_eq!(identity(handle), title);
 
         assert_eq!(
-            mc_game_runtime_new_game_v1(
+            bootstrap_package_set(
                 handle,
                 1,
-                package.as_ptr(),
-                package.len() as u32,
-                std::ptr::null(),
-                0,
+                &[
+                    level_two_package(),
+                    level_three_package(),
+                    level_one_package()
+                ],
             ),
             MC_STATUS_OK
         );
         let loading = identity(handle);
 
-        let missing_package = utf8(&level_one_package().join("missing-package-for-runtime-test"));
         assert_eq!(
-            mc_game_runtime_new_game_v1(
+            bootstrap_package_set(
                 handle,
                 2,
-                missing_package.as_ptr(),
-                missing_package.len() as u32,
-                std::ptr::null(),
-                0,
-            ),
-            MC_STATUS_INVALID_ARGUMENT
-        );
-        assert_eq!(identity(handle), loading);
-
-        let level_two = utf8(&level_two_package());
-        assert_eq!(
-            mc_game_runtime_new_game_v1(
-                handle,
-                2,
-                level_two.as_ptr(),
-                level_two.len() as u32,
-                std::ptr::null(),
-                0,
+                &[
+                    level_two_package(),
+                    level_three_package(),
+                    level_one_package()
+                ],
             ),
             MC_STATUS_INVALID_ARGUMENT
         );
@@ -818,15 +994,15 @@ mod tests {
             MC_STATUS_OK
         );
         let failed_open_root = copy_package_for_runtime_failure(&level_one_package());
-        let failed_open_package = utf8(&failed_open_root);
         assert_eq!(
-            mc_game_runtime_new_game_v1(
+            bootstrap_package_set(
                 failed_open_handle,
                 1,
-                failed_open_package.as_ptr(),
-                failed_open_package.len() as u32,
-                std::ptr::null(),
-                0,
+                &[
+                    level_two_package(),
+                    level_three_package(),
+                    failed_open_root.clone(),
+                ],
             ),
             MC_STATUS_OK
         );
