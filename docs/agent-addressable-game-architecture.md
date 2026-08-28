@@ -351,7 +351,10 @@ partial real implementation, not a completion claim:
   and freezes that same session behind generation-invalidating pause/resume
   boundaries. The quiescent boundary does not yet implement `paused_frame`,
   so the MC2 pre-gate RNG/objective/presentation work, semantic flow
-  definitions, presentation bindings and later transitions remain open;
+  definitions, presentation bindings and later transitions remain open. Its
+  Unity transport now borrows snapshot, step, event and reset operations from
+  the nested session on that same runtime handle, without a second session or
+  destroy path; production presentation has not yet migrated to this owner;
 - placement/spawn/behavior/asset authoring and the remaining objective fields
   are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed

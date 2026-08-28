@@ -84,12 +84,15 @@ namespace MagicCarpet.Native
 
         internal Contract NegotiatedContract { get; }
 
+        internal EngineSessionTransport.Contract NegotiatedSessionContract { get; }
+
         internal Identity Current { get; private set; }
 
         internal GameRuntimeTransport()
         {
             NegotiatedContract = ReadContract();
             ValidateContract(NegotiatedContract);
+            NegotiatedSessionContract = EngineSessionTransport.ReadValidatedContract();
             Check(NativeSim.mc_game_runtime_create_v1(out var handle), "create game runtime");
             if (handle == 0 || handle > long.MaxValue)
             {
@@ -201,26 +204,89 @@ namespace MagicCarpet.Native
 
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignSnapshot()
         {
-            if (Current?.mode != PlayingMode && Current?.mode != PausedMode)
+            RequireSessionMode(allowPaused: true, "campaign snapshot");
+            return ValidateCampaignObservation(
+                EngineSessionTransport.CampaignSnapshotForHandle(RequireHandle()));
+        }
+
+        internal EngineSessionTransport.CampaignSnapshotObservation CampaignStep(
+            sbyte roll,
+            sbyte pitch,
+            sbyte flags,
+            ushort lookYaw,
+            ushort lookPitch)
+        {
+            RequireSessionMode(allowPaused: false, "campaign step");
+            var before = Current;
+            var beforeRuntimeGeneration = ParseCounter(before.generation, "generation");
+            var beforeSessionGeneration =
+                ParseCounter(before.session.generation, "session_generation");
+            var beforeTick = ParseCounter(before.session.tick, "tick");
+            EngineSessionTransport.StepHandle(
+                RequireHandle(),
+                before.session,
+                roll,
+                pitch,
+                flags,
+                lookYaw,
+                lookPitch,
+                NegotiatedSessionContract.limits.maximum_command_json_bytes);
+            var identity = IdentitySnapshot();
+            if (identity.mode != PlayingMode ||
+                ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
+                !PreservesSessionBinding(before.session, identity.session) ||
+                ParseCounter(identity.session.generation, "session_generation") !=
+                    beforeSessionGeneration ||
+                ParseCounter(identity.session.tick, "tick") != checked(beforeTick + 1))
             {
                 throw new InvalidOperationException(
-                    "campaign snapshot requires Playing or Paused mode");
+                    "campaign step did not advance only the bound gameplay tick");
             }
-            var snapshot = ReadJson<EngineSessionTransport.CampaignSnapshotObservation>(
-                (IntPtr buffer, uint capacity, out uint length) =>
-                    NativeSim.mc_game_session_snapshot_json_v1(
-                        RequireHandle(), buffer, capacity, out length),
-                "read runtime campaign snapshot");
-            if (snapshot?.identity == null || snapshot.value == null ||
-                snapshot.identity.session_id != Current.session.session_id ||
-                snapshot.identity.generation != Current.session.generation ||
-                snapshot.identity.tick != Current.session.tick)
+            return CampaignSnapshot();
+        }
+
+        internal EngineSessionTransport.EventObservation CampaignEvents(
+            string cursor,
+            uint limit = 1024)
+        {
+            RequireSessionMode(allowPaused: true, "campaign events");
+            var result = EngineSessionTransport.EventsForHandle(
+                RequireHandle(),
+                Current.session,
+                cursor,
+                limit,
+                NegotiatedSessionContract.limits.maximum_event_page_size,
+                EngineSessionTransport.CampaignProfile);
+            if (result.identity.session_id != Current.session.session_id ||
+                result.identity.generation != Current.session.generation ||
+                result.identity.tick != Current.session.tick)
             {
-                throw new InvalidOperationException("runtime campaign snapshot is not identity-bound");
+                throw new InvalidOperationException(
+                    "runtime campaign events are not identity-bound");
             }
-            EngineSessionTransport.ValidateIdentity(snapshot.identity);
-            EngineSessionTransport.ValidateCampaignSnapshot(snapshot.value, snapshot.identity);
-            return snapshot;
+            return result;
+        }
+
+        internal EngineSessionTransport.CampaignSnapshotObservation CampaignReset()
+        {
+            RequireSessionMode(allowPaused: false, "campaign reset");
+            var before = Current;
+            var beforeRuntimeGeneration = ParseCounter(before.generation, "generation");
+            var beforeSessionGeneration =
+                ParseCounter(before.session.generation, "session_generation");
+            EngineSessionTransport.ResetHandle(RequireHandle(), before.session);
+            var identity = IdentitySnapshot();
+            if (identity.mode != PlayingMode ||
+                ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
+                !PreservesSessionBinding(before.session, identity.session) ||
+                ParseCounter(identity.session.generation, "session_generation") !=
+                    checked(beforeSessionGeneration + 1) ||
+                ParseCounter(identity.session.tick, "tick") != 0)
+            {
+                throw new InvalidOperationException(
+                    "campaign reset did not replace only the bound gameplay generation");
+            }
+            return CampaignSnapshot();
         }
 
         public void Dispose()
@@ -350,6 +416,43 @@ namespace MagicCarpet.Native
                     operation + " did not preserve the bound gameplay session");
             }
             return identity;
+        }
+
+        private void RequireSessionMode(bool allowPaused, string operation)
+        {
+            if (!HasSessionIdentity(Current) ||
+                (Current.mode != PlayingMode && (!allowPaused || Current.mode != PausedMode)))
+            {
+                throw new InvalidOperationException(
+                    operation + " requires a bound " +
+                    (allowPaused ? "Playing or Paused" : "Playing") + " session");
+            }
+        }
+
+        private EngineSessionTransport.CampaignSnapshotObservation ValidateCampaignObservation(
+            EngineSessionTransport.CampaignSnapshotObservation snapshot)
+        {
+            if (snapshot?.identity == null || snapshot.value == null ||
+                snapshot.identity.session_id != Current.session.session_id ||
+                snapshot.identity.generation != Current.session.generation ||
+                snapshot.identity.tick != Current.session.tick)
+            {
+                throw new InvalidOperationException(
+                    "runtime campaign snapshot is not identity-bound");
+            }
+            return snapshot;
+        }
+
+        private bool PreservesSessionBinding(
+            EngineSessionTransport.Identity before,
+            EngineSessionTransport.Identity after)
+        {
+            return before != null && after != null &&
+                ParseCounter(after.session_id, "session_id") == RequireHandle() &&
+                after.session_id == before.session_id &&
+                after.package_graph_hash == before.package_graph_hash &&
+                after.definition_hash == before.definition_hash &&
+                after.definition_revision == before.definition_revision;
         }
 
         private static bool HasDefinitionIdentity(Identity identity)

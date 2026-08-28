@@ -286,8 +286,7 @@ namespace MagicCarpet.Native
             string assetCachePath,
             string workspacePath = null)
         {
-            NegotiatedContract = ReadContract();
-            ValidateContract(NegotiatedContract);
+            NegotiatedContract = ReadValidatedContract();
             Profile = IsCampaignPackage(packagePath) ? CampaignProfile : OwnedProfile;
             byte[] closure;
             byte[] cache;
@@ -386,13 +385,7 @@ namespace MagicCarpet.Native
         internal CampaignSnapshotObservation CampaignSnapshot()
         {
             RequireProfile(CampaignProfile, "the campaign snapshot observation");
-            var result = ReadJson<CampaignSnapshotObservation>(
-                (IntPtr buffer, uint capacity, out uint length) =>
-                    NativeSim.mc_game_session_snapshot_json_v1(
-                        Handle, buffer, capacity, out length),
-                "read neutral campaign snapshot");
-            ValidateIdentity(result.identity);
-            ValidateCampaignSnapshot(result.value, result.identity);
+            var result = CampaignSnapshotForHandle(Handle);
             CurrentCampaign = result;
             return result;
         }
@@ -428,6 +421,28 @@ namespace MagicCarpet.Native
             ushort lookYaw,
             ushort lookPitch)
         {
+            StepHandle(
+                Handle,
+                CurrentIdentity,
+                roll,
+                pitch,
+                flags,
+                lookYaw,
+                lookPitch,
+                NegotiatedContract.limits.maximum_command_json_bytes);
+        }
+
+        internal static void StepHandle(
+            ulong handle,
+            Identity identity,
+            sbyte roll,
+            sbyte pitch,
+            sbyte flags,
+            ushort lookYaw,
+            ushort lookPitch,
+            uint maximumCommandJsonBytes)
+        {
+            ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
             if ((bits & 0x80) != 0 || (bits & 0x03) == 0x03 || (bits & 0x0c) == 0x0c)
             {
@@ -450,15 +465,15 @@ namespace MagicCarpet.Native
                 look_pitch = unchecked((short)lookPitch),
             };
             var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(command));
-            if (bytes.Length > NegotiatedContract.limits.maximum_command_json_bytes)
+            if (bytes.Length > maximumCommandJsonBytes)
             {
                 throw new InvalidOperationException("managed neutral command exceeds negotiated bound");
             }
             Check(
                 NativeSim.mc_game_session_step_json_v1(
-                    Handle,
-                    ParseCounter(CurrentIdentity.generation, "generation"),
-                    ParseCounter(CurrentIdentity.tick, "tick"),
+                    handle,
+                    ParseCounter(identity.generation, "generation"),
+                    ParseCounter(identity.tick, "tick"),
                     bytes,
                     checked((uint)bytes.Length)),
                 "step neutral engine session");
@@ -480,27 +495,57 @@ namespace MagicCarpet.Native
 
         private void ResetNative()
         {
+            ResetHandle(Handle, CurrentIdentity);
+        }
+
+        internal static void ResetHandle(ulong handle, Identity identity)
+        {
+            ValidateIdentityForHandle(handle, identity);
             Check(
                 NativeSim.mc_game_session_reset_v1(
-                    Handle,
-                    ParseCounter(CurrentIdentity.generation, "generation"),
-                    ParseCounter(CurrentIdentity.tick, "tick")),
+                    handle,
+                    ParseCounter(identity.generation, "generation"),
+                    ParseCounter(identity.tick, "tick")),
                 "reset neutral engine session");
         }
 
         internal EventObservation Events(string cursor, uint limit = 1024)
         {
-            if (limit > NegotiatedContract.limits.maximum_event_page_size)
+            return EventsForHandle(
+                Handle,
+                CurrentIdentity,
+                cursor,
+                limit,
+                NegotiatedContract.limits.maximum_event_page_size,
+                Profile);
+        }
+
+        internal static EventObservation EventsForHandle(
+            ulong handle,
+            Identity identity,
+            string cursor,
+            uint limit,
+            uint maximumEventPageSize,
+            string profile)
+        {
+            ValidateIdentityForHandle(handle, identity);
+            if (profile != OwnedProfile && profile != CampaignProfile)
+            {
+                throw new ArgumentException(
+                    "event compatibility profile is not negotiated",
+                    nameof(profile));
+            }
+            if (limit > maximumEventPageSize)
             {
                 throw new ArgumentOutOfRangeException(nameof(limit));
             }
-            var generation = ParseCounter(CurrentIdentity.generation, "generation");
-            var tick = ParseCounter(CurrentIdentity.tick, "tick");
+            var generation = ParseCounter(identity.generation, "generation");
+            var tick = ParseCounter(identity.tick, "tick");
             var parsedCursor = ParseCounter(cursor, "cursor");
             var result = ReadJson<EventObservation>(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_session_events_json_v1(
-                        Handle,
+                        handle,
                         generation,
                         tick,
                         parsedCursor,
@@ -509,7 +554,7 @@ namespace MagicCarpet.Native
                         capacity,
                         out length),
                 "read neutral events");
-            ValidateIdentity(result.identity);
+            ValidateIdentityForHandle(handle, result.identity);
             if (result.value == null || result.value.events == null ||
                 result.value.requested_cursor != cursor)
             {
@@ -518,11 +563,11 @@ namespace MagicCarpet.Native
             // The MC2-owned adapter proves retained event/audio identities via
             // its receipt; the campaign adapter retains none, and a fabricated
             // receipt must never be accepted.
-            if (Profile == OwnedProfile && result.value.compatibility == null)
+            if (profile == OwnedProfile && result.value.compatibility == null)
             {
                 throw new InvalidOperationException("neutral event page is incomplete");
             }
-            if (Profile == CampaignProfile &&
+            if (profile == CampaignProfile &&
                 !string.IsNullOrEmpty(result.value.compatibility?.contract))
             {
                 throw new InvalidOperationException(
@@ -631,10 +676,24 @@ namespace MagicCarpet.Native
                 "destroy neutral engine session");
         }
 
-        private static Contract ReadContract()
+        internal static Contract ReadValidatedContract()
         {
-            return ReadJson<Contract>(NativeSim.mc_game_session_contract_json_v1,
+            var contract = ReadJson<Contract>(NativeSim.mc_game_session_contract_json_v1,
                 "read neutral engine contract");
+            ValidateContract(contract);
+            return contract;
+        }
+
+        internal static CampaignSnapshotObservation CampaignSnapshotForHandle(ulong handle)
+        {
+            var result = ReadJson<CampaignSnapshotObservation>(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    NativeSim.mc_game_session_snapshot_json_v1(
+                        handle, buffer, capacity, out length),
+                "read neutral campaign snapshot");
+            ValidateIdentityForHandle(handle, result.identity);
+            ValidateCampaignSnapshot(result.value, result.identity);
+            return result;
         }
 
         internal static void ValidateContract(Contract contract)
@@ -707,6 +766,16 @@ namespace MagicCarpet.Native
             ParseCounter(identity.session_id, "session_id");
             ParseCounter(identity.generation, "generation");
             ParseCounter(identity.tick, "tick");
+        }
+
+        private static void ValidateIdentityForHandle(ulong handle, Identity identity)
+        {
+            ValidateIdentity(identity);
+            if (handle == 0 || ParseCounter(identity.session_id, "session_id") != handle)
+            {
+                throw new InvalidOperationException(
+                    "neutral identity does not belong to the supplied session handle");
+            }
         }
 
         private static void ValidateSnapshot(SnapshotValue value, Identity identity)

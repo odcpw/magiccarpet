@@ -21,6 +21,38 @@ namespace MagicCarpet.Native.Tests
                 PrivateRoot,
                 "generated/mc-cf02-campaign-package-v1-a/qualified-level2");
 
+        private static void AssertSameCampaignState(
+            EngineSessionTransport.CampaignSnapshotObservation expected,
+            EngineSessionTransport.CampaignSnapshotObservation actual)
+        {
+            Assert.That(actual.value.effect_head, Is.EqualTo(expected.value.effect_head));
+            Assert.That(actual.value.state_hash, Is.EqualTo(expected.value.state_hash));
+            Assert.That(actual.value.terrain_hash, Is.EqualTo(expected.value.terrain_hash));
+            Assert.That(
+                actual.value.effect_journal_sha256,
+                Is.EqualTo(expected.value.effect_journal_sha256));
+            Assert.That(actual.value.player_pose.x, Is.EqualTo(expected.value.player_pose.x));
+            Assert.That(actual.value.player_pose.y, Is.EqualTo(expected.value.player_pose.y));
+            Assert.That(actual.value.player_pose.z, Is.EqualTo(expected.value.player_pose.z));
+            Assert.That(actual.value.player_pose.yaw, Is.EqualTo(expected.value.player_pose.yaw));
+            Assert.That(
+                actual.value.player_pose.display_pitch,
+                Is.EqualTo(expected.value.player_pose.display_pitch));
+            Assert.That(
+                actual.value.player_pose.effective_pitch,
+                Is.EqualTo(expected.value.player_pose.effective_pitch));
+            Assert.That(actual.value.player_pose.roll, Is.EqualTo(expected.value.player_pose.roll));
+            Assert.That(
+                actual.value.player_motion.target_speed,
+                Is.EqualTo(expected.value.player_motion.target_speed));
+            Assert.That(
+                actual.value.player_motion.actual_speed,
+                Is.EqualTo(expected.value.player_motion.actual_speed));
+            Assert.That(
+                actual.value.player_motion.strafe_speed,
+                Is.EqualTo(expected.value.player_motion.strafe_speed));
+        }
+
         [Test]
         [Timeout(180000)]
         public void RustGameRuntimeOwnsTitleLoadingAndRealLevelOnePlaying()
@@ -172,6 +204,122 @@ namespace MagicCarpet.Native.Tests
             // No-Claim: this is a quiescent pause boundary only. There is no
             // paused_frame transport or MC2 pre-gate RNG/objective/presentation
             // service, replay-visible paused time, or production pause UI.
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void RustGameRuntimeOwnsTheBorrowedCampaignStepEventAndResetFacet()
+        {
+            var runtime = new GameRuntimeTransport();
+            var handle = runtime.Handle;
+            try
+            {
+                runtime.NewGame(LevelOnePackage);
+                var playing = runtime.OpenLevel();
+                Assert.That(playing.session.session_id, Is.EqualTo(handle.ToString()));
+
+                var initial = runtime.CampaignSnapshot();
+                using (var other = new GameRuntimeTransport())
+                {
+                    other.NewGame(LevelOnePackage);
+                    var otherPlaying = other.OpenLevel();
+                    var otherInitial = other.CampaignSnapshot();
+                    Assert.That(otherPlaying.session.generation, Is.EqualTo("1"));
+                    Assert.That(otherPlaying.session.tick, Is.EqualTo("0"));
+                    Assert.That(other.Handle, Is.Not.EqualTo(handle));
+                    Assert.Throws<InvalidOperationException>(() =>
+                        EngineSessionTransport.StepHandle(
+                            handle,
+                            otherPlaying.session,
+                            0,
+                            0,
+                            1,
+                            0,
+                            0,
+                            runtime.NegotiatedSessionContract.limits.maximum_command_json_bytes));
+                    var unchanged = runtime.CampaignSnapshot();
+                    var otherUnchanged = other.CampaignSnapshot();
+                    Assert.That(unchanged.identity.generation, Is.EqualTo("1"));
+                    Assert.That(unchanged.identity.tick, Is.EqualTo("0"));
+                    Assert.That(otherUnchanged.identity.generation, Is.EqualTo("1"));
+                    Assert.That(otherUnchanged.identity.tick, Is.EqualTo("0"));
+                    AssertSameCampaignState(initial, unchanged);
+                    AssertSameCampaignState(otherInitial, otherUnchanged);
+                }
+
+                var stepped = runtime.CampaignStep(0, 0, 1, 0, 0);
+                Assert.That(stepped.identity.session_id, Is.EqualTo(handle.ToString()));
+                Assert.That(stepped.identity.generation, Is.EqualTo("1"));
+                Assert.That(stepped.identity.tick, Is.EqualTo("1"));
+                Assert.That(runtime.Current.generation, Is.EqualTo("3"));
+                Assert.That(runtime.Current.session.tick, Is.EqualTo("1"));
+
+                var head = ulong.Parse(stepped.value.effect_head);
+                Assert.That(head, Is.GreaterThan(0UL));
+                var cursor = "0";
+                var drained = 0UL;
+                while (true)
+                {
+                    var events = runtime.CampaignEvents(cursor);
+                    Assert.That(events.identity.session_id, Is.EqualTo(handle.ToString()));
+                    Assert.That(events.identity.tick, Is.EqualTo("1"));
+                    Assert.That(events.value.requested_cursor, Is.EqualTo(cursor));
+                    Assert.That(events.value.event_head, Is.EqualTo(stepped.value.effect_head));
+                    foreach (var gameEvent in events.value.events)
+                    {
+                        drained++;
+                        Assert.That(gameEvent.sequence, Is.EqualTo(drained.ToString()));
+                    }
+                    if (!events.value.has_more)
+                    {
+                        break;
+                    }
+                    Assert.That(events.value.next_cursor, Is.Not.EqualTo(cursor));
+                    cursor = events.value.next_cursor;
+                }
+                Assert.That(drained, Is.EqualTo(head));
+
+                Assert.That(
+                    NativeSim.mc_game_session_destroy_v1(handle),
+                    Is.EqualTo(NativeSim.InvalidArgument));
+                Assert.That(runtime.IdentitySnapshot().session.tick, Is.EqualTo("1"));
+
+                var reset = runtime.CampaignReset();
+                Assert.That(reset.identity.session_id, Is.EqualTo(handle.ToString()));
+                Assert.That(reset.identity.generation, Is.EqualTo("2"));
+                Assert.That(reset.identity.tick, Is.EqualTo("0"));
+                Assert.That(runtime.Current.generation, Is.EqualTo("3"));
+                AssertSameCampaignState(initial, reset);
+
+                var command = Encoding.UTF8.GetBytes("{}");
+                Assert.That(
+                    NativeSim.mc_game_session_step_json_v1(
+                        handle,
+                        1,
+                        1,
+                        command,
+                        checked((uint)command.Length)),
+                    Is.EqualTo(NativeSim.GenerationMismatch));
+
+                runtime.Dispose();
+                runtime.Dispose();
+                Assert.That(
+                    NativeSim.mc_game_session_snapshot_json_v1(
+                        handle,
+                        IntPtr.Zero,
+                        0,
+                        out _),
+                    Is.EqualTo(NativeSim.UnknownHandle));
+
+                // No-Claim: this is a borrow-only managed gameplay facet on
+                // the Rust runtime handle. It does not replace the production
+                // MagicCarpetRuntime bootstrap or prove campaign presentation,
+                // HUD/minimap/audio, later-level policy, or paused-frame work.
+            }
+            finally
+            {
+                runtime.Dispose();
+            }
         }
     }
 }
