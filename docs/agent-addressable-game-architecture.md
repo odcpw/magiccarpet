@@ -411,8 +411,10 @@ partial real implementation, not a completion claim:
   pre-gate RNG/objective/presentation work remains open. Its Unity transport
   now validates that flow identity and borrows snapshot, step, event and reset
   operations from the nested session on that same runtime handle, without a
-  second session or destroy path; production presentation has not yet migrated
-  to this owner;
+  second session or destroy path. The production `NativeSession` facade can
+  now own that resolver-derived handle and borrow the same generic gameplay
+  facet without opening either legacy registry; production presentation and
+  shell startup have not yet migrated to this owner;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed

@@ -11676,6 +11676,17 @@ namespace MagicCarpet.Native
             return new EngineSessionTransport(package, closure, assetCache);
         }
 
+        /// <summary>
+        /// Open one production-owned facade over the resolver-derived Rust
+        /// game runtime. Resource ordering carries no entry-level authority;
+        /// the retained Rust resolver selects and opens the semantic entry.
+        /// </summary>
+        internal static NativeSession OpenGameRuntimeSessionForPackages(
+            params GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
+            return NativeSession.OpenGameRuntime(packages);
+        }
+
         private static NativeSession OpenSessionWithAssetCache(
             string package,
             string closure,

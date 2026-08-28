@@ -16,6 +16,7 @@ namespace MagicCarpet.Native
 
         private long handleBits;
         private readonly EngineSessionTransport engine;
+        private readonly GameRuntimeTransport gameRuntime;
         private readonly NativeSim.TerrainGridVertex[] terrainGrid;
         private readonly NativeSim.GoatSnapshot[] goats;
         private readonly NativeSim.SelectorFrameState[] selectorFrames;
@@ -30,10 +31,19 @@ namespace MagicCarpet.Native
 #endif
         }
 
-        private NativeSession(ulong handle, EngineSessionTransport engine = null)
+        private NativeSession(
+            ulong handle,
+            EngineSessionTransport engine = null,
+            GameRuntimeTransport gameRuntime = null)
         {
+            if (engine != null && gameRuntime != null)
+            {
+                throw new ArgumentException(
+                    "a native session facade cannot own two transports");
+            }
             handleBits = unchecked((long)handle);
             this.engine = engine;
+            this.gameRuntime = gameRuntime;
             terrainGrid = new NativeSim.TerrainGridVertex[
                 checked((int)NativeSim.mc_native_terrain_grid_vertex_count())];
             goats = new NativeSim.GoatSnapshot[33];
@@ -121,7 +131,26 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal static NativeSession OpenGameRuntime(
+            params GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
+            var runtime = new GameRuntimeTransport();
+            try
+            {
+                runtime.BootstrapPackageSet(packages);
+                runtime.OpenLevel();
+                return new NativeSession(runtime.Handle, gameRuntime: runtime);
+            }
+            catch
+            {
+                runtime.Dispose();
+                throw;
+            }
+        }
+
         internal bool UsesEngineContract => engine != null;
+
+        internal bool UsesGameRuntimeContract => gameRuntime != null;
 
         internal EngineSessionTransport.Contract EngineContract =>
             engine?.NegotiatedContract ?? throw new InvalidOperationException(
@@ -131,6 +160,43 @@ namespace MagicCarpet.Native
         {
             return engine?.Snapshot() ?? throw new InvalidOperationException(
                 "legacy session has no neutral engine observation");
+        }
+
+        internal GameRuntimeTransport.Identity GameRuntimeIdentity()
+        {
+            return gameRuntime?.IdentitySnapshot() ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
+        internal EngineSessionTransport.CampaignSnapshotObservation GameRuntimeCampaignSnapshot()
+        {
+            return gameRuntime?.CampaignSnapshot() ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
+        internal EngineSessionTransport.CampaignSnapshotObservation GameRuntimeCampaignStep(
+            sbyte roll,
+            sbyte pitch,
+            sbyte flags,
+            ushort lookYaw,
+            ushort lookPitch)
+        {
+            return gameRuntime?.CampaignStep(roll, pitch, flags, lookYaw, lookPitch) ??
+                throw new InvalidOperationException("session does not own a game runtime");
+        }
+
+        internal EngineSessionTransport.EventObservation GameRuntimeCampaignEvents(
+            string cursor,
+            uint limit = 1024)
+        {
+            return gameRuntime?.CampaignEvents(cursor, limit) ??
+                throw new InvalidOperationException("session does not own a game runtime");
+        }
+
+        internal EngineSessionTransport.CampaignSnapshotObservation GameRuntimeCampaignReset()
+        {
+            return gameRuntime?.CampaignReset() ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
         }
 
         internal EngineSessionTransport.EventObservation EngineEvents(
@@ -2096,9 +2162,24 @@ namespace MagicCarpet.Native
             {
                 return;
             }
-            var status = engine == null
-                ? NativeSim.mc_native_session_destroy(unchecked((ulong)value))
-                : NativeSim.mc_game_session_destroy_v1(unchecked((ulong)value));
+            var status = NativeSim.Ok;
+            if (gameRuntime != null)
+            {
+                try
+                {
+                    gameRuntime.Dispose();
+                }
+                catch (GameRuntimeTransport.TransitionException error)
+                {
+                    status = error.Status;
+                }
+            }
+            else
+            {
+                status = engine == null
+                    ? NativeSim.mc_native_session_destroy(unchecked((ulong)value))
+                    : NativeSim.mc_game_session_destroy_v1(unchecked((ulong)value));
+            }
             if (status != NativeSim.Ok)
             {
                 UnityEngine.Debug.LogError(
