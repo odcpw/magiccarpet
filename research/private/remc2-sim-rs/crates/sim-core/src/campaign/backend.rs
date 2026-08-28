@@ -1887,6 +1887,19 @@ mod tests {
                 ),
             ]
         );
+        assert_eq!(
+            definition
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.position_access() == LevelEntityPositionAccess::SessionReset
+                })
+                .map(|entity| entity.id().as_str())
+                .collect::<Vec<_>>(),
+            vec!["switch.start_area_exit"]
+        );
         let level_two = assert_package_content(
             &descriptor_fixture_path(),
             &[
@@ -1944,6 +1957,22 @@ mod tests {
                 .entities()
                 .iter()
                 .all(|entity| entity.absence_countdown().is_none())
+        );
+        assert_eq!(
+            level_two
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.position_access() == LevelEntityPositionAccess::SessionReset
+                })
+                .map(|entity| entity.id().as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "spell_pickup.beyond_sight.at_1_152",
+                "spell_pickup.speed.at_167_59",
+            ]
         );
         let level_three = assert_package_content(
             &level_three_descriptor_fixture_path(),
@@ -2024,7 +2053,10 @@ mod tests {
                 })
                 .map(|entity| entity.id().as_str())
                 .collect::<Vec<_>>(),
-            vec!["spell_pickup.shield.at_85_85"]
+            vec![
+                "spell_pickup.shield.at_85_85",
+                "spell_pickup.invisibility.at_136_85",
+            ]
         );
         let level = definition
             .level_definition()

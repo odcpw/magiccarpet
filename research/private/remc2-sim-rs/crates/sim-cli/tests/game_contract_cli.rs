@@ -458,6 +458,54 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
 }
 
 #[test]
+fn reset_live_spell_pickup_placements_are_package_projected() {
+    fn assert_position_access(package: &str, ids: &[&str], expected: &str) {
+        for id in ids {
+            let entity = run(&[
+                "game",
+                "entities",
+                "--campaign-package",
+                package,
+                "--id",
+                id,
+            ]);
+            assert!(entity.status.success(), "{:?}", entity.stderr);
+            assert!(entity.stderr.is_empty());
+            let entity: Value = serde_json::from_slice(&entity.stdout).unwrap();
+            assert_eq!(entity["data"]["page"]["total"], 1);
+            assert_eq!(entity["data"]["entities"][0]["id"], *id);
+            assert_eq!(entity["data"]["entities"][0]["position_access"], expected);
+        }
+    }
+
+    let level_two = level_two_campaign_fixture();
+    let level_two = level_two.to_str().expect("UTF-8 campaign path");
+    assert_position_access(
+        level_two,
+        &[
+            "spell_pickup.beyond_sight.at_1_152",
+            "spell_pickup.speed.at_167_59",
+        ],
+        "session_reset",
+    );
+    assert_position_access(level_two, &["spell_pickup.shield.at_138_219"], "read_only");
+
+    let level_three = level_three_campaign_fixture();
+    let level_three = level_three.to_str().expect("UTF-8 campaign path");
+    assert_position_access(
+        level_three,
+        &[
+            "spell_pickup.shield.at_85_85",
+            "spell_pickup.invisibility.at_136_85",
+        ],
+        "session_reset",
+    );
+    // No-Claim: this is the public package-projection gate. The already-focused
+    // Shield authoring test owns publication/reopen/reset and ordinary pickup
+    // consumption; this test does not duplicate that lifecycle for each row.
+}
+
+#[test]
 fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecycle() {
     const ENTITY: &str = "mechanic.absence_countdown.worm.at_134_98";
     const TARGET: &str = "mechanic.absence_countdown.worm.at_134_98.arming_ticks";

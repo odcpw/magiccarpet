@@ -363,13 +363,14 @@ partial real implementation, not a completion claim:
   Level 1, 2 and 3 package entities; those identities are frozen in the private
   MC2 adapter rather than derived from kind ordinals or runtime slots;
 - typed semantic `MoveEntity` changes are published atomically and consumed on
-  explicit reopen by the real Level 1 start-area trigger and the reset-live
-  Level 3 Shield pickup. The latter is bound from semantic kind and package
-  position to its unique imported source carrier, preserves its sub-tile
-  position, map membership, and shared spell projection, and runs the ordinary
-  overlap/acquisition lifecycle only at the authored tile. Every other
-  placement remains read-only until its own runtime materialization binding is
-  implemented;
+  explicit reopen by the real Level 1 start-area trigger and every reset-live
+  semantic spell pickup in the first three qualified packages: Level 2 Beyond
+  Sight and Speed, plus Level 3 Shield and Invisibility. Each pickup is bound
+  from semantic kind and package position to its unique imported source
+  carrier; movement preserves sub-tile position, map membership, and the
+  shared spell projection before the ordinary overlap/acquisition lifecycle.
+  Every other placement remains read-only until its own runtime
+  materialization binding is implemented;
 - all fifteen qualified Level 1, 2 and 3 objectives have stable semantic IDs;
   typed `PutObjective` authoring is published atomically and consumed on
   explicit reopen/reset for the five package-present `ReachLocation`
