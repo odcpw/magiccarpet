@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-operation v4 milestone, this is a binding target with
+As of the semantic-operation v5 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -337,6 +337,16 @@ partial real implementation, not a completion claim:
   typed `PutObjective` authoring is published atomically and consumed on
   explicit reopen/reset for the five package-present `ReachLocation`
   conditions, while the ten other condition families remain read-only;
+- every package-present `AbsenceCountdown` in the first three levels has a
+  stable instance ID and a typed `arming_ticks` descriptor; guarded
+  `SetMechanicCountdown` publication is consumed by both dynamically authored
+  Level 1 carriers and the imported Level 3 carrier, while Level 2 rejects the
+  absent mechanic before publication. The live timer still starts at zero and
+  loads the configured delay only on its first clear-family visit;
+- the first Rust outer runtime owner now guards `Title -> Loading -> Playing`
+  and opens a real qualified Level 1 `GameSession` while rejecting a mismatched
+  package without changing runtime state; semantic flow definitions,
+  presentation bindings and later transitions remain open;
 - placement/spawn/behavior/asset authoring and the remaining objective fields
   are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed

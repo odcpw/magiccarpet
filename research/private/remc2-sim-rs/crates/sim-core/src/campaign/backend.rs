@@ -682,8 +682,8 @@ mod tests {
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
         ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind,
-        LevelObjectiveConditionAccess, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind,
-        SwitchKind, TilePosition,
+        LevelEntityParameterAccess, LevelObjectiveConditionAccess, MechanicKind,
+        ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
     };
     use sim_definition::adapter::{
         build_level_definition, entity_definition, objective_definition, reissue_at_revision,
@@ -831,6 +831,40 @@ mod tests {
                 PublicationFault::None,
             )
             .expect("objective change publishes");
+        store.active_definition().expect("published definition")
+    }
+
+    fn publish_countdown_delay(
+        store: &WorkspaceStore,
+        catalog: &SemanticCatalog,
+        active: &GameDefinition,
+        workspace: &str,
+        entity_id: &str,
+        original: u32,
+        authored: u32,
+    ) -> GameDefinition {
+        let entity = sim_definition::adapter::stable_entity_id(entity_id).unwrap();
+        let change_set = ChangeSetBuilder::new(
+            workspace,
+            active,
+            "author-countdown-delay",
+            RequestedTiming::SessionReset,
+        )
+        .set_mechanic_countdown_from(entity, original, authored)
+        .build()
+        .expect("typed countdown change set");
+        let validation = store
+            .validate(catalog, change_set.clone())
+            .expect("countdown change validates");
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .expect("countdown change publishes");
         store.active_definition().expect("published definition")
     }
 
@@ -1038,7 +1072,40 @@ mod tests {
                 26, 27, 28, 29, 30, 31, 32, 33, 34,
             ],
         );
-        assert_package_content(
+        let level_one_countdowns = definition
+            .level_definition()
+            .unwrap()
+            .entities()
+            .iter()
+            .filter_map(|entity| {
+                entity.absence_countdown().map(|config| {
+                    (
+                        entity.id().as_str(),
+                        config.default_arming_ticks(),
+                        config.arming_ticks(),
+                        config.arming_ticks_access(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            level_one_countdowns,
+            vec![
+                (
+                    "mechanic.absence_countdown.archer.at_144_255",
+                    16,
+                    16,
+                    LevelEntityParameterAccess::SessionReset,
+                ),
+                (
+                    "mechanic.absence_countdown.worm.at_134_98",
+                    16,
+                    16,
+                    LevelEntityParameterAccess::SessionReset,
+                ),
+            ]
+        );
+        let level_two = assert_package_content(
             &descriptor_fixture_path(),
             &[
                 (CreatureKind::Goat, 36),
@@ -1086,7 +1153,15 @@ mod tests {
                 24, 25, 26, 27, 28, 29, 31,
             ],
         );
-        assert_package_content(
+        assert!(
+            level_two
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .all(|entity| entity.absence_countdown().is_none())
+        );
+        let level_three = assert_package_content(
             &level_three_descriptor_fixture_path(),
             &[
                 (CreatureKind::Dragon, 5),
@@ -1133,6 +1208,26 @@ mod tests {
                 ObjectiveCondition::NoLivingCreatures(CreatureKind::Bee),
             ],
             &[1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12],
+        );
+        assert_eq!(
+            level_three
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter_map(|entity| entity.absence_countdown().map(|config| (
+                    entity.id().as_str(),
+                    config.default_arming_ticks(),
+                    config.arming_ticks(),
+                    config.arming_ticks_access(),
+                )))
+                .collect::<Vec<_>>(),
+            vec![(
+                "mechanic.absence_countdown.worm.at_160_106",
+                16,
+                16,
+                LevelEntityParameterAccess::SessionReset,
+            )]
         );
         let level = definition
             .level_definition()
@@ -2064,6 +2159,394 @@ mod tests {
             2
         );
         std::fs::remove_dir_all(workspace_root).unwrap();
+    }
+
+    #[test]
+    fn campaign_backend_countdown_override_is_instance_bound_and_runtime_consumed_after_reopen() {
+        const WORM_ID: &str = "mechanic.absence_countdown.worm.at_134_98";
+        const ARCHER_ID: &str = "mechanic.absence_countdown.archer.at_144_255";
+        const GROUP34_ROWS: [u16; 3] = [309, 310, 311];
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let workspace_root = temporary_workspace_path("campaign-countdown-authoring");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-countdown-authoring",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            72,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let published = publish_countdown_delay(
+            &store,
+            &catalog,
+            &base,
+            "campaign-countdown-authoring",
+            WORM_ID,
+            16,
+            8,
+        );
+
+        {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(4)
+                .unwrap();
+            assert!(
+                compatibility
+                    .economy_mut()
+                    .retire_authored_multipart_prerequisite_for_test(307)
+            );
+        }
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == 308)
+                .unwrap()
+                .dword_0x10,
+            16,
+            "publishing must not mutate the already-open base session"
+        );
+
+        session
+            .reopen(guard(&session), Arc::new(published.clone()))
+            .unwrap();
+        let semantic_level = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .semantic_level_definition()
+            .unwrap();
+        for (id, expected) in [(WORM_ID, 8), (ARCHER_ID, 16)] {
+            let id = sim_definition::adapter::stable_entity_id(id).unwrap();
+            assert_eq!(
+                semantic_level
+                    .entity(&id)
+                    .unwrap()
+                    .absence_countdown()
+                    .unwrap()
+                    .arming_ticks(),
+                expected,
+                "the operation must be bound to one stable mechanic instance"
+            );
+        }
+
+        let countdown_slot = {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(4)
+                .unwrap();
+            compatibility
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == 308)
+                .unwrap()
+                .source_entity_index
+        };
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.source_entity_index == countdown_slot)
+                .unwrap()
+                .dword_0x10,
+            0,
+            "the live Worm must freeze a zero timer; configuration is not constructor state"
+        );
+        assert!(
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .retire_authored_multipart_prerequisite_for_test(307)
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.source_entity_index == countdown_slot)
+                .unwrap()
+                .dword_0x10,
+            8
+        );
+        for expected in (1..8).rev() {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .authored_switch_producers()
+                    .iter()
+                    .find(|source| source.source_entity_index == countdown_slot)
+                    .unwrap()
+                    .dword_0x10,
+                expected
+            );
+        }
+        let journal_start = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let records = &compatibility.effect_journal().records()[journal_start..];
+        let sound = records
+            .iter()
+            .position(|record| {
+                matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index,
+                        sound_id: 41,
+                        ..
+                    }) if entity_index == countdown_slot
+                )
+            })
+            .unwrap();
+        let activation = records
+            .iter()
+            .position(|record| {
+                matches!(
+                    &record.effect,
+                    crate::campaign::journal::CampaignEffect::Dispatch(
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot,
+                            group: 34,
+                            authored_indices,
+                            ..
+                        }
+                    ) if *source_slot == countdown_slot && authored_indices.as_ref() == GROUP34_ROWS
+                )
+            })
+            .unwrap();
+        assert!(sound < activation);
+        assert!(
+            compatibility
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.source_entity_index != countdown_slot)
+        );
+
+        session.reset(guard(&session)).unwrap();
+        {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(4)
+                .unwrap();
+            assert!(
+                compatibility
+                    .economy_mut()
+                    .retire_authored_multipart_prerequisite_for_test(307)
+            );
+        }
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == 308)
+                .unwrap()
+                .dword_0x10,
+            8,
+            "reset must reproduce the authored definition without pre-loading live state"
+        );
+
+        let level_two_root = descriptor_fixture_path();
+        let level_two = load_mc2_campaign(&level_two_root, &catalog).unwrap();
+        let rejected_root = temporary_workspace_path("campaign-countdown-l2-rejection");
+        let rejected_store = WorkspaceStore::create(
+            &rejected_root,
+            "campaign-countdown-l2-rejection",
+            level_two.clone(),
+        )
+        .unwrap();
+        let before = rejected_store.state_bytes().unwrap();
+        let request = ChangeSetBuilder::new(
+            "campaign-countdown-l2-rejection",
+            &level_two,
+            "reject-absent-countdown",
+            RequestedTiming::SessionReset,
+        )
+        .set_mechanic_countdown(
+            sim_definition::adapter::stable_entity_id(WORM_ID).unwrap(),
+            8,
+        )
+        .build()
+        .unwrap();
+        let validation = rejected_store.validate(&catalog, request).unwrap();
+        assert!(!validation.accepted);
+        assert_eq!(rejected_store.state_bytes().unwrap(), before);
+
+        std::fs::remove_dir_all(workspace_root).unwrap();
+        std::fs::remove_dir_all(rejected_root).unwrap();
+        // No-Claim: the test-only prerequisite seam does not prove Worm
+        // combat/death. This gate owns typed publication, per-instance binding,
+        // ordinary countdown consumption, group output, reclaim and reset.
+    }
+
+    #[test]
+    fn campaign_backend_countdown_override_reaches_imported_level_three_carrier() {
+        const WORM_ID: &str = "mechanic.absence_countdown.worm.at_160_106";
+        const COUNTDOWN_SLOT: usize = 247;
+        const GROUP11_ROWS: [u16; 10] = [247, 248, 249, 250, 251, 252, 253, 254, 255, 256];
+
+        fn countdown_timer(source: &crate::native_world::EntitySnapshot) -> i32 {
+            i32::from_le_bytes(source.record_bytes()[20..24].try_into().unwrap())
+        }
+
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let workspace_root = temporary_workspace_path("campaign-l3-countdown-authoring");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-l3-countdown-authoring",
+            base.clone(),
+        )
+        .unwrap();
+        let published = publish_countdown_delay(
+            &store,
+            &catalog,
+            &base,
+            "campaign-l3-countdown-authoring",
+            WORM_ID,
+            16,
+            2,
+        );
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base),
+            73,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .hide_imported_stage_worm_roots_for_test(),
+            5
+        );
+
+        for expected in [2, 1] {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            assert_eq!(
+                countdown_timer(
+                    &session.backend().campaign.level2_compatibility().entities()[COUNTDOWN_SLOT],
+                ),
+                expected
+            );
+        }
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let source = &compatibility.entities()[COUNTDOWN_SLOT];
+        assert!(source.active && source.drawing_disabled());
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 247,
+                group: 11,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == GROUP11_ROWS
+        )));
+        assert!(
+            compatibility
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert!(
+            !session.backend().campaign.level2_compatibility().entities()[COUNTDOWN_SLOT].active
+        );
+        session.reset(guard(&session)).unwrap();
+        let reset = session.backend().campaign.level2_compatibility();
+        assert_eq!(countdown_timer(&reset.entities()[COUNTDOWN_SLOT]), 0);
+        let entity = sim_definition::adapter::stable_entity_id(WORM_ID).unwrap();
+        assert_eq!(
+            reset
+                .semantic_level_definition()
+                .unwrap()
+                .entity(&entity)
+                .unwrap()
+                .absence_countdown()
+                .unwrap()
+                .arming_ticks(),
+            2
+        );
+        std::fs::remove_dir_all(workspace_root).unwrap();
+        // No-Claim: this imports one package-present countdown configuration;
+        // it does not establish Worm combat or a general reset-row editor.
     }
 
     #[test]

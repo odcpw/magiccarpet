@@ -100,6 +100,7 @@ pub enum DescriptorKind {
     Behavior,
     Placement,
     Objective,
+    Mechanic,
 }
 
 impl DescriptorKind {
@@ -112,6 +113,7 @@ impl DescriptorKind {
             Self::Behavior => "behavior",
             Self::Placement => "placement",
             Self::Objective => "objective",
+            Self::Mechanic => "mechanic",
         }
     }
 }

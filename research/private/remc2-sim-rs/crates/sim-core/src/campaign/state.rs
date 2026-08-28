@@ -17,8 +17,8 @@ use crate::{
     TetherTarget,
     collision_mask::CollisionMaskBank,
     level_definition::{
-        BuildingKind, CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind,
-        SpellKind, SwitchKind,
+        BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, MechanicKind,
+        SceneryKind, SpellKind, SwitchKind,
     },
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
@@ -86,6 +86,8 @@ pub struct CampaignDefinition {
     initial_source_switches: BTreeMap<u16, SwitchKind>,
     authored_mechanics: BTreeMap<u16, MechanicKind>,
     initial_source_mechanics: BTreeMap<u16, MechanicKind>,
+    authored_mechanic_entities: BTreeMap<u16, LevelEntityId>,
+    initial_source_mechanic_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) collision_masks: Option<CollisionMaskBank>,
     pub(crate) presentation: PresentationSelectors,
 }
@@ -110,6 +112,8 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) initial_source_switches: BTreeMap<u16, SwitchKind>,
     pub(crate) authored_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) initial_source_mechanics: BTreeMap<u16, MechanicKind>,
+    pub(crate) authored_mechanic_entities: BTreeMap<u16, LevelEntityId>,
+    pub(crate) initial_source_mechanic_entities: BTreeMap<u16, LevelEntityId>,
 }
 
 /// Source slot/map topology observed alongside the lossless entity records.
@@ -372,6 +376,8 @@ impl CampaignDefinition {
             initial_source_switches: BTreeMap::new(),
             authored_mechanics: BTreeMap::new(),
             initial_source_mechanics: BTreeMap::new(),
+            authored_mechanic_entities: BTreeMap::new(),
+            initial_source_mechanic_entities: BTreeMap::new(),
             collision_masks,
             presentation,
         }
@@ -393,6 +399,8 @@ impl CampaignDefinition {
         self.initial_source_switches = bindings.initial_source_switches;
         self.authored_mechanics = bindings.authored_mechanics;
         self.initial_source_mechanics = bindings.initial_source_mechanics;
+        self.authored_mechanic_entities = bindings.authored_mechanic_entities;
+        self.initial_source_mechanic_entities = bindings.initial_source_mechanic_entities;
     }
 
     pub(crate) fn replace_semantic_level(
@@ -479,6 +487,20 @@ impl CampaignDefinition {
         source_slot: u16,
     ) -> Option<MechanicKind> {
         self.initial_source_mechanics.get(&source_slot).copied()
+    }
+
+    pub(crate) fn mechanic_entity_for_authored_record(
+        &self,
+        authored_record: u16,
+    ) -> Option<&LevelEntityId> {
+        self.authored_mechanic_entities.get(&authored_record)
+    }
+
+    pub(crate) fn mechanic_entity_for_initial_source_slot(
+        &self,
+        source_slot: u16,
+    ) -> Option<&LevelEntityId> {
+        self.initial_source_mechanic_entities.get(&source_slot)
     }
 }
 

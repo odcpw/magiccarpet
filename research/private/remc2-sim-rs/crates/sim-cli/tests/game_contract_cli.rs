@@ -79,10 +79,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "4.0");
+    assert_eq!(capabilities["contract_version"], "5.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
-        "carpet-flight-change-set/v4"
+        "carpet-flight-change-set/v5"
+    );
+    assert_eq!(
+        capabilities["data"]["authoring"]["game_definition_schema"],
+        "carpet-flight-game-definition/v4"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["operation"],
@@ -112,6 +116,16 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         put_objective["objective_ids"],
         "game objectives -> data.objectives[].id"
     );
+    let set_countdown = capabilities["data"]["authoring"]["operation_schema"]["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["operation"] == "set_mechanic_countdown")
+        .expect("set_mechanic_countdown is discoverable");
+    assert_eq!(set_countdown["target_id"], "<entity-id>.arming_ticks");
+    assert_eq!(set_countdown["arming_ticks"]["unit"], "entity_visits");
+    assert_eq!(set_countdown["arming_ticks"]["minimum"], 1);
+    assert_eq!(set_countdown["arming_ticks"]["maximum"], i32::MAX);
     assert_eq!(
         capabilities["data"]["compiled_capabilities"]
             .as_array()
@@ -206,7 +220,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "4.0");
+    assert_eq!(entities["contract_version"], "5.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -285,6 +299,275 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert_eq!(
         get_position["data"]["value"],
         serde_json::json!({"type": "position", "value": {"x": 74, "y": 212}})
+    );
+}
+
+#[test]
+fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecycle() {
+    const ENTITY: &str = "mechanic.absence_countdown.worm.at_134_98";
+    const TARGET: &str = "mechanic.absence_countdown.worm.at_134_98.arming_ticks";
+
+    let temporary = TempWorkspace::new("semantic-countdown");
+    let workspace = temporary.0.to_str().unwrap();
+    let campaign = level_one_campaign_fixture();
+    let campaign = campaign.to_str().expect("UTF-8 campaign path");
+
+    let described = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        campaign,
+        "--id",
+        TARGET,
+    ]);
+    assert!(described.status.success(), "{:?}", described.stderr);
+    assert!(described.stderr.is_empty());
+    let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+    let descriptor = &described["data"]["descriptors"][0];
+    assert_eq!(described["contract_version"], "5.0");
+    assert_eq!(
+        described["identity"]["schema"],
+        "carpet-flight-game-definition/v4"
+    );
+    assert_eq!(descriptor["id"], TARGET);
+    assert_eq!(descriptor["kind"], "mechanic");
+    assert_eq!(descriptor["value_type"], "integer");
+    assert_eq!(descriptor["unit"], "entity_visits");
+    assert_eq!(descriptor["access"], "writable");
+    assert_eq!(descriptor["mutation_timing"], "session_reset");
+    assert_eq!(descriptor["bounds_or_enum"]["minimum"], 1);
+    assert_eq!(descriptor["bounds_or_enum"]["maximum"], i32::MAX);
+    assert_eq!(descriptor["default_value"]["value"], 16);
+    assert_eq!(descriptor["effective_value"]["value"], 16);
+
+    let entities = run(&[
+        "game",
+        "entities",
+        "--campaign-package",
+        campaign,
+        "--limit",
+        "1",
+    ]);
+    assert!(entities.status.success(), "{:?}", entities.stderr);
+    let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
+    let countdown_offset = 4 + entities["data"]["page"]["total"].as_u64().unwrap();
+    let cursor = format!(
+        "v1.{}.{}.{}",
+        described["data"]["catalog_hash"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("sha256:"),
+        described["identity"]["definition_hash"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("sha256:"),
+        countdown_offset
+    );
+    let listed = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        campaign,
+        "--limit",
+        "2",
+        "--cursor",
+        &cursor,
+    ]);
+    assert!(listed.status.success(), "{:?}", listed.stderr);
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let listed_ids = listed["data"]["descriptors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|descriptor| descriptor["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(listed_ids.contains(&TARGET));
+
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "semantic-countdown-workspace",
+        "--campaign-package",
+        campaign,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+
+    let initial = run(&["game", "get", "--workspace", workspace, "--id", TARGET]);
+    assert!(initial.status.success(), "{:?}", initial.stderr);
+    let initial: Value = serde_json::from_slice(&initial.stdout).unwrap();
+    assert_eq!(
+        initial["data"]["value"],
+        serde_json::json!({"type": "integer", "value": 16})
+    );
+
+    let changes_path = temporary.0.join("set-countdown.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "set_mechanic_countdown",
+            "entity": ENTITY,
+            "arming_ticks": 2,
+            "expected_arming_ticks": 16
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "semantic-countdown-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(
+        staged["data"]["change_set"]["schema_version"],
+        "carpet-flight-change-set/v5"
+    );
+    assert_eq!(
+        staged["data"]["change_set"]["operations"][0]["operation"],
+        "set_mechanic_countdown"
+    );
+    let change_set_path = temporary.0.join("countdown-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        validated["data"]["validation"]["affected_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let diff = run(&[
+        "game",
+        "diff",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(diff.status.success(), "{:?}", diff.stderr);
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(
+        diff["data"]["diff"],
+        serde_json::json!([{
+            "id": TARGET,
+            "before": {"type": "integer", "value": 16},
+            "after": {"type": "integer", "value": 2}
+        }])
+    );
+
+    let validation_receipt = validated["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validation_receipt,
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(
+        applied["data"]["receipt"]["applied_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let authored = run(&["game", "get", "--workspace", workspace, "--id", TARGET]);
+    assert!(authored.status.success(), "{:?}", authored.stderr);
+    let authored: Value = serde_json::from_slice(&authored.stdout).unwrap();
+    assert_eq!(authored["identity"]["revision"], 2);
+    assert_eq!(authored["data"]["descriptor"]["default_value"]["value"], 16);
+    assert_eq!(
+        authored["data"]["descriptor"]["effective_value"]["value"],
+        2
+    );
+    assert_eq!(
+        authored["data"]["value"],
+        serde_json::json!({"type": "integer", "value": 2})
+    );
+
+    let committed_state = fs::read(temporary.0.join("workspace-state.json")).unwrap();
+    let zero_path = temporary.0.join("zero-countdown.json");
+    fs::write(
+        &zero_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "set_mechanic_countdown",
+            "entity": ENTITY,
+            "arming_ticks": 0,
+            "expected_arming_ticks": 2
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let zero_staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "semantic-countdown-zero",
+        "--timing",
+        "session_reset",
+        "--changes",
+        zero_path.to_str().unwrap(),
+    ]);
+    assert!(zero_staged.status.success(), "{:?}", zero_staged.stderr);
+    let zero_staged: Value = serde_json::from_slice(&zero_staged.stdout).unwrap();
+    let zero_change_set_path = temporary.0.join("zero-countdown-change-set.json");
+    fs::write(
+        &zero_change_set_path,
+        serde_json::to_vec(&zero_staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let zero_validation = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        zero_change_set_path.to_str().unwrap(),
+    ]);
+    assert!(
+        zero_validation.status.success(),
+        "{:?}",
+        zero_validation.stderr
+    );
+    let zero_validation: Value = serde_json::from_slice(&zero_validation.stdout).unwrap();
+    assert_eq!(zero_validation["data"]["validation"]["accepted"], false);
+    assert_eq!(
+        zero_validation["data"]["validation"]["diagnostics"][0]["code"],
+        "OUT_OF_RANGE"
+    );
+    assert_eq!(
+        fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+        committed_state
     );
 }
 
@@ -802,7 +1085,7 @@ fn authoring_cli_rejects_session_generation_and_duplicate_workspace_creation() {
     fs::write(
         &invalid_path,
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": "carpet-flight-change-set/v4",
+            "schema_version": "carpet-flight-change-set/v5",
             "target_workspace": "schema-workspace",
             "expected_definition_hash": definition_hash,
             "expected_definition_revision": 1,

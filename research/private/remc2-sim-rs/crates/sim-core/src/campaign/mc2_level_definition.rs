@@ -6,15 +6,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sim_definition::adapter::{
-    activation_group_id, build_level_definition, entity_definition_with_position_access,
-    objective_definition, stable_entity_id, stable_objective_id,
+    absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
+    build_level_definition, entity_definition_with_position_access, objective_definition,
+    stable_entity_id, stable_objective_id,
 };
 
 use crate::{
     level_definition::{
         BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
-        LevelEntityPositionAccess, LevelObjectiveConditionAccess, LevelObjectiveId, MechanicKind,
-        ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
+        LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
+        LevelObjectiveId, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind,
+        TilePosition,
     },
     level1_mission::parse_authored_features,
 };
@@ -36,6 +38,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
     pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
+    pub(crate) mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) movable_source_id_by_entity_id: BTreeMap<LevelEntityId, u16>,
 }
 
@@ -149,6 +152,7 @@ impl Mc2LevelDefinition {
         let mut item_by_authored_record = BTreeMap::new();
         let mut switch_by_authored_record = BTreeMap::new();
         let mut mechanic_by_authored_record = BTreeMap::new();
+        let mut mechanic_entity_by_authored_record = BTreeMap::new();
         let mut authored_record_by_entity_id = BTreeMap::new();
         let mut movable_source_id_by_entity_id = BTreeMap::new();
         let mut entities = Vec::new();
@@ -424,14 +428,16 @@ impl Mc2LevelDefinition {
                 &id,
                 position_access,
             )?;
-            entities.push(entity_definition_with_position_access(
-                id,
+            entities.push(absence_countdown_entity_definition(
+                id.clone(),
                 LevelEntityKind::Mechanic(mechanic_kind),
                 position,
                 activation_group,
                 position_access,
+                absence_countdown_definition(16, LevelEntityParameterAccess::SessionReset),
             ));
             mechanic_by_authored_record.insert(feature.index, mechanic_kind);
+            mechanic_entity_by_authored_record.insert(feature.index, id);
         }
 
         let objectives = objective_operations
@@ -566,6 +572,7 @@ impl Mc2LevelDefinition {
             item_by_authored_record,
             switch_by_authored_record,
             mechanic_by_authored_record,
+            mechanic_entity_by_authored_record,
             movable_source_id_by_entity_id,
         })
     }

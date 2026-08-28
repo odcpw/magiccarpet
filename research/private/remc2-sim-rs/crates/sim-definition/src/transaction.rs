@@ -22,7 +22,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v4";
+pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v5";
 pub const WORKSPACE_SCHEMA: &str = "carpet-flight-definition-workspace/v1";
 pub const VALIDATION_RECEIPT_SCHEMA: &str = "carpet-flight-validation-receipt/v1";
 pub const APPLY_RECEIPT_SCHEMA: &str = "carpet-flight-apply-receipt/v1";
@@ -397,6 +397,39 @@ impl ChangeSetBuilder {
                 objective,
                 condition,
                 expected_condition: Some(expected_condition),
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_mechanic_countdown(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        arming_ticks: u32,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetMechanicCountdown {
+                entity,
+                arming_ticks,
+                expected_arming_ticks: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_mechanic_countdown_from(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        expected_arming_ticks: u32,
+        arming_ticks: u32,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetMechanicCountdown {
+                entity,
+                arming_ticks,
+                expected_arming_ticks: Some(expected_arming_ticks),
             });
         self
     }
@@ -1369,6 +1402,58 @@ fn validate_against(
                     Err(error) => diagnostics.push(error.into()),
                 }
             }
+            ResolvedOperation::MechanicCountdownSet {
+                id,
+                entity,
+                arming_ticks,
+                expected_arming_ticks,
+            } => {
+                required_timing = Some(required_timing.unwrap_or(RequestedTiming::SessionReset));
+                if !change_set
+                    .requested_timing
+                    .permits(MutationTiming::SessionReset)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "UNSAFE_TIMING".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "mechanic authoring requires session_reset timing".to_owned(),
+                    });
+                    continue;
+                }
+                let current = active
+                    .level_definition()
+                    .and_then(|level| level.entity(entity))
+                    .and_then(|candidate| candidate.absence_countdown())
+                    .map(|config| config.arming_ticks());
+                if expected_arming_ticks.is_some() && current != *expected_arming_ticks {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "countdown expected delay does not match the active definition"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                if current == Some(*arming_ticks) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "countdown already has the requested arming delay".to_owned(),
+                    });
+                    continue;
+                }
+                match proposed.with_countdown_arming_ticks(
+                    entity,
+                    *arming_ticks,
+                    candidate_revision,
+                ) {
+                    Ok(updated) => {
+                        proposed = updated;
+                        preliminarily_valid.insert(id.clone());
+                    }
+                    Err(error) => diagnostics.push(error.into()),
+                }
+            }
         }
     }
     for resolved in &resolved_operations {
@@ -1394,6 +1479,13 @@ fn validate_against(
                     condition,
                     ..
                 } => candidate.with_put_level_objective(objective, *condition, candidate_revision),
+                ResolvedOperation::MechanicCountdownSet {
+                    entity,
+                    arming_ticks,
+                    ..
+                } => {
+                    candidate.with_countdown_arming_ticks(entity, *arming_ticks, candidate_revision)
+                }
             };
             match applied {
                 Ok(updated) => candidate = updated,
@@ -1648,12 +1740,14 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::adapter::{
+        absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
         build_level_definition, entity_definition_with_position_access, objective_definition,
         stable_entity_id, stable_objective_id, with_level_definition,
     };
     use crate::level_definition::{
-        LevelEntityKind, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
-        ObjectiveCondition, SceneryKind, SwitchKind, TilePosition,
+        CreatureKind, LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
+        LevelObjectiveConditionAccess, MechanicKind, ObjectiveCondition, SceneryKind, SwitchKind,
+        TilePosition,
     };
     use crate::{
         GamePackage, Result as DefinitionResult, SemanticBinding, default_catalog,
@@ -1844,6 +1938,33 @@ mod tests {
         with_level_definition(
             fixture_definition(),
             build_level_definition(Vec::new(), vec![writable, read_only], Vec::new()).unwrap(),
+        )
+    }
+
+    fn fixture_definition_with_countdowns() -> GameDefinition {
+        let worm = absence_countdown_entity_definition(
+            stable_entity_id("mechanic.absence_countdown.worm.at_134_98").unwrap(),
+            LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown {
+                creature: CreatureKind::Worm,
+            }),
+            TilePosition { x: 134, y: 98 },
+            Some(activation_group_id(4)),
+            LevelEntityPositionAccess::ReadOnly,
+            absence_countdown_definition(16, LevelEntityParameterAccess::SessionReset),
+        );
+        let archer = absence_countdown_entity_definition(
+            stable_entity_id("mechanic.absence_countdown.archer.at_144_255").unwrap(),
+            LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown {
+                creature: CreatureKind::Archer,
+            }),
+            TilePosition { x: 144, y: 255 },
+            Some(activation_group_id(3)),
+            LevelEntityPositionAccess::ReadOnly,
+            absence_countdown_definition(16, LevelEntityParameterAccess::ReadOnly),
+        );
+        with_level_definition(
+            fixture_definition(),
+            build_level_definition(vec![worm, archer], Vec::new(), Vec::new()).unwrap(),
         )
     }
 
@@ -2120,6 +2241,151 @@ mod tests {
                 .is_err(),
             "the runtime variant boundary must repeat the transaction's world-bounds gate"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mechanic_countdown_publication_diff_readback_and_rollback_are_typed_and_atomic() {
+        let root = temporary_workspace("mechanic-countdown");
+        let definition = fixture_definition_with_countdowns();
+        let store =
+            WorkspaceStore::create(&root, "countdown-workspace", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let entity = stable_entity_id("mechanic.absence_countdown.worm.at_134_98").unwrap();
+        let target =
+            SemanticId::parse("mechanic.absence_countdown.worm.at_134_98.arming_ticks").unwrap();
+        let descriptor = definition
+            .level_countdown_arming_ticks_descriptor(&target)
+            .unwrap();
+        assert_eq!(descriptor.kind, crate::DescriptorKind::Mechanic);
+        assert_eq!(descriptor.access, Access::Writable);
+        assert_eq!(descriptor.default_value, SemanticValue::Integer(16));
+        assert_eq!(
+            definition.semantic_target_value(&target),
+            Some(SemanticValue::Integer(16))
+        );
+        let request = ChangeSetBuilder::new(
+            "countdown-workspace",
+            &definition,
+            "shorten-worm-countdown",
+            RequestedTiming::SessionReset,
+        )
+        .set_mechanic_countdown_from(entity.clone(), 16, 8)
+        .build()
+        .unwrap();
+        let before = store.state_bytes().unwrap();
+        let validation = store.validate(&catalog, request.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        assert_eq!(
+            validation.affected_ids,
+            vec!["mechanic.absence_countdown.worm.at_134_98.arming_ticks"]
+        );
+        let (_, diff) = store.diff(&catalog, request.clone()).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].before, SemanticValue::Integer(16));
+        assert_eq!(diff[0].after, SemanticValue::Integer(8));
+        assert_eq!(store.state_bytes().unwrap(), before);
+
+        let applied = store
+            .apply(
+                &catalog,
+                request,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let active = store.active_definition().unwrap();
+        assert_eq!(
+            active.semantic_target_value(&target),
+            Some(SemanticValue::Integer(8))
+        );
+        assert_eq!(
+            active
+                .level_countdown_arming_ticks_descriptor(&target)
+                .unwrap()
+                .default_value,
+            SemanticValue::Integer(16)
+        );
+        assert_ne!(active.definition_hash(), definition.definition_hash());
+
+        store
+            .rollback(
+                active.definition_hash(),
+                active.revision(),
+                &applied.transaction_id,
+                "rollback-worm-countdown",
+                PublicationFault::None,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .active_definition()
+                .unwrap()
+                .semantic_target_value(&target),
+            Some(SemanticValue::Integer(16))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mechanic_countdown_rejections_preserve_workspace_and_instance_identity() {
+        let root = temporary_workspace("mechanic-countdown-rejections");
+        let definition = fixture_definition_with_countdowns();
+        let store =
+            WorkspaceStore::create(&root, "countdown-workspace", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let before = store.state_bytes().unwrap();
+        let worm = stable_entity_id("mechanic.absence_countdown.worm.at_134_98").unwrap();
+        let archer = stable_entity_id("mechanic.absence_countdown.archer.at_144_255").unwrap();
+        let requests = [
+            DefinitionOperation::SetMechanicCountdown {
+                entity: worm.clone(),
+                arming_ticks: 0,
+                expected_arming_ticks: None,
+            },
+            DefinitionOperation::SetMechanicCountdown {
+                entity: worm.clone(),
+                arming_ticks: i32::MAX.cast_unsigned() + 1,
+                expected_arming_ticks: None,
+            },
+            DefinitionOperation::SetMechanicCountdown {
+                entity: worm.clone(),
+                arming_ticks: 8,
+                expected_arming_ticks: Some(15),
+            },
+            DefinitionOperation::SetMechanicCountdown {
+                entity: archer,
+                arming_ticks: 8,
+                expected_arming_ticks: Some(16),
+            },
+            DefinitionOperation::SetMechanicCountdown {
+                entity: stable_entity_id("mechanic.absence_countdown.goat.at_1_1").unwrap(),
+                arming_ticks: 8,
+                expected_arming_ticks: None,
+            },
+        ];
+        for (index, operation) in requests.into_iter().enumerate() {
+            let request = ChangeSetBuilder::new(
+                "countdown-workspace",
+                &definition,
+                format!("rejected-countdown-{index}"),
+                RequestedTiming::SessionReset,
+            )
+            .operation(operation)
+            .build()
+            .unwrap();
+            let validation = store.validate(&catalog, request).unwrap();
+            assert!(!validation.accepted);
+            assert_eq!(store.state_bytes().unwrap(), before);
+        }
+
+        let malformed = serde_json::json!({
+            "operation": "set_mechanic_countdown",
+            "entity": "mechanic.absence_countdown.worm.at_134_98",
+            "arming_ticks": 8,
+            "source_slot": 308
+        });
+        assert!(serde_json::from_value::<DefinitionOperation>(malformed).is_err());
         let _ = fs::remove_dir_all(root);
     }
 

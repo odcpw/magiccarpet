@@ -1,7 +1,7 @@
 use sim_core::game_definition::{
-    CHANGE_SET_SCHEMA, DefinitionError, DefinitionOperation, GameDefinition, GamePackage,
-    Mc2OwnedInputs, SemanticCatalog, SemanticId, default_catalog, engine_capabilities,
-    load_mc2_owned,
+    CHANGE_SET_SCHEMA, DefinitionError, DefinitionOperation, GAME_DEFINITION_SCHEMA,
+    GameDefinition, GamePackage, Mc2OwnedInputs, SemanticCatalog, SemanticId, default_catalog,
+    engine_capabilities, load_mc2_owned,
 };
 use std::process::ExitCode;
 
@@ -71,6 +71,7 @@ fn game_capabilities() -> ExitCode {
         "authoring_transaction_available": true,
         "authoring": {
             "change_set_schema": CHANGE_SET_SCHEMA,
+            "game_definition_schema": GAME_DEFINITION_SCHEMA,
             "operation_schema": DefinitionOperation::schema_json(),
         },
         "writable_descriptor_count": catalog.descriptors().filter(|descriptor| descriptor.access.as_str() == "writable").count(),
@@ -272,6 +273,10 @@ fn game_describe(arguments: &[String]) -> ExitCode {
             } else if let Some(descriptor) = definition.level_entity_position_descriptor(&id) {
                 let effective = definition.semantic_target_value(&id);
                 vec![descriptor.to_json(effective.as_ref())]
+            } else if let Some(descriptor) = definition.level_countdown_arming_ticks_descriptor(&id)
+            {
+                let effective = definition.semantic_target_value(&id);
+                vec![descriptor.to_json(effective.as_ref())]
             } else if let Some(descriptor) = definition.level_objective_condition_descriptor(&id) {
                 let effective = definition.semantic_target_value(&id);
                 vec![descriptor.to_json(effective.as_ref())]
@@ -287,6 +292,15 @@ fn game_describe(arguments: &[String]) -> ExitCode {
             descriptors.extend(
                 definition
                     .level_entity_position_descriptors()
+                    .into_iter()
+                    .map(|descriptor| {
+                        let effective = definition.semantic_target_value(&descriptor.id);
+                        descriptor.to_json(effective.as_ref())
+                    }),
+            );
+            descriptors.extend(
+                definition
+                    .level_countdown_arming_ticks_descriptors()
                     .into_iter()
                     .map(|descriptor| {
                         let effective = definition.semantic_target_value(&descriptor.id);
@@ -382,6 +396,20 @@ fn game_get(arguments: &[String]) -> ExitCode {
             let value = definition
                 .semantic_target_value(&id)
                 .expect("objective descriptor has semantic readback");
+            return game_success(
+                "get",
+                definition.definition_hash(),
+                serde_json::json!({
+                    "descriptor": descriptor.to_json(Some(&value)),
+                    "value": value.to_json(),
+                }),
+                Some(&definition),
+            );
+        }
+        if let Some(descriptor) = definition.level_countdown_arming_ticks_descriptor(&id) {
+            let value = definition
+                .semantic_target_value(&id)
+                .expect("countdown descriptor has semantic readback");
             return game_success(
                 "get",
                 definition.definition_hash(),

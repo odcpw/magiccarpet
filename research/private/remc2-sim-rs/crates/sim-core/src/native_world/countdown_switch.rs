@@ -14,13 +14,14 @@ pub(super) enum CountdownSwitchStep {
 pub(super) fn step_absence_countdown(
     timer: &mut i32,
     blocking_family_present: bool,
+    arming_ticks: i32,
 ) -> CountdownSwitchStep {
     if blocking_family_present {
         return CountdownSwitchStep::Frozen;
     }
     match *timer {
         0 => {
-            *timer = 16;
+            *timer = arming_ticks;
             CountdownSwitchStep::Armed
         }
         1 => CountdownSwitchStep::Fire,
@@ -39,31 +40,55 @@ mod tests {
     fn cf14_absence_countdown_freezes_arms_and_fires_on_seventeenth_clear_visit() {
         let mut timer = 0;
         assert_eq!(
-            step_absence_countdown(&mut timer, true),
+            step_absence_countdown(&mut timer, true, 16),
             CountdownSwitchStep::Frozen
         );
         assert_eq!(timer, 0);
         assert_eq!(
-            step_absence_countdown(&mut timer, false),
+            step_absence_countdown(&mut timer, false, 16),
             CountdownSwitchStep::Armed
         );
         assert_eq!(timer, 16);
         for expected in (1..=15).rev() {
             assert_eq!(
-                step_absence_countdown(&mut timer, false),
+                step_absence_countdown(&mut timer, false, 16),
                 CountdownSwitchStep::Decremented
             );
             assert_eq!(timer, expected);
         }
         assert_eq!(
-            step_absence_countdown(&mut timer, true),
+            step_absence_countdown(&mut timer, true, 16),
             CountdownSwitchStep::Frozen
         );
         assert_eq!(timer, 1);
         assert_eq!(
-            step_absence_countdown(&mut timer, false),
+            step_absence_countdown(&mut timer, false, 16),
             CountdownSwitchStep::Fire
         );
         assert_eq!(timer, 1);
+    }
+
+    #[test]
+    fn authored_two_tick_delay_arms_then_fires_on_third_clear_visit() {
+        let mut timer = 0;
+        assert_eq!(
+            step_absence_countdown(&mut timer, true, 2),
+            CountdownSwitchStep::Frozen
+        );
+        assert_eq!(timer, 0, "a blocker must not pre-load the authored delay");
+        assert_eq!(
+            step_absence_countdown(&mut timer, false, 2),
+            CountdownSwitchStep::Armed
+        );
+        assert_eq!(timer, 2);
+        assert_eq!(
+            step_absence_countdown(&mut timer, false, 2),
+            CountdownSwitchStep::Decremented
+        );
+        assert_eq!(timer, 1);
+        assert_eq!(
+            step_absence_countdown(&mut timer, false, 2),
+            CountdownSwitchStep::Fire
+        );
     }
 }

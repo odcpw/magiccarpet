@@ -377,6 +377,8 @@ pub struct CampaignDefinition {
     switch_by_initial_source_slot: BTreeMap<u16, SwitchKind>,
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
+    mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
+    mechanic_entity_by_initial_source_slot: BTreeMap<u16, LevelEntityId>,
     movable_entity_bindings: BTreeMap<LevelEntityId, Mc2EntityRuntimeBinding>,
     member_hashes: BTreeMap<String, String>,
 }
@@ -934,6 +936,38 @@ impl CampaignDefinition {
                 ))
             })
             .collect::<BTreeMap<_, _>>();
+        let mut mechanic_entity_by_initial_source_slot = BTreeMap::new();
+        for row in &expected_rows {
+            let (Some(source_slot), Some(kind)) = (
+                row.initial_source_slot,
+                Mc2LevelDefinition::mechanic_for_reset_selector(row.class, row.model, row.action),
+            ) else {
+                continue;
+            };
+            // Reset behavior rows use their own constructor provenance, not
+            // the authored feature index. Join the private carrier to the
+            // semantic package entity by kind and fail closed on ambiguity.
+            let matching = semantic_level
+                .mechanic_by_authored_record
+                .iter()
+                .filter(|(_, candidate_kind)| **candidate_kind == kind)
+                .filter_map(|(authored_record, _)| {
+                    semantic_level
+                        .mechanic_entity_by_authored_record
+                        .get(authored_record)
+                })
+                .collect::<Vec<_>>();
+            if matching.len() != 1 {
+                return fail(
+                    ValidationStage::TypedOperations,
+                    format!(
+                        "initial mechanic source slot {source_slot} has {} semantic package candidates",
+                        matching.len()
+                    ),
+                );
+            }
+            mechanic_entity_by_initial_source_slot.insert(source_slot, matching[0].clone());
+        }
         let scenery_by_initial_source_slot = expected_rows
             .iter()
             .filter_map(|row| {
@@ -1151,6 +1185,8 @@ impl CampaignDefinition {
             switch_by_initial_source_slot,
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
             mechanic_by_initial_source_slot,
+            mechanic_entity_by_authored_record: semantic_level.mechanic_entity_by_authored_record,
+            mechanic_entity_by_initial_source_slot,
             movable_entity_bindings,
             member_hashes: files
                 .into_iter()
@@ -1224,6 +1260,14 @@ impl CampaignDefinition {
 
     pub(crate) fn initial_mechanic_bindings(&self) -> &BTreeMap<u16, MechanicKind> {
         &self.mechanic_by_initial_source_slot
+    }
+
+    pub(crate) fn mechanic_entity_bindings(&self) -> &BTreeMap<u16, LevelEntityId> {
+        &self.mechanic_entity_by_authored_record
+    }
+
+    pub(crate) fn initial_mechanic_entity_bindings(&self) -> &BTreeMap<u16, LevelEntityId> {
+        &self.mechanic_entity_by_initial_source_slot
     }
 
     pub(crate) fn movable_entity_binding(

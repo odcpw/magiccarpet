@@ -9,9 +9,10 @@ use crate::{
     ArtifactKind, ArtifactNode, DefinitionError, DefinitionErrorCode, GameDefinition, GamePackage,
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
     level_definition::{
-        ActivationGroupId, LevelDefinition, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
-        LevelEntityPositionAccess, LevelObjectiveConditionAccess, LevelObjectiveDefinition,
-        LevelObjectiveId, ObjectiveCondition, TilePosition,
+        AbsenceCountdownDefinition, ActivationGroupId, LevelDefinition, LevelEntityDefinition,
+        LevelEntityId, LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
+        LevelObjectiveConditionAccess, LevelObjectiveDefinition, LevelObjectiveId,
+        ObjectiveCondition, TilePosition,
     },
 };
 
@@ -74,6 +75,7 @@ pub const fn entity_definition(
         position,
         activation_group,
         LevelEntityPositionAccess::ReadOnly,
+        None,
     )
 }
 
@@ -85,7 +87,34 @@ pub const fn entity_definition_with_position_access(
     activation_group: Option<ActivationGroupId>,
     position_access: LevelEntityPositionAccess,
 ) -> LevelEntityDefinition {
-    LevelEntityDefinition::new(id, kind, position, activation_group, position_access)
+    LevelEntityDefinition::new(id, kind, position, activation_group, position_access, None)
+}
+
+#[must_use]
+pub const fn absence_countdown_definition(
+    arming_ticks: u32,
+    arming_ticks_access: LevelEntityParameterAccess,
+) -> AbsenceCountdownDefinition {
+    AbsenceCountdownDefinition::new(arming_ticks, arming_ticks_access)
+}
+
+#[must_use]
+pub const fn absence_countdown_entity_definition(
+    id: LevelEntityId,
+    kind: LevelEntityKind,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    countdown: AbsenceCountdownDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        kind,
+        position,
+        activation_group,
+        position_access,
+        Some(countdown),
+    )
 }
 
 #[must_use]

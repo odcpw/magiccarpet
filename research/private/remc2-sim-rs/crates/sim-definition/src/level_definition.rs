@@ -328,6 +328,55 @@ pub enum LevelEntityPositionAccess {
     SessionReset,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelEntityParameterAccess {
+    #[default]
+    ReadOnly,
+    SessionReset,
+}
+
+/// Authorable configuration for one package-present absence countdown.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AbsenceCountdownDefinition {
+    default_arming_ticks: u32,
+    arming_ticks: u32,
+    #[serde(default, skip_serializing_if = "is_read_only_entity_parameter")]
+    arming_ticks_access: LevelEntityParameterAccess,
+}
+
+impl AbsenceCountdownDefinition {
+    pub(crate) const fn new(
+        arming_ticks: u32,
+        arming_ticks_access: LevelEntityParameterAccess,
+    ) -> Self {
+        Self {
+            default_arming_ticks: arming_ticks,
+            arming_ticks,
+            arming_ticks_access,
+        }
+    }
+
+    #[must_use]
+    pub const fn default_arming_ticks(self) -> u32 {
+        self.default_arming_ticks
+    }
+
+    #[must_use]
+    pub const fn arming_ticks(self) -> u32 {
+        self.arming_ticks
+    }
+
+    #[must_use]
+    pub const fn arming_ticks_access(self) -> LevelEntityParameterAccess {
+        self.arming_ticks_access
+    }
+}
+
+const fn is_read_only_entity_parameter(access: &LevelEntityParameterAccess) -> bool {
+    matches!(access, LevelEntityParameterAccess::ReadOnly)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectiveCondition {
@@ -404,6 +453,8 @@ pub struct LevelEntityDefinition {
     activation_group: Option<ActivationGroupId>,
     #[serde(default, skip_serializing_if = "is_read_only_position")]
     position_access: LevelEntityPositionAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    absence_countdown: Option<AbsenceCountdownDefinition>,
 }
 
 impl LevelEntityDefinition {
@@ -413,6 +464,7 @@ impl LevelEntityDefinition {
         position: TilePosition,
         activation_group: Option<ActivationGroupId>,
         position_access: LevelEntityPositionAccess,
+        absence_countdown: Option<AbsenceCountdownDefinition>,
     ) -> Self {
         Self {
             id,
@@ -421,6 +473,7 @@ impl LevelEntityDefinition {
             position,
             activation_group,
             position_access,
+            absence_countdown,
         }
     }
 
@@ -454,6 +507,11 @@ impl LevelEntityDefinition {
     pub const fn position_access(&self) -> LevelEntityPositionAccess {
         self.position_access
     }
+
+    #[must_use]
+    pub const fn absence_countdown(&self) -> Option<AbsenceCountdownDefinition> {
+        self.absence_countdown
+    }
 }
 
 const fn is_read_only_position(access: &LevelEntityPositionAccess) -> bool {
@@ -480,6 +538,32 @@ impl LevelDefinition {
                     "duplicate semantic level entity {}",
                     entity.id.as_str()
                 ));
+            }
+            match (entity.kind, entity.absence_countdown) {
+                (
+                    LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. }),
+                    Some(config),
+                ) if (1..=i32::MAX.cast_unsigned()).contains(&config.default_arming_ticks)
+                    && (1..=i32::MAX.cast_unsigned()).contains(&config.arming_ticks) => {}
+                (LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. }), Some(_)) => {
+                    return Err(format!(
+                        "semantic absence countdown {} has an invalid arming delay",
+                        entity.id.as_str()
+                    ));
+                }
+                (LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. }), None) => {
+                    return Err(format!(
+                        "semantic absence countdown {} has no arming configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-countdown entity {} carries absence-countdown configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
             }
         }
         let mut objective_ids = BTreeSet::new();
@@ -605,6 +689,46 @@ impl LevelDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_countdown_arming_ticks(
+        &self,
+        id: &LevelEntityId,
+        arming_ticks: u32,
+    ) -> Result<Self, String> {
+        if !(1..=i32::MAX.cast_unsigned()).contains(&arming_ticks) {
+            return Err(format!(
+                "semantic absence countdown {} arming delay is outside 1..={}",
+                id.as_str(),
+                i32::MAX
+            ));
+        }
+        let mut candidate = self.clone();
+        let entity = candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == *id)
+            .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
+        let config = entity.absence_countdown.as_mut().ok_or_else(|| {
+            format!(
+                "semantic level entity {} is not an absence countdown",
+                id.as_str()
+            )
+        })?;
+        if config.arming_ticks_access != LevelEntityParameterAccess::SessionReset {
+            return Err(format!(
+                "semantic absence countdown {} arming delay has no runtime consumer",
+                id.as_str()
+            ));
+        }
+        if config.arming_ticks == arming_ticks {
+            return Err(format!(
+                "semantic absence countdown {} already has the requested arming delay",
+                id.as_str()
+            ));
+        }
+        config.arming_ticks = arming_ticks;
+        Ok(candidate)
+    }
+
     /// Verify that this definition differs from `base` only through semantic
     /// changes explicitly admitted at session reset.
     ///
@@ -630,6 +754,41 @@ impl LevelDefinition {
                     "semantic level variant changes entity identity or structure at {}",
                     original.id.as_str()
                 ));
+            }
+            match (candidate.absence_countdown, original.absence_countdown) {
+                (Some(candidate_config), Some(original_config)) => {
+                    if candidate_config.default_arming_ticks != original_config.default_arming_ticks
+                        || candidate_config.arming_ticks_access
+                            != original_config.arming_ticks_access
+                    {
+                        return Err(format!(
+                            "semantic level variant changes countdown structure at {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if candidate_config.arming_ticks != original_config.arming_ticks
+                        && original_config.arming_ticks_access
+                            != LevelEntityParameterAccess::SessionReset
+                    {
+                        return Err(format!(
+                            "semantic level variant changes read-only countdown {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if !(1..=i32::MAX.cast_unsigned()).contains(&candidate_config.arming_ticks) {
+                        return Err(format!(
+                            "semantic level variant gives countdown {} an invalid arming delay",
+                            original.id.as_str()
+                        ));
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(format!(
+                        "semantic level variant adds or removes countdown configuration at {}",
+                        original.id.as_str()
+                    ));
+                }
             }
             if candidate.position != original.position
                 && original.position_access != LevelEntityPositionAccess::SessionReset

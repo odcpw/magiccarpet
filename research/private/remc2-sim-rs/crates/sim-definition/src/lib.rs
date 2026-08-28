@@ -49,8 +49,8 @@ use std::{
 use level_definition::LevelDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v3";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "4.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v4";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "5.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -487,6 +487,39 @@ impl GameDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_countdown_arming_ticks(
+        &self,
+        id: &level_definition::LevelEntityId,
+        arming_ticks: u32,
+        revision: u64,
+    ) -> Result<Self> {
+        if revision < self.revision {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidRequest,
+                "definition.revision",
+                "candidate definition revision must not move backward",
+            ));
+        }
+        let level = self.level_definition.as_ref().ok_or_else(|| {
+            DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                id.as_str(),
+                "definition has no semantic mechanic consumer",
+            )
+        })?;
+        let mut candidate = self.clone();
+        candidate.level_definition = Some(
+            level
+                .with_countdown_arming_ticks(id, arming_ticks)
+                .map_err(|message| {
+                    DefinitionError::new(DefinitionErrorCode::InvalidRequest, id.as_str(), message)
+                })?,
+        );
+        candidate.revision = revision;
+        candidate.definition_hash = candidate.compute_hash();
+        Ok(candidate)
+    }
+
     /// Read one semantic authoring target from the immutable definition.
     #[must_use]
     pub fn semantic_target_value(&self, id: &SemanticId) -> Option<SemanticValue> {
@@ -500,6 +533,15 @@ impl GameDefinition {
                 .as_ref()?
                 .entity(&entity_id)
                 .map(|entity| SemanticValue::Position(entity.position()));
+        }
+        if let Some(entity) = id.as_str().strip_suffix(".arming_ticks") {
+            let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
+            return self
+                .level_definition
+                .as_ref()?
+                .entity(&entity_id)
+                .and_then(level_definition::LevelEntityDefinition::absence_countdown)
+                .map(|config| SemanticValue::Integer(i64::from(config.arming_ticks())));
         }
         if let Some(objective) = id.as_str().strip_suffix(".condition") {
             let objective_id = level_definition::LevelObjectiveId::parse(objective).ok()?;
@@ -588,6 +630,90 @@ impl GameDefinition {
                 SemanticId::parse(&format!("{}.position", entity.id().as_str()))
                     .ok()
                     .and_then(|id| self.level_entity_position_descriptor(&id))
+            })
+            .collect()
+    }
+
+    /// Describe one package-present absence-countdown arming delay.
+    #[must_use]
+    pub fn level_countdown_arming_ticks_descriptor(
+        &self,
+        id: &SemanticId,
+    ) -> Option<SemanticDescriptor> {
+        let entity_id = id.as_str().strip_suffix(".arming_ticks")?;
+        let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
+        let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
+        let config = entity.absence_countdown()?;
+        let writable = matches!(
+            config.arming_ticks_access(),
+            level_definition::LevelEntityParameterAccess::SessionReset
+        );
+        let target_id = id.as_str().to_owned();
+        Some(SemanticDescriptor {
+            id: id.clone(),
+            descriptor_version: 1,
+            kind: DescriptorKind::Mechanic,
+            value_type: ValueType::Integer,
+            unit: Some("entity_visits".to_owned()),
+            default_value: SemanticValue::Integer(i64::from(config.default_arming_ticks())),
+            minimum: Some(1),
+            maximum: Some(i64::from(i32::MAX)),
+            enum_values: Vec::new(),
+            access: if writable {
+                Access::Writable
+            } else {
+                Access::ReadOnly
+            },
+            mutation_timing: MutationTiming::SessionReset,
+            determinism_role: "immutable per-instance mechanic configuration".to_owned(),
+            dependencies: vec![
+                entity.id().as_str().to_owned(),
+                "package absence-countdown runtime binding".to_owned(),
+            ],
+            side_effects: if writable {
+                vec![
+                    "already-open sessions remain unchanged until explicit reopen/reset".to_owned(),
+                    "ordinary countdown callbacks use the authored arming delay".to_owned(),
+                ]
+            } else {
+                Vec::new()
+            },
+            scope: format!("stable absence countdown {}", entity.id().as_str()),
+            provenance_origin: "package semantic level definition".to_owned(),
+            provenance_content_hash: self.package_graph_hash.clone(),
+            temporal_contract: Some(TemporalContract {
+                dispatch_phase: "definition_publication".to_owned(),
+                dispatch_key: target_id.clone(),
+                ordinary_producer: "validated SetMechanicCountdown candidate".to_owned(),
+                handler: "guarded atomic definition compare-and-swap".to_owned(),
+                same_pass_epilogue:
+                    "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
+                following_pass_cleanup: "explicit reset/reopen creates a new runtime generation; the package-bound countdown reads the authored delay on its next arming visit"
+                    .to_owned(),
+                authoritative_reads: vec![target_id],
+                authoritative_writes: vec![
+                    "immutable LevelDefinition absence-countdown configuration".to_owned(),
+                ],
+                rng_and_event_effects:
+                    "none during publication; countdown audio/group effects remain scheduler-owned"
+                        .to_owned(),
+            }),
+            summary: "Clear-family visits loaded when this absence countdown arms.".to_owned(),
+        })
+    }
+
+    /// Describe every absence-countdown arming target in level order.
+    #[must_use]
+    pub fn level_countdown_arming_ticks_descriptors(&self) -> Vec<SemanticDescriptor> {
+        self.level_definition
+            .as_ref()
+            .into_iter()
+            .flat_map(level_definition::LevelDefinition::entities)
+            .filter(|entity| entity.absence_countdown().is_some())
+            .filter_map(|entity| {
+                SemanticId::parse(&format!("{}.arming_ticks", entity.id().as_str()))
+                    .ok()
+                    .and_then(|id| self.level_countdown_arming_ticks_descriptor(&id))
             })
             .collect()
     }

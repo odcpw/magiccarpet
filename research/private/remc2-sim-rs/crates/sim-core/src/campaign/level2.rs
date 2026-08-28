@@ -4464,6 +4464,52 @@ impl Level2ResetSession {
             })
     }
 
+    fn countdown_arming_ticks_for_source_slot(
+        &self,
+        source_slot: u16,
+    ) -> std::result::Result<i32, String> {
+        let Some(level) = self.session.definition.semantic_level() else {
+            return Ok(16);
+        };
+        let authored_record = self
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_switch_producers
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .map(|source| source.authored_index);
+        let entity_id = authored_record
+            .and_then(|authored_record| {
+                self.session
+                    .definition
+                    .mechanic_entity_for_authored_record(authored_record)
+            })
+            .or_else(|| {
+                self.session
+                    .definition
+                    .mechanic_entity_for_initial_source_slot(source_slot)
+            })
+            .ok_or_else(|| {
+                format!("countdown source slot {source_slot} has no package-bound semantic entity")
+            })?;
+        let ticks = level
+            .entity(entity_id)
+            .and_then(|entity| entity.absence_countdown())
+            .ok_or_else(|| {
+                format!(
+                    "countdown source slot {source_slot} semantic entity {} has no countdown configuration",
+                    entity_id.as_str()
+                )
+            })?
+            .arming_ticks();
+        i32::try_from(ticks).map_err(|_| {
+            format!("countdown source slot {source_slot} arming delay {ticks} exceeds source width")
+        })
+    }
+
     fn countdown_observed_creature_present(
         &self,
         source_slot: u16,
@@ -4749,6 +4795,22 @@ impl Level2ResetSession {
         target_group: u16,
     ) -> std::result::Result<(), String> {
         self.consume_authored_group(0, 0, target_group)
+    }
+
+    /// Hide the five real Level-3 stage Worm roots so the package-present
+    /// imported absence countdown can be exercised through its ordinary
+    /// scheduler path. The source rows and countdown carrier remain otherwise
+    /// untouched.
+    #[cfg(test)]
+    pub(crate) fn hide_imported_stage_worm_roots_for_test(&mut self) -> usize {
+        let mut hidden = 0;
+        for source in &mut self.session.state.live.economy.entities {
+            if source.active && source.class == 5 && source.model == 3 && source.action == 31 {
+                source.disable_drawing();
+                hidden += 1;
+            }
+        }
+        hidden
     }
 
     /// Evaluate every participating owner's remaining Level 2 objective
@@ -12777,6 +12839,7 @@ impl Level2ResetSession {
         source_slot: u16,
         observed_creature_present: bool,
     ) -> std::result::Result<(), String> {
+        let arming_ticks = self.countdown_arming_ticks_for_source_slot(source_slot)?;
         let (target_group, outcome) = {
             let source = self
                 .session
@@ -12799,8 +12862,11 @@ impl Level2ResetSession {
                 })?;
             let target_group = source.source_id;
             let mut timer = source.source_dword_10();
-            let outcome =
-                countdown_switch::step_absence_countdown(&mut timer, observed_creature_present);
+            let outcome = countdown_switch::step_absence_countdown(
+                &mut timer,
+                observed_creature_present,
+                arming_ticks,
+            );
             source.set_source_dword_10(timer);
             (target_group, outcome)
         };
@@ -12831,6 +12897,7 @@ impl Level2ResetSession {
         source_slot: u16,
         observed_creature_present: bool,
     ) -> std::result::Result<(), String> {
+        let arming_ticks = self.countdown_arming_ticks_for_source_slot(source_slot)?;
         let (model, target_group, outcome) = {
             let source = self
                 .session
@@ -12855,6 +12922,7 @@ impl Level2ResetSession {
             let outcome = countdown_switch::step_absence_countdown(
                 &mut source.dword_0x10,
                 observed_creature_present,
+                arming_ticks,
             );
             (source.model, source.stage_tag, outcome)
         };
@@ -22050,7 +22118,12 @@ mod tests {
             .live
             .economy
             .entities[247];
-        assert_eq!(producer.source_dword_10(), 1);
+        assert_eq!(
+            producer.source_dword_10(),
+            1,
+            "countdown events after the fire window: {:#?}",
+            campaign.events()
+        );
         assert!(producer.drawing_disabled());
         assert!(producer.active);
         assert_eq!(producer.phase, phase_before.wrapping_add(17));

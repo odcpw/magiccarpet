@@ -146,6 +146,12 @@ pub enum DefinitionOperation {
         #[serde(default)]
         expected_condition: Option<ObjectiveCondition>,
     },
+    SetMechanicCountdown {
+        entity: LevelEntityId,
+        arming_ticks: u32,
+        #[serde(default)]
+        expected_arming_ticks: Option<u32>,
+    },
 }
 
 impl DefinitionOperation {
@@ -217,6 +223,24 @@ impl DefinitionOperation {
                     "describe": "game describe --id <objective-id>.condition",
                     "read_back": "game get --id <objective-id>.condition"
                 },
+                {
+                    "operation": "set_mechanic_countdown",
+                    "required_fields": ["entity", "arming_ticks"],
+                    "optional_fields": ["expected_arming_ticks"],
+                    "entity_ids": "game entities -> data.entities[].id",
+                    "target_id": "<entity-id>.arming_ticks",
+                    "arming_ticks": {
+                        "type": "integer",
+                        "unit": "entity_visits",
+                        "minimum": 1,
+                        "maximum": i32::MAX,
+                    },
+                    "expected_arming_ticks": "same type, unit, and bounds as arming_ticks",
+                    "writable_when": "entity carries a session-reset absence-countdown configuration",
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id <entity-id>.arming_ticks",
+                    "read_back": "game get --id <entity-id>.arming_ticks",
+                },
             ],
         })
     }
@@ -234,6 +258,10 @@ impl DefinitionOperation {
                 SemanticId::parse(&format!("{}.condition", objective.as_str()))
                     .expect("validated objective ID plus condition is a semantic target")
             }
+            Self::SetMechanicCountdown { entity, .. } => {
+                SemanticId::parse(&format!("{}.arming_ticks", entity.as_str()))
+                    .expect("validated entity ID plus arming_ticks is a semantic target")
+            }
         }
     }
 
@@ -246,6 +274,7 @@ impl DefinitionOperation {
                     ..
                 } | Self::MoveEntity { .. }
                     | Self::PutObjective { .. }
+                    | Self::SetMechanicCountdown { .. }
             )
         {
             return Err(DefinitionError::new(
@@ -329,6 +358,46 @@ impl DefinitionOperation {
                 expected_condition: *expected_condition,
             });
         }
+        if let Self::SetMechanicCountdown {
+            entity,
+            arming_ticks,
+            expected_arming_ticks,
+        } = self
+        {
+            let id = self.target_id();
+            let descriptor = definition
+                .level_countdown_arming_ticks_descriptor(&id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownSemanticId,
+                        entity.as_str(),
+                        "countdown update names no absence mechanic in the active level definition",
+                    )
+                })?;
+            if descriptor.access != Access::Writable {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    entity.as_str(),
+                    "absence-countdown delay has no runtime consumer in this package",
+                ));
+            }
+            descriptor.validate_value(
+                &SemanticValue::Integer(i64::from(*arming_ticks)),
+                id.as_str(),
+            )?;
+            if let Some(expected_arming_ticks) = expected_arming_ticks {
+                descriptor.validate_value(
+                    &SemanticValue::Integer(i64::from(*expected_arming_ticks)),
+                    "expected_arming_ticks",
+                )?;
+            }
+            return Ok(ResolvedOperation::MechanicCountdownSet {
+                id,
+                entity: entity.clone(),
+                arming_ticks: *arming_ticks,
+                expected_arming_ticks: *expected_arming_ticks,
+            });
+        }
         let (id, value, expected_value) = match self {
             Self::SetInteger {
                 parameter,
@@ -363,6 +432,9 @@ impl DefinitionOperation {
             ),
             Self::MoveEntity { .. } => unreachable!("entity moves return above"),
             Self::PutObjective { .. } => unreachable!("objective puts return above"),
+            Self::SetMechanicCountdown { .. } => {
+                unreachable!("mechanic countdown updates return above")
+            }
         };
         Ok(ResolvedOperation::CatalogReplacement {
             id,
@@ -390,6 +462,12 @@ pub(crate) enum ResolvedOperation {
         objective: LevelObjectiveId,
         condition: ObjectiveCondition,
         expected_condition: Option<ObjectiveCondition>,
+    },
+    MechanicCountdownSet {
+        id: SemanticId,
+        entity: LevelEntityId,
+        arming_ticks: u32,
+        expected_arming_ticks: Option<u32>,
     },
 }
 

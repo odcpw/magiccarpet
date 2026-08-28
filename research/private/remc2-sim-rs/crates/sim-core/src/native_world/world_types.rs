@@ -3739,6 +3739,8 @@ impl NativeWorldInspection {
             initial_source_switches: definition.initial_switch_bindings().clone(),
             authored_mechanics: definition.mechanic_bindings().clone(),
             initial_source_mechanics: definition.initial_mechanic_bindings().clone(),
+            authored_mechanic_entities: definition.mechanic_entity_bindings().clone(),
+            initial_source_mechanic_entities: definition.initial_mechanic_entity_bindings().clone(),
         });
         Ok(session)
     }
