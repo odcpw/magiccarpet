@@ -1313,9 +1313,11 @@ uint32_t mc_sim_fire_sequence(void);
 uint8_t mc_sim_last_resolution(void);
 
 /*
- * Rust-owned outer game runtime ABI v1. The same handle moves through Title,
- * Loading and Playing. Once Playing, the mc_game_session_*_v1 functions below
- * address the nested authoritative GameSession through this handle.
+ * Rust-owned outer game runtime ABI. The same handle moves through Title,
+ * Loading, Playing and a quiescent Paused boundary. Once Playing, the
+ * mc_game_session_*_v1 functions below address the nested authoritative
+ * GameSession through this handle. Paused frames are not yet part of this
+ * contract.
  */
 int32_t mc_game_runtime_contract_json_v1(
     uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
@@ -1328,6 +1330,10 @@ int32_t mc_game_runtime_new_game_v1(
     const uint8_t *package_dir, uint32_t package_dir_len,
     const uint8_t *owner_cache_path, uint32_t owner_cache_path_len);
 int32_t mc_game_runtime_open_level_v1(
+    uint64_t handle, uint64_t generation);
+int32_t mc_game_runtime_pause_v1(
+    uint64_t handle, uint64_t generation);
+int32_t mc_game_runtime_resume_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_destroy_v1(uint64_t handle);
 

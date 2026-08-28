@@ -18,7 +18,7 @@ use sim_core::{
 };
 use sim_session::{GameSession, OpenSessionError};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v1";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v2";
 
 pub(super) struct RuntimeRecord {
     runtime: GameRuntime<Mc2CampaignBackend>,
@@ -128,6 +128,28 @@ impl RuntimeRecord {
         Ok(())
     }
 
+    fn pause(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
+        self.validate_transition(handle, generation, RuntimeMode::Playing)?;
+        self.runtime
+            .pause(RuntimeGuard {
+                runtime_id: handle,
+                generation,
+            })
+            .map_err(map_transition_error)?;
+        Ok(())
+    }
+
+    fn resume(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
+        self.validate_transition(handle, generation, RuntimeMode::Paused)?;
+        self.runtime
+            .resume(RuntimeGuard {
+                runtime_id: handle,
+                generation,
+            })
+            .map_err(map_transition_error)?;
+        Ok(())
+    }
+
     fn validate_transition(
         &self,
         handle: u64,
@@ -232,6 +254,7 @@ fn map_transition_error(error: RuntimeTransitionError) -> AbiError {
         RuntimeTransitionError::InvalidRuntimeId | RuntimeTransitionError::Guard(_) => {
             MC_STATUS_UNKNOWN_HANDLE
         }
+        RuntimeTransitionError::SessionGuard(_) => MC_STATUS_GENERATION_MISMATCH,
         RuntimeTransitionError::InvalidMode { .. } => MC_STATUS_INVALID_ARGUMENT,
         RuntimeTransitionError::GenerationExhausted => MC_STATUS_GENERATION_MISMATCH,
     };
@@ -277,11 +300,11 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 1,
+            "transport_version": 2,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
-            "modes": ["title", "loading", "playing"],
-            "transitions": ["new_game", "open_level"],
+            "modes": ["title", "loading", "playing", "paused"],
+            "transitions": ["new_game", "open_level", "pause", "resume"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
             "limits": {
@@ -352,6 +375,16 @@ pub extern "C" fn mc_game_runtime_open_level_v1(handle: u64, generation: u64) ->
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_pause_v1(handle: u64, generation: u64) -> i32 {
+    boundary(|| with_runtime_mut(handle, |runtime| runtime.pause(handle, generation)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_resume_v1(handle: u64, generation: u64) -> i32 {
+    boundary(|| with_runtime_mut(handle, |runtime| runtime.resume(handle, generation)))
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_destroy_v1(handle: u64) -> i32 {
     boundary(|| {
         let entry = runtime_arc(handle)?;
@@ -378,7 +411,8 @@ pub extern "C" fn mc_game_runtime_destroy_v1(handle: u64) -> i32 {
 mod tests {
     use super::*;
     use crate::native_v2::game_session_abi::{
-        mc_game_session_destroy_v1, mc_game_session_snapshot_json_v1, mc_game_session_step_json_v1,
+        mc_game_session_destroy_v1, mc_game_session_reset_v1, mc_game_session_snapshot_json_v1,
+        mc_game_session_step_json_v1,
     };
     use serde_json::Value;
     use std::path::PathBuf;
@@ -434,11 +468,20 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v1"
+            "carpet-flight-game-runtime/v2"
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v1"
+            "carpet-flight-native-game-runtime-json/v2"
+        );
+        assert_eq!(contract["transport_version"], 2);
+        assert_eq!(
+            contract["modes"],
+            serde_json::json!(["title", "loading", "playing", "paused"])
+        );
+        assert_eq!(
+            contract["transitions"],
+            serde_json::json!(["new_game", "open_level", "pause", "resume"])
         );
         assert_eq!(
             contract["playing_session_transport"],
@@ -513,6 +556,109 @@ mod tests {
             MC_STATUS_UNKNOWN_HANDLE
         );
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_UNKNOWN_HANDLE);
+    }
+
+    #[test]
+    fn runtime_pause_resume_freezes_same_handle_campaign_session() {
+        let mut handle = 0_u64;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let package = utf8(&level_one_package());
+        assert_eq!(
+            mc_game_runtime_new_game_v1(
+                handle,
+                1,
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let playing = identity(handle);
+        let before = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+
+        assert_eq!(
+            mc_game_runtime_pause_v1(handle, 2),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(identity(handle), playing);
+        assert_eq!(
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            }),
+            before
+        );
+
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        let paused = identity(handle);
+        assert_eq!(paused["mode"], "paused");
+        assert_eq!(paused["generation"], "4");
+        assert_eq!(paused["session"]["session_id"], handle.to_string());
+        assert_eq!(paused["session"]["generation"], "2");
+        assert_eq!(paused["session"]["tick"], "0");
+        assert_eq!(
+            paused["session"]["definition_hash"],
+            playing["session"]["definition_hash"]
+        );
+        let paused_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+        assert_eq!(paused_snapshot["identity"], paused["session"]);
+        assert_eq!(paused_snapshot["value"], before["value"]);
+
+        let command = br#"{"longitudinal":"accelerate"}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 2, 0, command.as_ptr(), command.len() as u32,),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            mc_game_session_reset_v1(handle, 2, 0),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(identity(handle), paused);
+        assert_eq!(
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            }),
+            paused_snapshot
+        );
+
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        let resumed = identity(handle);
+        assert_eq!(resumed["mode"], "playing");
+        assert_eq!(resumed["generation"], "5");
+        assert_eq!(resumed["session"]["generation"], "3");
+        assert_eq!(resumed["session"]["tick"], "0");
+        assert_eq!(
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            })["value"],
+            before["value"]
+        );
+
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 2, 0, command.as_ptr(), command.len() as u32,),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 3, 0, command.as_ptr(), command.len() as u32,),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            })["identity"]["tick"],
+            "1"
+        );
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+
+        // No-Claim: this transport exposes only a quiescent pause boundary.
+        // It has no paused_frame export and therefore proves no MC2 pre-gate
+        // RNG/objective/presentation/audio work, replay-visible paused time,
+        // L2/L3 pause policy, or application pause UI.
     }
 
     #[test]

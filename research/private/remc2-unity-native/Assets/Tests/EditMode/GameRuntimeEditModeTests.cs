@@ -98,5 +98,80 @@ namespace MagicCarpet.Native.Tests
                 runtime.Dispose();
             }
         }
+
+        [Test]
+        [Timeout(180000)]
+        public void RustGameRuntimePauseResumeFreezesTheSameLevelOneSession()
+        {
+            using var runtime = new GameRuntimeTransport();
+            runtime.NewGame(LevelOnePackage);
+            var playing = runtime.OpenLevel();
+            var before = runtime.CampaignSnapshot();
+
+            var paused = runtime.Pause();
+            Assert.That(paused.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+            Assert.That(paused.generation, Is.EqualTo("4"));
+            Assert.That(paused.session.session_id, Is.EqualTo(playing.session.session_id));
+            Assert.That(paused.session.generation, Is.EqualTo("2"));
+            Assert.That(paused.session.tick, Is.EqualTo("0"));
+            Assert.That(
+                paused.session.definition_hash,
+                Is.EqualTo(playing.session.definition_hash));
+
+            paused.mode = GameRuntimeTransport.PlayingMode;
+            Assert.That(
+                runtime.IdentitySnapshot().mode,
+                Is.EqualTo(GameRuntimeTransport.PausedMode));
+
+            var command = Encoding.UTF8.GetBytes("{}");
+            Assert.That(
+                NativeSim.mc_game_session_step_json_v1(
+                    runtime.Handle,
+                    2,
+                    0,
+                    command,
+                    checked((uint)command.Length)),
+                Is.EqualTo(NativeSim.InvalidArgument));
+            Assert.That(
+                NativeSim.mc_game_session_reset_v1(runtime.Handle, 2, 0),
+                Is.EqualTo(NativeSim.InvalidArgument));
+            var frozen = runtime.CampaignSnapshot();
+            Assert.That(frozen.identity.tick, Is.EqualTo(before.identity.tick));
+            Assert.That(frozen.value.state_hash, Is.EqualTo(before.value.state_hash));
+            Assert.That(frozen.value.terrain_hash, Is.EqualTo(before.value.terrain_hash));
+            Assert.That(
+                frozen.value.effect_journal_sha256,
+                Is.EqualTo(before.value.effect_journal_sha256));
+            Assert.That(frozen.value.player_pose.x, Is.EqualTo(before.value.player_pose.x));
+            Assert.That(frozen.value.player_pose.y, Is.EqualTo(before.value.player_pose.y));
+            Assert.That(frozen.value.player_pose.z, Is.EqualTo(before.value.player_pose.z));
+
+            var resumed = runtime.Resume();
+            Assert.That(resumed.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+            Assert.That(resumed.generation, Is.EqualTo("5"));
+            Assert.That(resumed.session.generation, Is.EqualTo("3"));
+            Assert.That(resumed.session.tick, Is.EqualTo("0"));
+            Assert.That(
+                NativeSim.mc_game_session_step_json_v1(
+                    runtime.Handle,
+                    2,
+                    0,
+                    command,
+                    checked((uint)command.Length)),
+                Is.EqualTo(NativeSim.GenerationMismatch));
+            Assert.That(
+                NativeSim.mc_game_session_step_json_v1(
+                    runtime.Handle,
+                    3,
+                    0,
+                    command,
+                    checked((uint)command.Length)),
+                Is.EqualTo(NativeSim.Ok));
+            Assert.That(runtime.IdentitySnapshot().session.tick, Is.EqualTo("1"));
+
+            // No-Claim: this is a quiescent pause boundary only. There is no
+            // paused_frame transport or MC2 pre-gate RNG/objective/presentation
+            // service, replay-visible paused time, or production pause UI.
+        }
     }
 }

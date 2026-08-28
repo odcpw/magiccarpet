@@ -5,12 +5,13 @@
 
 use crate::game_definition::GameDefinition;
 use crate::game_session::{
-    GameAdapter, GameSession, GameSessionBackend, OpenSessionError, SessionIdentity,
+    GameAdapter, GameSession, GameSessionBackend, OpenSessionError, SessionGuardError,
+    SessionIdentity,
 };
 use serde::Serialize;
 use std::{error::Error, fmt, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v1";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v2";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -19,13 +20,14 @@ where
     serializer.serialize_str(&value.to_string())
 }
 
-/// The three runtime modes established by this first outer-ownership slice.
+/// Runtime modes established by the guarded outer owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMode {
     Title,
     Loading,
     Playing,
+    Paused,
 }
 
 impl RuntimeMode {
@@ -35,6 +37,7 @@ impl RuntimeMode {
             Self::Title => "title",
             Self::Loading => "loading",
             Self::Playing => "playing",
+            Self::Paused => "paused",
         }
     }
 }
@@ -137,6 +140,7 @@ impl Error for RuntimeGuardError {}
 pub enum RuntimeTransitionError {
     InvalidRuntimeId,
     Guard(Box<RuntimeGuardError>),
+    SessionGuard(Box<SessionGuardError>),
     InvalidMode {
         expected: RuntimeMode,
         actual: RuntimeMode,
@@ -149,6 +153,7 @@ impl fmt::Display for RuntimeTransitionError {
         match self {
             Self::InvalidRuntimeId => formatter.write_str("INVALID_RUNTIME_ID: runtime ID is zero"),
             Self::Guard(error) => error.fmt(formatter),
+            Self::SessionGuard(error) => error.fmt(formatter),
             Self::InvalidMode { expected, actual } => write!(
                 formatter,
                 "INVALID_RUNTIME_MODE: expected {}, found {}",
@@ -184,8 +189,13 @@ impl<E: Error + 'static> Error for OpenLevelError<E> {}
 #[derive(Debug)]
 enum RuntimeState<B> {
     Title,
-    Loading { definition: Arc<GameDefinition> },
-    Playing(GameSession<B>),
+    Loading {
+        definition: Arc<GameDefinition>,
+    },
+    Playing {
+        session: GameSession<B>,
+        paused: bool,
+    },
 }
 
 /// Rust-owned outer runtime state above the existing gameplay session.
@@ -223,9 +233,15 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 Some(RuntimeDefinitionIdentity::from_definition(definition)),
                 None,
             ),
-            RuntimeState::Playing(session) => {
-                (RuntimeMode::Playing, None, Some(session.identity()))
-            }
+            RuntimeState::Playing { session, paused } => (
+                if *paused {
+                    RuntimeMode::Paused
+                } else {
+                    RuntimeMode::Playing
+                },
+                None,
+                Some(session.identity()),
+            ),
         };
         RuntimeIdentity {
             runtime_contract: GAME_RUNTIME_CONTRACT,
@@ -297,16 +313,41 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         let next_generation = self.next_generation().map_err(OpenLevelError::Transition)?;
         let session = GameSession::open(adapter, definition, session_id, input)
             .map_err(OpenLevelError::Session)?;
-        self.state = RuntimeState::Playing(session);
+        self.state = RuntimeState::Playing {
+            session,
+            paused: false,
+        };
         self.generation = next_generation;
         Ok(self.identity())
     }
 
-    /// Borrow the sole gameplay authority only while the runtime is playing.
+    /// Enter a quiescent pause boundary without executing a gameplay or
+    /// package-specific paused frame.
+    ///
+    /// The same definition-bound session remains owned by this runtime. Only
+    /// the outer and nested lifecycle generations advance; backend state and
+    /// the gameplay tick remain unchanged.
+    pub fn pause(
+        &mut self,
+        guard: RuntimeGuard,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.set_paused(guard, false, true)
+    }
+
+    /// Leave the quiescent pause boundary without executing a gameplay step.
+    pub fn resume(
+        &mut self,
+        guard: RuntimeGuard,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.set_paused(guard, true, false)
+    }
+
+    /// Observationally borrow the sole gameplay authority while the runtime is
+    /// playing or paused.
     #[must_use]
     pub fn session(&self) -> Option<&GameSession<B>> {
         match &self.state {
-            RuntimeState::Playing(session) => Some(session),
+            RuntimeState::Playing { session, .. } => Some(session),
             RuntimeState::Title | RuntimeState::Loading { .. } => None,
         }
     }
@@ -316,9 +357,49 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     /// every gameplay mutation.
     pub fn session_mut(&mut self) -> Option<&mut GameSession<B>> {
         match &mut self.state {
-            RuntimeState::Playing(session) => Some(session),
-            RuntimeState::Title | RuntimeState::Loading { .. } => None,
+            RuntimeState::Playing {
+                session,
+                paused: false,
+            } => Some(session),
+            RuntimeState::Playing { paused: true, .. }
+            | RuntimeState::Title
+            | RuntimeState::Loading { .. } => None,
         }
+    }
+
+    fn set_paused(
+        &mut self,
+        guard: RuntimeGuard,
+        expected_paused: bool,
+        next_paused: bool,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let expected_mode = if expected_paused {
+            RuntimeMode::Paused
+        } else {
+            RuntimeMode::Playing
+        };
+        let actual_mode = self.identity().mode;
+        if actual_mode != expected_mode {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: expected_mode,
+                actual: actual_mode,
+            });
+        }
+        let next_runtime_generation = self.next_generation()?;
+        let RuntimeState::Playing { session, paused } = &mut self.state else {
+            unreachable!("validated runtime mode owns a gameplay session")
+        };
+        let session_guard = session.identity().guard();
+        session
+            .advance_lifecycle_generation(session_guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?;
+        *paused = next_paused;
+        self.generation = next_runtime_generation;
+        Ok(self.identity())
     }
 
     fn next_generation(&self) -> Result<u64, RuntimeTransitionError> {
@@ -361,6 +442,7 @@ mod tests {
             spec::CampaignSelection,
         },
         game_definition::{DefinitionErrorCode, default_catalog},
+        game_session::{GameCommand, GameSessionError, SessionGuardErrorCode},
     };
     use std::path::PathBuf;
 
@@ -465,5 +547,96 @@ mod tests {
                 .identity,
             CampaignSelection::LEVEL1
         );
+    }
+
+    #[test]
+    fn runtime_pause_resume_freezes_real_level_one_and_invalidates_session_guards() {
+        let catalog = default_catalog().unwrap();
+        let level_one = level_one_package();
+        let definition = Arc::new(load_mc2_campaign(&level_one, &catalog).unwrap());
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(91).unwrap();
+        let loading = runtime
+            .new_game(runtime.identity().guard(), Arc::clone(&definition))
+            .unwrap();
+        let playing = runtime
+            .open_level(
+                loading.guard(),
+                &Mc2CampaignAdapter,
+                Mc2CampaignInputs::new(level_one),
+                91,
+            )
+            .unwrap();
+        let before = runtime.session().unwrap().snapshot();
+        let pre_pause_session_guard = before.identity.guard();
+
+        let paused = runtime.pause(playing.guard()).unwrap();
+        assert_eq!(paused.mode, RuntimeMode::Paused);
+        assert_eq!(paused.generation, 4);
+        let paused_session = paused.session.as_ref().unwrap();
+        assert_eq!(paused_session.session_id, before.identity.session_id);
+        assert_eq!(paused_session.generation, 2);
+        assert_eq!(paused_session.tick, before.identity.tick);
+        assert_eq!(
+            paused_session.definition_hash,
+            before.identity.definition_hash
+        );
+        assert!(runtime.session_mut().is_none());
+        let paused_snapshot = runtime.session().unwrap().snapshot();
+        assert_eq!(paused_snapshot.value, before.value);
+        assert_eq!(paused_snapshot.identity, *paused_session);
+        assert_eq!(runtime.session().unwrap().snapshot(), paused_snapshot);
+
+        let before_stale_pause = runtime.identity();
+        let stale_pause = runtime.pause(playing.guard());
+        assert!(matches!(
+            stale_pause,
+            Err(RuntimeTransitionError::Guard(error))
+                if error.code == RuntimeGuardErrorCode::GenerationMismatch
+        ));
+        assert_eq!(runtime.identity(), before_stale_pause);
+        assert_eq!(runtime.session().unwrap().snapshot(), paused_snapshot);
+
+        let resumed = runtime.pause(paused.guard());
+        assert!(matches!(
+            resumed,
+            Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing,
+                actual: RuntimeMode::Paused,
+            })
+        ));
+        assert_eq!(runtime.identity(), before_stale_pause);
+
+        let resumed = runtime.resume(paused.guard()).unwrap();
+        assert_eq!(resumed.mode, RuntimeMode::Playing);
+        assert_eq!(resumed.generation, 5);
+        let resumed_session = resumed.session.as_ref().unwrap();
+        assert_eq!(resumed_session.generation, 3);
+        assert_eq!(resumed_session.tick, before.identity.tick);
+        let after_resume = runtime.session().unwrap().snapshot();
+        assert_eq!(after_resume.value, before.value);
+
+        let stale_session_step = runtime
+            .session_mut()
+            .unwrap()
+            .step(pre_pause_session_guard, GameCommand::default());
+        assert!(matches!(
+            stale_session_step,
+            Err(GameSessionError::Guard(error))
+                if error.code == SessionGuardErrorCode::GenerationMismatch
+        ));
+        assert_eq!(runtime.session().unwrap().snapshot(), after_resume);
+
+        let current_guard = runtime.session().unwrap().identity().guard();
+        let stepped = runtime
+            .session_mut()
+            .unwrap()
+            .step(current_guard, GameCommand::default())
+            .unwrap();
+        assert_eq!(stepped.identity.tick, before.identity.tick + 1);
+
+        // No-Claim: this gate proves only the quiescent runtime boundary and
+        // guard invalidation. There is no paused_frame operation here, so it
+        // does not prove the L1 pre-gate RNG/objective/presentation/audio
+        // prefix, replay-visible paused time, L2/L3 pause policy, or pause UI.
     }
 }

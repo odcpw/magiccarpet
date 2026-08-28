@@ -246,6 +246,17 @@ pub struct SessionIdentity {
     pub tick: u64,
 }
 
+impl SessionIdentity {
+    #[must_use]
+    pub const fn guard(&self) -> SessionGuard {
+        SessionGuard {
+            session_id: self.session_id,
+            generation: self.generation,
+            expected_tick: self.tick,
+        }
+    }
+}
+
 /// One backend projection bound to the exact identity at which it was read.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SessionObservation<T> {
@@ -539,6 +550,36 @@ impl<B: GameSessionBackend> GameSession<B> {
         definition: Arc<GameDefinition>,
     ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
         self.reset_or_reopen(guard, definition)
+    }
+
+    /// Advance only the session lifecycle generation for an outer runtime
+    /// boundary such as pause or resume.
+    ///
+    /// The definition, backend, tick, journals, RNG, and snapshot payload are
+    /// unchanged. This method is intentionally not a gameplay command and is
+    /// not exposed by the neutral session ABI; it lets the sole outer runtime
+    /// invalidate commands captured before a lifecycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale guard or generation overflow without changing the
+    /// session.
+    #[doc(hidden)]
+    pub fn advance_lifecycle_generation(
+        &mut self,
+        guard: SessionGuard,
+    ) -> Result<SessionObservation<B::Snapshot>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        let next_generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| SessionGuardError {
+                code: SessionGuardErrorCode::GenerationExhausted,
+                expected: self.identity(),
+                actual: guard,
+            })?;
+        self.generation = next_generation;
+        Ok(self.snapshot())
     }
 
     fn reset_or_reopen(

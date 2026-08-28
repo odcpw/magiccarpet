@@ -16,12 +16,13 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v1";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v2";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v1";
+            "carpet-flight-native-game-runtime-json/v2";
         internal const string TitleMode = "title";
         internal const string LoadingMode = "loading";
         internal const string PlayingMode = "playing";
+        internal const string PausedMode = "paused";
 
         private delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
 
@@ -180,11 +181,30 @@ namespace MagicCarpet.Native
             return identity;
         }
 
+        internal Identity Pause()
+        {
+            return SetPaused(
+                PlayingMode,
+                PausedMode,
+                NativeSim.mc_game_runtime_pause_v1,
+                "pause game runtime");
+        }
+
+        internal Identity Resume()
+        {
+            return SetPaused(
+                PausedMode,
+                PlayingMode,
+                NativeSim.mc_game_runtime_resume_v1,
+                "resume game runtime");
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignSnapshot()
         {
-            if (Current?.mode != PlayingMode)
+            if (Current?.mode != PlayingMode && Current?.mode != PausedMode)
             {
-                throw new InvalidOperationException("campaign snapshot requires Playing mode");
+                throw new InvalidOperationException(
+                    "campaign snapshot requires Playing or Paused mode");
             }
             var snapshot = ReadJson<EngineSessionTransport.CampaignSnapshotObservation>(
                 (IntPtr buffer, uint capacity, out uint length) =>
@@ -225,7 +245,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 1 ||
+                contract.transport_version != 2 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
@@ -235,9 +255,11 @@ namespace MagicCarpet.Native
                 contract.limits.maximum_output_json_bytes != 16 * 1024 * 1024 ||
                 contract.limits.json_length_type != "u32" ||
                 contract.modes == null ||
-                !new[] { TitleMode, LoadingMode, PlayingMode }.SequenceEqual(contract.modes) ||
+                !new[] { TitleMode, LoadingMode, PlayingMode, PausedMode }
+                    .SequenceEqual(contract.modes) ||
                 contract.transitions == null ||
-                !new[] { "new_game", "open_level" }.SequenceEqual(contract.transitions))
+                !new[] { "new_game", "open_level", "pause", "resume" }
+                    .SequenceEqual(contract.transitions))
             {
                 throw new InvalidOperationException("native game runtime contract is unsupported");
             }
@@ -254,7 +276,8 @@ namespace MagicCarpet.Native
         {
             if (identity == null || identity.runtime_contract != RuntimeContract ||
                 ParseCounter(identity.runtime_id, "runtime_id") != handle ||
-                !new[] { TitleMode, LoadingMode, PlayingMode }.Contains(identity.mode))
+                !new[] { TitleMode, LoadingMode, PlayingMode, PausedMode }
+                    .Contains(identity.mode))
             {
                 throw new InvalidOperationException("game runtime identity is incomplete");
             }
@@ -281,6 +304,7 @@ namespace MagicCarpet.Native
                         "definition_revision");
                     break;
                 case PlayingMode:
+                case PausedMode:
                     if (HasDefinitionIdentity(identity) || !HasSessionIdentity(identity))
                     {
                         throw new InvalidOperationException(
@@ -289,6 +313,43 @@ namespace MagicCarpet.Native
                     EngineSessionTransport.ValidateIdentity(identity.session);
                     break;
             }
+        }
+
+        private Identity SetPaused(
+            string expectedMode,
+            string nextMode,
+            Func<ulong, ulong, int> transition,
+            string operation)
+        {
+            if (Current?.mode != expectedMode || !HasSessionIdentity(Current))
+            {
+                throw new InvalidOperationException(
+                    operation + " requires " + expectedMode + " mode");
+            }
+            var before = Current;
+            var beforeRuntimeGeneration = ParseCounter(before.generation, "generation");
+            var beforeSessionGeneration =
+                ParseCounter(before.session.generation, "session_generation");
+            var beforeTick = ParseCounter(before.session.tick, "tick");
+            Check(
+                transition(RequireHandle(), beforeRuntimeGeneration),
+                operation);
+            var identity = IdentitySnapshot();
+            if (identity.mode != nextMode ||
+                ParseCounter(identity.generation, "generation") !=
+                    checked(beforeRuntimeGeneration + 1) ||
+                identity.session.session_id != before.session.session_id ||
+                identity.session.package_graph_hash != before.session.package_graph_hash ||
+                identity.session.definition_hash != before.session.definition_hash ||
+                identity.session.definition_revision != before.session.definition_revision ||
+                ParseCounter(identity.session.generation, "session_generation") !=
+                    checked(beforeSessionGeneration + 1) ||
+                ParseCounter(identity.session.tick, "tick") != beforeTick)
+            {
+                throw new InvalidOperationException(
+                    operation + " did not preserve the bound gameplay session");
+            }
+            return identity;
         }
 
         private static bool HasDefinitionIdentity(Identity identity)
