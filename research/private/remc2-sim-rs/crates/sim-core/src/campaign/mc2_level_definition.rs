@@ -825,7 +825,8 @@ fn bind_private_entity(
                 })?;
                 Mc2MovableRuntimeHint::AuthoredRecord(source_id)
             }
-            LevelEntityKind::Item(ItemKind::ExperienceScroll) => {
+            LevelEntityKind::Item(ItemKind::ExperienceScroll)
+            | LevelEntityKind::Scenery(SceneryKind::ExitPortal) => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
             LevelEntityKind::SpellPickup(_)

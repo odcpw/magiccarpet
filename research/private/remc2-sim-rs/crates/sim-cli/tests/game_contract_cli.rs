@@ -491,7 +491,10 @@ fn reset_live_move_entity_targets_are_package_projected() {
     assert_position_access(level_two, &["spell_pickup.shield.at_138_219"], "read_only");
     assert_position_access(
         level_two,
-        &["item.experience_scroll.at_129_149"],
+        &[
+            "item.experience_scroll.at_129_149",
+            "scenery.exit_portal.at_122_188",
+        ],
         "session_reset",
     );
     let scroll_position = run(&[
@@ -537,6 +540,7 @@ fn reset_live_move_entity_targets_are_package_projected() {
             "scenery.tree.at_100_149",
             "switch.area_entry_trigger.at_218_93",
             "item.experience_scroll.at_160_107",
+            "scenery.exit_portal.at_14_220",
         ],
         "session_reset",
     );
@@ -554,11 +558,15 @@ fn reset_live_move_entity_targets_are_package_projected() {
     );
     assert_position_access(
         level_one,
-        &["item.experience_scroll.at_216_213"],
+        &[
+            "item.experience_scroll.at_216_213",
+            "scenery.exit_portal.at_97_221",
+        ],
         "session_reset",
     );
     // No-Claim: this is the public package-projection gate. The already-focused
-    // Shield, Stone, Tree, imported-trigger, and Experience Scroll authoring tests own
+    // Shield, Stone, Tree, imported-trigger, Experience Scroll, and Exit Portal
+    // authoring tests own
     // publication/reopen/reset and their ordinary consumers; this test does
     // not duplicate those lifecycles.
 }

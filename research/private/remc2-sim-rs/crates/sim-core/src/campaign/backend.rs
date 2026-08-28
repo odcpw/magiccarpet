@@ -1901,6 +1901,7 @@ mod tests {
             vec![
                 "switch.start_area_exit",
                 "item.experience_scroll.at_216_213",
+                "scenery.exit_portal.at_97_221",
                 "item.experience_scroll.at_214_215",
                 "item.experience_scroll.at_214_211",
                 "item.experience_scroll.at_218_211",
@@ -1972,7 +1973,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 26);
+        assert_eq!(level_two_movable.len(), 27);
         assert_eq!(
             level_two_movable
                 .iter()
@@ -2071,7 +2072,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 62);
+        assert_eq!(level_three_movable.len(), 63);
         assert_eq!(
             level_three_movable
                 .iter()
@@ -4657,6 +4658,272 @@ mod tests {
         // constructor, and one ordinary Level 2 XP pickup/hide/reclaim chain.
         // It does not prove organic group-5 activation, every scroll's pickup,
         // spell-experience tuning, other items, save/replay, or Unity rendering.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_exit_portal_and_action12_turns_to_authored_target() {
+        const PORTAL_RECORD: u16 = 132;
+        const TRIGGER_RECORD: u16 = 137;
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let portal_id =
+            sim_definition::adapter::stable_entity_id("scenery.exit_portal.at_97_221").unwrap();
+        let package_tile = TilePosition { x: 97, y: 221 };
+        let authored_tile = TilePosition { x: 75, y: 180 };
+        let package_entity = base.level_definition().unwrap().entity(&portal_id).unwrap();
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-exit-portal-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-exit-portal-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            77,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-exit-portal-placement",
+            &base,
+            "move-level-one-exit-portal",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(portal_id.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(published.revision(), 2);
+        assert_eq!(
+            published
+                .level_definition()
+                .unwrap()
+                .entity(&portal_id)
+                .unwrap()
+                .position(),
+            authored_tile
+        );
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(4)
+            .unwrap();
+        let package_portal = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == PORTAL_RECORD)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            (
+                package_portal.position.x >> 8,
+                package_portal.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y),
+            "publication must not mutate the already-open package session"
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == PORTAL_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(4)
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let authored_portal = compatibility
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == PORTAL_RECORD)
+            .copied()
+            .unwrap();
+        let trigger = compatibility
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == TRIGGER_RECORD)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            (
+                authored_portal.position.x >> 8,
+                authored_portal.position.y >> 8
+            ),
+            (authored_tile.x, authored_tile.y)
+        );
+        assert_eq!((authored_portal.model, authored_portal.action), (3, 8));
+
+        let player = compatibility.state.entity_index;
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, trigger.position)
+            .unwrap();
+        let turns_until_cadence = usize::from((8_u8.wrapping_sub(trigger.phase & 7)) & 7) + 1;
+        for _ in 0..turns_until_cadence {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let exit = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .level_exit_sequence();
+        assert!(exit.active);
+        assert!(!exit.complete);
+        assert_eq!(
+            exit.portal_entity_index,
+            authored_portal.source_entity_index
+        );
+
+        {
+            let state = &mut session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .core
+                .state;
+            state.actual_speed = 0;
+        }
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .level_exit_sequence()
+                .phase,
+            1
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .level_exit_sequence()
+                .phase,
+            3
+        );
+
+        let player_position = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .position;
+        let package_target = crate::Position {
+            x: package_tile.x << 8,
+            y: package_tile.y << 8,
+            z: authored_portal.position.z,
+        };
+        let package_yaw = i16::try_from(crate::heading_for_positions(
+            player_position,
+            package_target,
+        ))
+        .unwrap();
+        let authored_yaw = i16::try_from(crate::heading_for_positions(
+            player_position,
+            authored_portal.position,
+        ))
+        .unwrap();
+        assert_ne!(package_yaw, authored_yaw);
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .yaw = package_yaw;
+        let expected_yaw =
+            package_yaw.wrapping_add(crate::turn_toward(package_yaw, authored_yaw, 11)) & 0x07ff;
+        assert_ne!(expected_yaw, package_yaw);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(compatibility.level_exit_sequence().phase, 3);
+        assert_eq!(compatibility.state.yaw, expected_yaw);
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            reset.level_exit_sequence(),
+            crate::native_world::LevelExitSequence::default()
+        );
+        assert_eq!(
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == PORTAL_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves package-bound placement authoring for all
+        // shared Exit Portal carriers through one real Level 1 constructor,
+        // capture, and position-sensitive action-12 turn after reopen/reset.
+        // It stages group 4 and the player's initial flight pose; it does not
+        // prove organic objectives, the full phase-12 transition, L2/L3 exit
+        // traversal, save/replay, or Unity presentation.
     }
 
     #[test]

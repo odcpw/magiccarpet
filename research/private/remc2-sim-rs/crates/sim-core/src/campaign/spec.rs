@@ -1170,18 +1170,20 @@ impl CampaignDefinition {
                         ),
                     })?;
             if let Mc2MovableRuntimeHint::AuthoredFeature(authored_record) = hint {
-                let LevelEntityKind::Item(expected_kind) = entity.kind() else {
-                    return fail(
-                        ValidationStage::TypedOperations,
-                        format!(
-                            "movable semantic entity {} has an invalid authored-feature carrier",
-                            entity_id.as_str()
-                        ),
-                    );
+                let carrier_matches = match entity.kind() {
+                    LevelEntityKind::Item(expected_kind) => {
+                        semantic_level.item_by_authored_record.get(authored_record)
+                            == Some(&expected_kind)
+                    }
+                    LevelEntityKind::Scenery(expected_kind) => {
+                        semantic_level
+                            .scenery_by_authored_record
+                            .get(authored_record)
+                            == Some(&expected_kind)
+                    }
+                    _ => false,
                 };
-                if semantic_level.item_by_authored_record.get(authored_record)
-                    != Some(&expected_kind)
-                {
+                if !carrier_matches {
                     return fail(
                         ValidationStage::TypedOperations,
                         format!(

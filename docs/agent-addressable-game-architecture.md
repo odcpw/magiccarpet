@@ -375,7 +375,10 @@ partial real implementation, not a completion claim:
   thirty-nine package-present Experience Scroll placements across Levels 1-3
   bind to their immutable authored-feature rows before construction; the
   ordinary class-14 pickup callback consumes the authored location through XP
-  award, same-pass hide and following-pass reclaim. Movement preserves
+  award, same-pass hide and following-pass reclaim. The three package-present
+  Exit Portal placements use the same authored-feature binding; the real exit
+  trigger captures the constructed portal and player action 12 consumes its
+  authored position for transition heading and movement. Movement preserves
   sub-tile position and map membership, plus the shared spell projection for
   spell pickups. Every other placement remains read-only until its own runtime
   materialization binding is implemented;
