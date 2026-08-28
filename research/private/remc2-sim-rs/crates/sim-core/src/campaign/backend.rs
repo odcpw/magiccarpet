@@ -433,6 +433,68 @@ pub struct Mc2RuntimePackageResolver {
 }
 
 impl Mc2RuntimePackageResolver {
+    fn exact_package_for_definition(
+        &self,
+        definition: &GameDefinition,
+    ) -> Result<&ResolvedMc2RuntimePackage, crate::game_runtime::RuntimeTransitionError> {
+        let level_id = definition
+            .runtime_flow()
+            .map(RuntimeFlowDefinition::bound_level_id)
+            .ok_or_else(
+                || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "resolver-bound definition has no semantic runtime flow".to_owned(),
+                },
+            )?;
+        let package = self.package(level_id).ok_or_else(|| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: format!(
+                    "installed package resolver has no binding for {}",
+                    level_id.as_str()
+                ),
+            }
+        })?;
+        if definition.package_graph_hash() != package.definition.package_graph_hash()
+            || definition.definition_hash() != package.definition.definition_hash()
+            || definition.revision() != package.definition.revision()
+        {
+            return Err(
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: format!(
+                        "definition {} is not the resolver's exact installed binding",
+                        level_id.as_str()
+                    ),
+                },
+            );
+        }
+        Ok(package)
+    }
+
+    /// Replace one installed definition only for a resolver-binding negative.
+    /// The returned exact binding must be restored before the positive route.
+    #[cfg(test)]
+    pub(crate) fn replace_exact_definition_for_test(
+        &mut self,
+        definition: Arc<GameDefinition>,
+    ) -> Result<Arc<GameDefinition>, crate::game_runtime::RuntimeTransitionError> {
+        let level_id = definition
+            .runtime_flow()
+            .map(|flow| flow.bound_level_id().clone())
+            .ok_or_else(
+                || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "test replacement definition has no semantic runtime flow".to_owned(),
+                },
+            )?;
+        let package = self.by_level.get_mut(&level_id).ok_or_else(|| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: format!(
+                    "installed package resolver has no binding for {}",
+                    level_id.as_str()
+                ),
+            }
+        })?;
+        Ok(std::mem::replace(&mut package.definition, definition))
+    }
+
     /// Load and close one unordered installed package set over its declared
     /// semantic runtime flow.
     ///
@@ -555,24 +617,8 @@ impl Mc2RuntimePackageResolver {
         crate::game_runtime::OpenLevelError<CampaignBackendError>,
     > {
         runtime.open_level_resolved(guard, &Mc2CampaignAdapter, session_id, |definition| {
-            let level_id = definition
-                .runtime_flow()
-                .map(RuntimeFlowDefinition::bound_level_id)
-                .ok_or_else(
-                    || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
-                        message: "loading runtime has no resolver-bound semantic level".to_owned(),
-                    },
-                )?;
-            self.package(level_id)
+            self.exact_package_for_definition(definition)
                 .map(|package| package.inputs.clone())
-                .ok_or_else(
-                    || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
-                        message: format!(
-                            "installed package resolver has no binding for {}",
-                            level_id.as_str()
-                        ),
-                    },
-                )
         })
     }
 
@@ -587,7 +633,8 @@ impl Mc2RuntimePackageResolver {
         crate::game_runtime::CompletionTransitionReceipt,
         crate::game_runtime::RuntimeTransitionError,
     > {
-        runtime.accept_transition_resolved(guard, session_guard, |level_id| {
+        runtime.accept_transition_resolved(guard, session_guard, |source_definition, level_id| {
+            self.exact_package_for_definition(source_definition)?;
             self.package(level_id)
                 .map(|package| Arc::clone(&package.definition))
                 .ok_or_else(

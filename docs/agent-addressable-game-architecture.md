@@ -374,9 +374,13 @@ partial real implementation, not a completion claim:
   duplicate or incomplete sets before play. A focused real Level 1 route
   accepts only its declared Level 2 edge without a caller level ID or path,
   opens that exact prevalidated definition/resource binding with a monotonic
-  nested session generation, and rejects stale Level 1 guards. Native/Unity
-  transition exposure, production package installation/discovery, Level 2/3
-  completion, terminal Title execution and results remain open. The
+  nested session generation, and rejects stale Level 1 guards. A separate
+  focused staged-boundary Level 2 route now drives the ordinary final-objective,
+  exit-group, trigger and phase-12 lifecycle, accepts only the resolver-owned
+  Level 3 edge, and opens its exact installed binding on the same handle.
+  Native/Unity transition exposure, production package installation/discovery,
+  an uninterrupted Level 1-to-3 playthrough, Level 3 completion, terminal
+  Title execution and results remain open. The
   quiescent boundary also does not yet implement `paused_frame`, so the MC2
   pre-gate RNG/objective/presentation work remains open. Its Unity transport
   now validates that flow identity and borrows snapshot, step, event and reset
@@ -392,7 +396,8 @@ partial real implementation, not a completion claim:
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
   coverage remain open; the current Unity build enters one gameplay scene
   directly, neutral campaign saves/loads do not yet exist, and level completion
-  does not yet drive a Rust-owned 1 -> 2 -> 3 handoff.
+  has not yet been proved as one uninterrupted Rust-owned 1 -> 2 -> 3
+  playthrough or through the final Level 3 -> Title edge.
 
 The next foundation seam extends the same stable definition-to-runtime binding
 to the next package-present semantic domain without adding another arena,

@@ -4938,6 +4938,76 @@ impl Level2ResetSession {
         self.consume_authored_group(0, 0, target_group)
     }
 
+    /// Stage only the qualified Level-2 objective boundary immediately before
+    /// the final building-absence lifecycle. Production source callbacks still
+    /// own group 8, model-45 hide/reclaim, cadence evaluation, group 31, the
+    /// exit trigger, player action 12, and terminal completion.
+    #[cfg(test)]
+    pub(crate) fn stage_level_two_final_objective_prerequisite_for_test(
+        &mut self,
+    ) -> std::result::Result<(), String> {
+        const PRIOR_STAGE: usize = 3;
+        const FINAL_STAGE: usize = 4;
+        let objective_id =
+            crate::level_definition::LevelObjectiveId::parse("objective.clear.payahandra_vaults")
+                .map_err(|error| error.to_string())?;
+        if self
+            .session
+            .definition
+            .standing_building_chain(&objective_id)
+            != Some(&[21, 54][..])
+        {
+            return Err("qualified Level-2 standing-building chain is not [21,54]".to_owned());
+        }
+        let stage_count = self.session.state.live.core.runtime.objectives[0]
+            .stage_selectors
+            .len();
+        for stage_index in 0..stage_count {
+            self.session
+                .state
+                .live
+                .core
+                .runtime
+                .set_level2_objective_stage_selector_for(0, stage_index, 0);
+        }
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .set_level2_objective_stage_selector_for(0, PRIOR_STAGE, 2);
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .set_level2_objective_stage_selector_for(0, FINAL_STAGE, 1);
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .set_level2_objective_text_selector_for(0, FINAL_STAGE);
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .set_level2_objective_level_end_for(0, 0);
+        while self.session.state.live.core.runtime.objectives[0].done != 0 {
+            self.session
+                .state
+                .live
+                .core
+                .runtime
+                .consume_objective_done_pause_for(0);
+        }
+        self.session.state.live.level2_objective_pause = 0;
+        self.session.state.live.level2_objective_done = false;
+        self.set_level2_selected_objective_stage_state(2)
+            .map_err(|error| error.to_string())
+    }
+
     /// Corrupt only the private terminal result byte after a completed exit,
     /// so the neutral completion projection's fail-closed branch can be
     /// discriminated without exposing that source byte in production APIs.
