@@ -362,10 +362,14 @@ partial real implementation, not a completion claim:
 - `LevelDefinition` exposes a complete stable-ID census for the qualified real
   Level 1, 2 and 3 package entities; those identities are frozen in the private
   MC2 adapter rather than derived from kind ordinals or runtime slots;
-- the first typed semantic level change, `MoveEntity`, is published atomically
-  and consumed on explicit reopen by the real Level 1 start-area trigger and
-  its ordinary scheduler/group lifecycle; every other placement remains
-  read-only until its own runtime materialization binding is implemented;
+- typed semantic `MoveEntity` changes are published atomically and consumed on
+  explicit reopen by the real Level 1 start-area trigger and the reset-live
+  Level 3 Shield pickup. The latter is bound from semantic kind and package
+  position to its unique imported source carrier, preserves its sub-tile
+  position, map membership, and shared spell projection, and runs the ordinary
+  overlap/acquisition lifecycle only at the authored tile. Every other
+  placement remains read-only until its own runtime materialization binding is
+  implemented;
 - all fifteen qualified Level 1, 2 and 3 objectives have stable semantic IDs;
   typed `PutObjective` authoring is published atomically and consumed on
   explicit reopen/reset for the five package-present `ReachLocation`

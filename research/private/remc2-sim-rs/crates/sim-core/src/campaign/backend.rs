@@ -1264,8 +1264,8 @@ mod tests {
     use crate::goat::{GoatBehaviorConfig, GoatStepEvent};
     use crate::level_definition::{
         ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind,
-        LevelEntityParameterAccess, LevelObjectiveConditionAccess, MechanicKind,
-        ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
+        LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
+        MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
     };
     use crate::native_world::FireballProjectileOrigin;
     use sim_definition::adapter::{
@@ -2012,6 +2012,19 @@ mod tests {
                 16,
                 LevelEntityParameterAccess::SessionReset,
             )]
+        );
+        assert_eq!(
+            level_three
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.position_access() == LevelEntityPositionAccess::SessionReset
+                })
+                .map(|entity| entity.id().as_str())
+                .collect::<Vec<_>>(),
+            vec!["spell_pickup.shield.at_85_85"]
         );
         let level = definition
             .level_definition()
@@ -3610,6 +3623,219 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&workspace_root).unwrap();
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_three_shield_pickup_only_on_reopen_and_acquires_at_authored_position()
+     {
+        const PICKUP_SLOT: u16 = 124;
+        const SHIELD_FAMILY: u8 = 6;
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let shield =
+            sim_definition::adapter::stable_entity_id("spell_pickup.shield.at_85_85").unwrap();
+        let package_tile = TilePosition { x: 85, y: 85 };
+        let authored_tile = TilePosition { x: 92, y: 91 };
+        let package_entity = base.level_definition().unwrap().entity(&shield).unwrap();
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-shield-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-shield-placement-authoring",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            72,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let package_position = session.backend().campaign.level2_compatibility().entities()
+            [usize::from(PICKUP_SLOT)]
+        .position;
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(PICKUP_SLOT)]
+                .position,
+            package_position
+        );
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-shield-placement-authoring",
+            &base,
+            "move-level-three-shield",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(shield.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(published.revision(), 2);
+        assert_eq!(
+            published
+                .level_definition()
+                .unwrap()
+                .entity(&shield)
+                .unwrap()
+                .position(),
+            authored_tile
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(PICKUP_SLOT)]
+                .position,
+            package_position,
+            "publication must not mutate the already-open package authority"
+        );
+
+        session
+            .reopen(guard(&session), Arc::new(published.clone()))
+            .unwrap();
+        let authored_position = crate::Position {
+            x: (authored_tile.x << 8) | (package_position.x & 0xff),
+            y: (authored_tile.y << 8) | (package_position.y & 0xff),
+            z: package_position.z,
+        };
+        let authored_reset_hash = session.backend().campaign.state_hash();
+        {
+            let live = &session.backend().campaign.level2.session.state.live;
+            assert_eq!(
+                live.economy.entities[usize::from(PICKUP_SLOT)].position,
+                authored_position
+            );
+            assert_eq!(
+                live.shared_spells
+                    .pickups()
+                    .iter()
+                    .find(|pickup| pickup.index == PICKUP_SLOT)
+                    .unwrap()
+                    .position,
+                authored_position
+            );
+            assert_eq!(
+                live.economy.map_chains().tile_of(PICKUP_SLOT),
+                u16::from_le_bytes([authored_tile.x as u8, authored_tile.y as u8])
+            );
+        }
+
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .entity_index;
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, package_position)
+            .unwrap();
+        for _ in 0..4 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(PICKUP_SLOT)]
+                .action,
+            19,
+            "a definition-only fake would still acquire at the package position"
+        );
+        assert!(!session.backend().campaign.events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot: PICKUP_SLOT,
+                    family: SHIELD_FAMILY,
+                    result: Some(_),
+                    ..
+                }
+            )
+        }));
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, authored_position)
+            .unwrap();
+        for _ in 0..4 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            if session.backend().campaign.level2_compatibility().entities()
+                [usize::from(PICKUP_SLOT)]
+            .action
+                == 18
+            {
+                break;
+            }
+        }
+        assert!(session.backend().campaign.events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot: PICKUP_SLOT,
+                    family: SHIELD_FAMILY,
+                    result: Some(_),
+                    ..
+                }
+            )
+        }));
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(PICKUP_SLOT)]
+                .action,
+            18
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset_live = &session.backend().campaign.level2.session.state.live;
+        assert_eq!(
+            reset_live.economy.entities[usize::from(PICKUP_SLOT)].position,
+            authored_position
+        );
+        assert_eq!(
+            reset_live
+                .shared_spells
+                .pickups()
+                .iter()
+                .find(|pickup| pickup.index == PICKUP_SLOT)
+                .unwrap()
+                .position,
+            authored_position
+        );
+        assert_eq!(
+            reset_live.economy.entities[usize::from(PICKUP_SLOT)].action,
+            19
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 3 Shield pickup placement,
+        // ordinary overlap acquisition, explicit reopen, and reset retention.
+        // It does not make generated pickups, other placements, spell tuning,
+        // later holder behavior, save/replay, or Unity presentation authorable.
     }
 
     #[test]

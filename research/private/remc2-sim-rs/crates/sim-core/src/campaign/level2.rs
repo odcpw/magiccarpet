@@ -5587,6 +5587,7 @@ impl Level2ResetSession {
         };
         let active = entity.active;
         entity.set_position(position);
+        let canonical_entity = entity.clone();
         self.session
             .state
             .live
@@ -5611,6 +5612,21 @@ impl Level2ResetSession {
             .find(|root| root.source_slot == entity_index)
         {
             root.position = position;
+        }
+        if self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickups()
+            .iter()
+            .any(|pickup| pickup.index == entity_index)
+        {
+            self.session
+                .state
+                .live
+                .shared_spells
+                .sync_pickup_from_authority(&canonical_entity);
         }
         Ok(())
     }

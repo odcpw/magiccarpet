@@ -4,7 +4,7 @@
 //! a session, install a scheduler, or allocate a handle; CF-11 consumes this
 //! receipt after the static registry work lands.
 
-use super::mc2_level_definition::Mc2LevelDefinition;
+use super::mc2_level_definition::{Mc2LevelDefinition, Mc2MovableRuntimeHint};
 use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, decode_building_parameters,
     validate_source_facts,
@@ -12,6 +12,7 @@ use super::source_facts::{
 use crate::level_definition::{
     BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
     LevelObjectiveId, MechanicKind, RivalWizardId, SceneryKind, SpellKind, SwitchKind,
+    TilePosition,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1150,7 +1151,7 @@ impl CampaignDefinition {
             })
             .collect::<BTreeMap<_, _>>();
         let mut movable_entity_bindings = BTreeMap::new();
-        for (entity_id, source_id) in &semantic_level.movable_source_id_by_entity_id {
+        for (entity_id, hint) in &semantic_level.movable_runtime_hint_by_entity_id {
             let entity =
                 semantic_level
                     .semantic
@@ -1162,20 +1163,39 @@ impl CampaignDefinition {
                             entity_id.as_str()
                         ),
                     })?;
-            let matching = expected_rows
-                .iter()
-                .filter(|row| {
-                    row.initial_source_slot.is_some() && row.authored_record == *source_id
-                })
-                .filter(|row| match entity.kind() {
+            let mut matching = Vec::new();
+            for row in &expected_rows {
+                let Some(source_slot) = row.initial_source_slot else {
+                    continue;
+                };
+                let kind_matches = match entity.kind() {
                     LevelEntityKind::Switch(expected) => {
                         Mc2LevelDefinition::switch_for_reset_selector(
                             row.class, row.model, row.action,
                         ) == Some(expected)
                     }
+                    LevelEntityKind::SpellPickup(expected) => {
+                        Mc2LevelDefinition::spell_for_reset_selector(
+                            row.class, row.model, row.action,
+                        ) == Some(expected)
+                    }
                     _ => false,
-                })
-                .collect::<Vec<_>>();
+                };
+                if !kind_matches {
+                    continue;
+                }
+                let identity_matches = match hint {
+                    Mc2MovableRuntimeHint::AuthoredRecord(authored_record) => {
+                        row.authored_record == *authored_record
+                    }
+                    Mc2MovableRuntimeHint::ResetKindAndPosition => {
+                        initial_entity_tile(entities, source_slot)? == entity.position()
+                    }
+                };
+                if identity_matches {
+                    matching.push(row);
+                }
+            }
             if matching.len() != 1 {
                 return fail(
                     ValidationStage::TypedOperations,
@@ -1194,7 +1214,7 @@ impl CampaignDefinition {
                         .initial_source_slot
                         .expect("movable carrier is frame-zero"),
                     kind: entity.kind(),
-                    source_id: *source_id,
+                    source_id: row.authored_record,
                 },
             );
         }
@@ -1853,6 +1873,24 @@ fn read_u32(bytes: &[u8], offset: usize, label: &str, stage: ValidationStage) ->
         return fail(stage, format!("{label} is truncated"));
     };
     Ok(u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
+}
+
+fn initial_entity_tile(bytes: &[u8], source_slot: u16) -> Result<TilePosition> {
+    let offset = 12 + usize::from(source_slot) * ENTITY_RECORD_BYTES;
+    Ok(TilePosition {
+        x: read_u16(
+            bytes,
+            offset + 80,
+            "entity x",
+            ValidationStage::TypedMembers,
+        )? >> 8,
+        y: read_u16(
+            bytes,
+            offset + 82,
+            "entity y",
+            ValidationStage::TypedMembers,
+        )? >> 8,
+    })
 }
 
 fn decode_behavior_rows(

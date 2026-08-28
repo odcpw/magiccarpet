@@ -34,6 +34,12 @@ const LEVEL_TWO_NYPHUR_PLAYER_SELECTOR: u16 = 2;
 const LEVEL_TWO_NYPHUR_ENTITY_INDEX: u16 = 112;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Mc2MovableRuntimeHint {
+    AuthoredRecord(u16),
+    ResetKindAndPosition,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Mc2LevelDefinition {
     pub(crate) semantic: LevelDefinition,
     pub(crate) creature_by_authored_record: BTreeMap<u16, CreatureKind>,
@@ -46,7 +52,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     pub(crate) mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
-    pub(crate) movable_source_id_by_entity_id: BTreeMap<LevelEntityId, u16>,
+    pub(crate) movable_runtime_hint_by_entity_id: BTreeMap<LevelEntityId, Mc2MovableRuntimeHint>,
     pub(crate) standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
     pub(crate) rival_wizard_by_id: BTreeMap<RivalWizardId, u16>,
 }
@@ -144,6 +150,20 @@ impl Mc2LevelDefinition {
         }
     }
 
+    pub(crate) const fn spell_for_reset_selector(
+        class: u8,
+        model: u8,
+        action: u8,
+    ) -> Option<SpellKind> {
+        match (class, model, action) {
+            (15, 3, 10) => Some(SpellKind::Speed),
+            (15, 6, 19) => Some(SpellKind::Shield),
+            (15, 11, 34) => Some(SpellKind::Invisibility),
+            (15, 12, 37) => Some(SpellKind::BeyondSight),
+            _ => None,
+        }
+    }
+
     pub(crate) fn from_authored_bytes(
         bytes: &[u8],
         objective_operations: &[ObjectiveOperation],
@@ -164,7 +184,7 @@ impl Mc2LevelDefinition {
         let mut mechanic_by_authored_record = BTreeMap::new();
         let mut mechanic_entity_by_authored_record = BTreeMap::new();
         let mut authored_record_by_entity_id = BTreeMap::new();
-        let mut movable_source_id_by_entity_id = BTreeMap::new();
+        let mut movable_runtime_hint_by_entity_id = BTreeMap::new();
         let mut standing_building_chains = BTreeMap::new();
         let mut rival_wizard_by_id = BTreeMap::new();
         let mut entities = Vec::new();
@@ -222,9 +242,10 @@ impl Mc2LevelDefinition {
                 )?;
                 bind_private_entity(
                     &mut authored_record_by_entity_id,
-                    &mut movable_source_id_by_entity_id,
+                    &mut movable_runtime_hint_by_entity_id,
                     feature,
                     &id,
+                    LevelEntityKind::Creature(kind),
                     position_access,
                 )?;
                 entities.push(entity_definition_with_position_access(
@@ -254,9 +275,10 @@ impl Mc2LevelDefinition {
                 )?;
                 bind_private_entity(
                     &mut authored_record_by_entity_id,
-                    &mut movable_source_id_by_entity_id,
+                    &mut movable_runtime_hint_by_entity_id,
                     feature,
                     &id,
+                    LevelEntityKind::Scenery(kind),
                     position_access,
                 )?;
                 entities.push(entity_definition_with_position_access(
@@ -284,9 +306,10 @@ impl Mc2LevelDefinition {
                 )?;
                 bind_private_entity(
                     &mut authored_record_by_entity_id,
-                    &mut movable_source_id_by_entity_id,
+                    &mut movable_runtime_hint_by_entity_id,
                     feature,
                     &id,
+                    LevelEntityKind::Building(kind),
                     position_access,
                 )?;
                 entities.push(entity_definition_with_position_access(
@@ -315,9 +338,10 @@ impl Mc2LevelDefinition {
                 )?;
                 bind_private_entity(
                     &mut authored_record_by_entity_id,
-                    &mut movable_source_id_by_entity_id,
+                    &mut movable_runtime_hint_by_entity_id,
                     feature,
                     &id,
+                    LevelEntityKind::Item(kind),
                     position_access,
                 )?;
                 entities.push(entity_definition_with_position_access(
@@ -354,9 +378,10 @@ impl Mc2LevelDefinition {
                 )?;
                 bind_private_entity(
                     &mut authored_record_by_entity_id,
-                    &mut movable_source_id_by_entity_id,
+                    &mut movable_runtime_hint_by_entity_id,
                     feature,
                     &id,
+                    LevelEntityKind::Switch(kind),
                     position_access,
                 )?;
                 entities.push(entity_definition_with_position_access(
@@ -400,9 +425,10 @@ impl Mc2LevelDefinition {
                 )?;
                 bind_private_entity(
                     &mut authored_record_by_entity_id,
-                    &mut movable_source_id_by_entity_id,
+                    &mut movable_runtime_hint_by_entity_id,
                     feature,
                     &id,
+                    LevelEntityKind::SpellPickup(kind),
                     position_access,
                 )?;
                 entities.push(entity_definition_with_position_access(
@@ -435,9 +461,10 @@ impl Mc2LevelDefinition {
             )?;
             bind_private_entity(
                 &mut authored_record_by_entity_id,
-                &mut movable_source_id_by_entity_id,
+                &mut movable_runtime_hint_by_entity_id,
                 feature,
                 &id,
+                LevelEntityKind::Mechanic(mechanic_kind),
                 position_access,
             )?;
             entities.push(absence_countdown_entity_definition(
@@ -634,7 +661,7 @@ impl Mc2LevelDefinition {
             switch_by_authored_record,
             mechanic_by_authored_record,
             mechanic_entity_by_authored_record,
-            movable_source_id_by_entity_id,
+            movable_runtime_hint_by_entity_id,
             standing_building_chains,
             rival_wizard_by_id,
         })
@@ -773,9 +800,10 @@ fn take_stable_entity_id(
 
 fn bind_private_entity(
     authored: &mut BTreeMap<LevelEntityId, u16>,
-    movable_sources: &mut BTreeMap<LevelEntityId, u16>,
+    movable_hints: &mut BTreeMap<LevelEntityId, Mc2MovableRuntimeHint>,
     feature: &crate::level1_mission::AuthoredFeature,
     id: &LevelEntityId,
+    kind: LevelEntityKind,
     access: LevelEntityPositionAccess,
 ) -> Result<(), String> {
     if authored.insert(id.clone(), feature.index).is_some() {
@@ -785,14 +813,26 @@ fn bind_private_entity(
         ));
     }
     if access == LevelEntityPositionAccess::SessionReset {
-        let source_id = u16::try_from(feature.stage_tag).map_err(|_| {
-            format!(
-                "movable semantic entity {} has invalid MC2 source identity {}",
-                id.as_str(),
-                feature.stage_tag
-            )
-        })?;
-        movable_sources.insert(id.clone(), source_id);
+        let hint = match kind {
+            LevelEntityKind::Switch(_) => {
+                let source_id = u16::try_from(feature.stage_tag).map_err(|_| {
+                    format!(
+                        "movable semantic entity {} has invalid MC2 source identity {}",
+                        id.as_str(),
+                        feature.stage_tag
+                    )
+                })?;
+                Mc2MovableRuntimeHint::AuthoredRecord(source_id)
+            }
+            LevelEntityKind::SpellPickup(_) => Mc2MovableRuntimeHint::ResetKindAndPosition,
+            _ => {
+                return Err(format!(
+                    "semantic entity {} has no supported movable MC2 carrier class",
+                    id.as_str()
+                ));
+            }
+        };
+        movable_hints.insert(id.clone(), hint);
     }
     Ok(())
 }

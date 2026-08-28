@@ -405,6 +405,56 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
         get_position["data"]["value"],
         serde_json::json!({"type": "position", "value": {"x": 74, "y": 212}})
     );
+
+    let level_three = level_three_campaign_fixture();
+    let level_three = level_three.to_str().expect("UTF-8 campaign path");
+    let shield = run(&[
+        "game",
+        "entities",
+        "--campaign-package",
+        level_three,
+        "--id",
+        "spell_pickup.shield.at_85_85",
+    ]);
+    assert!(shield.status.success(), "{:?}", shield.stderr);
+    assert!(shield.stderr.is_empty());
+    let shield: Value = serde_json::from_slice(&shield.stdout).unwrap();
+    assert_eq!(shield["data"]["page"]["total"], 1);
+    assert_eq!(
+        shield["data"]["entities"][0]["kind"],
+        serde_json::json!({"spell_pickup": "shield"})
+    );
+    assert_eq!(
+        shield["data"]["entities"][0]["position"],
+        serde_json::json!({"x": 85, "y": 85})
+    );
+    assert_eq!(
+        shield["data"]["entities"][0]["position_access"],
+        "session_reset"
+    );
+    let shield_position = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        level_three,
+        "--id",
+        "spell_pickup.shield.at_85_85.position",
+    ]);
+    assert!(
+        shield_position.status.success(),
+        "{:?}",
+        shield_position.stderr
+    );
+    assert!(shield_position.stderr.is_empty());
+    let shield_position: Value = serde_json::from_slice(&shield_position.stdout).unwrap();
+    let shield_descriptor = &shield_position["data"]["descriptors"][0];
+    assert_eq!(shield_descriptor["kind"], "placement");
+    assert_eq!(shield_descriptor["access"], "writable");
+    assert_eq!(shield_descriptor["mutation_timing"], "session_reset");
+    assert_eq!(
+        shield_descriptor["effective_value"]["value"],
+        serde_json::json!({"x": 85, "y": 85})
+    );
 }
 
 #[test]
