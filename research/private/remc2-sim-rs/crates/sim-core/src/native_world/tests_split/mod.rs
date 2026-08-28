@@ -221,10 +221,12 @@ fn level_two_reach_row42(
             .find(|source| source.authored_index == 41)
             .map(|source| source.phase)
             .expect("row 41 producer remains live before its cadence");
+        let mut row41_exit_position = row42_position;
+        row41_exit_position.x = row41_exit_position.x.wrapping_add(0x8000);
         for _ in 0..level_two_switch_turns_until_cadence(row41_phase) {
             session
-                .set_level2_entity_position(local_player, row11_position)
-                .expect("public player-position input remains on row 11");
+                .set_level2_entity_position(local_player, row41_exit_position)
+                .expect("public player-position input leaves the row-41 inverse-overlap switch");
             session.step_outer_turn(PlayerCommand::default(), 0);
         }
     }

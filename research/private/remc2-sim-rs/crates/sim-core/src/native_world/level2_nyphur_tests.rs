@@ -1999,6 +1999,59 @@ fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
 }
 
 #[test]
+fn level_two_nyphur_terminal_holder_epilogue_reads_the_raw_phase_authority() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    for holder_slot in [
+        LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX,
+        LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX,
+    ] {
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 Nyphur holder session");
+        {
+            let holder = &mut session.session.state.live.economy.entities[usize::from(holder_slot)];
+            holder.phase = 117;
+            holder.record[66] = 117;
+            holder.active_value = 1;
+            holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+            holder.record[48..50].copy_from_slice(&1_u16.to_le_bytes());
+            holder.subspell_index = holder.subspell_index.wrapping_add(1);
+        }
+        let shared_holder = session
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(holder_slot)
+            .expect("the retained shared projection exists for the Nyphur holder");
+        shared_holder.phase = 115;
+        shared_holder.record[66] = 115;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let raw_holder = &session.session.state.live.economy.entities[usize::from(holder_slot)];
+        assert_eq!(raw_holder.active_value, 0);
+        assert_eq!(raw_holder.phase, 118);
+        assert_eq!(raw_holder.record[66], 118);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == holder_slot
+        )));
+        assert!(
+            session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| matches!(
+                    receipt,
+                    crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. }
+                        if *slot == holder_slot
+                ))
+        );
+    }
+}
+
+#[test]
 fn level_two_nyphur_avoidance_packed_directions_los_and_zero_rng_are_exact() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");

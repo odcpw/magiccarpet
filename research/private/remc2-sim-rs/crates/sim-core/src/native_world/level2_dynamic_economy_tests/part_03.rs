@@ -846,7 +846,14 @@
             736,
             "one source pass must close by defender speed 48 plus sphere attraction 16"
         );
-        for _ in 0..16 {
+        // The two rows close 64 XY units per pass until they share an axis
+        // (defender 48 + attracted sphere 16). Only then does the sphere's
+        // later numeric callback climb 32 Z units toward the defender. This
+        // geometry needs 13 XY visits, the later-slot sphere's 32-unit
+        // vertical visits to enter the strict AABB, and one following
+        // defender visit to consume it. Thirty-two visits bound that exact
+        // staged route without substituting a direct overlap.
+        for _ in 0..32 {
             if session
                 .economy()
                 .castle_children()
@@ -857,6 +864,14 @@
                 break;
             }
             session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                !session
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                "Castle defender pursuit must commit without scheduler rollback: {:?}",
+                session.dispatch_events()
+            );
         }
         let child = session
             .economy()
@@ -864,7 +879,16 @@
             .iter()
             .find(|child| child.source_entity_index == defender_slot)
             .expect("live defender holder");
-        assert_eq!(child.mana, 321);
+        let current_sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .copied();
+        assert_eq!(
+            child.mana, 321,
+            "defender pursuit did not collect within the bounded route: child={child:?}, sphere={current_sphere:?}"
+        );
         assert_eq!(child.player_entity_index, child.id_entity_index);
         assert_eq!(child.target_sphere_slot, 0);
         assert_ne!(child.position.x, target_position.x);

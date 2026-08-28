@@ -1103,8 +1103,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     .ok_or_else(|| format!("source slot {slot} lost its phase after epilogue"))?;
                 if after != before.wrapping_add(1) {
                     return Err(format!(
-                        "scheduler epilogue at source slot {slot} advanced phase {before} -> {after}, expected {}",
-                        before.wrapping_add(1)
+                        "scheduler epilogue at source slot {slot} advanced phase {before} -> {after}, expected {}; original={route:?} current={current:?}",
+                        before.wrapping_add(1),
                     ));
                 }
             }
@@ -9997,9 +9997,7 @@ impl Level2ResetSession {
         match route {
             Level2SourceRoute::SpeedPickup
             | Level2SourceRoute::ImportedSpellSource
-            | Level2SourceRoute::PossessionHolder
-            | Level2SourceRoute::CastleHolder
-            | Level2SourceRoute::FireballHolder => live
+            | Level2SourceRoute::CastleHolder => live
                 .shared_spells
                 .pickups()
                 .iter()
@@ -10014,6 +10012,25 @@ impl Level2ResetSession {
                         .find(|row| row.index == source_slot)
                         .map(|row| row.phase)
                 }),
+            Level2SourceRoute::PossessionHolder | Level2SourceRoute::FireballHolder => {
+                if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+                    || source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+                {
+                    live.economy
+                        .entities
+                        .iter()
+                        .find(|row| row.index == source_slot)
+                        .map(|row| row.phase)
+                } else {
+                    live.shared_spells
+                        .pickups()
+                        .iter()
+                        .chain(live.shared_spells.holders.iter())
+                        .chain(live.shared_spells.dynamic_pickups())
+                        .find(|row| row.index == source_slot)
+                        .map(|row| row.phase)
+                }
+            }
             Level2SourceRoute::BadStone => live
                 .bad_stones
                 .iter()
@@ -14206,7 +14223,7 @@ impl Level2ResetSession {
         pass: u8,
         source_slot: u16,
     ) -> bool {
-        let Some((position, word_10)) = self
+        let Some((position, word_10, model)) = self
             .session
             .state
             .live
@@ -14214,7 +14231,7 @@ impl Level2ResetSession {
             .authored_switch_producers()
             .iter()
             .find(|source| source.active && source.source_entity_index == source_slot)
-            .map(|source| (source.position, source.word_10))
+            .map(|source| (source.position, source.word_10, source.model))
         else {
             return false;
         };
@@ -14226,14 +14243,16 @@ impl Level2ResetSession {
             return false;
         }
         let switch_extent = word_10.cast_unsigned().wrapping_shl(8).cast_signed();
+        let expected_overlap = match model {
+            0 | 12 => true,
+            1 => false,
+            _ => return false,
+        };
         let overlap = self.level2_model0_overlap_matches(
             position,
             switch_extent,
             switch_extent,
-            matches!(
-                switch_kind,
-                Some(SwitchKind::AreaEntryTrigger | SwitchKind::ExitSequenceTrigger)
-            ),
+            expected_overlap,
             |entity| {
                 if entity.index == self.session.state.live.core.state.entity_index {
                     self.session.state.live.core.state.position

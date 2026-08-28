@@ -1032,20 +1032,27 @@ fn level_two_model53_action58_runs_through_production_cursor() {
         .filter(|child| child.parent_entity_index == row439.source_entity_index)
         .collect::<Vec<_>>();
     assert_eq!(children.len(), 3);
-    assert!(children.iter().all(|child| {
-        (
-            child.parent_entity_id,
-            child.model,
-            child.action,
-            child.subspell_index,
-            child.max_life,
-            child.life,
-            child.control_flags,
-            child.shift_rot_x,
-            child.shift_rot_y,
-            child.yaw,
-        ) == (row439.entity_id, 0, 0, 400, 8, 7, 0x0003_0080, 512, 512, 0)
-    }));
+    for child in children {
+        assert_eq!(
+            (
+                child.parent_entity_id,
+                child.model,
+                child.action,
+                child.subspell_index,
+                child.max_life,
+                child.life,
+                child.control_flags,
+                child.shift_rot_x,
+                child.shift_rot_y,
+                child.yaw,
+            ),
+            // The newly allocated higher slots run later in this same numeric
+            // pass. Their first action-0 visit preserves the constructor
+            // payload and adds source control bit 1 (0x02).
+            (row439.entity_id, 0, 0, 400, 8, 7, 0x0003_0082, 512, 512, 0),
+            "same-pass model-0 child state for {child:?}"
+        );
+    }
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
