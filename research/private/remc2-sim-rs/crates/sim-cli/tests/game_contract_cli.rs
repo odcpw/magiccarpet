@@ -489,6 +489,42 @@ fn reset_live_move_entity_targets_are_package_projected() {
         "session_reset",
     );
     assert_position_access(level_two, &["spell_pickup.shield.at_138_219"], "read_only");
+    assert_position_access(
+        level_two,
+        &["item.experience_scroll.at_129_149"],
+        "session_reset",
+    );
+    let scroll_position = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        level_two,
+        "--id",
+        "item.experience_scroll.at_129_149.position",
+    ]);
+    assert!(
+        scroll_position.status.success(),
+        "{:?}",
+        scroll_position.stderr
+    );
+    assert!(scroll_position.stderr.is_empty());
+    let scroll_position: Value = serde_json::from_slice(&scroll_position.stdout).unwrap();
+    assert_eq!(
+        scroll_position["data"]["descriptors"][0]["kind"],
+        "placement"
+    );
+    assert_eq!(
+        scroll_position["data"]["descriptors"][0]["access"],
+        "writable"
+    );
+    assert_eq!(
+        scroll_position["data"]["descriptors"][0]["mutation_timing"],
+        "session_reset"
+    );
+    assert_eq!(
+        scroll_position["data"]["descriptors"][0]["effective_value"]["value"],
+        serde_json::json!({"x": 129, "y": 149})
+    );
 
     let level_three = level_three_campaign_fixture();
     let level_three = level_three.to_str().expect("UTF-8 campaign path");
@@ -500,6 +536,7 @@ fn reset_live_move_entity_targets_are_package_projected() {
             "scenery.stone.at_219_93",
             "scenery.tree.at_100_149",
             "switch.area_entry_trigger.at_218_93",
+            "item.experience_scroll.at_160_107",
         ],
         "session_reset",
     );
@@ -515,8 +552,13 @@ fn reset_live_move_entity_targets_are_package_projected() {
         &["scenery.stone.at_75_218", "scenery.tree.at_110_96"],
         "read_only",
     );
+    assert_position_access(
+        level_one,
+        &["item.experience_scroll.at_216_213"],
+        "session_reset",
+    );
     // No-Claim: this is the public package-projection gate. The already-focused
-    // Shield, Stone, Tree, and imported-trigger authoring tests own
+    // Shield, Stone, Tree, imported-trigger, and Experience Scroll authoring tests own
     // publication/reopen/reset and their ordinary consumers; this test does
     // not duplicate those lifecycles.
 }

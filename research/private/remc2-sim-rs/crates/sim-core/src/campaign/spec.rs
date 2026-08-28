@@ -492,10 +492,16 @@ pub struct CampaignDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Mc2EntityRuntimeBinding {
-    pub(crate) initial_source_slot: u16,
-    pub(crate) kind: LevelEntityKind,
-    pub(crate) source_id: u16,
+pub(crate) enum Mc2EntityRuntimeBinding {
+    InitialSource {
+        initial_source_slot: u16,
+        kind: LevelEntityKind,
+        source_id: u16,
+    },
+    AuthoredFeature {
+        authored_record: u16,
+        kind: LevelEntityKind,
+    },
 }
 
 impl CampaignDefinition {
@@ -1163,6 +1169,36 @@ impl CampaignDefinition {
                             entity_id.as_str()
                         ),
                     })?;
+            if let Mc2MovableRuntimeHint::AuthoredFeature(authored_record) = hint {
+                let LevelEntityKind::Item(expected_kind) = entity.kind() else {
+                    return fail(
+                        ValidationStage::TypedOperations,
+                        format!(
+                            "movable semantic entity {} has an invalid authored-feature carrier",
+                            entity_id.as_str()
+                        ),
+                    );
+                };
+                if semantic_level.item_by_authored_record.get(authored_record)
+                    != Some(&expected_kind)
+                {
+                    return fail(
+                        ValidationStage::TypedOperations,
+                        format!(
+                            "movable semantic entity {} authored-feature identity diverges",
+                            entity_id.as_str()
+                        ),
+                    );
+                }
+                movable_entity_bindings.insert(
+                    entity_id.clone(),
+                    Mc2EntityRuntimeBinding::AuthoredFeature {
+                        authored_record: *authored_record,
+                        kind: entity.kind(),
+                    },
+                );
+                continue;
+            }
             let mut matching = Vec::new();
             for row in &expected_rows {
                 let Some(source_slot) = row.initial_source_slot else {
@@ -1193,6 +1229,9 @@ impl CampaignDefinition {
                     Mc2MovableRuntimeHint::AuthoredRecord(authored_record) => {
                         row.authored_record == *authored_record
                     }
+                    Mc2MovableRuntimeHint::AuthoredFeature(_) => unreachable!(
+                        "authored-feature bindings are validated before frame-zero matching"
+                    ),
                     Mc2MovableRuntimeHint::ResetKindAndPosition => {
                         initial_entity_tile(entities, source_slot)? == entity.position()
                     }
@@ -1214,7 +1253,7 @@ impl CampaignDefinition {
             let row = matching[0];
             movable_entity_bindings.insert(
                 entity_id.clone(),
-                Mc2EntityRuntimeBinding {
+                Mc2EntityRuntimeBinding::InitialSource {
                     initial_source_slot: row
                         .initial_source_slot
                         .expect("movable carrier is frame-zero"),

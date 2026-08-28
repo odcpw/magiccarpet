@@ -371,10 +371,14 @@ partial real implementation, not a completion claim:
   consume the authored location through terrain ground/material projections.
   One reset-imported Level 3 area-entry trigger also consumes its authored
   location through the ordinary overlap cadence and exact group-8 constructor;
-  the other reset and dynamically authored switches remain read-only.
-  Movement preserves sub-tile position and map membership, plus the shared
-  spell projection for pickups. Every other placement remains read-only until
-  its own runtime materialization binding is implemented;
+  the other reset and dynamically authored switches remain read-only. All
+  thirty-nine package-present Experience Scroll placements across Levels 1-3
+  bind to their immutable authored-feature rows before construction; the
+  ordinary class-14 pickup callback consumes the authored location through XP
+  award, same-pass hide and following-pass reclaim. Movement preserves
+  sub-tile position and map membership, plus the shared spell projection for
+  spell pickups. Every other placement remains read-only until its own runtime
+  materialization binding is implemented;
 - all fifteen qualified Level 1, 2 and 3 objectives have stable semantic IDs;
   typed `PutObjective` authoring is published atomically and consumed on
   explicit reopen/reset for the five package-present `ReachLocation`

@@ -1093,6 +1093,29 @@ impl MissionContentSession {
         &self.authored_features
     }
 
+    /// Move one package-authored feature before its production constructor
+    /// consumes it. The private MC2 adapter has already proven the authored
+    /// record/kind relation; this seam changes only its tile coordinates.
+    pub(crate) fn set_authored_feature_tile(
+        &mut self,
+        authored_record: u16,
+        tile_x: u16,
+        tile_y: u16,
+    ) -> Result<(), MissionContentError> {
+        let Some(feature) = self
+            .authored_features
+            .iter_mut()
+            .find(|feature| feature.index == authored_record)
+        else {
+            return Err(MissionContentError::InvalidReset(format!(
+                "authored feature {authored_record} is absent"
+            )));
+        };
+        feature.tile_x = tile_x;
+        feature.tile_y = tile_y;
+        Ok(())
+    }
+
     #[must_use]
     pub fn source_slots(&self) -> &[Level1ResetSourceSlot] {
         &self.source_slots

@@ -1898,7 +1898,14 @@ mod tests {
                 })
                 .map(|entity| entity.id().as_str())
                 .collect::<Vec<_>>(),
-            vec!["switch.start_area_exit"]
+            vec![
+                "switch.start_area_exit",
+                "item.experience_scroll.at_216_213",
+                "item.experience_scroll.at_214_215",
+                "item.experience_scroll.at_214_211",
+                "item.experience_scroll.at_218_211",
+                "item.experience_scroll.at_218_215",
+            ]
         );
         let level_two = assert_package_content(
             &descriptor_fixture_path(),
@@ -1958,21 +1965,36 @@ mod tests {
                 .iter()
                 .all(|entity| entity.absence_countdown().is_none())
         );
+        let level_two_movable = level_two
+            .level_definition()
+            .unwrap()
+            .entities()
+            .iter()
+            .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
+            .collect::<Vec<_>>();
+        assert_eq!(level_two_movable.len(), 26);
         assert_eq!(
-            level_two
-                .level_definition()
-                .unwrap()
-                .entities()
+            level_two_movable
                 .iter()
-                .filter(|entity| {
-                    entity.position_access() == LevelEntityPositionAccess::SessionReset
-                })
+                .filter(|entity| matches!(entity.kind(), LevelEntityKind::SpellPickup(_)))
                 .map(|entity| entity.id().as_str())
                 .collect::<Vec<_>>(),
             vec![
                 "spell_pickup.beyond_sight.at_1_152",
                 "spell_pickup.speed.at_167_59",
             ]
+        );
+        assert_eq!(
+            level_two_movable
+                .iter()
+                .filter(|entity| {
+                    matches!(
+                        entity.kind(),
+                        LevelEntityKind::Item(ItemKind::ExperienceScroll)
+                    )
+                })
+                .count(),
+            24
         );
         let level_three = assert_package_content(
             &level_three_descriptor_fixture_path(),
@@ -2049,7 +2071,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 52);
+        assert_eq!(level_three_movable.len(), 62);
         assert_eq!(
             level_three_movable
                 .iter()
@@ -2074,6 +2096,18 @@ mod tests {
                 })
                 .count(),
             37
+        );
+        assert_eq!(
+            level_three_movable
+                .iter()
+                .filter(|entity| {
+                    matches!(
+                        entity.kind(),
+                        LevelEntityKind::Item(ItemKind::ExperienceScroll)
+                    )
+                })
+                .count(),
+            10
         );
         assert_eq!(
             level_three_movable
@@ -4369,6 +4403,260 @@ mod tests {
         // model-39/model-54 construction. It does not make the other area
         // triggers movable or prove groups 9/10, dynamic switches, save/replay,
         // or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_experience_scroll_before_ordinary_collection_and_reclaim() {
+        const AUTHORED_RECORD: u16 = 248;
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let scroll =
+            sim_definition::adapter::stable_entity_id("item.experience_scroll.at_129_149").unwrap();
+        let package_tile = TilePosition { x: 129, y: 149 };
+        let authored_tile = TilePosition { x: 100, y: 100 };
+        let package_entity = base.level_definition().unwrap().entity(&scroll).unwrap();
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-experience-scroll-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-experience-scroll-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            76,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-experience-scroll-placement",
+            &base,
+            "move-level-two-experience-scroll",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(scroll.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(published.revision(), 2);
+        assert_eq!(
+            published
+                .level_definition()
+                .unwrap()
+                .entity(&scroll)
+                .unwrap()
+                .position(),
+            authored_tile
+        );
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(5)
+            .unwrap();
+        let package_scroll = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == AUTHORED_RECORD)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            (
+                package_scroll.position.x >> 8,
+                package_scroll.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y)
+        );
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let authored_position = crate::Position {
+            x: authored_tile.x << 8,
+            y: authored_tile.y << 8,
+            z: package_scroll.position.z,
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, authored_position)
+            .unwrap();
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, .. }
+                        if *source_slot == package_scroll.source_entity_index
+                ))
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let authored_feature = compatibility
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == AUTHORED_RECORD)
+            .unwrap();
+        assert_eq!(
+            (authored_feature.tile_x, authored_feature.tile_y),
+            (authored_tile.x, authored_tile.y)
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(5)
+            .unwrap();
+        let authored_scroll = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == AUTHORED_RECORD)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            (
+                authored_scroll.position.x >> 8,
+                authored_scroll.position.y >> 8
+            ),
+            (authored_tile.x, authored_tile.y)
+        );
+        let experience_before = *session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .spell_experience();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, authored_scroll.position)
+            .unwrap();
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(
+            compatibility
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        event,
+                        Level2SharedSpellEvent::ExperienceScrollCollected {
+                            source_slot,
+                            player_entity_index,
+                        } if *source_slot == authored_scroll.source_entity_index
+                            && *player_entity_index == player
+                    )
+                })
+        );
+        assert_ne!(
+            compatibility.shared_spells().spell_experience(),
+            &experience_before
+        );
+        let retained = compatibility
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.source_entity_index == authored_scroll.source_entity_index)
+            .unwrap();
+        assert!(retained.active);
+        assert!(!retained.drawing_enabled);
+        assert_eq!(retained.phase, authored_scroll.phase.wrapping_add(1));
+        assert!(
+            compatibility
+                .economy()
+                .map_chains()
+                .is_linked(authored_scroll.source_entity_index)
+        );
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(
+            !compatibility
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|source| source.source_entity_index == authored_scroll.source_entity_index)
+        );
+        assert!(
+            !compatibility
+                .economy()
+                .map_chains()
+                .is_linked(authored_scroll.source_entity_index)
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == AUTHORED_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        assert!(reset.economy().authored_class14().is_empty());
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves package-bound Experience Scroll placement
+        // authoring through explicit reopen/reset, the shared authored-feature
+        // constructor, and one ordinary Level 2 XP pickup/hide/reclaim chain.
+        // It does not prove organic group-5 activation, every scroll's pickup,
+        // spell-experience tuning, other items, save/replay, or Unity rendering.
     }
 
     #[test]

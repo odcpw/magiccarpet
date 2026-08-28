@@ -36,6 +36,7 @@ const LEVEL_TWO_NYPHUR_ENTITY_INDEX: u16 = 112;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Mc2MovableRuntimeHint {
     AuthoredRecord(u16),
+    AuthoredFeature(u16),
     ResetKindAndPosition,
 }
 
@@ -823,6 +824,9 @@ fn bind_private_entity(
                     )
                 })?;
                 Mc2MovableRuntimeHint::AuthoredRecord(source_id)
+            }
+            LevelEntityKind::Item(ItemKind::ExperienceScroll) => {
+                Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
             LevelEntityKind::SpellPickup(_)
             | LevelEntityKind::Scenery(SceneryKind::Stone | SceneryKind::Tree) => {

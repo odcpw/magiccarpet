@@ -180,46 +180,73 @@ impl CampaignSession {
                         entity.id().as_str()
                     ))
                 })?;
-            if binding.kind != entity.kind() {
-                return Err(NativeWorldError::new(format!(
-                    "semantic entity {} private binding kind diverges",
-                    entity.id().as_str()
-                )));
+            match binding {
+                spec::Mc2EntityRuntimeBinding::InitialSource {
+                    initial_source_slot,
+                    kind,
+                    source_id,
+                } => {
+                    if *kind != entity.kind() {
+                        return Err(NativeWorldError::new(format!(
+                            "semantic entity {} private binding kind diverges",
+                            entity.id().as_str()
+                        )));
+                    }
+                    let source = self
+                        .level2
+                        .entities()
+                        .get(usize::from(*initial_source_slot))
+                        .filter(|source| {
+                            source.active
+                                && source.index == *initial_source_slot
+                                && source.source_id == *source_id
+                        })
+                        .cloned()
+                        .ok_or_else(|| {
+                            NativeWorldError::new(format!(
+                                "semantic entity {} lost its frame-zero MC2 carrier",
+                                entity.id().as_str()
+                            ))
+                        })?;
+                    let original_tile = original.position();
+                    if source.position.x >> 8 != original_tile.x
+                        || source.position.y >> 8 != original_tile.y
+                    {
+                        return Err(NativeWorldError::new(format!(
+                            "semantic entity {} private binding position diverges",
+                            entity.id().as_str()
+                        )));
+                    }
+                    let position = entity.position();
+                    self.level2.set_level2_entity_position(
+                        *initial_source_slot,
+                        Position {
+                            x: position.x.wrapping_shl(8) | (source.position.x & 0xff),
+                            y: position.y.wrapping_shl(8) | (source.position.y & 0xff),
+                            z: source.position.z,
+                        },
+                    )?;
+                }
+                spec::Mc2EntityRuntimeBinding::AuthoredFeature {
+                    authored_record,
+                    kind,
+                } => {
+                    if *kind != entity.kind() {
+                        return Err(NativeWorldError::new(format!(
+                            "semantic entity {} private authored-feature kind diverges",
+                            entity.id().as_str()
+                        )));
+                    }
+                    let position = entity.position();
+                    self.level2
+                        .session
+                        .state
+                        .live
+                        .mission
+                        .set_authored_feature_tile(*authored_record, position.x, position.y)
+                        .map_err(|error| NativeWorldError::new(error.to_string()))?;
+                }
             }
-            let source = self
-                .level2
-                .entities()
-                .get(usize::from(binding.initial_source_slot))
-                .filter(|source| {
-                    source.active
-                        && source.index == binding.initial_source_slot
-                        && source.source_id == binding.source_id
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    NativeWorldError::new(format!(
-                        "semantic entity {} lost its frame-zero MC2 carrier",
-                        entity.id().as_str()
-                    ))
-                })?;
-            let original_tile = original.position();
-            if source.position.x >> 8 != original_tile.x
-                || source.position.y >> 8 != original_tile.y
-            {
-                return Err(NativeWorldError::new(format!(
-                    "semantic entity {} private binding position diverges",
-                    entity.id().as_str()
-                )));
-            }
-            let position = entity.position();
-            self.level2.set_level2_entity_position(
-                binding.initial_source_slot,
-                Position {
-                    x: position.x.wrapping_shl(8) | (source.position.x & 0xff),
-                    y: position.y.wrapping_shl(8) | (source.position.y & 0xff),
-                    z: source.position.z,
-                },
-            )?;
         }
         let active_definition = self
             .definition
