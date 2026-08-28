@@ -10,9 +10,11 @@
 //! neutral contract.
 
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use sha2::{Digest, Sha256};
@@ -390,6 +392,197 @@ impl Mc2CampaignInputs {
             package_root: package_root.into(),
             owner_cache: Some(owner_cache.into()),
         }
+    }
+}
+
+/// One definition-validated MC2 resource binding, keyed only by the semantic
+/// level identity derived from its immutable definition. Owner-cache and
+/// backend materialization validation remain retryable work at open time.
+#[derive(Clone, Debug)]
+struct ResolvedMc2RuntimePackage {
+    definition: Arc<GameDefinition>,
+    inputs: Mc2CampaignInputs,
+}
+
+/// Immutable installed-package resolver for one closed semantic MC2 flow.
+///
+/// Callers supply only unordered resource locations. The resolver loads and
+/// verifies every definition, derives each key from `bound_level_id`, and
+/// rejects mixed, duplicate, or incomplete package sets before a runtime can
+/// enter Loading. It never accepts a caller-provided next-level identity.
+#[derive(Clone, Debug)]
+pub struct Mc2RuntimePackageResolver {
+    flow: RuntimeFlowDefinition,
+    by_level: BTreeMap<SemanticLevelId, ResolvedMc2RuntimePackage>,
+}
+
+impl Mc2RuntimePackageResolver {
+    /// Load and close one unordered installed package set over its declared
+    /// semantic runtime flow.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed definition error when a package is invalid, a derived
+    /// level identity is duplicated, flow identities disagree, or any
+    /// declared playable level is absent.
+    pub fn load(
+        inputs: impl IntoIterator<Item = Mc2CampaignInputs>,
+    ) -> crate::game_definition::Result<Self> {
+        let catalog = default_catalog()?;
+        let mut flow: Option<RuntimeFlowDefinition> = None;
+        let mut by_level = BTreeMap::new();
+        for input in inputs {
+            let definition = Arc::new(load_mc2_campaign(&input.package_root, &catalog)?);
+            definition.verify_identity()?;
+            let candidate = definition.runtime_flow().cloned().ok_or_else(|| {
+                definition_error(
+                    DefinitionErrorCode::InvalidSchema,
+                    "runtime_package_resolver.flow",
+                    "installed campaign definition has no semantic runtime flow",
+                )
+            })?;
+            if let Some(expected) = &flow {
+                if candidate.game_id() != expected.game_id()
+                    || candidate.entry_level_id() != expected.entry_level_id()
+                    || candidate.entries() != expected.entries()
+                {
+                    return Err(definition_error(
+                        DefinitionErrorCode::DependencyFailed,
+                        "runtime_package_resolver.flow",
+                        "installed campaign definitions do not share one ordered semantic flow",
+                    ));
+                }
+            } else {
+                flow = Some(candidate.clone());
+            }
+            let level_id = candidate.bound_level_id().clone();
+            if by_level
+                .insert(
+                    level_id.clone(),
+                    ResolvedMc2RuntimePackage {
+                        definition,
+                        inputs: input,
+                    },
+                )
+                .is_some()
+            {
+                return Err(definition_error(
+                    DefinitionErrorCode::DuplicateBinding,
+                    level_id.as_str(),
+                    "installed campaign package set duplicates a semantic level binding",
+                ));
+            }
+        }
+        let observed_flow = flow.ok_or_else(|| {
+            definition_error(
+                DefinitionErrorCode::InvalidSchema,
+                "runtime_package_resolver.packages",
+                "installed campaign package set is empty",
+            )
+        })?;
+        for entry in observed_flow.entries() {
+            if !by_level.contains_key(entry.level_id()) {
+                return Err(definition_error(
+                    DefinitionErrorCode::DependencyFailed,
+                    entry.level_id().as_str(),
+                    "installed campaign package set is missing a declared playable level",
+                ));
+            }
+        }
+        if by_level.len() != observed_flow.entries().len() {
+            return Err(definition_error(
+                DefinitionErrorCode::InvalidSchema,
+                "runtime_package_resolver.packages",
+                "installed campaign package set contains a level outside its closed flow",
+            ));
+        }
+        let flow = by_level
+            .get(observed_flow.entry_level_id())
+            .and_then(|package| package.definition.runtime_flow())
+            .cloned()
+            .expect("closed package set contains its validated entry definition");
+        Ok(Self { flow, by_level })
+    }
+
+    #[must_use]
+    pub const fn flow(&self) -> &RuntimeFlowDefinition {
+        &self.flow
+    }
+
+    fn package(&self, level_id: &SemanticLevelId) -> Option<&ResolvedMc2RuntimePackage> {
+        self.by_level.get(level_id)
+    }
+
+    /// Bind the resolver-derived entry package at the runtime's guarded
+    /// new-game boundary.
+    pub fn new_game(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+    ) -> Result<crate::game_runtime::RuntimeIdentity, crate::game_runtime::RuntimeTransitionError>
+    {
+        let package = self
+            .package(self.flow.entry_level_id())
+            .expect("closed installed package set contains its entry level");
+        runtime.new_game(guard, Arc::clone(&package.definition))
+    }
+
+    /// Open the currently pending resolver-owned package through the ordinary
+    /// MC2 gameplay adapter.
+    pub fn open_pending(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_id: u64,
+    ) -> Result<
+        crate::game_runtime::RuntimeIdentity,
+        crate::game_runtime::OpenLevelError<CampaignBackendError>,
+    > {
+        runtime.open_level_resolved(guard, &Mc2CampaignAdapter, session_id, |definition| {
+            let level_id = definition
+                .runtime_flow()
+                .map(RuntimeFlowDefinition::bound_level_id)
+                .ok_or_else(
+                    || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "loading runtime has no resolver-bound semantic level".to_owned(),
+                    },
+                )?;
+            self.package(level_id)
+                .map(|package| package.inputs.clone())
+                .ok_or_else(
+                    || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: format!(
+                            "installed package resolver has no binding for {}",
+                            level_id.as_str()
+                        ),
+                    },
+                )
+        })
+    }
+
+    /// Resolve the active semantic completion edge and accept it without a
+    /// caller-provided level identity, definition, or package path.
+    pub fn accept_transition(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_guard: crate::game_session::SessionGuard,
+    ) -> Result<
+        crate::game_runtime::CompletionTransitionReceipt,
+        crate::game_runtime::RuntimeTransitionError,
+    > {
+        runtime.accept_transition_resolved(guard, session_guard, |level_id| {
+            self.package(level_id)
+                .map(|package| Arc::clone(&package.definition))
+                .ok_or_else(
+                    || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: format!(
+                            "installed package resolver has no binding for {}",
+                            level_id.as_str()
+                        ),
+                    },
+                )
+        })
     }
 }
 
@@ -869,6 +1062,51 @@ mod tests {
             "carpet-flight-{label}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn runtime_package_resolver_canonicalizes_order_and_rejects_open_flow_sets() {
+        let level_one = level_one_descriptor_fixture_path();
+        let level_two = descriptor_fixture_path();
+        let level_three = level_three_descriptor_fixture_path();
+        let forward = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(&level_one),
+            Mc2CampaignInputs::new(&level_two),
+            Mc2CampaignInputs::new(&level_three),
+        ])
+        .unwrap();
+        let reverse = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(&level_three),
+            Mc2CampaignInputs::new(&level_two),
+            Mc2CampaignInputs::new(&level_one),
+        ])
+        .unwrap();
+        assert_eq!(forward.flow(), reverse.flow());
+        assert_eq!(
+            forward.flow().bound_level_id(),
+            forward.flow().entry_level_id()
+        );
+
+        let incomplete = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(&level_one),
+            Mc2CampaignInputs::new(&level_three),
+        ])
+        .unwrap_err();
+        assert_eq!(incomplete.code, DefinitionErrorCode::DependencyFailed);
+
+        let duplicate = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(&level_one),
+            Mc2CampaignInputs::new(&level_one),
+            Mc2CampaignInputs::new(&level_two),
+            Mc2CampaignInputs::new(&level_three),
+        ])
+        .unwrap_err();
+        assert_eq!(duplicate.code, DefinitionErrorCode::DuplicateBinding);
+
+        // No-Claim: this constructor gate proves only definition-derived,
+        // order-independent closure for the three qualified resource roots.
+        // It does not validate owner-cache bytes, install/discover packages,
+        // open gameplay, or consume a completion edge.
     }
 
     fn publish_player_max_forward_speed(

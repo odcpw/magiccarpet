@@ -389,6 +389,20 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     where
         A: GameAdapter<Backend = B>,
     {
+        self.open_level_resolved(guard, adapter, session_id, |_| Ok(input))
+    }
+
+    pub(crate) fn open_level_resolved<A, F>(
+        &mut self,
+        guard: RuntimeGuard,
+        adapter: &A,
+        session_id: u64,
+        resolve_input: F,
+    ) -> Result<RuntimeIdentity, OpenLevelError<A::Error>>
+    where
+        A: GameAdapter<Backend = B>,
+        F: FnOnce(&GameDefinition) -> Result<A::OpenInput, RuntimeTransitionError>,
+    {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)
@@ -408,6 +422,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             }
         };
         let next_generation = self.next_generation().map_err(OpenLevelError::Transition)?;
+        let input = resolve_input(definition.as_ref()).map_err(OpenLevelError::Transition)?;
         let session = GameSession::open_with_generation(
             adapter,
             definition,
@@ -440,6 +455,18 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         session_guard: SessionGuard,
         next_definition: Arc<GameDefinition>,
     ) -> Result<CompletionTransitionReceipt, RuntimeTransitionError> {
+        self.accept_transition_resolved(guard, session_guard, |_| Ok(next_definition))
+    }
+
+    pub(crate) fn accept_transition_resolved<F>(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+        resolve_definition: F,
+    ) -> Result<CompletionTransitionReceipt, RuntimeTransitionError>
+    where
+        F: FnOnce(&SemanticLevelId) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
+    {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
@@ -498,6 +525,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     .to_owned(),
             });
         };
+        let next_definition = resolve_definition(next_level)?;
         let candidate_flow = next_definition.runtime_flow().ok_or_else(|| {
             RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "next definition has no semantic runtime flow".to_owned(),
@@ -706,7 +734,7 @@ mod tests {
         campaign::{
             backend::{
                 CampaignBackendError, Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs,
-                load_mc2_campaign,
+                Mc2RuntimePackageResolver, load_mc2_campaign,
             },
             spec::CampaignSelection,
         },
@@ -1007,20 +1035,30 @@ mod tests {
         let level_one = level_one_package();
         let level_two = level_two_package();
         let level_three = level_three_package();
-        let level_one_definition = Arc::new(load_mc2_campaign(&level_one, &catalog).unwrap());
         let level_two_definition = Arc::new(load_mc2_campaign(&level_two, &catalog).unwrap());
         let level_three_definition = Arc::new(load_mc2_campaign(&level_three, &catalog).unwrap());
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(&level_three),
+            Mc2CampaignInputs::new(&level_one),
+            Mc2CampaignInputs::new(&level_two),
+        ])
+        .unwrap();
+        assert_eq!(
+            resolver.flow().bound_level_id(),
+            resolver.flow().entry_level_id()
+        );
         let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(111).unwrap();
-        let loading = runtime
-            .new_game(runtime.identity().guard(), level_one_definition)
-            .unwrap();
-        let playing = runtime
-            .open_level(
-                loading.guard(),
-                &Mc2CampaignAdapter,
-                Mc2CampaignInputs::new(&level_one),
-                111,
-            )
+        let title = runtime.identity();
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        let stale_open = resolver.open_pending(&mut runtime, title.guard(), 111);
+        assert!(matches!(
+            stale_open,
+            Err(OpenLevelError::Transition(RuntimeTransitionError::Guard(error)))
+                if error.code == RuntimeGuardErrorCode::GenerationMismatch
+        ));
+        assert_eq!(runtime.identity(), loading);
+        let playing = resolver
+            .open_pending(&mut runtime, loading.guard(), 111)
             .unwrap();
         let stale_level_one_tick_zero_guard = playing.session.as_ref().unwrap().guard();
 
@@ -1053,10 +1091,10 @@ mod tests {
 
         let before_start = runtime.identity();
         let before_start_snapshot = runtime.session().unwrap().snapshot();
-        let premature = runtime.accept_transition(
+        let premature = resolver.accept_transition(
+            &mut runtime,
             before_start.guard(),
             before_start.session.as_ref().unwrap().guard(),
-            Arc::clone(&level_two_definition),
         );
         assert!(matches!(
             premature,
@@ -1095,14 +1133,27 @@ mod tests {
         assert!(!started.complete);
         let started_identity = runtime.identity();
         let started_snapshot = runtime.session().unwrap().snapshot();
-        let started_rejection = runtime.accept_transition(
+        let started_rejection = resolver.accept_transition(
+            &mut runtime,
             started_identity.guard(),
             started_identity.session.as_ref().unwrap().guard(),
-            Arc::clone(&level_two_definition),
         );
         assert!(matches!(
             started_rejection,
             Err(RuntimeTransitionError::CompletionNotReady)
+        ));
+        assert_eq!(runtime.identity(), started_identity);
+        assert_eq!(runtime.session().unwrap().snapshot(), started_snapshot);
+
+        let stale_session_rejection = resolver.accept_transition(
+            &mut runtime,
+            started_identity.guard(),
+            stale_level_one_tick_zero_guard,
+        );
+        assert!(matches!(
+            stale_session_rejection,
+            Err(RuntimeTransitionError::SessionGuard(error))
+                if error.code == SessionGuardErrorCode::TickMismatch
         ));
         assert_eq!(runtime.identity(), started_identity);
         assert_eq!(runtime.session().unwrap().snapshot(), started_snapshot);
@@ -1192,10 +1243,10 @@ mod tests {
         }
         let invalid_identity = runtime.identity();
         let invalid_snapshot = runtime.session().unwrap().snapshot();
-        let invalid_completion = runtime.accept_transition(
+        let invalid_completion = resolver.accept_transition(
+            &mut runtime,
             invalid_identity.guard(),
             invalid_identity.session.as_ref().unwrap().guard(),
-            Arc::clone(&level_two_definition),
         );
         assert!(matches!(
             invalid_completion,
@@ -1240,11 +1291,11 @@ mod tests {
         assert_eq!(runtime.identity(), completed_identity);
         assert_eq!(runtime.session().unwrap().snapshot(), completed_snapshot);
 
-        let receipt = runtime
+        let receipt = resolver
             .accept_transition(
+                &mut runtime,
                 completed_identity.guard(),
                 completed_identity.session.as_ref().unwrap().guard(),
-                level_two_definition,
             )
             .unwrap();
         assert_eq!(receipt.receipt_contract, COMPLETION_TRANSITION_RECEIPT);
@@ -1269,10 +1320,10 @@ mod tests {
         assert_eq!(runtime.identity().mode, RuntimeMode::Loading);
         assert!(runtime.session().is_none());
 
-        let duplicate = runtime.accept_transition(
+        let duplicate = resolver.accept_transition(
+            &mut runtime,
             completed_identity.guard(),
             completed_identity.session.as_ref().unwrap().guard(),
-            Arc::new(load_mc2_campaign(&level_two, &catalog).unwrap()),
         );
         assert!(matches!(
             duplicate,
@@ -1280,16 +1331,55 @@ mod tests {
                 if error.code == RuntimeGuardErrorCode::GenerationMismatch
         ));
 
-        let level_two_playing = runtime
-            .open_level(
-                runtime.identity().guard(),
-                &Mc2CampaignAdapter,
-                Mc2CampaignInputs::new(level_two),
-                111,
-            )
+        let pending_level_two = runtime.identity();
+        let level_two_playing = resolver
+            .open_pending(&mut runtime, pending_level_two.guard(), 111)
             .unwrap();
         assert_eq!(level_two_playing.mode, RuntimeMode::Playing);
+        assert_eq!(pending_level_two.runtime_id, 111);
+        assert_eq!(level_two_playing.runtime_id, pending_level_two.runtime_id);
+        assert_eq!(level_two_playing.session.as_ref().unwrap().session_id, 111);
         assert_eq!(level_two_playing.session.as_ref().unwrap().generation, 2);
+        assert_eq!(
+            level_two_playing
+                .session
+                .as_ref()
+                .unwrap()
+                .package_graph_hash,
+            pending_level_two
+                .pending_definition
+                .as_ref()
+                .unwrap()
+                .package_graph_hash
+        );
+        assert_eq!(
+            level_two_playing.session.as_ref().unwrap().definition_hash,
+            pending_level_two
+                .pending_definition
+                .as_ref()
+                .unwrap()
+                .definition_hash
+        );
+        assert_eq!(
+            level_two_playing
+                .session
+                .as_ref()
+                .unwrap()
+                .definition_revision,
+            pending_level_two
+                .pending_definition
+                .as_ref()
+                .unwrap()
+                .definition_revision
+        );
+        assert_eq!(
+            level_two_playing.active_runtime_flow,
+            pending_level_two
+                .pending_definition
+                .as_ref()
+                .unwrap()
+                .runtime_flow
+        );
         assert_eq!(
             level_two_playing
                 .active_runtime_flow
@@ -1310,10 +1400,13 @@ mod tests {
         ));
 
         // No-Claim: this focused gate stages the already-separated real L1
-        // exit-group prerequisite. It proves authoritative phase-12 capture,
-        // exact semantic L1->L2 selection, one guarded Loading transition,
-        // real L2 open, and cross-level ABA rejection. It does not prove
-        // organic L1 objective progression, L2 completion, L3->Title,
-        // native/Unity transition exposure, results UI, save/load, or replay.
+        // exit-group prerequisite and uses a closed unordered installed set.
+        // It proves resolver-derived entry selection, authoritative phase-12
+        // capture, the declared L1->L2 edge without a caller level or path,
+        // one guarded Loading transition, exact pending-definition-to-real-L2
+        // same-handle open, and cross-level ABA rejection. It does not prove
+        // organic L1 objective progression, package installation/discovery,
+        // L2 completion, L3->Title, native/Unity transition exposure, results
+        // UI, save/load, or replay.
     }
 }
