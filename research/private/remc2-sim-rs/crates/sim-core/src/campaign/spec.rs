@@ -1179,6 +1179,11 @@ impl CampaignDefinition {
                             row.class, row.model, row.action,
                         ) == Some(expected)
                     }
+                    LevelEntityKind::Scenery(expected) => {
+                        Mc2LevelDefinition::scenery_for_reset_selector(
+                            row.class, row.model, row.action,
+                        ) == Some(expected)
+                    }
                     _ => false,
                 };
                 if !kind_matches {

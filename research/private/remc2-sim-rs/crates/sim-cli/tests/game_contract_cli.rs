@@ -458,7 +458,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
 }
 
 #[test]
-fn reset_live_spell_pickup_placements_are_package_projected() {
+fn reset_live_move_entity_targets_are_package_projected() {
     fn assert_position_access(package: &str, ids: &[&str], expected: &str) {
         for id in ids {
             let entity = run(&[
@@ -497,12 +497,16 @@ fn reset_live_spell_pickup_placements_are_package_projected() {
         &[
             "spell_pickup.shield.at_85_85",
             "spell_pickup.invisibility.at_136_85",
+            "scenery.stone.at_219_93",
         ],
         "session_reset",
     );
+    let level_one = level_one_campaign_fixture();
+    let level_one = level_one.to_str().expect("UTF-8 campaign path");
+    assert_position_access(level_one, &["scenery.stone.at_75_218"], "read_only");
     // No-Claim: this is the public package-projection gate. The already-focused
-    // Shield authoring test owns publication/reopen/reset and ordinary pickup
-    // consumption; this test does not duplicate that lifecycle for each row.
+    // Shield and Stone authoring tests own publication/reopen/reset and their
+    // ordinary consumers; this test does not duplicate those lifecycles.
 }
 
 #[test]

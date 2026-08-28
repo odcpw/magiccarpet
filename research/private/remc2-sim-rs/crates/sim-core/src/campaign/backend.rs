@@ -2056,6 +2056,18 @@ mod tests {
             vec![
                 "spell_pickup.shield.at_85_85",
                 "spell_pickup.invisibility.at_136_85",
+                "scenery.stone.at_219_93",
+                "scenery.stone.at_218_92",
+                "scenery.stone.at_218_94",
+                "scenery.stone.at_217_93",
+                "scenery.stone.at_248_117",
+                "scenery.stone.at_248_119",
+                "scenery.stone.at_250_119",
+                "scenery.stone.at_250_117",
+                "scenery.stone.at_57_8",
+                "scenery.stone.at_58_9",
+                "scenery.stone.at_57_9",
+                "scenery.stone.at_58_8",
             ]
         );
         let level = definition
@@ -3868,6 +3880,124 @@ mod tests {
         // ordinary overlap acquisition, explicit reopen, and reset retention.
         // It does not make generated pickups, other placements, spell tuning,
         // later holder behavior, save/replay, or Unity presentation authorable.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_three_stone_and_runs_ordinary_ground_consumer() {
+        const STONE_SLOT: u16 = 220;
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let stone = sim_definition::adapter::stable_entity_id("scenery.stone.at_219_93").unwrap();
+        let package_tile = TilePosition { x: 219, y: 93 };
+        let authored_tile = TilePosition { x: 210, y: 90 };
+        let package_entity = base.level_definition().unwrap().entity(&stone).unwrap();
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-stone-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-stone-placement-authoring",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            73,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let package_position = session.backend().campaign.level2_compatibility().entities()
+            [usize::from(STONE_SLOT)]
+        .position;
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-stone-placement-authoring",
+            &base,
+            "move-level-three-stone",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(stone.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(published.revision(), 2);
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(STONE_SLOT)]
+                .position,
+            package_position,
+            "publication must not mutate the already-open package authority"
+        );
+
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        let authored_position = crate::Position {
+            x: (authored_tile.x << 8) | (package_position.x & 0xff),
+            y: (authored_tile.y << 8) | (package_position.y & 0xff),
+            z: package_position.z,
+        };
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let target_ground =
+            crate::FlightWorld::ground_height(compatibility.canonical_terrain(), authored_position);
+        assert_ne!(
+            target_ground, package_position.z,
+            "the authored tile must discriminate the ordinary Stone ground callback"
+        );
+        assert_eq!(
+            compatibility.entities()[usize::from(STONE_SLOT)].position,
+            authored_position
+        );
+        assert_eq!(
+            compatibility
+                .session
+                .state
+                .live
+                .economy
+                .map_chains()
+                .tile_of(STONE_SLOT),
+            u16::from_le_bytes([authored_tile.x as u8, authored_tile.y as u8])
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let stepped =
+            &session.backend().campaign.level2_compatibility().entities()[usize::from(STONE_SLOT)];
+        assert_eq!(stepped.position.x, authored_position.x);
+        assert_eq!(stepped.position.y, authored_position.y);
+        assert_eq!(stepped.position.z, target_ground);
+        assert_ne!(session.backend().campaign.state_hash(), authored_reset_hash);
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset =
+            &session.backend().campaign.level2_compatibility().entities()[usize::from(STONE_SLOT)];
+        assert_eq!(reset.position, authored_position);
+        assert_eq!(reset.action, 3);
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 3 ordinary Stone placement,
+        // map relocation, explicit reopen/reset, and its ground-height callback.
+        // It does not make authored-group Stones, trees, buildings, creatures,
+        // damage/destruction, save/replay, or Unity presentation authorable.
     }
 
     #[test]

@@ -824,7 +824,9 @@ fn bind_private_entity(
                 })?;
                 Mc2MovableRuntimeHint::AuthoredRecord(source_id)
             }
-            LevelEntityKind::SpellPickup(_) => Mc2MovableRuntimeHint::ResetKindAndPosition,
+            LevelEntityKind::SpellPickup(_) | LevelEntityKind::Scenery(SceneryKind::Stone) => {
+                Mc2MovableRuntimeHint::ResetKindAndPosition
+            }
             _ => {
                 return Err(format!(
                     "semantic entity {} has no supported movable MC2 carrier class",

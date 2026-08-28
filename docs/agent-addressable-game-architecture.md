@@ -365,12 +365,13 @@ partial real implementation, not a completion claim:
 - typed semantic `MoveEntity` changes are published atomically and consumed on
   explicit reopen by the real Level 1 start-area trigger and every reset-live
   semantic spell pickup in the first three qualified packages: Level 2 Beyond
-  Sight and Speed, plus Level 3 Shield and Invisibility. Each pickup is bound
-  from semantic kind and package position to its unique imported source
-  carrier; movement preserves sub-tile position, map membership, and the
-  shared spell projection before the ordinary overlap/acquisition lifecycle.
-  Every other placement remains read-only until its own runtime
-  materialization binding is implemented;
+  Sight and Speed, plus Level 3 Shield and Invisibility. The same private
+  kind-and-position binding covers all twelve reset-live Level 3 ordinary
+  Stones; their ordinary callback consumes the authored location through its
+  terrain-ground projection. Movement preserves sub-tile position and map
+  membership, plus the shared spell projection for pickups. Every other
+  placement remains read-only until its own runtime materialization binding is
+  implemented;
 - all fifteen qualified Level 1, 2 and 3 objectives have stable semantic IDs;
   typed `PutObjective` authoring is published atomically and consumed on
   explicit reopen/reset for the five package-present `ReachLocation`
