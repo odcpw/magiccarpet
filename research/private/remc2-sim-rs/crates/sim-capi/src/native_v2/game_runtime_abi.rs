@@ -256,7 +256,10 @@ fn map_transition_error(error: RuntimeTransitionError) -> AbiError {
         }
         RuntimeTransitionError::SessionGuard(_) => MC_STATUS_GENERATION_MISMATCH,
         RuntimeTransitionError::InvalidMode { .. } => MC_STATUS_INVALID_ARGUMENT,
-        RuntimeTransitionError::InvalidRuntimeFlow { .. } => MC_STATUS_VALIDATION_FAILED,
+        RuntimeTransitionError::InvalidRuntimeFlow { .. }
+        | RuntimeTransitionError::InvalidNextDefinition { .. }
+        | RuntimeTransitionError::InvalidCompletion { .. } => MC_STATUS_VALIDATION_FAILED,
+        RuntimeTransitionError::CompletionNotReady => MC_STATUS_INVALID_ARGUMENT,
         RuntimeTransitionError::GenerationExhausted => MC_STATUS_GENERATION_MISMATCH,
     };
     AbiError::new(status, error.to_string())
@@ -492,7 +495,7 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v3"
+            "carpet-flight-game-runtime/v4"
         );
         assert_eq!(
             contract["transport_contract"],

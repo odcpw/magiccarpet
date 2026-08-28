@@ -38,9 +38,9 @@ use crate::{
         engine_capabilities,
     },
     game_session::{
-        CampaignSnapshot, EventPage, GameAdapter, GameAudioCommand, GameCommand, GameEvent,
-        GameSessionBackend, LateralControl, LongitudinalControl, PlayerMotion, PlayerPose,
-        RuntimeActorId, RuntimeParticipantId,
+        CampaignSnapshot, EventPage, GameAdapter, GameAudioCommand, GameCommand, GameCompletion,
+        GameCompletionStatus, GameEvent, GameSessionBackend, LateralControl, LongitudinalControl,
+        PlayerMotion, PlayerPose, RuntimeActorId, RuntimeParticipantId,
     },
     native_world::{Level2DispatchEvent, Level2SharedSpellEvent},
 };
@@ -493,6 +493,23 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.campaign.tick()
     }
 
+    fn completion_status(&self) -> GameCompletionStatus {
+        let exit = self.campaign.level2_compatibility().level_exit_sequence();
+        if !exit.complete {
+            GameCompletionStatus::InProgress
+        } else if exit.result_code == 10 {
+            GameCompletionStatus::Completed {
+                completion: GameCompletion {
+                    state_hash: self.campaign.state_hash(),
+                },
+            }
+        } else {
+            GameCompletionStatus::Invalid {
+                message: "completed MC2 exit carrier has a non-success result".to_owned(),
+            }
+        }
+    }
+
     fn snapshot(&self) -> Self::Snapshot {
         let flight = &self.campaign.level2.state;
         CampaignSnapshot {
@@ -623,6 +640,11 @@ impl Mc2CampaignBackend {
     #[must_use]
     pub fn compatibility_campaign(&self) -> &CampaignSession {
         &self.campaign
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compatibility_campaign_mut_for_test(&mut self) -> &mut CampaignSession {
+        &mut self.campaign
     }
 
     fn opaque_runtime_handle(&self, namespace: &[u8], source_value: u64) -> u64 {

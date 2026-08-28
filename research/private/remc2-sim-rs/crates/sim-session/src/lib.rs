@@ -8,9 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v1";
+pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v2";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -358,11 +358,31 @@ pub trait GameSessionBackend {
     type Error;
 
     fn tick(&self) -> u64;
+    fn completion_status(&self) -> GameCompletionStatus;
     fn snapshot(&self) -> Self::Snapshot;
     fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
     fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error>;
     fn reset_for_definition(&mut self, definition: &GameDefinition) -> Result<(), Self::Error>;
+}
+
+/// Package-neutral successful gameplay completion observed by the outer
+/// runtime. Backends publish this only from their persistent authoritative
+/// completion carrier, never from client input or an intermediate objective.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GameCompletion {
+    #[serde(serialize_with = "serialize_u64_hex")]
+    pub state_hash: u64,
+}
+
+/// Closed neutral projection of a backend's authoritative completion carrier.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum GameCompletionStatus {
+    Unsupported,
+    InProgress,
+    Completed { completion: GameCompletion },
+    Invalid { message: String },
 }
 
 /// Adapter that constructs one concrete backend from a neutral definition.
@@ -403,6 +423,24 @@ impl<B: GameSessionBackend> GameSession<B> {
     where
         A: GameAdapter<Backend = B>,
     {
+        Self::open_with_generation(adapter, definition, session_id, NonZeroU64::MIN, input)
+    }
+
+    /// Open a definition-bound session at a runtime-owned nonzero lifecycle
+    /// generation. The outer runtime uses this when moving between levels so
+    /// a stale guard from an earlier level cannot collide with a fresh
+    /// session on the same handle.
+    #[doc(hidden)]
+    pub fn open_with_generation<A>(
+        adapter: &A,
+        definition: Arc<GameDefinition>,
+        session_id: u64,
+        initial_generation: NonZeroU64,
+        input: A::OpenInput,
+    ) -> Result<Self, OpenSessionError<A::Error>>
+    where
+        A: GameAdapter<Backend = B>,
+    {
         if session_id == 0 {
             return Err(OpenSessionError::InvalidSessionId);
         }
@@ -412,7 +450,7 @@ impl<B: GameSessionBackend> GameSession<B> {
         Ok(Self {
             definition,
             session_id,
-            generation: 1,
+            generation: initial_generation.get(),
             backend,
         })
     }
@@ -457,6 +495,19 @@ impl<B: GameSessionBackend> GameSession<B> {
             identity: self.identity(),
             value: self.backend.snapshot(),
         }
+    }
+
+    /// Observe authoritative gameplay completion without advancing the
+    /// session or consuming its event journal.
+    pub fn completion_status(
+        &self,
+        guard: SessionGuard,
+    ) -> Result<SessionObservation<GameCompletionStatus>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: self.backend.completion_status(),
+        })
     }
 
     /// Read an ordered bounded event page without advancing any session state.
@@ -677,6 +728,10 @@ mod tests {
 
         fn tick(&self) -> u64 {
             self.tick
+        }
+
+        fn completion_status(&self) -> GameCompletionStatus {
+            GameCompletionStatus::InProgress
         }
 
         fn snapshot(&self) -> Self::Snapshot {

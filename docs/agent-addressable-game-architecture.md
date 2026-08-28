@@ -354,8 +354,13 @@ partial real implementation, not a completion claim:
   boundaries. Each qualified Level 1-3 definition now carries the same closed,
   ordered semantic campaign flow plus its bound semantic level; `new_game`
   admits only the declared entry and Loading/Playing/Paused observations retain
-  that definition-owned identity. Completion detection, next-package
-  resolution, transition acceptance and results execution remain open. The
+  that definition-owned identity. The neutral session now projects successful
+  completion only from the persistent phase-12 level-exit carrier, and the
+  Rust runtime consumes it exactly once: a focused real Level 1 route accepts
+  only the flow-declared Level 2 definition into Loading, opens that real
+  package with a monotonic nested session generation, and rejects stale Level
+  1 guards. Native/Unity transition exposure, automatic package resolution,
+  Level 2/3 completion, terminal Title execution and results remain open. The
   quiescent boundary also does not yet implement `paused_frame`, so the MC2
   pre-gate RNG/objective/presentation work remains open. Its Unity transport
   now validates that flow identity and borrows snapshot, step, event and reset

@@ -879,7 +879,13 @@ impl GameDefinition {
         Ok(candidate)
     }
 
-    pub(crate) fn verify_identity(&self) -> Result<()> {
+    /// Verify the complete persisted schema, hash, capability, artifact, and
+    /// semantic-flow identity without mutating this definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first typed identity or schema violation.
+    pub fn verify_identity(&self) -> Result<()> {
         if self.schema != GAME_DEFINITION_SCHEMA {
             return Err(DefinitionError::new(
                 DefinitionErrorCode::InvalidSchema,

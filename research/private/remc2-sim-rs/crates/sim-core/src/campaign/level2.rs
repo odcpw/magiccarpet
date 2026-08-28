@@ -4798,6 +4798,15 @@ impl Level2ResetSession {
         self.consume_authored_group(0, 0, target_group)
     }
 
+    /// Corrupt only the private terminal result byte after a completed exit,
+    /// so the neutral completion projection's fail-closed branch can be
+    /// discriminated without exposing that source byte in production APIs.
+    #[cfg(test)]
+    pub(crate) fn corrupt_completed_exit_result_for_test(&mut self, result_code: u8) {
+        assert!(self.session.state.live.level_exit.complete);
+        self.session.state.live.level_exit.result_code = result_code;
+    }
+
     /// Hide the five real Level-3 stage Worm roots so the package-present
     /// imported absence countdown can be exercised through its ordinary
     /// scheduler path. The source rows and countdown carrier remain otherwise

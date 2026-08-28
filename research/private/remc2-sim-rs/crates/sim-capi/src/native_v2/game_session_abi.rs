@@ -866,7 +866,7 @@ mod tests {
         let contract = read_json(|buffer, capacity, length| {
             mc_game_session_contract_json_v1(buffer, capacity, length)
         });
-        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v1");
+        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v2");
         assert_eq!(
             contract["transport_contract"],
             "carpet-flight-native-json/v1"

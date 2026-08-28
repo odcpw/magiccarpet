@@ -18,8 +18,8 @@ use sim_core::{
 };
 use sim_session::{
     AudioAction, CompatibilityReceipt, EventPage, GameAdapter, GameAssetReference,
-    GameAudioCommand, GameCommand, GameEvent, GameSessionBackend, LateralControl,
-    LongitudinalControl, RuntimeActorId, RuntimeParticipantId,
+    GameAudioCommand, GameCommand, GameCompletionStatus, GameEvent, GameSessionBackend,
+    LateralControl, LongitudinalControl, RuntimeActorId, RuntimeParticipantId,
 };
 
 use super::{
@@ -412,6 +412,10 @@ impl GameSessionBackend for SealedLevel1Backend {
 
     fn tick(&self) -> u64 {
         self.session.state.tick
+    }
+
+    fn completion_status(&self) -> GameCompletionStatus {
+        GameCompletionStatus::Unsupported
     }
 
     fn snapshot(&self) -> Self::Snapshot {

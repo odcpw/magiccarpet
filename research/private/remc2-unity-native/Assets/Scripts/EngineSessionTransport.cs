@@ -17,7 +17,7 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class EngineSessionTransport
     {
-        internal const string EngineContract = "carpet-flight-game-session/v1";
+        internal const string EngineContract = "carpet-flight-game-session/v2";
         internal const string TransportContract = "carpet-flight-native-json/v1";
         internal const string OwnedProfile = "mc2-owned";
         internal const string CampaignProfile = "mc2-campaign";
