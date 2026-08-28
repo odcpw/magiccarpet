@@ -495,7 +495,7 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v4"
+            "carpet-flight-game-runtime/v5"
         );
         assert_eq!(
             contract["transport_contract"],

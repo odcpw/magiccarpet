@@ -14,7 +14,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v4";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v5";
 pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v1";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
@@ -261,7 +261,9 @@ impl<E: Error + 'static> Error for OpenLevelError<E> {}
 
 #[derive(Debug)]
 enum RuntimeState<B> {
-    Title,
+    Title {
+        session_generation: NonZeroU64,
+    },
     Loading {
         definition: Arc<GameDefinition>,
         session_generation: NonZeroU64,
@@ -270,6 +272,11 @@ enum RuntimeState<B> {
         session: GameSession<B>,
         paused: bool,
     },
+}
+
+pub(crate) enum ResolvedCompletionTarget {
+    Level(Arc<GameDefinition>),
+    Title,
 }
 
 /// Rust-owned outer runtime state above the existing gameplay session.
@@ -294,14 +301,16 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         Ok(Self {
             runtime_id,
             generation: 1,
-            state: RuntimeState::Title,
+            state: RuntimeState::Title {
+                session_generation: NonZeroU64::MIN,
+            },
         })
     }
 
     #[must_use]
     pub fn identity(&self) -> RuntimeIdentity {
         let (mode, pending_definition, active_runtime_flow, session) = match &self.state {
-            RuntimeState::Title => (RuntimeMode::Title, None, None, None),
+            RuntimeState::Title { .. } => (RuntimeMode::Title, None, None, None),
             RuntimeState::Loading { definition, .. } => (
                 RuntimeMode::Loading,
                 Some(RuntimeDefinitionIdentity::from_definition(definition)),
@@ -344,12 +353,15 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
-        if !matches!(self.state, RuntimeState::Title) {
-            return Err(RuntimeTransitionError::InvalidMode {
-                expected: RuntimeMode::Title,
-                actual: self.identity().mode,
-            });
-        }
+        let session_generation = match &self.state {
+            RuntimeState::Title { session_generation } => *session_generation,
+            _ => {
+                return Err(RuntimeTransitionError::InvalidMode {
+                    expected: RuntimeMode::Title,
+                    actual: self.identity().mode,
+                });
+            }
+        };
         let runtime_flow = definition.runtime_flow().ok_or_else(|| {
             RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "new-game definition has no semantic runtime flow".to_owned(),
@@ -367,7 +379,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         let next_generation = self.next_generation()?;
         self.state = RuntimeState::Loading {
             definition,
-            session_generation: NonZeroU64::MIN,
+            session_generation,
         };
         self.generation = next_generation;
         Ok(self.identity())
@@ -455,7 +467,14 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         session_guard: SessionGuard,
         next_definition: Arc<GameDefinition>,
     ) -> Result<CompletionTransitionReceipt, RuntimeTransitionError> {
-        self.accept_transition_resolved(guard, session_guard, |_, _| Ok(next_definition))
+        self.accept_transition_resolved(guard, session_guard, |_, destination| {
+            Ok(match destination {
+                RuntimeFlowDestination::Level { .. } => {
+                    ResolvedCompletionTarget::Level(next_definition)
+                }
+                RuntimeFlowDestination::Title { .. } => ResolvedCompletionTarget::Title,
+            })
+        })
     }
 
     pub(crate) fn accept_transition_resolved<F>(
@@ -467,8 +486,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     where
         F: FnOnce(
             &GameDefinition,
-            &SemanticLevelId,
-        ) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
+            &RuntimeFlowDestination,
+        ) -> Result<ResolvedCompletionTarget, RuntimeTransitionError>,
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -519,46 +538,58 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .expect("validated runtime flow contains its bound level");
         let completed_level_id = current_entry.level_id().clone();
         let completion_destination = current_entry.completion_destination().clone();
-        let RuntimeFlowDestination::Level {
-            level_id: next_level,
-        } = &completion_destination
-        else {
-            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
-                message: "terminal Title transition is not yet supported by this runtime seam"
-                    .to_owned(),
-            });
-        };
-        let next_definition = resolve_definition(session.definition(), next_level)?;
-        let candidate_flow = next_definition.runtime_flow().ok_or_else(|| {
-            RuntimeTransitionError::InvalidRuntimeFlow {
-                message: "next definition has no semantic runtime flow".to_owned(),
+        let resolved = resolve_definition(session.definition(), &completion_destination)?;
+        let next_definition = match (&completion_destination, resolved) {
+            (
+                RuntimeFlowDestination::Level {
+                    level_id: next_level,
+                },
+                ResolvedCompletionTarget::Level(next_definition),
+            ) => {
+                let candidate_flow = next_definition.runtime_flow().ok_or_else(|| {
+                    RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "next definition has no semantic runtime flow".to_owned(),
+                    }
+                })?;
+                next_definition.verify_identity().map_err(|error| {
+                    RuntimeTransitionError::InvalidNextDefinition {
+                        message: error.to_string(),
+                    }
+                })?;
+                if candidate_flow.game_id() != current_flow.game_id()
+                    || candidate_flow.entry_level_id() != current_flow.entry_level_id()
+                    || candidate_flow.entries() != current_flow.entries()
+                {
+                    return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "next definition does not retain the active semantic game and ordered flow"
+                            .to_owned(),
+                    });
+                }
+                if candidate_flow.bound_level_id() != next_level {
+                    return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: format!(
+                            "completion of {} requires {}, but candidate binds {}",
+                            completed_level_id.as_str(),
+                            next_level.as_str(),
+                            candidate_flow.bound_level_id().as_str(),
+                        ),
+                    });
+                }
+                Some(next_definition)
             }
-        })?;
-        next_definition.verify_identity().map_err(|error| {
-            RuntimeTransitionError::InvalidNextDefinition {
-                message: error.to_string(),
+            (RuntimeFlowDestination::Title { .. }, ResolvedCompletionTarget::Title) => None,
+            (RuntimeFlowDestination::Level { .. }, ResolvedCompletionTarget::Title) => {
+                return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "playable-level completion resolved to Title".to_owned(),
+                });
             }
-        })?;
-        if candidate_flow.game_id() != current_flow.game_id()
-            || candidate_flow.entry_level_id() != current_flow.entry_level_id()
-            || candidate_flow.entries() != current_flow.entries()
-        {
-            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
-                message:
-                    "next definition does not retain the active semantic game and ordered flow"
+            (RuntimeFlowDestination::Title { .. }, ResolvedCompletionTarget::Level(_)) => {
+                return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "terminal Title completion resolved to a playable definition"
                         .to_owned(),
-            });
-        }
-        if candidate_flow.bound_level_id() != next_level {
-            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
-                message: format!(
-                    "completion of {} requires {}, but candidate binds {}",
-                    completed_level_id.as_str(),
-                    next_level.as_str(),
-                    candidate_flow.bound_level_id().as_str(),
-                ),
-            });
-        }
+                });
+            }
+        };
         let next_runtime_generation = self.next_generation()?;
         let next_session_generation = source_session
             .generation
@@ -566,9 +597,14 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .and_then(NonZeroU64::new)
             .ok_or(RuntimeTransitionError::GenerationExhausted)?;
 
-        self.state = RuntimeState::Loading {
-            definition: next_definition,
-            session_generation: next_session_generation,
+        self.state = match next_definition {
+            Some(definition) => RuntimeState::Loading {
+                definition,
+                session_generation: next_session_generation,
+            },
+            None => RuntimeState::Title {
+                session_generation: next_session_generation,
+            },
         };
         self.generation = next_runtime_generation;
         let after = self.identity();
@@ -619,7 +655,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     pub fn session(&self) -> Option<&GameSession<B>> {
         match &self.state {
             RuntimeState::Playing { session, .. } => Some(session),
-            RuntimeState::Title | RuntimeState::Loading { .. } => None,
+            RuntimeState::Title { .. } | RuntimeState::Loading { .. } => None,
         }
     }
 
@@ -633,7 +669,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 paused: false,
             } => Some(session),
             RuntimeState::Playing { paused: true, .. }
-            | RuntimeState::Title
+            | RuntimeState::Title { .. }
             | RuntimeState::Loading { .. } => None,
         }
     }
@@ -806,6 +842,41 @@ mod tests {
                 .bound_level_id()
                 .as_str(),
             "level.magic_carpet_2.payahandra_ruins"
+        );
+        runtime
+    }
+
+    fn open_real_level_three_at_proven_incoming_boundary(
+        resolver: &Mc2RuntimePackageResolver,
+        runtime_id: u64,
+    ) -> GameRuntime<Mc2CampaignBackend> {
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(level_three_package(), &catalog).unwrap());
+        // Test-stage only the exact Loading identity separately proved by the
+        // L2->L3 gate. Resolver binding and the L3->Title route below remain
+        // production-owned.
+        let mut runtime = GameRuntime {
+            runtime_id,
+            generation: 6,
+            state: RuntimeState::Loading {
+                definition,
+                session_generation: NonZeroU64::new(3).unwrap(),
+            },
+        };
+        let loading = runtime.identity();
+        let playing = resolver
+            .open_pending(&mut runtime, loading.guard(), runtime_id)
+            .unwrap();
+        assert_eq!(playing.generation, 7);
+        assert_eq!(playing.session.as_ref().unwrap().generation, 3);
+        assert_eq!(
+            playing
+                .active_runtime_flow
+                .as_ref()
+                .unwrap()
+                .bound_level_id()
+                .as_str(),
+            "level.magic_carpet_2.revealed_way"
         );
         runtime
     }
@@ -1863,5 +1934,348 @@ mod tests {
         // organic L1/L2 objective progression or vault destruction, package
         // installation/discovery, L3 gameplay/completion/Title, CAPI/Unity,
         // results UI, save/load, replay, or commercial distribution.
+    }
+
+    #[test]
+    fn runtime_completed_real_level_three_returns_to_title_and_restarts_without_aba() {
+        const BEE_ROWS: [u16; 6] = [149, 150, 152, 153, 154, 155];
+        const GROUP6_ROWS: [u16; 7] = [196, 197, 198, 199, 200, 201, 202];
+
+        let mut resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_two_package()),
+            Mc2CampaignInputs::new(level_three_package()),
+            Mc2CampaignInputs::new(level_one_package()),
+        ])
+        .unwrap();
+        let mut runtime = open_real_level_three_at_proven_incoming_boundary(&resolver, 333);
+
+        runtime
+            .session_mut()
+            .unwrap()
+            .backend_mut()
+            .compatibility_campaign_mut_for_test()
+            .level2_compatibility_mut()
+            .stage_level_three_final_objective_prerequisite_for_test()
+            .unwrap();
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .level2_selected_objective_stage_state(),
+            2
+        );
+        let guard = runtime.session().unwrap().identity().guard();
+        runtime
+            .session_mut()
+            .unwrap()
+            .step(guard, GameCommand::default())
+            .unwrap();
+        {
+            let session = runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            assert!(session.dispatch_events().iter().any(|event| matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot: 129,
+                    group: 3,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == BEE_ROWS
+            )));
+            assert_eq!(
+                session
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .filter_map(crate::native_world::BeeCreatureRuntime::authored_index)
+                    .collect::<Vec<_>>(),
+                BEE_ROWS
+            );
+            assert_eq!(session.runtime().objectives[0].stage_selectors[4], 1);
+        }
+
+        assert_eq!(
+            runtime
+                .session_mut()
+                .unwrap()
+                .backend_mut()
+                .compatibility_campaign_mut_for_test()
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_authored_bee_terminal_hide_for_test(&BEE_ROWS),
+            BEE_ROWS.len()
+        );
+        let guard = runtime.session().unwrap().identity().guard();
+        runtime
+            .session_mut()
+            .unwrap()
+            .step(guard, GameCommand::default())
+            .unwrap();
+        {
+            let session = runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            assert!(session.economy().bee_creatures().is_empty());
+            assert_eq!(session.runtime().objectives[0].stage_selectors[4], 2);
+            assert_eq!(session.runtime().objectives[0].is_level_end, 1);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+            )));
+        }
+        let completed_objective_identity = runtime.identity();
+        let completed_objective_snapshot = runtime.session().unwrap().snapshot();
+        let before_group6 = resolver.accept_transition(
+            &mut runtime,
+            completed_objective_identity.guard(),
+            completed_objective_identity
+                .session
+                .as_ref()
+                .unwrap()
+                .guard(),
+        );
+        assert!(matches!(
+            before_group6,
+            Err(RuntimeTransitionError::CompletionNotReady)
+        ));
+        assert_eq!(runtime.identity(), completed_objective_identity);
+        assert_eq!(
+            runtime.session().unwrap().snapshot(),
+            completed_objective_snapshot
+        );
+
+        let guard = runtime.session().unwrap().identity().guard();
+        runtime
+            .session_mut()
+            .unwrap()
+            .step(guard, GameCommand::default())
+            .unwrap();
+        let session = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .compatibility_campaign()
+            .level2_compatibility();
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 219,
+                group: 6,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == GROUP6_ROWS
+        )));
+        let trigger = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 201)
+            .copied()
+            .expect("ordinary L3 flow constructs the real exit trigger");
+        let portal = session
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == 202)
+            .copied()
+            .expect("ordinary L3 flow constructs the real exit portal");
+        assert_eq!((trigger.model, trigger.action), (12, 12));
+        assert_eq!((portal.model, portal.action), (3, 8));
+        {
+            let session = runtime
+                .session_mut()
+                .unwrap()
+                .backend_mut()
+                .compatibility_campaign_mut_for_test()
+                .level2_compatibility_mut();
+            session
+                .set_level2_entity_position(session.state.entity_index, trigger.position)
+                .expect("stage the real L3 player inside the real group-6 trigger");
+        }
+
+        for _ in 0..16 {
+            if runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .level_exit_sequence()
+                .active
+            {
+                break;
+            }
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+        }
+        let active_exit = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .compatibility_campaign()
+            .level2_compatibility()
+            .level_exit_sequence();
+        assert!(active_exit.active);
+        assert!(!active_exit.complete);
+        let active_identity = runtime.identity();
+        let active_snapshot = runtime.session().unwrap().snapshot();
+        let premature = resolver.accept_transition(
+            &mut runtime,
+            active_identity.guard(),
+            active_identity.session.as_ref().unwrap().guard(),
+        );
+        assert!(matches!(
+            premature,
+            Err(RuntimeTransitionError::CompletionNotReady)
+        ));
+        assert_eq!(runtime.identity(), active_identity);
+        assert_eq!(runtime.session().unwrap().snapshot(), active_snapshot);
+
+        for _ in 0..700 {
+            if matches!(
+                runtime.session().unwrap().backend().completion_status(),
+                GameCompletionStatus::Completed { .. }
+            ) {
+                break;
+            }
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+        }
+        let completed_identity = runtime.identity();
+        let completed_snapshot = runtime.session().unwrap().snapshot();
+        let stale_level_three_guard = completed_identity.session.as_ref().unwrap().guard();
+        assert!(matches!(
+            runtime.session().unwrap().backend().completion_status(),
+            GameCompletionStatus::Completed { .. }
+        ));
+
+        let reissued_completed_definition = Arc::new(
+            sim_definition::adapter::reissue_at_revision(
+                runtime.session().unwrap().definition(),
+                2,
+            )
+            .unwrap(),
+        );
+        let exact_level_three_definition = resolver
+            .replace_exact_definition_for_test(Arc::clone(&reissued_completed_definition))
+            .unwrap();
+        let mismatched_source = resolver.accept_transition(
+            &mut runtime,
+            completed_identity.guard(),
+            stale_level_three_guard,
+        );
+        assert!(matches!(
+            mismatched_source,
+            Err(RuntimeTransitionError::InvalidRuntimeFlow { .. })
+        ));
+        assert_eq!(runtime.identity(), completed_identity);
+        assert_eq!(runtime.session().unwrap().snapshot(), completed_snapshot);
+        let displaced_reissue = resolver
+            .replace_exact_definition_for_test(exact_level_three_definition)
+            .unwrap();
+        assert_eq!(
+            displaced_reissue.definition_hash(),
+            reissued_completed_definition.definition_hash()
+        );
+
+        let receipt = resolver
+            .accept_transition(
+                &mut runtime,
+                completed_identity.guard(),
+                stale_level_three_guard,
+            )
+            .unwrap();
+        assert!(receipt.verify());
+        assert_eq!(receipt.before, completed_identity);
+        assert_eq!(receipt.source_session, completed_snapshot.identity);
+        assert_eq!(
+            receipt.completion.state_hash,
+            completed_snapshot.value.state_hash
+        );
+        assert_eq!(
+            receipt.completed_level_id.as_str(),
+            "level.magic_carpet_2.revealed_way"
+        );
+        assert!(matches!(
+            receipt.completion_destination,
+            RuntimeFlowDestination::Title { ref node_id }
+                if node_id.as_str() == "flow.magic_carpet_2.return_to_title"
+        ));
+        let title = runtime.identity();
+        assert_eq!(title.generation, 8);
+        assert_eq!(title.mode, RuntimeMode::Title);
+        assert!(title.pending_definition.is_none());
+        assert!(title.active_runtime_flow.is_none());
+        assert!(title.session.is_none());
+        assert_eq!(receipt.after, title);
+
+        let duplicate = resolver.accept_transition(
+            &mut runtime,
+            completed_identity.guard(),
+            stale_level_three_guard,
+        );
+        assert!(matches!(
+            duplicate,
+            Err(RuntimeTransitionError::Guard(error))
+                if error.code == RuntimeGuardErrorCode::GenerationMismatch
+        ));
+        assert_eq!(runtime.identity(), title);
+
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        assert_eq!(loading.generation, 9);
+        let restarted = resolver
+            .open_pending(&mut runtime, loading.guard(), 333)
+            .unwrap();
+        assert_eq!(restarted.generation, 10);
+        assert_eq!(restarted.runtime_id, 333);
+        assert_eq!(restarted.session.as_ref().unwrap().session_id, 333);
+        assert_eq!(restarted.session.as_ref().unwrap().generation, 4);
+        assert_eq!(restarted.session.as_ref().unwrap().tick, 0);
+        assert_eq!(
+            restarted
+                .active_runtime_flow
+                .as_ref()
+                .unwrap()
+                .bound_level_id()
+                .as_str(),
+            "level.magic_carpet_2.night_spire"
+        );
+        let stale_level_three = runtime
+            .session_mut()
+            .unwrap()
+            .step(stale_level_three_guard, GameCommand::default());
+        assert!(matches!(
+            stale_level_three,
+            Err(GameSessionError::Guard(error))
+                if error.code == SessionGuardErrorCode::GenerationMismatch
+        ));
+
+        // No-Claim: this gate starts from the exact resolver-owned L3 Loading
+        // boundary separately proved by the L2->L3 gate, stages objectives
+        // 0-3/final selection, and stages the already-proven terminal hide for
+        // the real final Bee roots. It proves ordinary final-objective/group-6
+        // chronology, authoritative phase-12 completion, semantic Title,
+        // and same-handle generation-4 restart. It does not prove an
+        // uninterrupted L1->Title run, organic L3 objectives or Bee combat,
+        // Title/results presentation, CAPI/Unity transition exposure, package
+        // installation/discovery, save/load, replay, or distribution.
     }
 }

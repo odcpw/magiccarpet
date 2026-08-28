@@ -378,9 +378,13 @@ partial real implementation, not a completion claim:
   focused staged-boundary Level 2 route now drives the ordinary final-objective,
   exit-group, trigger and phase-12 lifecycle, accepts only the resolver-owned
   Level 3 edge, and opens its exact installed binding on the same handle.
+  A corresponding staged-boundary Level 3 route drives its final Bee objective,
+  exact exit group and phase-12 carrier into the declared semantic Title node,
+  then preserves the nested generation floor when the same handle starts a new
+  Level 1 session so stale Level 3 guards cannot collide.
   Native/Unity transition exposure, production package installation/discovery,
-  an uninterrupted Level 1-to-3 playthrough, Level 3 completion, terminal
-  Title execution and results remain open. The
+  an uninterrupted Level 1-to-Title playthrough, and Title/results presentation
+  remain open. The
   quiescent boundary also does not yet implement `paused_frame`, so the MC2
   pre-gate RNG/objective/presentation work remains open. Its Unity transport
   now validates that flow identity and borrows snapshot, step, event and reset
@@ -396,8 +400,8 @@ partial real implementation, not a completion claim:
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
   coverage remain open; the current Unity build enters one gameplay scene
   directly, neutral campaign saves/loads do not yet exist, and level completion
-  has not yet been proved as one uninterrupted Rust-owned 1 -> 2 -> 3
-  playthrough or through the final Level 3 -> Title edge.
+  has not yet been proved as one uninterrupted Rust-owned 1 -> 2 -> 3 -> Title
+  playthrough or exposed through the production client.
 
 The next foundation seam extends the same stable definition-to-runtime binding
 to the next package-present semantic domain without adding another arena,

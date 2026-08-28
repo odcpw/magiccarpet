@@ -633,19 +633,33 @@ impl Mc2RuntimePackageResolver {
         crate::game_runtime::CompletionTransitionReceipt,
         crate::game_runtime::RuntimeTransitionError,
     > {
-        runtime.accept_transition_resolved(guard, session_guard, |source_definition, level_id| {
-            self.exact_package_for_definition(source_definition)?;
-            self.package(level_id)
-                .map(|package| Arc::clone(&package.definition))
-                .ok_or_else(
-                    || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
-                        message: format!(
-                            "installed package resolver has no binding for {}",
-                            level_id.as_str()
-                        ),
-                    },
-                )
-        })
+        runtime.accept_transition_resolved(
+            guard,
+            session_guard,
+            |source_definition, destination| {
+                self.exact_package_for_definition(source_definition)?;
+                match destination {
+                    RuntimeFlowDestination::Level { level_id } => self
+                        .package(level_id)
+                        .map(|package| {
+                            crate::game_runtime::ResolvedCompletionTarget::Level(Arc::clone(
+                                &package.definition,
+                            ))
+                        })
+                        .ok_or_else(|| {
+                            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                                message: format!(
+                                    "installed package resolver has no binding for {}",
+                                    level_id.as_str()
+                                ),
+                            }
+                        }),
+                    RuntimeFlowDestination::Title { .. } => {
+                        Ok(crate::game_runtime::ResolvedCompletionTarget::Title)
+                    }
+                }
+            },
+        )
     }
 }
 
