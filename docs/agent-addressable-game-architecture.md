@@ -374,10 +374,13 @@ partial real implementation, not a completion claim:
   their immutable feature before construction, while Level 3 reset-live rows
   relocate their imported carrier. Their callbacks consume the authored
   location through terrain ground/material projections.
-  One reset-imported Level 3 area-entry trigger also consumes its authored
-  location through the ordinary overlap cadence and exact group-8 constructor;
-  the other reset and dynamically authored switches remain read-only. All
-  thirty-nine package-present Experience Scroll placements across Levels 1-3
+  All fifty-four package-present position-sensitive switches across Levels
+  1-3 use the same reset-versus-authored split: group-zero Area Entry/Exit and
+  Exit Sequence triggers relocate their imported carrier, while grouped
+  triggers bind their immutable feature before construction. Their ordinary
+  overlap cadence consumes the authored location; Objective and Level Exit
+  gates remain read-only because their package positions are not gameplay
+  inputs. All thirty-nine package-present Experience Scroll placements across Levels 1-3
   bind to their immutable authored-feature rows before construction; the
   ordinary class-14 pickup callback consumes the authored location through XP
   award, same-pass hide and following-pass reclaim. The three package-present

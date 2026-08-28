@@ -1185,6 +1185,12 @@ impl CampaignDefinition {
                         semantic_level.spell_by_authored_record.get(authored_record)
                             == Some(&expected_kind)
                     }
+                    LevelEntityKind::Switch(expected_kind) => {
+                        semantic_level
+                            .switch_by_authored_record
+                            .get(authored_record)
+                            == Some(&expected_kind)
+                    }
                     _ => false,
                 };
                 if !carrier_matches {

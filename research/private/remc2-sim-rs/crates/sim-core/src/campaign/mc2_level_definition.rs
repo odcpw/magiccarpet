@@ -815,6 +815,9 @@ fn bind_private_entity(
     }
     if access == LevelEntityPositionAccess::SessionReset {
         let hint = match kind {
+            LevelEntityKind::Switch(_) if feature.activation_group != 0 => {
+                Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
+            }
             LevelEntityKind::Switch(_) => {
                 let source_id = u16::try_from(feature.stage_tag).map_err(|_| {
                     format!(

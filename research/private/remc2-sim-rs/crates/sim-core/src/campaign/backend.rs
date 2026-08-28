@@ -1900,12 +1900,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "switch.start_area_exit",
+                "switch.area_entry_trigger.at_165_211",
                 "item.experience_scroll.at_216_213",
                 "spell_pickup.castle.at_194_213",
+                "switch.area_entry_trigger.at_165_198",
                 "spell_pickup.speed.at_202_212",
+                "switch.area_entry_trigger.at_198_213",
                 "scenery.exit_portal.at_97_221",
+                "switch.area_entry_trigger.at_165_186",
+                "switch.exit_sequence_trigger.at_75_218",
                 "item.experience_scroll.at_214_215",
                 "item.experience_scroll.at_214_211",
+                "switch.area_entry_trigger.at_172_182",
+                "switch.area_entry_trigger.at_185_182",
+                "switch.area_entry_trigger.at_196_182",
+                "switch.area_entry_trigger.at_208_182",
+                "switch.area_entry_trigger.at_221_182",
+                "switch.area_entry_trigger.at_233_182",
                 "scenery.stone.at_75_218",
                 "scenery.tree.at_110_96",
                 "scenery.tree.at_102_91",
@@ -1925,8 +1936,23 @@ mod tests {
                 "scenery.tree.at_71_165",
                 "scenery.tree.at_67_165",
                 "scenery.tree.at_55_185",
+                "switch.area_entry_trigger.at_233_194",
+                "switch.area_entry_trigger.at_233_228",
+                "switch.area_entry_trigger.at_233_240",
+                "switch.area_entry_trigger.at_221_240",
+                "switch.area_entry_trigger.at_209_240",
+                "switch.area_entry_trigger.at_196_240",
+                "switch.area_entry_trigger.at_185_240",
+                "switch.area_entry_trigger.at_172_240",
+                "switch.area_entry_trigger.at_165_236",
+                "switch.area_entry_trigger.at_165_224",
+                "switch.area_entry_trigger.at_234_212",
+                "switch.area_exit_trigger.at_189_212",
+                "switch.area_entry_trigger.at_199_213",
                 "item.experience_scroll.at_218_211",
+                "switch.area_entry_trigger.at_116_213",
                 "item.experience_scroll.at_218_215",
+                "switch.area_entry_trigger.at_217_213",
             ]
         );
         let level_two = assert_package_content(
@@ -1994,7 +2020,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 42);
+        assert_eq!(level_two_movable.len(), 64);
         assert_eq!(
             level_two_movable
                 .iter()
@@ -2038,6 +2064,19 @@ mod tests {
                 .count(),
             12
         );
+        for (kind, expected) in [
+            (SwitchKind::AreaEntryTrigger, 17),
+            (SwitchKind::AreaExitTrigger, 4),
+            (SwitchKind::ExitSequenceTrigger, 1),
+        ] {
+            assert_eq!(
+                level_two_movable
+                    .iter()
+                    .filter(|entity| entity.kind() == LevelEntityKind::Switch(kind))
+                    .count(),
+                expected
+            );
+        }
         let level_three = assert_package_content(
             &level_three_descriptor_fixture_path(),
             &[
@@ -2113,7 +2152,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 64);
+        assert_eq!(level_three_movable.len(), 68);
         assert_eq!(
             level_three_movable
                 .iter()
@@ -2167,7 +2206,22 @@ mod tests {
                 })
                 .map(|entity| entity.id().as_str())
                 .collect::<Vec<_>>(),
-            vec!["switch.area_entry_trigger.at_218_93"]
+            vec![
+                "switch.area_entry_trigger.at_110_110",
+                "switch.area_entry_trigger.at_218_93",
+                "switch.area_entry_trigger.at_249_118",
+                "switch.area_entry_trigger.at_57_10",
+            ]
+        );
+        assert_eq!(
+            level_three_movable
+                .iter()
+                .filter(|entity| {
+                    entity.kind() == LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger)
+                })
+                .map(|entity| entity.id().as_str())
+                .collect::<Vec<_>>(),
+            vec!["switch.exit_sequence_trigger.at_213_220"]
         );
         let level = definition
             .level_definition()
@@ -3495,9 +3549,8 @@ mod tests {
         let base = load_mc2_campaign(&root, &catalog).unwrap();
         let start_trigger =
             sim_definition::adapter::stable_entity_id("switch.start_area_exit").unwrap();
-        let fixed_trigger =
-            sim_definition::adapter::stable_entity_id("switch.area_exit_trigger.at_189_212")
-                .unwrap();
+        let fixed_gate =
+            sim_definition::adapter::stable_entity_id("switch.objective_gate.at_194_17").unwrap();
         assert_eq!(
             base.level_definition()
                 .unwrap()
@@ -3509,10 +3562,10 @@ mod tests {
         assert_eq!(
             base.level_definition()
                 .unwrap()
-                .entity(&fixed_trigger)
+                .entity(&fixed_gate)
                 .unwrap()
                 .position(),
-            TilePosition { x: 189, y: 212 }
+            TilePosition { x: 194, y: 17 }
         );
 
         let workspace_root = temporary_workspace_path("campaign-placement");
@@ -3535,10 +3588,10 @@ mod tests {
         let unsupported = ChangeSetBuilder::new(
             "campaign-placement-authoring",
             &base,
-            "reject-read-only-trigger",
+            "reject-position-insensitive-gate",
             RequestedTiming::SessionReset,
         )
-        .move_entity(fixed_trigger.clone(), TilePosition { x: 188, y: 212 })
+        .move_entity(fixed_gate.clone(), TilePosition { x: 193, y: 17 })
         .build()
         .unwrap();
         let rejected = store.validate(&catalog, unsupported).unwrap();
@@ -3652,10 +3705,10 @@ mod tests {
             moved
                 .level_definition()
                 .unwrap()
-                .entity(&fixed_trigger)
+                .entity(&fixed_gate)
                 .unwrap()
                 .position(),
-            TilePosition { x: 189, y: 212 }
+            TilePosition { x: 194, y: 17 }
         );
 
         for _ in 0..7 {
@@ -3766,6 +3819,257 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&workspace_root).unwrap();
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_dynamic_area_exit_trigger_before_ordinary_overlap_consumption() {
+        const TRIGGER_RECORD: u16 = 231;
+        const GROUP_TWO_ROWS: &[u16] = &[105, 231];
+        const GROUP_EIGHT_ROWS: &[u16] = &[232];
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let trigger =
+            sim_definition::adapter::stable_entity_id("switch.area_exit_trigger.at_189_212")
+                .unwrap();
+        let package_tile = TilePosition { x: 189, y: 212 };
+        let authored_tile = TilePosition { x: 100, y: 100 };
+        let package_entity = base.level_definition().unwrap().entity(&trigger).unwrap();
+        assert_eq!(
+            package_entity.kind(),
+            LevelEntityKind::Switch(SwitchKind::AreaExitTrigger)
+        );
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-dynamic-area-exit-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-dynamic-area-exit-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            76,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-dynamic-area-exit-placement",
+            &base,
+            "move-level-one-dynamic-area-exit",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(trigger.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_two = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(2)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 2,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == GROUP_TWO_ROWS
+            )));
+            compatibility
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == TRIGGER_RECORD)
+                .copied()
+                .unwrap()
+        };
+
+        let package_trigger = construct_group_two(&mut session);
+        assert_eq!(
+            (
+                package_trigger.position.x >> 8,
+                package_trigger.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y)
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == TRIGGER_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        let authored_trigger = construct_group_two(&mut session);
+        assert_eq!(
+            (
+                authored_trigger.position.x >> 8,
+                authored_trigger.position.y >> 8
+            ),
+            (authored_tile.x, authored_tile.y)
+        );
+        assert_ne!(
+            (
+                authored_trigger.position.x >> 8,
+                authored_trigger.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y)
+        );
+        let source_slot = authored_trigger.source_entity_index;
+        let players = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.active && entity.class == 3 && entity.model == 0 && entity.life >= 0
+            })
+            .map(|entity| entity.index)
+            .collect::<Vec<_>>();
+        assert!(!players.is_empty());
+        for player in &players {
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(*player, authored_trigger.position)
+                .unwrap();
+        }
+        for _ in 0..8 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: actual,
+                        group: 8,
+                        ..
+                    } if *actual == source_slot
+                ))
+        );
+
+        let outside = crate::Position {
+            x: package_tile.x.wrapping_shl(8).wrapping_add(128),
+            y: package_tile.y.wrapping_shl(8).wrapping_add(128),
+            z: authored_trigger.position.z,
+        };
+        for player in &players {
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(*player, outside)
+                .unwrap();
+        }
+        for _ in 0..8 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            if session.backend().campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: actual,
+                        group: 8,
+                        authored_indices,
+                        ..
+                    } if *actual == source_slot && authored_indices.as_ref() == GROUP_EIGHT_ROWS
+                )
+            }) {
+                break;
+            }
+        }
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: actual,
+                        group: 8,
+                        authored_indices,
+                        ..
+                    } if *actual == source_slot && authored_indices.as_ref() == GROUP_EIGHT_ROWS
+                ))
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::Error { source_slot: actual, .. } if *actual == source_slot
+                ))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = session.backend().campaign.level2_compatibility();
+        assert!(reset.economy().authored_switch_producers().is_empty());
+        assert_eq!(
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == TRIGGER_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the real Level 1 group-2 boundary and player
+        // overlap to prove one dynamically authored AreaExit placement crosses
+        // publication, explicit reopen, ordinary construction/cadence, exact
+        // group-8 consumption, and reset. It does not re-prove the other switch
+        // groups, organic prior progression, save/replay, or Unity presentation.
     }
 
     #[test]
