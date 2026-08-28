@@ -458,7 +458,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
 }
 
 #[test]
-fn reset_live_move_entity_targets_are_package_projected() {
+fn move_entity_targets_are_package_projected() {
     fn assert_position_access(package: &str, ids: &[&str], expected: &str) {
         for id in ids {
             let entity = run(&[
@@ -483,12 +483,13 @@ fn reset_live_move_entity_targets_are_package_projected() {
     assert_position_access(
         level_two,
         &[
+            "spell_pickup.shield.at_138_219",
+            "spell_pickup.invisibility.at_138_237",
             "spell_pickup.beyond_sight.at_1_152",
             "spell_pickup.speed.at_167_59",
         ],
         "session_reset",
     );
-    assert_position_access(level_two, &["spell_pickup.shield.at_138_219"], "read_only");
     assert_position_access(
         level_two,
         &[
@@ -536,6 +537,7 @@ fn reset_live_move_entity_targets_are_package_projected() {
         &[
             "spell_pickup.shield.at_85_85",
             "spell_pickup.invisibility.at_136_85",
+            "spell_pickup.morph.at_110_109",
             "scenery.stone.at_219_93",
             "scenery.tree.at_100_149",
             "switch.area_entry_trigger.at_218_93",
@@ -559,14 +561,16 @@ fn reset_live_move_entity_targets_are_package_projected() {
     assert_position_access(
         level_one,
         &[
+            "spell_pickup.castle.at_194_213",
+            "spell_pickup.speed.at_202_212",
             "item.experience_scroll.at_216_213",
             "scenery.exit_portal.at_97_221",
         ],
         "session_reset",
     );
     // No-Claim: this is the public package-projection gate. The already-focused
-    // Shield, Stone, Tree, imported-trigger, Experience Scroll, and Exit Portal
-    // authoring tests own
+    // reset-live Shield, dynamic Castle, Stone, Tree, imported-trigger,
+    // Experience Scroll, and Exit Portal authoring tests own
     // publication/reopen/reset and their ordinary consumers; this test does
     // not duplicate those lifecycles.
 }

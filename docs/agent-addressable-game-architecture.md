@@ -363,12 +363,16 @@ partial real implementation, not a completion claim:
   Level 1, 2 and 3 package entities; those identities are frozen in the private
   MC2 adapter rather than derived from kind ordinals or runtime slots;
 - typed semantic `MoveEntity` changes are published atomically and consumed on
-  explicit reopen by the real Level 1 start-area trigger and every reset-live
-  semantic spell pickup in the first three qualified packages: Level 2 Beyond
-  Sight and Speed, plus Level 3 Shield and Invisibility. The same private
-  kind-and-position binding covers all twelve reset-live Level 3 ordinary
-  Stones and all thirty-seven reset-live ordinary Trees; their callbacks
-  consume the authored location through terrain ground/material projections.
+  explicit reopen by the real Level 1 start-area trigger and every semantic
+  spell pickup in the first three qualified packages. Reset-live Level 2
+  Beyond Sight and Speed plus Level 3 Shield and Invisibility retain their
+  imported carrier; dynamically authored Level 1 Castle and Speed, Level 2
+  Shield and Invisibility, and Level 3 Morph bind their immutable authored
+  feature before the package group constructs the ordinary pickup. The same
+  private kind-and-position binding covers all twelve reset-live Level 3
+  ordinary Stones and all thirty-seven reset-live ordinary Trees; their
+  callbacks consume the authored location through terrain ground/material
+  projections.
   One reset-imported Level 3 area-entry trigger also consumes its authored
   location through the ordinary overlap cadence and exact group-8 constructor;
   the other reset and dynamically authored switches remain read-only. All

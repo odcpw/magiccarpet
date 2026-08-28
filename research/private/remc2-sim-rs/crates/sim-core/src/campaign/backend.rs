@@ -1901,6 +1901,8 @@ mod tests {
             vec![
                 "switch.start_area_exit",
                 "item.experience_scroll.at_216_213",
+                "spell_pickup.castle.at_194_213",
+                "spell_pickup.speed.at_202_212",
                 "scenery.exit_portal.at_97_221",
                 "item.experience_scroll.at_214_215",
                 "item.experience_scroll.at_214_211",
@@ -1973,7 +1975,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 27);
+        assert_eq!(level_two_movable.len(), 29);
         assert_eq!(
             level_two_movable
                 .iter()
@@ -1981,6 +1983,8 @@ mod tests {
                 .map(|entity| entity.id().as_str())
                 .collect::<Vec<_>>(),
             vec![
+                "spell_pickup.shield.at_138_219",
+                "spell_pickup.invisibility.at_138_237",
                 "spell_pickup.beyond_sight.at_1_152",
                 "spell_pickup.speed.at_167_59",
             ]
@@ -2072,13 +2076,18 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 63);
+        assert_eq!(level_three_movable.len(), 64);
         assert_eq!(
             level_three_movable
                 .iter()
                 .filter(|entity| matches!(entity.kind(), LevelEntityKind::SpellPickup(_)))
-                .count(),
-            2
+                .map(|entity| entity.id().as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "spell_pickup.shield.at_85_85",
+                "spell_pickup.invisibility.at_136_85",
+                "spell_pickup.morph.at_110_109",
+            ]
         );
         assert_eq!(
             level_three_movable
@@ -3720,6 +3729,298 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&workspace_root).unwrap();
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_one_dynamic_castle_pickup_through_group_one_after_reopen()
+    {
+        const PICKUP_RECORD: u16 = 31;
+        const PRODUCER_SLOT: u16 = 48;
+        const CASTLE_FAMILY: u8 = 2;
+        const GROUP_ONE_ROWS: &[u16] = &[
+            31, 99, 104, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172,
+            173, 174, 175,
+        ];
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let castle =
+            sim_definition::adapter::stable_entity_id("spell_pickup.castle.at_194_213").unwrap();
+        let package_tile = TilePosition { x: 194, y: 213 };
+        let authored_tile = TilePosition { x: 180, y: 180 };
+        let package_entity = base.level_definition().unwrap().entity(&castle).unwrap();
+        assert_eq!(
+            package_entity.kind(),
+            LevelEntityKind::SpellPickup(SpellKind::Castle)
+        );
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-castle-pickup-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-castle-pickup-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            73,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-castle-pickup-placement",
+            &base,
+            "move-level-one-castle-pickup",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(castle.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(published.revision(), 2);
+        assert_eq!(
+            published
+                .level_definition()
+                .unwrap()
+                .entity(&castle)
+                .unwrap()
+                .position(),
+            authored_tile
+        );
+
+        let move_player_outside_group_one = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.state.entity_index;
+            let outside = crate::Position {
+                x: 0,
+                y: 0,
+                z: compatibility.state.position.z,
+            };
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player, outside)
+                .unwrap();
+        };
+        let step_until_group_one = |session: &mut GameSession<Mc2CampaignBackend>| {
+            for _ in 0..8 {
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .events()
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot: PRODUCER_SLOT,
+                            group: 1,
+                            authored_indices,
+                            ..
+                        } if authored_indices.as_ref() == GROUP_ONE_ROWS
+                    ))
+            );
+        };
+
+        move_player_outside_group_one(&mut session);
+        step_until_group_one(&mut session);
+        let package_pickup = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|pickup| pickup.authored_index == PICKUP_RECORD)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            (
+                package_pickup.position.x >> 8,
+                package_pickup.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y),
+            "publication must not mutate the already-open package authority"
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == PICKUP_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        assert!(compatibility.shared_spells().dynamic_pickups().is_empty());
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        move_player_outside_group_one(&mut session);
+        step_until_group_one(&mut session);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let authored_pickup = compatibility
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|pickup| pickup.authored_index == PICKUP_RECORD)
+            .copied()
+            .unwrap();
+        let source_slot = authored_pickup.source_entity_index;
+        assert_eq!(authored_pickup.family, CASTLE_FAMILY);
+        assert_eq!(
+            (
+                authored_pickup.position.x >> 8,
+                authored_pickup.position.y >> 8
+            ),
+            (authored_tile.x, authored_tile.y)
+        );
+        let shared_pickup = compatibility
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|pickup| pickup.index == source_slot)
+            .unwrap();
+        assert_eq!(shared_pickup.position, authored_pickup.position);
+        assert_eq!(shared_pickup.model, CASTLE_FAMILY);
+        assert_eq!(
+            compatibility.economy().map_chains().tile_of(source_slot),
+            u16::from_le_bytes([authored_tile.x as u8, authored_tile.y as u8])
+        );
+
+        let player = compatibility.state.entity_index;
+        let package_position = crate::Position {
+            x: package_tile.x.wrapping_shl(8).wrapping_add(128),
+            y: package_tile.y.wrapping_shl(8).wrapping_add(128),
+            z: authored_pickup.position.z,
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, package_position)
+            .unwrap();
+        for _ in 0..4 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            !session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot: slot,
+                        family: CASTLE_FAMILY,
+                        result: Some(_),
+                        ..
+                    } if *slot == source_slot
+                )),
+            "a definition-only fake would still acquire at the package position"
+        );
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, authored_pickup.position)
+            .unwrap();
+        for _ in 0..4 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            if session.backend().campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot: slot,
+                        family: CASTLE_FAMILY,
+                        result: Some(_),
+                        ..
+                    } if *slot == source_slot
+                )
+            }) {
+                break;
+            }
+        }
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::SpellAcquisition {
+                        source_slot: slot,
+                        family: CASTLE_FAMILY,
+                        result: Some(_),
+                        ..
+                    } if *slot == source_slot
+                ))
+        );
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().players()[0].enabled_spell_holders
+                [usize::from(CASTLE_FAMILY)],
+            source_slot,
+            "the ordinary acquisition callback must publish the authored pickup as the player's Castle holder"
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = session.backend().campaign.level2_compatibility();
+        assert!(reset.shared_spells().dynamic_pickups().is_empty());
+        assert_eq!(
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == PICKUP_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves the real Level 1 Castle authored-feature row
+        // crosses guarded publication, explicit reopen, ordinary group-1
+        // construction, map/shared-spell projection, position-sensitive
+        // acquisition, and reset-template retention. The exact package census
+        // makes the other four dynamic spell pickups authorable through this
+        // same typed binding, but this test does not re-prove their distinct
+        // package-group producers, later spell behavior, save/replay, or Unity.
     }
 
     #[test]
