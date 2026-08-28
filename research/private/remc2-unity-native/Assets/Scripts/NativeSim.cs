@@ -7,6 +7,8 @@ namespace MagicCarpet.Native
     {
         internal const uint AbiVersion = 2;
         internal const int Ok = 0;
+        internal const int InvalidArgument = 3;
+        internal const int UnknownHandle = 9;
         internal const int Bounds = 10;
         internal const int BufferTooSmall = 11;
         internal const int GenerationMismatch = 12;
@@ -2529,6 +2531,39 @@ namespace MagicCarpet.Native
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_session_destroy(ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_contract_json_v1(
+            IntPtr buffer,
+            uint capacity,
+            out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_create_v1(out ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_identity_json_v1(
+            ulong handle,
+            IntPtr buffer,
+            uint capacity,
+            out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_new_game_v1(
+            ulong handle,
+            ulong generation,
+            byte[] packageDir,
+            uint packageDirLength,
+            byte[] ownerCachePath,
+            uint ownerCachePathLength);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_open_level_v1(
+            ulong handle,
+            ulong generation);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_destroy_v1(ulong handle);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_session_contract_json_v1(

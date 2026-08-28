@@ -26,7 +26,7 @@ use sim_core::{
 const MAX_COMMAND_JSON_BYTES: u32 = 4 * 1024;
 const MAX_ASSET_ID_BYTES: u32 = 256;
 const MAX_EVENT_PAGE_SIZE: u32 = 1024;
-const MAX_OUTPUT_JSON_BYTES: u32 = 16 * 1024 * 1024;
+pub(super) const MAX_OUTPUT_JSON_BYTES: u32 = 16 * 1024 * 1024;
 
 /// A campaign descriptor package is selected by its own envelope, never by a
 /// level-named symbol or open parameter.
@@ -39,6 +39,7 @@ const CAMPAIGN_DESCRIPTOR_ENVELOPE: &str = "campaign-definition.json";
 pub(super) enum NeutralSession {
     Mc2Owned(GameSession<SealedLevel1Backend>),
     Mc2Campaign(GameSession<Mc2CampaignBackend>),
+    Runtime(super::game_runtime_abi::RuntimeRecord),
 }
 
 impl NeutralSession {
@@ -48,7 +49,7 @@ impl NeutralSession {
     pub(super) fn legacy_projection(&self) -> AbiResult<&SessionRecord> {
         match self {
             Self::Mc2Owned(session) => Ok(session.backend().projection()),
-            Self::Mc2Campaign(_) => Err(AbiError::new(
+            Self::Mc2Campaign(_) | Self::Runtime(_) => Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "MC2-owned compatibility projection is unavailable on a campaign-backed neutral session",
             )),
@@ -58,7 +59,7 @@ impl NeutralSession {
     pub(super) fn legacy_projection_mut(&mut self) -> AbiResult<&mut SessionRecord> {
         match self {
             Self::Mc2Owned(session) => Ok(session.backend_mut().projection_mut()),
-            Self::Mc2Campaign(_) => Err(AbiError::new(
+            Self::Mc2Campaign(_) | Self::Runtime(_) => Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "MC2-owned compatibility projection is unavailable on a campaign-backed neutral session",
             )),
@@ -78,6 +79,9 @@ impl NeutralSession {
             Self::Mc2Campaign(session) => {
                 write_json(&session.snapshot(), buffer, capacity, out_length)
             }
+            Self::Runtime(runtime) => {
+                write_json(&runtime.session()?.snapshot(), buffer, capacity, out_length)
+            }
         }
     }
 
@@ -91,6 +95,11 @@ impl NeutralSession {
                 .step(guard, command)
                 .map(|_| ())
                 .map_err(map_campaign_session_error),
+            Self::Runtime(runtime) => runtime
+                .session_mut()?
+                .step(guard, command)
+                .map(|_| ())
+                .map_err(map_campaign_session_error),
         }
     }
 
@@ -98,6 +107,11 @@ impl NeutralSession {
         match self {
             Self::Mc2Owned(session) => session.reset(guard).map(|_| ()).map_err(map_session_error),
             Self::Mc2Campaign(session) => session
+                .reset(guard)
+                .map(|_| ())
+                .map_err(map_campaign_session_error),
+            Self::Runtime(runtime) => runtime
+                .session_mut()?
                 .reset(guard)
                 .map(|_| ())
                 .map_err(map_campaign_session_error),
@@ -117,6 +131,10 @@ impl NeutralSession {
             Self::Mc2Campaign(session) => session
                 .events_after(guard, cursor, limit)
                 .map_err(map_campaign_session_error),
+            Self::Runtime(runtime) => runtime
+                .session()?
+                .events_after(guard, cursor, limit)
+                .map_err(map_campaign_session_error),
         }
     }
 
@@ -132,6 +150,10 @@ impl NeutralSession {
             Self::Mc2Campaign(session) => session
                 .audio_for_event(guard, event_sequence)
                 .map_err(map_campaign_session_error),
+            Self::Runtime(runtime) => runtime
+                .session()?
+                .audio_for_event(guard, event_sequence)
+                .map_err(map_campaign_session_error),
         }
     }
 
@@ -145,6 +167,10 @@ impl NeutralSession {
                 .presentation_asset(guard, id)
                 .map_err(map_asset_error),
             Self::Mc2Campaign(session) => session
+                .presentation_asset(guard, id)
+                .map_err(map_asset_error),
+            Self::Runtime(runtime) => runtime
+                .session()?
                 .presentation_asset(guard, id)
                 .map_err(map_asset_error),
         }
@@ -226,7 +252,7 @@ fn map_session_error(error: GameSessionError<AbiError>) -> AbiError {
 /// The campaign adapter's typed errors project onto the existing neutral
 /// status vocabulary; no new status code or symbol is introduced. Unsupported
 /// capabilities (positional audio) fail closed as bounded lookups.
-fn map_campaign_error(error: CampaignBackendError) -> AbiError {
+pub(super) fn map_campaign_error(error: CampaignBackendError) -> AbiError {
     let status = match &error {
         CampaignBackendError::CursorBeyondHead { .. }
         | CampaignBackendError::NoAudioSidecar { .. } => MC_STATUS_BOUNDS,
@@ -355,7 +381,7 @@ impl ExplicitOpenPaths {
     }
 }
 
-fn write_json<T: serde::Serialize>(
+pub(super) fn write_json<T: serde::Serialize>(
     value: &T,
     buffer: *mut u8,
     capacity: u32,
@@ -539,7 +565,20 @@ pub extern "C" fn mc_game_session_open_workspace_v1(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_session_destroy_v1(handle: u64) -> i32 {
-    boundary(|| with_registry_mut(|registry| registry.remove_neutral(handle)))
+    boundary(|| {
+        let session = neutral_session_arc(handle)?;
+        let guard = session.lock().map_err(|_| {
+            AbiError::new(MC_STATUS_LOCK_FAILED, "neutral session lock is poisoned")
+        })?;
+        if matches!(*guard, NeutralSession::Runtime(_)) {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "game runtime handles must be destroyed through mc_game_runtime_destroy_v1",
+            ));
+        }
+        drop(guard);
+        with_registry_mut(|registry| registry.remove_neutral(handle))
+    })
 }
 
 #[unsafe(no_mangle)]

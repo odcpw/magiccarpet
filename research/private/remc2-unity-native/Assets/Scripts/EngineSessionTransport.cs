@@ -695,7 +695,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        private static void ValidateIdentity(Identity identity)
+        internal static void ValidateIdentity(Identity identity)
         {
             if (identity == null || identity.engine_contract != EngineContract ||
                 string.IsNullOrWhiteSpace(identity.package_graph_hash) ||
@@ -722,7 +722,7 @@ namespace MagicCarpet.Native
             ParseHash(value.conformance_hash, "conformance_hash");
         }
 
-        private static void ValidateCampaignSnapshot(CampaignSnapshotValue value, Identity identity)
+        internal static void ValidateCampaignSnapshot(CampaignSnapshotValue value, Identity identity)
         {
             if (value == null || value.player_pose == null || value.player_motion == null ||
                 value.tick != identity.tick)

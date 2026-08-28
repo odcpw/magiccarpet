@@ -1313,6 +1313,25 @@ uint32_t mc_sim_fire_sequence(void);
 uint8_t mc_sim_last_resolution(void);
 
 /*
+ * Rust-owned outer game runtime ABI v1. The same handle moves through Title,
+ * Loading and Playing. Once Playing, the mc_game_session_*_v1 functions below
+ * address the nested authoritative GameSession through this handle.
+ */
+int32_t mc_game_runtime_contract_json_v1(
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
+int32_t mc_game_runtime_create_v1(uint64_t *out_handle);
+int32_t mc_game_runtime_identity_json_v1(
+    uint64_t handle, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
+int32_t mc_game_runtime_new_game_v1(
+    uint64_t handle, uint64_t generation,
+    const uint8_t *package_dir, uint32_t package_dir_len,
+    const uint8_t *owner_cache_path, uint32_t owner_cache_path_len);
+int32_t mc_game_runtime_open_level_v1(
+    uint64_t handle, uint64_t generation);
+int32_t mc_game_runtime_destroy_v1(uint64_t handle);
+
+/*
  * Definition-bound neutral GameSession ABI v1. JSON outputs are UTF-8 byte
  * spans without a trailing NUL. A zero-capacity read returns MC_STATUS_BOUNDS
  * and writes the required byte count without changing session state.

@@ -311,6 +311,16 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         }
     }
 
+    /// Mutably borrow the sole gameplay authority only while the runtime is
+    /// playing. The session's own generation/tick guards remain mandatory for
+    /// every gameplay mutation.
+    pub fn session_mut(&mut self) -> Option<&mut GameSession<B>> {
+        match &mut self.state {
+            RuntimeState::Playing(session) => Some(session),
+            RuntimeState::Title | RuntimeState::Loading { .. } => None,
+        }
+    }
+
     fn next_generation(&self) -> Result<u64, RuntimeTransitionError> {
         self.generation
             .checked_add(1)
