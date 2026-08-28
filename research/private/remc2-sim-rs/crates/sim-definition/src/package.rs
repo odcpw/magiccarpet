@@ -17,6 +17,10 @@ use std::{
 /// reset-time Fireball mana-cost carrier.
 pub const FIREBALL_MANA_COST_CAPABILITY_ID: &str = "engine.spell.fireball.mana_cost";
 
+/// Exact compiled capability required by packages which bind the ordinary
+/// creature perceive/decide/act policy.
+pub const CREATURE_POLICY_CAPABILITY_ID: &str = "engine.ai.creature_policy";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledCapability {
     pub id: SemanticId,
@@ -115,7 +119,7 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
     CompiledCapabilityRegistry::new(
         [
             (
-                "engine.ai.creature_policy",
+                CREATURE_POLICY_CAPABILITY_ID,
                 "Bounded compiled creature perceive/decide/act lifecycle.",
             ),
             (

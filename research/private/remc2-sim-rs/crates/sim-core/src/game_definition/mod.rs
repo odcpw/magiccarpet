@@ -9,8 +9,8 @@ mod runtime;
 
 pub use mc2_owned::{Mc2OwnedInputs, load_mc2_owned};
 pub use runtime::{
-    DefinitionFireballBinding, DefinitionFlightBinding, FIREBALL_MANA_COST_ID,
-    PLAYER_MAX_FORWARD_SPEED_ID,
+    DefinitionFireballBinding, DefinitionFlightBinding, DefinitionGoatPolicyBinding,
+    ENEMY_DEFAULT_POLICY_ID, FIREBALL_MANA_COST_ID, PLAYER_MAX_FORWARD_SPEED_ID,
 };
 pub use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
@@ -18,11 +18,12 @@ pub use sim_definition::runtime_flow::{
 };
 pub use sim_definition::{
     APPLY_RECEIPT_SCHEMA, Access, ApplyBinding, ApplyReceipt, ApplyStatus, ArtifactId,
-    ArtifactKind, ArtifactNode, BoundPresentationAsset, CHANGE_SET_SCHEMA, ChangeSet,
-    ChangeSetBuilder, CompiledCapability, CompiledCapabilityRegistry, DefinitionDiff,
-    DefinitionError, DefinitionErrorCode, DefinitionOperation, DescriptorKind, Diagnostic,
-    FIREBALL_MANA_COST_CAPABILITY_ID, GAME_DEFINITION_SCHEMA, GAME_PACKAGE_SCHEMA, GameDefinition,
-    GamePackage, INDEXED_SPRITE_SCHEMA, IndexedPresentationAsset, IntegerParameter, MutationTiming,
+    ArtifactKind, ArtifactNode, BoundPresentationAsset, CHANGE_SET_SCHEMA,
+    CREATURE_POLICY_CAPABILITY_ID, ChangeSet, ChangeSetBuilder, CompiledCapability,
+    CompiledCapabilityRegistry, DefinitionDiff, DefinitionError, DefinitionErrorCode,
+    DefinitionOperation, DescriptorKind, Diagnostic, FIREBALL_MANA_COST_CAPABILITY_ID,
+    GAME_DEFINITION_SCHEMA, GAME_PACKAGE_SCHEMA, GameDefinition, GamePackage,
+    INDEXED_SPRITE_SCHEMA, IndexedPresentationAsset, IntegerParameter, MutationTiming,
     OptionParameter, PackageProvenance, PackageProvenanceKind, PresentationAssetBudgets,
     PresentationAssetSlot, PublicationFault, ReadBackBinding, ReadBinding, RequestedTiming,
     RequiredCapability, Result, SEMANTIC_CONTRACT_VERSION, SemanticBinding, SemanticCatalog,

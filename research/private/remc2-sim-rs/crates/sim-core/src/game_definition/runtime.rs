@@ -1,14 +1,16 @@
 //! Definition-to-runtime bindings owned by the neutral Rust domain.
 
 use super::{
-    DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, Result, SemanticId,
-    SemanticValue,
+    CREATURE_POLICY_CAPABILITY_ID, DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID,
+    GameDefinition, Result, SemanticId, SemanticValue,
 };
-use crate::FlightTuning;
+use crate::{FlightTuning, goat::GoatBehaviorConfig};
 use sim_definition::adapter::definition_error;
+use sim_definition::level_definition::{CreatureKind, LevelEntityKind};
 
 pub const PLAYER_MAX_FORWARD_SPEED_ID: &str = "flight.player.max_forward_speed";
 pub const FIREBALL_MANA_COST_ID: &str = "spell.fireball.mana_cost";
+pub const ENEMY_DEFAULT_POLICY_ID: &str = "ai.enemy.default.policy";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DefinitionFlightBinding {
@@ -18,6 +20,83 @@ pub struct DefinitionFlightBinding {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DefinitionFireballBinding {
     mana_cost: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompiledGoatPolicy {
+    Classic,
+    Vigilant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DefinitionGoatPolicyBinding {
+    policy: CompiledGoatPolicy,
+}
+
+impl DefinitionGoatPolicyBinding {
+    /// Resolve a package-present Goat policy consumed by the ordinary
+    /// source-slot scheduler.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed definition error when a Goat-bearing package declares
+    /// an absent, mistyped, or unknown compiled policy.
+    pub fn from_definition(definition: &GameDefinition) -> Result<Option<Self>> {
+        let capability_present = definition
+            .required_capabilities()
+            .iter()
+            .any(|requirement| {
+                requirement.id.as_str() == CREATURE_POLICY_CAPABILITY_ID
+                    && requirement.exact_version == 1
+            });
+        let package_has_goats = definition.level_definition().is_some_and(|level| {
+            level
+                .entities()
+                .iter()
+                .any(|entity| entity.kind() == LevelEntityKind::Creature(CreatureKind::Goat))
+        });
+        if !capability_present || !package_has_goats {
+            return Ok(None);
+        }
+        let id = SemanticId::parse(ENEMY_DEFAULT_POLICY_ID)?;
+        let Some(SemanticValue::Enum(value)) = definition.value(&id) else {
+            return Err(definition_error(
+                DefinitionErrorCode::TypeMismatch,
+                ENEMY_DEFAULT_POLICY_ID,
+                "enemy default policy is not a compiled-policy enum",
+            ));
+        };
+        let policy = match value.as_str() {
+            "classic_goat_v1" => CompiledGoatPolicy::Classic,
+            "vigilant_goat_v1" => CompiledGoatPolicy::Vigilant,
+            _ => {
+                return Err(definition_error(
+                    DefinitionErrorCode::OutOfRange,
+                    ENEMY_DEFAULT_POLICY_ID,
+                    format!("unsupported compiled Goat policy {value}"),
+                ));
+            }
+        };
+        Ok(Some(Self { policy }))
+    }
+
+    /// Apply the selected compiled policy to the package-decoded source
+    /// parameter row without replacing unrelated movement or terrain fields.
+    #[must_use]
+    pub fn apply(self, mut package_config: GoatBehaviorConfig) -> GoatBehaviorConfig {
+        if self.policy == CompiledGoatPolicy::Vigilant {
+            package_config.perception_cadence = 1;
+            package_config.perception_radius = u16::MAX;
+            package_config.perception_half_angle = 1_025;
+            package_config.behavior_flags |= 0x10;
+        }
+        package_config
+    }
+
+    #[must_use]
+    pub fn consumes(id: &SemanticId) -> bool {
+        id.as_str() == ENEMY_DEFAULT_POLICY_ID
+    }
 }
 
 impl DefinitionFireballBinding {

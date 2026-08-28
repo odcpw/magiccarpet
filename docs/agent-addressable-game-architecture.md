@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 11.0 milestone, this is a binding target with
+As of the semantic-contract 12.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -333,6 +333,14 @@ partial real implementation, not a completion claim:
   baseline; Level 2 and 3 reject cost publication because their local-player
   family-zero holder relation is absent. This does not yet author spell
   acquisition, higher tiers, enemy holders or projectile behavior;
+- the package-bound `ai.enemy.default.policy` descriptor selects the
+  source-exact classic Goat policy or the compiled vigilant policy for each
+  Goat-bearing qualified Level 1-3 definition. Explicit reopen/reset binds
+  the selection to the shared ordinary Goat-family configuration, including
+  Level 3 Goats which are package-present but not reset-live. The focused
+  causal proof covers the Level 1 engagement decision; Goat population,
+  placement, movement parameters, damage/death and other creature families
+  remain outside this slice;
 - the qualified Level 1 campaign package now retains two profile-pinned,
   canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its
   semantic projectile slot binds the base payload and discovers the fade

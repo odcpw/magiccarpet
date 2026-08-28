@@ -24,9 +24,9 @@ pub use operation::{
     ArtifactId, DefinitionOperation, IntegerParameter, OptionParameter, PresentationAssetSlot,
 };
 pub use package::{
-    ArtifactKind, ArtifactNode, CompiledCapability, CompiledCapabilityRegistry,
-    FIREBALL_MANA_COST_CAPABILITY_ID, GamePackage, PackageProvenance, PackageProvenanceKind,
-    RequiredCapability, engine_capabilities,
+    ArtifactKind, ArtifactNode, CREATURE_POLICY_CAPABILITY_ID, CompiledCapability,
+    CompiledCapabilityRegistry, FIREBALL_MANA_COST_CAPABILITY_ID, GamePackage, PackageProvenance,
+    PackageProvenanceKind, RequiredCapability, engine_capabilities,
 };
 pub use presentation_asset::{
     BoundPresentationAsset, CompatiblePresentationArtifact, INDEXED_SPRITE_SCHEMA,
@@ -48,12 +48,12 @@ use std::{
     fmt,
 };
 
-use level_definition::LevelDefinition;
+use level_definition::{CreatureKind, LevelDefinition, LevelEntityKind};
 use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v5";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "11.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "12.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -199,6 +199,21 @@ impl GameDefinition {
         id: &SemanticId,
     ) -> Option<SemanticDescriptor> {
         let mut descriptor = catalog.descriptor(id)?.clone();
+        if id.as_str() == OptionParameter::EnemyDefaultPolicy.as_str() {
+            let capability_present = self.required_capabilities.iter().any(|requirement| {
+                requirement.id.as_str() == CREATURE_POLICY_CAPABILITY_ID
+                    && requirement.exact_version == 1
+            });
+            let package_has_goats = self.level_definition.as_ref().is_none_or(|level| {
+                level
+                    .entities()
+                    .iter()
+                    .any(|entity| entity.kind() == LevelEntityKind::Creature(CreatureKind::Goat))
+            });
+            if !capability_present || !package_has_goats {
+                descriptor.access = Access::ReadOnly;
+            }
+        }
         if id.as_str() == IntegerParameter::FireballManaCost.as_str()
             && !self.required_capabilities.iter().any(|requirement| {
                 requirement.id.as_str() == FIREBALL_MANA_COST_CAPABILITY_ID

@@ -7,8 +7,8 @@
 
 use crate::level_definition::{LevelObjectiveId, ObjectiveCondition};
 use crate::{
-    Access, DefinitionError, DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
-    SemanticId, SemanticValue,
+    Access, CREATURE_POLICY_CAPABILITY_ID, DefinitionError, DefinitionErrorCode,
+    FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, SemanticId, SemanticValue,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -186,6 +186,14 @@ impl DefinitionOperation {
                     "required_fields": ["parameter", "option"],
                     "optional_fields": ["expected_option"],
                     "parameter_ids": [OptionParameter::EnemyDefaultPolicy.as_str()],
+                    "required_capability": {
+                        "id": CREATURE_POLICY_CAPABILITY_ID,
+                        "exact_version": 1,
+                    },
+                    "writable_when": "the active definition requires this exact capability and contains package-present Goats",
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id ai.enemy.default.policy",
+                    "read_back": "game get --id ai.enemy.default.policy",
                 },
                 {
                     "operation": "bind_asset",
@@ -322,6 +330,30 @@ impl DefinitionOperation {
                 "definition has no package-qualified Fireball mana-cost runtime consumer",
             ));
         }
+        let policy_descriptor = matches!(self, Self::SelectOption { .. }).then(|| {
+            crate::default_catalog().and_then(|catalog| {
+                definition
+                    .semantic_descriptor(
+                        &catalog,
+                        &OptionParameter::EnemyDefaultPolicy.semantic_id(),
+                    )
+                    .ok_or_else(|| {
+                        DefinitionError::new(
+                            DefinitionErrorCode::UnknownSemanticId,
+                            self.target_id().as_str(),
+                            "definition has no enemy-policy descriptor",
+                        )
+                    })
+            })
+        });
+        if matches!(policy_descriptor.transpose()?, Some(descriptor) if descriptor.access != Access::Writable)
+        {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                self.target_id().as_str(),
+                "definition has no package-qualified Goat policy runtime consumer",
+            ));
+        }
         let asset_descriptor = matches!(self, Self::BindAsset { .. }).then(|| {
             crate::default_catalog().and_then(|catalog| {
                 definition
@@ -355,7 +387,7 @@ impl DefinitionOperation {
                 | Self::PutObjective { .. }
                 | Self::SetMechanicCountdown { .. }
         ) || is_fireball_cost_operation
-            || matches!(self, Self::BindAsset { .. });
+            || matches!(self, Self::BindAsset { .. } | Self::SelectOption { .. });
         if definition.level_definition().is_some() && !playable_operation_is_supported {
             return Err(DefinitionError::new(
                 DefinitionErrorCode::DependencyFailed,
@@ -573,6 +605,12 @@ fn is_source_selector_segment(segment: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{
+        build_level_definition, entity_definition, stable_entity_id, with_level_definition,
+    };
+    use crate::level_definition::{LevelEntityKind, SceneryKind, TilePosition};
+    use crate::{GamePackage, default_catalog, engine_capabilities};
+    use std::path::PathBuf;
 
     #[test]
     fn operation_json_is_closed_against_raw_selectors_and_unimplemented_structure() {
@@ -633,5 +671,47 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<DefinitionOperation>(value).is_err());
         }
+    }
+
+    #[test]
+    fn goat_policy_requires_a_package_present_goat_not_only_the_compiled_capability() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/custom-synthetic-v1");
+        let catalog = default_catalog().unwrap();
+        let definition = GameDefinition::from_package(
+            GamePackage::load(root).unwrap(),
+            &engine_capabilities().unwrap(),
+            &catalog,
+        )
+        .unwrap();
+        let definition = with_level_definition(
+            definition,
+            build_level_definition(
+                vec![entity_definition(
+                    stable_entity_id("scenery.policy_witness_tree").unwrap(),
+                    LevelEntityKind::Scenery(SceneryKind::Tree),
+                    TilePosition { x: 1, y: 1 },
+                    None,
+                )],
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let id = OptionParameter::EnemyDefaultPolicy.semantic_id();
+        assert_eq!(
+            definition
+                .semantic_descriptor(&catalog, &id)
+                .unwrap()
+                .access,
+            Access::ReadOnly
+        );
+        let operation = DefinitionOperation::SelectOption {
+            parameter: OptionParameter::EnemyDefaultPolicy,
+            option: "vigilant_goat_v1".to_owned(),
+            expected_option: Some("classic_goat_v1".to_owned()),
+        };
+        let error = operation.resolve(&definition).unwrap_err();
+        assert_eq!(error.code, DefinitionErrorCode::DependencyFailed);
     }
 }

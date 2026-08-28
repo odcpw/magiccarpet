@@ -37,8 +37,9 @@ use crate::{
     },
     game_definition::{
         ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFireballBinding,
-        DefinitionFlightBinding, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
-        RequiredCapability, SemanticCatalog, SemanticId, default_catalog, engine_capabilities,
+        DefinitionFlightBinding, DefinitionGoatPolicyBinding, ENEMY_DEFAULT_POLICY_ID,
+        FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, RequiredCapability, SemanticCatalog,
+        SemanticId, default_catalog, engine_capabilities,
     },
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAudioCommand, GameCommand, GameCompletion,
@@ -208,8 +209,12 @@ pub fn load_mc2_campaign(
             )),
         ));
     }
+    bindings.push((
+        SemanticId::parse(ENEMY_DEFAULT_POLICY_ID)?,
+        sim_definition::SemanticValue::Enum("classic_goat_v1".to_owned()),
+    ));
     let mut requirement_ids = vec![
-        "engine.ai.creature_policy",
+        crate::game_definition::CREATURE_POLICY_CAPABILITY_ID,
         "engine.flight.fixed_point",
         "engine.spell.projectile",
     ];
@@ -707,6 +712,7 @@ pub struct Mc2CampaignBackend {
     package_campaign: CampaignSession,
     flight_binding: DefinitionFlightBinding,
     fireball_binding: Option<DefinitionFireballBinding>,
+    goat_policy_binding: Option<DefinitionGoatPolicyBinding>,
     package_base: GameDefinition,
     package_graph_hash: String,
     artifact_graph_hash: String,
@@ -727,10 +733,13 @@ impl GameAdapter for Mc2CampaignAdapter {
             .map_err(CampaignBackendError::Definition)?;
         let fireball_binding = DefinitionFireballBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
+        let goat_policy_binding = DefinitionGoatPolicyBinding::from_definition(definition)
+            .map_err(CampaignBackendError::Definition)?;
         require_catalog_defaults(
             definition,
             &catalog,
             fireball_binding.is_some(),
+            goat_policy_binding.is_some(),
             consumes_fireball_projectile_asset(definition),
         )?;
         let package_base = load_mc2_campaign(&input.package_root, &catalog)
@@ -767,6 +776,9 @@ impl GameAdapter for Mc2CampaignAdapter {
             .map_err(|error| {
                 CampaignBackendError::Open(CampaignOpenError::Materialization(error))
             })?;
+        if let Some(binding) = goat_policy_binding {
+            campaign.apply_enemy_goat_policy(binding);
+        }
         if let Some(binding) = fireball_binding {
             campaign
                 .apply_local_player_fireball_mana_cost(binding.mana_cost())
@@ -779,6 +791,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             package_campaign,
             flight_binding,
             fireball_binding,
+            goat_policy_binding,
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
             package_base,
@@ -793,11 +806,13 @@ fn require_catalog_defaults(
     definition: &GameDefinition,
     catalog: &SemanticCatalog,
     consumes_fireball_cost: bool,
+    consumes_goat_policy: bool,
     consumes_fireball_projectile_asset: bool,
 ) -> Result<(), CampaignBackendError> {
     for descriptor in catalog.descriptors() {
         if DefinitionFlightBinding::consumes(&descriptor.id)
             || (consumes_fireball_cost && DefinitionFireballBinding::consumes(&descriptor.id))
+            || (consumes_goat_policy && DefinitionGoatPolicyBinding::consumes(&descriptor.id))
             || (consumes_fireball_projectile_asset
                 && descriptor.id.as_str() == "presentation.spell.fireball.projectile_asset")
         {
@@ -953,6 +968,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .map_err(CampaignBackendError::Definition)?;
         let fireball_binding = DefinitionFireballBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
+        let goat_policy_binding = DefinitionGoatPolicyBinding::from_definition(definition)
+            .map_err(CampaignBackendError::Definition)?;
         definition
             .verify_semantic_variant_of(&self.package_base, &catalog)
             .map_err(CampaignBackendError::Definition)?;
@@ -960,6 +977,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             definition,
             &catalog,
             fireball_binding.is_some(),
+            goat_policy_binding.is_some(),
             consumes_fireball_projectile_asset(definition),
         )?;
         let next_generation = self.campaign.generation().wrapping_add(1);
@@ -973,6 +991,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .map_err(|error| {
                 CampaignBackendError::Open(CampaignOpenError::Materialization(error))
             })?;
+        if let Some(binding) = goat_policy_binding {
+            campaign.apply_enemy_goat_policy(binding);
+        }
         if let Some(binding) = fireball_binding {
             campaign
                 .apply_local_player_fireball_mana_cost(binding.mana_cost())
@@ -984,6 +1005,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.campaign = campaign;
         self.flight_binding = flight_binding;
         self.fireball_binding = fireball_binding;
+        self.goat_policy_binding = goat_policy_binding;
         Ok(())
     }
 }
@@ -1167,10 +1189,11 @@ mod tests {
     use super::*;
     use crate::campaign::state::{ResetReceipt, ResetState, encode_reset_v1};
     use crate::game_definition::{
-        ArtifactId, ChangeSetBuilder, GamePackage, IntegerParameter, PresentationAssetSlot,
-        PublicationFault, RequestedTiming, SemanticValue, WorkspaceStore,
+        Access, ArtifactId, ChangeSetBuilder, GamePackage, IntegerParameter, OptionParameter,
+        PresentationAssetSlot, PublicationFault, RequestedTiming, SemanticValue, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
+    use crate::goat::{GoatBehaviorConfig, GoatStepEvent};
     use crate::level_definition::{
         ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind,
         LevelEntityParameterAccess, LevelObjectiveConditionAccess, MechanicKind,
@@ -1333,6 +1356,37 @@ mod tests {
                 PublicationFault::None,
             )
             .expect("Fireball cost change publishes");
+        store.active_definition().expect("published definition")
+    }
+
+    fn publish_enemy_goat_policy(
+        store: &WorkspaceStore,
+        catalog: &SemanticCatalog,
+        active: &GameDefinition,
+        idempotency_key: &str,
+        option: &str,
+    ) -> GameDefinition {
+        let change_set = ChangeSetBuilder::new(
+            "campaign-goat-policy-authoring",
+            active,
+            idempotency_key,
+            RequestedTiming::SessionReset,
+        )
+        .select_option(OptionParameter::EnemyDefaultPolicy, option)
+        .build()
+        .expect("typed Goat policy change set");
+        let validation = store
+            .validate(catalog, change_set.clone())
+            .expect("Goat policy change validates");
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .expect("Goat policy change publishes");
         store.active_definition().expect("published definition")
     }
 
@@ -2537,6 +2591,189 @@ mod tests {
 
             std::fs::remove_dir_all(&workspace_root).unwrap();
         }
+    }
+
+    #[test]
+    fn campaign_backend_binds_package_present_goat_policy_across_reopen_and_reset() {
+        let catalog = default_catalog().unwrap();
+        let policy_id = SemanticId::parse(ENEMY_DEFAULT_POLICY_ID).unwrap();
+        let mut expected_vigilant = GoatBehaviorConfig::LEVEL_ONE;
+        expected_vigilant.perception_cadence = 1;
+        expected_vigilant.perception_radius = u16::MAX;
+        expected_vigilant.perception_half_angle = 1_025;
+        expected_vigilant.behavior_flags |= 0x10;
+
+        for (ordinal, root, expected_goats) in [
+            (0_u64, level_one_descriptor_fixture_path(), 33_usize),
+            (1_u64, descriptor_fixture_path(), 36_usize),
+            (2_u64, level_three_descriptor_fixture_path(), 11_usize),
+        ] {
+            let base = load_mc2_campaign(&root, &catalog).unwrap();
+            assert_eq!(
+                base.value(&policy_id),
+                Some(&SemanticValue::Enum("classic_goat_v1".to_owned()))
+            );
+            assert_eq!(
+                base.semantic_descriptor(&catalog, &policy_id)
+                    .unwrap()
+                    .access,
+                Access::Writable
+            );
+            assert_eq!(
+                base.level_definition()
+                    .unwrap()
+                    .entities()
+                    .iter()
+                    .filter(|entity| {
+                        entity.kind() == LevelEntityKind::Creature(CreatureKind::Goat)
+                    })
+                    .count(),
+                expected_goats
+            );
+
+            let workspace_root =
+                temporary_workspace_path(&format!("campaign-goat-policy-{ordinal}"));
+            let store = WorkspaceStore::create(
+                &workspace_root,
+                "campaign-goat-policy-authoring",
+                base.clone(),
+            )
+            .unwrap();
+            let mut old = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(base.clone()),
+                80 + ordinal * 2,
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap_or_else(|error| {
+                panic!("qualified campaign {ordinal} failed to open: {error:?}")
+            });
+            let mut authored = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(base.clone()),
+                81 + ordinal * 2,
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap();
+            let vigilant = publish_enemy_goat_policy(
+                &store,
+                &catalog,
+                &base,
+                &format!("publish-vigilant-goat-policy-{ordinal}"),
+                "vigilant_goat_v1",
+            );
+
+            assert_eq!(old.identity().definition_hash, base.definition_hash());
+            assert_eq!(
+                old.backend()
+                    .campaign
+                    .level2_compatibility()
+                    .goat_behavior_config(),
+                GoatBehaviorConfig::LEVEL_ONE
+            );
+            let reopened = authored
+                .reopen(guard(&authored), Arc::new(vigilant.clone()))
+                .unwrap();
+            assert_eq!(reopened.identity.generation, 2);
+            assert_eq!(reopened.identity.definition_revision, 2);
+            assert_eq!(
+                authored
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .goat_behavior_config(),
+                expected_vigilant
+            );
+            let authored_frame_zero = authored.snapshot().value;
+            authored.reset(guard(&authored)).unwrap();
+            assert_eq!(authored.snapshot().value, authored_frame_zero);
+            assert_eq!(
+                authored
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .goat_behavior_config(),
+                expected_vigilant
+            );
+
+            if ordinal == 0 {
+                old.step(guard(&old), GameCommand::default()).unwrap();
+                authored
+                    .step(guard(&authored), GameCommand::default())
+                    .unwrap();
+                let old_campaign = &old.backend().campaign;
+                let authored_campaign = &authored.backend().campaign;
+                let engagements = |campaign: &CampaignSession| {
+                    campaign
+                        .events()
+                        .iter()
+                        .filter_map(|event| match event {
+                            Level2DispatchEvent::Goat { events, .. } => Some(events.as_ref()),
+                            _ => None,
+                        })
+                        .flatten()
+                        .filter(|event| {
+                            matches!(event, GoatStepEvent::EngagementBoundaryReached { .. })
+                        })
+                        .count()
+                };
+                assert_eq!(engagements(old_campaign), 0);
+                let authored_engagements = engagements(authored_campaign);
+                assert!(authored_engagements > 0);
+
+                let old_snapshot = old.snapshot().value;
+                let authored_snapshot = authored.snapshot().value;
+                assert_eq!(authored_snapshot.tick, old_snapshot.tick);
+                assert_eq!(authored_snapshot.terrain_hash, old_snapshot.terrain_hash);
+                assert_eq!(authored_snapshot.player_pose, old_snapshot.player_pose);
+                assert_eq!(authored_snapshot.player_motion, old_snapshot.player_motion);
+                assert_eq!(
+                    authored_campaign.level2_compatibility().source_global_rng(),
+                    old_campaign.level2_compatibility().source_global_rng()
+                );
+
+                let player_entity_index = authored_campaign
+                    .level2_compatibility()
+                    .shared_spells()
+                    .players()[0]
+                    .entity_index;
+                let old_goats = old_campaign.level2_compatibility().goats();
+                let authored_goats = authored_campaign.level2_compatibility().goats();
+                let mut changed = 0;
+                for (old_goat, authored_goat) in old_goats.iter().zip(authored_goats) {
+                    if old_goat == authored_goat {
+                        continue;
+                    }
+                    changed += 1;
+                    assert_eq!(authored_goat.action, 14);
+                    assert_eq!(authored_goat.stage_var_2, 10);
+                    assert_eq!(authored_goat.target_entity_index, Some(player_entity_index));
+                    assert_eq!(authored_goat.rng, old_goat.rng);
+                    let mut normalized = authored_goat.clone();
+                    normalized.action = old_goat.action;
+                    normalized.stage_var_2 = old_goat.stage_var_2;
+                    normalized.target_entity_index = old_goat.target_entity_index;
+                    normalized.actual_speed = old_goat.actual_speed;
+                    assert_eq!(&normalized, old_goat);
+                }
+                assert_eq!(changed, authored_engagements);
+
+                let authored_after_step = authored.snapshot().value;
+                authored.reset(guard(&authored)).unwrap();
+                authored
+                    .step(guard(&authored), GameCommand::default())
+                    .unwrap();
+                assert_eq!(authored.snapshot().value, authored_after_step);
+            }
+
+            std::fs::remove_dir_all(workspace_root).unwrap();
+        }
+
+        // No-Claim: this proves the package-present Goat policy binding for
+        // the three qualified definitions and one exact ordinary Level-1
+        // engagement decision through publication, reopen, and reset. It
+        // does not author Goat placement/population, damage/death, movement
+        // parameters, other creature families, or prove an organic campaign.
     }
 
     #[test]

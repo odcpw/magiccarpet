@@ -100,7 +100,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "11.0");
+    assert_eq!(capabilities["contract_version"], "12.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v5"
@@ -317,7 +317,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "11.0");
+    assert_eq!(entities["contract_version"], "12.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -421,7 +421,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "11.0");
+    assert_eq!(described["contract_version"], "12.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v5"
@@ -944,7 +944,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "11.0");
+    assert_eq!(described["contract_version"], "12.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v5"
@@ -1271,7 +1271,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "11.0");
+    assert_eq!(described["contract_version"], "12.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v5"
@@ -1553,7 +1553,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "11.0");
+    assert_eq!(described["contract_version"], "12.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v5"
@@ -2047,6 +2047,190 @@ fn workspace_authoring_cli_stages_previews_and_refuses_unsafe_asset_timing_witho
 }
 
 #[test]
+fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli() {
+    const TARGET: &str = "ai.enemy.default.policy";
+    const CLASSIC: &str = "classic_goat_v1";
+    const VIGILANT: &str = "vigilant_goat_v1";
+
+    let capabilities = run(&["game", "capabilities"]);
+    assert!(capabilities.status.success());
+    assert!(capabilities.stderr.is_empty());
+    let capabilities: Value = serde_json::from_slice(&capabilities.stdout).unwrap();
+    let select_option = capabilities["data"]["authoring"]["operation_schema"]["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["operation"] == "select_option")
+        .unwrap();
+    assert_eq!(
+        select_option["required_capability"],
+        serde_json::json!({"id": "engine.ai.creature_policy", "exact_version": 1})
+    );
+    assert_eq!(select_option["mutation_timing"], "session_reset");
+
+    for package in [
+        level_one_campaign_fixture(),
+        level_two_campaign_fixture(),
+        level_three_campaign_fixture(),
+    ] {
+        let described = run(&[
+            "game",
+            "describe",
+            "--campaign-package",
+            package.to_str().unwrap(),
+            "--id",
+            TARGET,
+        ]);
+        assert!(described.status.success(), "{:?}", described.stderr);
+        assert!(described.stderr.is_empty());
+        let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+        assert_eq!(described["contract_version"], "12.0");
+        let descriptor = &described["data"]["descriptors"][0];
+        assert_eq!(descriptor["id"], TARGET);
+        assert_eq!(descriptor["kind"], "behavior");
+        assert_eq!(descriptor["value_type"], "enum");
+        assert_eq!(descriptor["access"], "writable");
+        assert_eq!(descriptor["mutation_timing"], "session_reset");
+        assert_eq!(
+            descriptor["bounds_or_enum"]["values"],
+            serde_json::json!([CLASSIC, VIGILANT])
+        );
+        assert_eq!(descriptor["default_value"]["value"], CLASSIC);
+        assert_eq!(descriptor["effective_value"]["value"], CLASSIC);
+    }
+
+    let temporary = TempWorkspace::new("real-goat-policy");
+    let workspace = temporary.0.to_str().unwrap();
+    let level_one = level_one_campaign_fixture();
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "real-goat-policy",
+        "--campaign-package",
+        level_one.to_str().unwrap(),
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+    assert!(created.stderr.is_empty());
+
+    let changes = temporary.0.join("select-vigilant.json");
+    fs::write(
+        &changes,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "select_option",
+            "parameter": TARGET,
+            "option": VIGILANT,
+            "expected_option": CLASSIC
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "select-real-vigilant-goats",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    assert!(staged.stderr.is_empty());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(staged["data"]["published"], false);
+    let change_set = temporary.0.join("vigilant-change-set.json");
+    fs::write(
+        &change_set,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    assert!(validated.stderr.is_empty());
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        validated["data"]["validation"]["affected_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let diff = run(&[
+        "game",
+        "diff",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+    ]);
+    assert!(diff.status.success(), "{:?}", diff.stderr);
+    assert!(diff.stderr.is_empty());
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(
+        diff["data"]["diff"],
+        serde_json::json!([{
+            "id": TARGET,
+            "before": {"type": "enum", "value": CLASSIC},
+            "after": {"type": "enum", "value": VIGILANT}
+        }])
+    );
+
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+        "--validation-receipt",
+        validated["data"]["validation"]["receipt_hash"]
+            .as_str()
+            .unwrap(),
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    assert!(applied.stderr.is_empty());
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(
+        applied["data"]["receipt"]["applied_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let authored = run(&["game", "get", "--workspace", workspace, "--id", TARGET]);
+    assert!(authored.status.success(), "{:?}", authored.stderr);
+    assert!(authored.stderr.is_empty());
+    let authored: Value = serde_json::from_slice(&authored.stdout).unwrap();
+    assert_eq!(authored["identity"]["revision"], 2);
+    assert_eq!(
+        authored["data"]["descriptor"]["default_value"]["value"],
+        CLASSIC
+    );
+    assert_eq!(
+        authored["data"]["descriptor"]["effective_value"]["value"],
+        VIGILANT
+    );
+    assert_eq!(
+        authored["data"]["value"],
+        serde_json::json!({"type": "enum", "value": VIGILANT})
+    );
+
+    // No-Claim: this public gate proves closed discovery and guarded
+    // publication/readback for the qualified Goat policy. The separate
+    // sim-core gate owns ordinary scheduler consumption, reopen, and reset.
+}
+
+#[test]
 fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped() {
     const SLOT: &str = "presentation.spell.fireball.projectile_asset";
     const BASE: &str = "presentation.fireball.projectile.base";
@@ -2085,7 +2269,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "11.0");
+    assert_eq!(described["contract_version"], "12.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");

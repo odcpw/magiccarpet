@@ -4105,6 +4105,21 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    /// Bind the immutable compiled Goat policy to the package-decoded
+    /// behavior configuration before the session generation is exposed.
+    pub(crate) fn bind_enemy_goat_policy(
+        &mut self,
+        binding: crate::game_definition::DefinitionGoatPolicyBinding,
+    ) {
+        let package_config = self.session.state.live.goats.behavior_config();
+        self.session
+            .state
+            .live
+            .goats
+            .replace_behavior_config(binding.apply(package_config));
+        self.session.rebase();
+    }
+
     /// Refresh source-owned holder fields after the source pass without
     /// rebuilding hand or selected-command relations.  The latter were latched
     /// before the pass and must remain intact until the generic command pass
@@ -7238,6 +7253,11 @@ impl Level2ResetSession {
     #[must_use]
     pub const fn goat_outer_tick(&self) -> u32 {
         self.session.state.live.goats.outer_tick()
+    }
+
+    #[must_use]
+    pub(crate) const fn goat_behavior_config(&self) -> GoatBehaviorConfig {
+        self.session.state.live.goats.behavior_config()
     }
 
     #[must_use]

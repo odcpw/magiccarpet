@@ -852,6 +852,15 @@ impl GoatFamily {
         self.outer_tick
     }
 
+    #[must_use]
+    pub(crate) const fn behavior_config(&self) -> GoatBehaviorConfig {
+        self.config
+    }
+
+    pub(crate) fn replace_behavior_config(&mut self, config: GoatBehaviorConfig) {
+        self.config = config;
+    }
+
     /// Advance one unpaused source outer turn.
     ///
     /// Only the captured action-15 / StageVar2-2 patrol branch is live. Other

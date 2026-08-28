@@ -240,6 +240,13 @@ impl CampaignSession {
         self.level2.bind_local_player_fireball_mana_cost(mana_cost)
     }
 
+    pub(crate) fn apply_enemy_goat_policy(
+        &mut self,
+        binding: crate::game_definition::DefinitionGoatPolicyBinding,
+    ) {
+        self.level2.bind_enemy_goat_policy(binding);
+    }
+
     pub(crate) fn set_runtime_generation(&mut self, generation: u64) {
         self.level2.session.generation = generation;
         self.level2.session.state.scratch = self
