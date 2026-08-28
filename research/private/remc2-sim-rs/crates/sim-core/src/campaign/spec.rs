@@ -380,6 +380,7 @@ pub struct CampaignDefinition {
     mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     mechanic_entity_by_initial_source_slot: BTreeMap<u16, LevelEntityId>,
     movable_entity_bindings: BTreeMap<LevelEntityId, Mc2EntityRuntimeBinding>,
+    local_player_fireball_mana_cost: Option<i32>,
     member_hashes: BTreeMap<String, String>,
 }
 
@@ -856,6 +857,8 @@ impl CampaignDefinition {
             profile.player_version,
             profile.player_record_bytes,
         )?;
+        let local_player_fireball_mana_cost =
+            validate_local_player_fireball_binding(&members[&players_ref.member], entities)?;
         validate_terrain(&members["terrain.bin"], "terrain.bin")?;
         let feature_boundary = validate_feature_boundary(
             &reset_sources["feature_boundary"],
@@ -1188,6 +1191,7 @@ impl CampaignDefinition {
             mechanic_entity_by_authored_record: semantic_level.mechanic_entity_by_authored_record,
             mechanic_entity_by_initial_source_slot,
             movable_entity_bindings,
+            local_player_fireball_mana_cost,
             member_hashes: files
                 .into_iter()
                 .map(|(name, (_, sha256))| (name, sha256))
@@ -1275,6 +1279,13 @@ impl CampaignDefinition {
         entity_id: &LevelEntityId,
     ) -> Option<&Mc2EntityRuntimeBinding> {
         self.movable_entity_bindings.get(entity_id)
+    }
+
+    /// Package-present local-player family-zero Fireball cost. The private
+    /// holder relation and source slot terminate in this adapter.
+    #[must_use]
+    pub(crate) const fn local_player_fireball_mana_cost(&self) -> Option<i32> {
+        self.local_player_fireball_mana_cost
     }
 
     /// Reconstruct the identity of the wrapped owner-level export.
@@ -2022,6 +2033,62 @@ fn validate_players(
         }
     }
     Ok(())
+}
+
+fn validate_local_player_fireball_binding(players: &[u8], entities: &[u8]) -> Result<Option<i32>> {
+    let player_offset = 12;
+    let player_entity = read_u16(
+        players,
+        player_offset + 4,
+        "local player entity",
+        ValidationStage::TypedMembers,
+    )?;
+    let holder = read_u16(
+        players,
+        player_offset + 268,
+        "local player Fireball holder",
+        ValidationStage::TypedMembers,
+    )?;
+    if holder == 0 {
+        return Ok(None);
+    }
+    let holder_index = usize::from(holder);
+    if holder_index >= ENTITY_COUNT {
+        return fail(
+            ValidationStage::TypedMembers,
+            "local player Fireball holder relation is out of bounds",
+        );
+    }
+    let offset = 12 + holder_index * ENTITY_RECORD_BYTES;
+    let parent = read_u16(
+        entities,
+        offset + 44,
+        "local player Fireball holder parent",
+        ValidationStage::TypedMembers,
+    )?;
+    if entities[offset + 2] != 1
+        || entities[offset + 67] != 15
+        || entities[offset + 68] != 0
+        || entities[offset + 73] != 0
+        || parent != player_entity
+    {
+        return fail(
+            ValidationStage::TypedMembers,
+            "local player Fireball holder identity/parent relation changed",
+        );
+    }
+    let mana_cost = i32::from_le_bytes(
+        entities[offset + 144..offset + 148]
+            .try_into()
+            .expect("validated entity record extent"),
+    );
+    if mana_cost != 100 {
+        return fail(
+            ValidationStage::TypedMembers,
+            "local player Fireball holder package default changed from 100 mana units",
+        );
+    }
+    Ok(Some(mana_cost))
 }
 
 fn validate_runtime(bytes: &[u8]) -> Result<u16> {

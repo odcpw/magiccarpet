@@ -268,7 +268,7 @@ fn game_describe(arguments: &[String]) -> ExitCode {
     };
     let descriptors = match request.id {
         Some(id) => {
-            if let Some(descriptor) = catalog.descriptor(&id) {
+            if let Some(descriptor) = definition.semantic_descriptor(&catalog, &id) {
                 vec![descriptor.to_json(definition.value(&id))]
             } else if let Some(descriptor) = definition.level_entity_position_descriptor(&id) {
                 let effective = definition.semantic_target_value(&id);
@@ -285,8 +285,9 @@ fn game_describe(arguments: &[String]) -> ExitCode {
             }
         }
         None => {
-            let mut descriptors = catalog
-                .descriptors()
+            let mut descriptors = definition
+                .semantic_descriptors(&catalog)
+                .into_iter()
                 .map(|descriptor| descriptor.to_json(definition.value(&descriptor.id)))
                 .collect::<Vec<_>>();
             descriptors.extend(
@@ -377,7 +378,7 @@ fn game_get(arguments: &[String]) -> ExitCode {
         Err(error) => return game_domain_error("get", &error),
     };
     let id = request.id.expect("get request parser requires an ID");
-    let Some(descriptor) = catalog.descriptor(&id) else {
+    let Some(descriptor) = definition.semantic_descriptor(&catalog, &id) else {
         if let Some(descriptor) = definition.level_entity_position_descriptor(&id) {
             let value = definition
                 .semantic_target_value(&id)

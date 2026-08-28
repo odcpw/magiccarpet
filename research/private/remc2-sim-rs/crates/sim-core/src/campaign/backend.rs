@@ -35,9 +35,9 @@ use crate::{
         spec::{CampaignDefinition as CampaignDescriptor, CampaignSelection},
     },
     game_definition::{
-        ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFlightBinding,
-        GameDefinition, RequiredCapability, SemanticCatalog, SemanticId, default_catalog,
-        engine_capabilities,
+        ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFireballBinding,
+        DefinitionFlightBinding, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
+        RequiredCapability, SemanticCatalog, SemanticId, default_catalog, engine_capabilities,
     },
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAudioCommand, GameCommand, GameCompletion,
@@ -206,6 +206,9 @@ pub fn load_mc2_campaign(
         })
     {
         requirement_ids.push("engine.objective.no_living_creatures");
+    }
+    if descriptor.local_player_fireball_mana_cost().is_some() {
+        requirement_ids.push(FIREBALL_MANA_COST_CAPABILITY_ID);
     }
     let requirements = requirement_ids
         .into_iter()
@@ -593,6 +596,7 @@ pub struct Mc2CampaignBackend {
     campaign: CampaignSession,
     package_campaign: CampaignSession,
     flight_binding: DefinitionFlightBinding,
+    fireball_binding: Option<DefinitionFireballBinding>,
     package_base: GameDefinition,
     package_graph_hash: String,
     artifact_graph_hash: String,
@@ -611,7 +615,9 @@ impl GameAdapter for Mc2CampaignAdapter {
         let catalog = default_catalog().map_err(CampaignBackendError::Definition)?;
         let flight_binding = DefinitionFlightBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
-        require_catalog_defaults(definition, &catalog)?;
+        let fireball_binding = DefinitionFireballBinding::from_definition(definition)
+            .map_err(CampaignBackendError::Definition)?;
+        require_catalog_defaults(definition, &catalog, fireball_binding.is_some())?;
         let package_base = load_mc2_campaign(&input.package_root, &catalog)
             .map_err(CampaignBackendError::Definition)?;
         definition
@@ -646,10 +652,18 @@ impl GameAdapter for Mc2CampaignAdapter {
             .map_err(|error| {
                 CampaignBackendError::Open(CampaignOpenError::Materialization(error))
             })?;
+        if let Some(binding) = fireball_binding {
+            campaign
+                .apply_local_player_fireball_mana_cost(binding.mana_cost())
+                .map_err(|error| {
+                    CampaignBackendError::Open(CampaignOpenError::Materialization(error))
+                })?;
+        }
         Ok(Mc2CampaignBackend {
             campaign,
             package_campaign,
             flight_binding,
+            fireball_binding,
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
             package_base,
@@ -657,15 +671,18 @@ impl GameAdapter for Mc2CampaignAdapter {
     }
 }
 
-/// No campaign descriptor has a definition-consumption binding yet, so a
-/// deviated semantic value cannot reach gameplay. Fail closed instead of
-/// silently binding a definition whose values this route would ignore.
+/// Admit only semantic deviations with a package-present runtime consumer.
+/// Every other catalog value must remain at its package default so this route
+/// cannot silently bind a definition whose authored value gameplay ignores.
 fn require_catalog_defaults(
     definition: &GameDefinition,
     catalog: &SemanticCatalog,
+    consumes_fireball_cost: bool,
 ) -> Result<(), CampaignBackendError> {
     for descriptor in catalog.descriptors() {
-        if DefinitionFlightBinding::consumes(&descriptor.id) {
+        if DefinitionFlightBinding::consumes(&descriptor.id)
+            || (consumes_fireball_cost && DefinitionFireballBinding::consumes(&descriptor.id))
+        {
             continue;
         }
         if definition.value(&descriptor.id) != Some(&descriptor.default_value) {
@@ -802,10 +819,12 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let catalog = default_catalog().map_err(CampaignBackendError::Definition)?;
         let flight_binding = DefinitionFlightBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
+        let fireball_binding = DefinitionFireballBinding::from_definition(definition)
+            .map_err(CampaignBackendError::Definition)?;
         definition
             .verify_semantic_variant_of(&self.package_base, &catalog)
             .map_err(CampaignBackendError::Definition)?;
-        require_catalog_defaults(definition, &catalog)?;
+        require_catalog_defaults(definition, &catalog, fireball_binding.is_some())?;
         let next_generation = self.campaign.generation().wrapping_add(1);
         let mut campaign = self.package_campaign.clone();
         campaign
@@ -817,9 +836,17 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .map_err(|error| {
                 CampaignBackendError::Open(CampaignOpenError::Materialization(error))
             })?;
+        if let Some(binding) = fireball_binding {
+            campaign
+                .apply_local_player_fireball_mana_cost(binding.mana_cost())
+                .map_err(|error| {
+                    CampaignBackendError::Open(CampaignOpenError::Materialization(error))
+                })?;
+        }
         campaign.set_runtime_generation(next_generation);
         self.campaign = campaign;
         self.flight_binding = flight_binding;
+        self.fireball_binding = fireball_binding;
         Ok(())
     }
 }
@@ -1001,7 +1028,7 @@ fn hex_digest(bytes: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::campaign::state::{ResetState, encode_reset_v1};
+    use crate::campaign::state::{ResetReceipt, ResetState, encode_reset_v1};
     use crate::game_definition::{
         ChangeSetBuilder, GamePackage, IntegerParameter, PublicationFault, RequestedTiming,
         SemanticValue, WorkspaceStore,
@@ -1012,6 +1039,7 @@ mod tests {
         LevelEntityParameterAccess, LevelObjectiveConditionAccess, MechanicKind,
         ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
     };
+    use crate::native_world::FireballProjectileOrigin;
     use sim_definition::adapter::{
         build_level_definition, entity_definition, objective_definition, reissue_at_revision,
         with_level_definition, with_replacement,
@@ -1138,6 +1166,96 @@ mod tests {
             )
             .expect("flight change publishes");
         store.active_definition().expect("published definition")
+    }
+
+    fn publish_fireball_mana_cost(
+        store: &WorkspaceStore,
+        catalog: &SemanticCatalog,
+        active: &GameDefinition,
+        idempotency_key: &str,
+        mana_cost: i64,
+    ) -> GameDefinition {
+        let change_set = ChangeSetBuilder::new(
+            "campaign-fireball-authoring",
+            active,
+            idempotency_key,
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::FireballManaCost, mana_cost)
+        .build()
+        .expect("typed Fireball cost change set");
+        let validation = store
+            .validate(catalog, change_set.clone())
+            .expect("Fireball cost change validates");
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .expect("Fireball cost change publishes");
+        store.active_definition().expect("published definition")
+    }
+
+    fn assert_level_one_fireball_cost_mirrors(
+        session: &GameSession<Mc2CampaignBackend>,
+        expected: i32,
+    ) {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let shared = compatibility.shared_spells();
+        let holder_index = shared.players()[0].enabled_spell_holders[0];
+        let holder = shared
+            .holders()
+            .iter()
+            .find(|holder| holder.index == holder_index)
+            .expect("local player Fireball holder remains typed");
+        let imported = &compatibility.entities()[usize::from(holder_index)];
+        let context = compatibility
+            .session
+            .state
+            .live
+            .core
+            .context
+            .spell_fire
+            .as_ref()
+            .expect("ordinary spell-fire context remains materialized");
+        let context_holder = context
+            .holders
+            .iter()
+            .find(|candidate| candidate.entity_index == holder_index)
+            .expect("ordinary context retains the local Fireball holder");
+        assert_eq!(
+            [
+                holder.max_mana,
+                holder.mana_cost,
+                i32::from_le_bytes(holder.record_bytes()[144..148].try_into().unwrap()),
+                imported.max_mana,
+                imported.mana_cost,
+                i32::from_le_bytes(imported.record_bytes()[144..148].try_into().unwrap()),
+                shared.fireball_holder().mana_cost,
+                context_holder.mana_cost,
+            ],
+            [expected; 8]
+        );
+        assert_eq!(
+            ResetReceipt::from_state(&compatibility.session.state.live),
+            compatibility.session.baseline_hash,
+            "the authored live carrier must be sealed as the reset baseline"
+        );
+    }
+
+    fn player_spell_projectile_count(session: &GameSession<Mc2CampaignBackend>) -> usize {
+        session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .filter(|projectile| projectile.origin == FireballProjectileOrigin::PlayerSpell)
+            .count()
     }
 
     fn publish_start_trigger_move(
@@ -2182,23 +2300,6 @@ mod tests {
                 &format!("publish-speed-48-{ordinal}"),
                 48,
             );
-            if ordinal == 0 {
-                let before = store.state_bytes().unwrap();
-                let unsupported = ChangeSetBuilder::new(
-                    "campaign-flight-authoring",
-                    &speed_48,
-                    "unsupported-campaign-fireball-cost",
-                    RequestedTiming::SessionReset,
-                )
-                .set_integer(IntegerParameter::FireballManaCost, 200)
-                .build()
-                .unwrap();
-                let rejected = store.validate(&catalog, unsupported).unwrap();
-                assert!(!rejected.accepted);
-                assert_eq!(rejected.diagnostics[0].code, "DEPENDENCY_FAILED");
-                assert_eq!(store.state_bytes().unwrap(), before);
-            }
-
             assert_eq!(existing.identity().definition_hash, base.definition_hash());
             assert_eq!(existing.identity().generation, 1);
             let accelerate = GameCommand {
@@ -2246,6 +2347,263 @@ mod tests {
 
             std::fs::remove_dir_all(&workspace_root).unwrap();
         }
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_level_one_fireball_cost_to_activation_and_source_charge() {
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        assert!(base.required_capabilities().iter().any(|requirement| {
+            requirement.id.as_str() == FIREBALL_MANA_COST_CAPABILITY_ID
+                && requirement.exact_version == 1
+        }));
+        let workspace_root = temporary_workspace_path("campaign-fireball-cost-200");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-fireball-authoring", base.clone())
+                .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            61,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        assert_level_one_fireball_cost_mirrors(&session, 100);
+
+        let authored =
+            publish_fireball_mana_cost(&store, &catalog, &base, "publish-fireball-cost-200", 200);
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    cast_left: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(player_spell_projectile_count(&session), 1);
+        let base_projectiles = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .fireball_projectiles()
+            .to_vec();
+        let base_rng = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .source_global_rng();
+        let base_effects = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .to_vec();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .mana_regen,
+            -100,
+            "the already-open session must retain its package-default cost"
+        );
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(authored.clone()))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        assert_level_one_fireball_cost_mirrors(&session, 200);
+        let authored_frame_zero = session.snapshot().value;
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    cast_left: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(player_spell_projectile_count(&session), 1);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .fireball_projectiles(),
+            base_projectiles.as_slice(),
+            "mana cost must not rewrite projectile identity or trajectory"
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .source_global_rng(),
+            base_rng,
+            "mana cost must not alter the accepted-cast RNG schedule"
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .effect_journal()
+                .records(),
+            base_effects.as_slice(),
+            "mana cost must not alter unrelated accepted-cast effects"
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .mana_regen,
+            -200
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_level_one_fireball_cost_mirrors(&session, 200);
+        assert_eq!(player_spell_projectile_count(&session), 0);
+        assert_eq!(session.snapshot().value, authored_frame_zero);
+        std::fs::remove_dir_all(workspace_root).unwrap();
+        // No-Claim: this proves reset-time cost binding for the already-enabled
+        // local Level 1 tier-zero holder through affordability, first-pulse
+        // source charge, and projectile construction. It does not author
+        // higher tiers, pickup/acquisition, enemy holders, impact/damage,
+        // presentation, save migration, or Level 2/3 Fireball ownership.
+    }
+
+    #[test]
+    fn campaign_backend_level_one_fireball_cost_rejects_when_authored_above_player_mana() {
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let workspace_root = temporary_workspace_path("campaign-fireball-cost-1100");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-fireball-authoring", base.clone())
+                .unwrap();
+        let authored = publish_fireball_mana_cost(
+            &store,
+            &catalog,
+            &base,
+            "publish-fireball-cost-1100",
+            1_100,
+        );
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(authored),
+            62,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        assert_level_one_fireball_cost_mirrors(&session, 1_100);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .mana,
+            1_000
+        );
+        let mana_regen_before = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity()
+            .mana_regen;
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    cast_left: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(player_spell_projectile_count(&session), 0);
+        assert_eq!(
+            compatibility.shared_spells().player_entity().mana_regen,
+            mana_regen_before,
+            "insufficient mana must not publish a source charge"
+        );
+        assert!(
+            compatibility
+                .effect_journal()
+                .records()
+                .iter()
+                .any(|record| matches!(
+                    record.effect,
+                    CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::NotEnoughMana,
+                        ..
+                    })
+                ))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_level_one_fireball_cost_mirrors(&session, 1_100);
+        assert_eq!(player_spell_projectile_count(&session), 0);
+        std::fs::remove_dir_all(workspace_root).unwrap();
+        // No-Claim: this is the same real Level 1 activation boundary as the
+        // accepted-cost gate. It does not prove arbitrary mana sources,
+        // mid-session edits, higher tiers, or other spell families.
+    }
+
+    #[test]
+    fn campaign_definitions_without_a_local_fireball_holder_reject_cost_publication() {
+        let catalog = default_catalog().unwrap();
+        for (label, root) in [
+            ("level-two", descriptor_fixture_path()),
+            ("level-three", level_three_descriptor_fixture_path()),
+        ] {
+            let base = load_mc2_campaign(&root, &catalog).unwrap();
+            assert!(base.required_capabilities().iter().all(|requirement| {
+                requirement.id.as_str() != FIREBALL_MANA_COST_CAPABILITY_ID
+            }));
+            let workspace_root = temporary_workspace_path(label);
+            let store = WorkspaceStore::create(
+                &workspace_root,
+                "campaign-fireball-authoring",
+                base.clone(),
+            )
+            .unwrap();
+            let before = store.state_bytes().unwrap();
+            let change_set = ChangeSetBuilder::new(
+                "campaign-fireball-authoring",
+                &base,
+                "unsupported-fireball-cost",
+                RequestedTiming::SessionReset,
+            )
+            .set_integer(IntegerParameter::FireballManaCost, 200)
+            .build()
+            .unwrap();
+            let rejected = store.validate(&catalog, change_set).unwrap();
+            assert!(!rejected.accepted);
+            assert_eq!(rejected.diagnostics[0].code, "DEPENDENCY_FAILED");
+            assert_eq!(store.state_bytes().unwrap(), before);
+            std::fs::remove_dir_all(workspace_root).unwrap();
+        }
+        // No-Claim: this proves package-conditional publication refusal only;
+        // it does not add Fireball acquisition or ownership to Level 2/3.
     }
 
     #[test]

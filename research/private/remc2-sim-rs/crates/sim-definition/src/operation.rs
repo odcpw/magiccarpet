@@ -7,7 +7,8 @@
 
 use crate::level_definition::{LevelObjectiveId, ObjectiveCondition};
 use crate::{
-    Access, DefinitionError, DefinitionErrorCode, GameDefinition, SemanticId, SemanticValue,
+    Access, DefinitionError, DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
+    SemanticId, SemanticValue,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -170,6 +171,15 @@ impl DefinitionOperation {
                         IntegerParameter::PlayerMaxForwardSpeed.as_str(),
                         IntegerParameter::FireballManaCost.as_str(),
                     ],
+                    "parameter_requirements": {
+                        IntegerParameter::FireballManaCost.as_str(): {
+                            "required_capability": {
+                                "id": FIREBALL_MANA_COST_CAPABILITY_ID,
+                                "exact_version": 1,
+                            },
+                            "writable_when": "the active definition requires this exact capability",
+                        },
+                    },
                 },
                 {
                     "operation": "select_option",
@@ -281,17 +291,37 @@ impl DefinitionOperation {
     }
 
     pub(crate) fn resolve(&self, definition: &GameDefinition) -> crate::Result<ResolvedOperation> {
-        if definition.level_definition().is_some()
-            && !matches!(
-                self,
-                Self::SetInteger {
-                    parameter: IntegerParameter::PlayerMaxForwardSpeed,
-                    ..
-                } | Self::MoveEntity { .. }
-                    | Self::PutObjective { .. }
-                    | Self::SetMechanicCountdown { .. }
-            )
-        {
+        let fireball_cost_is_bound = definition
+            .required_capabilities()
+            .iter()
+            .any(|requirement| {
+                requirement.id.as_str() == FIREBALL_MANA_COST_CAPABILITY_ID
+                    && requirement.exact_version == 1
+            });
+        let is_fireball_cost_operation = matches!(
+            self,
+            Self::SetInteger {
+                parameter: IntegerParameter::FireballManaCost,
+                ..
+            }
+        );
+        if is_fireball_cost_operation && !fireball_cost_is_bound {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                self.target_id().as_str(),
+                "definition has no package-qualified Fireball mana-cost runtime consumer",
+            ));
+        }
+        let playable_operation_is_supported = matches!(
+            self,
+            Self::SetInteger {
+                parameter: IntegerParameter::PlayerMaxForwardSpeed,
+                ..
+            } | Self::MoveEntity { .. }
+                | Self::PutObjective { .. }
+                | Self::SetMechanicCountdown { .. }
+        ) || is_fireball_cost_operation;
+        if definition.level_definition().is_some() && !playable_operation_is_supported {
             return Err(DefinitionError::new(
                 DefinitionErrorCode::DependencyFailed,
                 self.target_id().as_str(),

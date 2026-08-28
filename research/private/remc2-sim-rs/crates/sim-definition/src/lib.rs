@@ -24,8 +24,9 @@ pub use operation::{
     ArtifactId, DefinitionOperation, IntegerParameter, OptionParameter, PresentationAssetSlot,
 };
 pub use package::{
-    ArtifactKind, ArtifactNode, CompiledCapability, CompiledCapabilityRegistry, GamePackage,
-    PackageProvenance, PackageProvenanceKind, RequiredCapability, engine_capabilities,
+    ArtifactKind, ArtifactNode, CompiledCapability, CompiledCapabilityRegistry,
+    FIREBALL_MANA_COST_CAPABILITY_ID, GamePackage, PackageProvenance, PackageProvenanceKind,
+    RequiredCapability, engine_capabilities,
 };
 pub use presentation_asset::{
     BoundPresentationAsset, INDEXED_SPRITE_SCHEMA, IndexedPresentationAsset,
@@ -52,7 +53,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v5";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "8.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "9.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -185,6 +186,40 @@ pub struct GameDefinition {
 }
 
 impl GameDefinition {
+    /// Project one catalog descriptor through the capabilities of this
+    /// immutable definition.
+    ///
+    /// Engine-wide catalog entries can be writable for one package while any
+    /// definition without the matching runtime consumer must advertise the
+    /// same semantic value as read-only.
+    #[must_use]
+    pub fn semantic_descriptor(
+        &self,
+        catalog: &SemanticCatalog,
+        id: &SemanticId,
+    ) -> Option<SemanticDescriptor> {
+        let mut descriptor = catalog.descriptor(id)?.clone();
+        if id.as_str() == IntegerParameter::FireballManaCost.as_str()
+            && !self.required_capabilities.iter().any(|requirement| {
+                requirement.id.as_str() == FIREBALL_MANA_COST_CAPABILITY_ID
+                    && requirement.exact_version == 1
+            })
+        {
+            descriptor.access = Access::ReadOnly;
+        }
+        Some(descriptor)
+    }
+
+    /// Project every engine catalog descriptor through this definition's
+    /// package-specific runtime capabilities.
+    #[must_use]
+    pub fn semantic_descriptors(&self, catalog: &SemanticCatalog) -> Vec<SemanticDescriptor> {
+        catalog
+            .descriptors()
+            .filter_map(|descriptor| self.semantic_descriptor(catalog, &descriptor.id))
+            .collect()
+    }
+
     /// Materialize an immutable definition from one validated package.
     ///
     /// # Errors

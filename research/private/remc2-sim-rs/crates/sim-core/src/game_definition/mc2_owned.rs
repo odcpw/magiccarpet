@@ -4,8 +4,8 @@
 //! only semantic IDs and content identities.
 
 use super::{
-    ArtifactKind, DefinitionErrorCode, GameDefinition, RequiredCapability, Result, SemanticCatalog,
-    SemanticId, SemanticValue, engine_capabilities,
+    ArtifactKind, DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
+    RequiredCapability, Result, SemanticCatalog, SemanticId, SemanticValue, engine_capabilities,
 };
 use crate::{SPEED_LIMIT, goat::GoatBehaviorConfig, native_world::NativeWorld};
 use serde_json::{Value, json};
@@ -170,6 +170,7 @@ pub fn load_mc2_owned(
         "engine.ai.creature_policy",
         "engine.flight.fixed_point",
         "engine.presentation.indexed_asset",
+        FIREBALL_MANA_COST_CAPABILITY_ID,
         "engine.spell.projectile",
     ]
     .into_iter()

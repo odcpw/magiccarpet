@@ -13,6 +13,10 @@ use std::{
     path::Path,
 };
 
+/// Exact compiled capability required by packages whose local player owns a
+/// reset-time Fireball mana-cost carrier.
+pub const FIREBALL_MANA_COST_CAPABILITY_ID: &str = "engine.spell.fireball.mana_cost";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledCapability {
     pub id: SemanticId,
@@ -133,6 +137,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 "engine.spell.projectile",
                 "Compiled spell activation and projectile lifecycle.",
+            ),
+            (
+                FIREBALL_MANA_COST_CAPABILITY_ID,
+                "Package-bound local-player Fireball affordability and source charge.",
             ),
         ]
         .into_iter()

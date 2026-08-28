@@ -8,7 +8,10 @@ mod mc2_owned;
 mod runtime;
 
 pub use mc2_owned::{Mc2OwnedInputs, load_mc2_owned};
-pub use runtime::{DefinitionFlightBinding, PLAYER_MAX_FORWARD_SPEED_ID};
+pub use runtime::{
+    DefinitionFireballBinding, DefinitionFlightBinding, FIREBALL_MANA_COST_ID,
+    PLAYER_MAX_FORWARD_SPEED_ID,
+};
 pub use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
     SemanticGameId, SemanticLevelId,
@@ -18,8 +21,8 @@ pub use sim_definition::{
     ArtifactKind, ArtifactNode, BoundPresentationAsset, CHANGE_SET_SCHEMA, ChangeSet,
     ChangeSetBuilder, CompiledCapability, CompiledCapabilityRegistry, DefinitionDiff,
     DefinitionError, DefinitionErrorCode, DefinitionOperation, DescriptorKind, Diagnostic,
-    GAME_DEFINITION_SCHEMA, GAME_PACKAGE_SCHEMA, GameDefinition, GamePackage,
-    INDEXED_SPRITE_SCHEMA, IndexedPresentationAsset, IntegerParameter, MutationTiming,
+    FIREBALL_MANA_COST_CAPABILITY_ID, GAME_DEFINITION_SCHEMA, GAME_PACKAGE_SCHEMA, GameDefinition,
+    GamePackage, INDEXED_SPRITE_SCHEMA, IndexedPresentationAsset, IntegerParameter, MutationTiming,
     OptionParameter, PackageProvenance, PackageProvenanceKind, PresentationAssetBudgets,
     PresentationAssetSlot, PublicationFault, ReadBackBinding, ReadBinding, RequestedTiming,
     RequiredCapability, Result, SEMANTIC_CONTRACT_VERSION, SemanticBinding, SemanticCatalog,

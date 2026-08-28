@@ -3969,6 +3969,130 @@ impl Level2ResetSession {
         fire.holders = holders;
     }
 
+    /// Bind the immutable definition value to every live carrier used by the
+    /// ordinary local-player Fireball activation and first-pulse source
+    /// callback. The private holder relation is package-derived; no source
+    /// slot is accepted from the semantic definition.
+    pub(crate) fn bind_local_player_fireball_mana_cost(&mut self, mana_cost: i32) -> Result<()> {
+        if mana_cost < 0 {
+            return Err(NativeWorldError::new(
+                "local-player Fireball mana cost must be nonnegative",
+            ));
+        }
+        let local_player = self.session.state.live.shared_spells.local_player.clone();
+        let holder_index = local_player.enabled_spell_holders[usize::from(FIREBALL_SPELL_FAMILY)];
+        if holder_index == 0 {
+            return Err(NativeWorldError::new(
+                "package declares a Fireball cost without a local-player family-zero holder",
+            ));
+        }
+        let expected_parent = local_player.entity_index;
+        let imported = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(holder_index))
+            .filter(|row| {
+                row.active
+                    && row.index == holder_index
+                    && row.class == 15
+                    && row.model == FIREBALL_SPELL_FAMILY
+                    && row.action == 0
+                    && row.source_spell_parent_entity_index() == expected_parent
+            })
+            .cloned()
+            .ok_or_else(|| {
+                NativeWorldError::new(
+                    "local-player Fireball holder lost its imported source identity",
+                )
+            })?;
+        let imported_raw = i32::from_le_bytes(
+            imported.record[144..148]
+                .try_into()
+                .expect("Fireball holder max-mana extent"),
+        );
+        let holder = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup(holder_index)
+            .filter(|row| {
+                row.active
+                    && row.class == 15
+                    && row.model == FIREBALL_SPELL_FAMILY
+                    && row.action == 0
+                    && row.source_spell_parent_entity_index() == expected_parent
+            })
+            .cloned()
+            .ok_or_else(|| {
+                NativeWorldError::new(
+                    "local-player Fireball holder lost its typed source projection",
+                )
+            })?;
+        let holder_raw = i32::from_le_bytes(
+            holder.record[144..148]
+                .try_into()
+                .expect("Fireball holder max-mana extent"),
+        );
+        if [
+            imported.max_mana,
+            imported.mana_cost,
+            imported_raw,
+            holder.max_mana,
+            holder.mana_cost,
+            holder_raw,
+            self.session.state.live.shared_spells.fireball.mana_cost,
+        ]
+        .into_iter()
+        .any(|value| value != 100)
+        {
+            return Err(NativeWorldError::new(
+                "local-player Fireball holder package-default mirrors diverged from 100",
+            ));
+        }
+        let context_cost = self
+            .session
+            .state
+            .live
+            .core
+            .context
+            .spell_fire
+            .as_ref()
+            .and_then(|fire| {
+                fire.holders
+                    .iter()
+                    .find(|row| row.entity_index == holder_index)
+            })
+            .map(|row| row.mana_cost)
+            .ok_or_else(|| {
+                NativeWorldError::new("local-player Fireball command projection is absent")
+            })?;
+        if context_cost != 100 {
+            return Err(NativeWorldError::new(
+                "local-player Fireball command projection diverged from its package default",
+            ));
+        }
+
+        let authoritative = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(holder_index)
+            .expect("validated Fireball holder remains present");
+        authoritative.max_mana = mana_cost;
+        authoritative.mana_cost = mana_cost;
+        authoritative.record[144..148].copy_from_slice(&mana_cost.to_le_bytes());
+        self.session.state.live.shared_spells.fireball.mana_cost = mana_cost;
+        self.commit_imported_spell_source_projection(holder_index)?;
+        self.sync_level2_spell_fire_context();
+        self.session.rebase();
+        Ok(())
+    }
+
     /// Refresh source-owned holder fields after the source pass without
     /// rebuilding hand or selected-command relations.  The latter were latched
     /// before the pass and must remain intact until the generic command pass

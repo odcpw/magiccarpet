@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 8.0 milestone, this is a binding target with
+As of the semantic-contract 9.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -326,6 +326,14 @@ partial real implementation, not a completion claim:
   `flight.player.max_forward_speed` through the ordinary neutral campaign
   player callback for the real Level 1, 2 and 3 packages, while operations
   without campaign runtime consumers fail before publication;
+- the package-bound `spell.fireball.mana_cost` descriptor is consumed for the
+  qualified Level 1 local player's already-enabled tier-zero holder. Explicit
+  reopen/reset writes both the generic activation affordability carrier and
+  the ordinary source callback's charge carrier before resealing the reset
+  baseline; Level 2 and 3 reject cost publication because their local-player
+  family-zero holder relation is absent. This does not yet author spell
+  acquisition, higher tiers, enemy holders, projectile behavior, assets or
+  presentation;
 - `LevelDefinition` exposes a complete stable-ID census for the qualified real
   Level 1, 2 and 3 package entities; those identities are frozen in the private
   MC2 adapter rather than derived from kind ordinals or runtime slots;

@@ -3390,6 +3390,13 @@ mod tests {
             assert_eq!(store.state_bytes().unwrap(), before);
         }
 
+        let fireball_id = SemanticId::parse("spell.fireball.mana_cost").unwrap();
+        let catalog = default_catalog().unwrap();
+        let range_error = catalog
+            .validate_replacement_shape(&definition, &fireball_id, &SemanticValue::Integer(-1))
+            .unwrap_err();
+        assert_eq!(range_error.code, crate::DefinitionErrorCode::OutOfRange);
+
         let negative_fireball_cost = ChangeSetBuilder::new(
             "custom-workspace",
             &definition,
@@ -3399,10 +3406,8 @@ mod tests {
         .set_integer(IntegerParameter::FireballManaCost, -1)
         .build()
         .unwrap();
-        let rejected = store
-            .validate(&default_catalog().unwrap(), negative_fireball_cost)
-            .unwrap();
-        assert_eq!(rejected.diagnostics[0].code, "OUT_OF_RANGE");
+        let rejected = store.validate(&catalog, negative_fireball_cost).unwrap();
+        assert_eq!(rejected.diagnostics[0].code, "DEPENDENCY_FAILED");
         assert_eq!(store.state_bytes().unwrap(), before);
 
         let misaligned_speed = ChangeSetBuilder::new(

@@ -406,10 +406,15 @@ fn inspect(arguments: &[String]) -> ExitCode {
         Ok(value) => value,
         Err(error) => return game_domain_error("inspect", &error),
     };
-    let writable_surface = catalog
-        .descriptors()
+    let definition = match store.active_definition() {
+        Ok(definition) => definition,
+        Err(error) => return transaction_error("inspect", &error),
+    };
+    let writable_surface = definition
+        .semantic_descriptors(&catalog)
+        .into_iter()
         .filter(|descriptor| descriptor.access.as_str() == "writable")
-        .map(|descriptor| descriptor.id.as_str())
+        .map(|descriptor| descriptor.id.as_str().to_owned())
         .collect::<Vec<_>>();
     match store.inspect() {
         Ok(inspection) => workspace_success(
@@ -418,7 +423,7 @@ fn inspect(arguments: &[String]) -> ExitCode {
             serde_json::json!({
                 "workspace": inspection,
                 "writable_surface": writable_surface,
-                "no_claim": "definition-writable does not imply a live gameplay consumer uses the published value",
+                "no_claim": "writable_surface is projected through this definition's package-qualified runtime capabilities",
                 "recommended_operations": ["describe", "set", "preview"]
             }),
         ),

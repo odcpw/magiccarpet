@@ -233,6 +233,13 @@ impl CampaignSession {
         Ok(())
     }
 
+    pub(crate) fn apply_local_player_fireball_mana_cost(
+        &mut self,
+        mana_cost: i32,
+    ) -> Result<(), NativeWorldError> {
+        self.level2.bind_local_player_fireball_mana_cost(mana_cost)
+    }
+
     pub(crate) fn set_runtime_generation(&mut self, generation: u64) {
         self.level2.session.generation = generation;
         self.level2.session.state.scratch = self
