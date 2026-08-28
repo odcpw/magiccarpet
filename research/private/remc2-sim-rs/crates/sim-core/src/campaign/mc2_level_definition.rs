@@ -829,7 +829,10 @@ fn bind_private_entity(
             | LevelEntityKind::Scenery(SceneryKind::ExitPortal) => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
-            LevelEntityKind::SpellPickup(_) if feature.activation_group != 0 => {
+            LevelEntityKind::SpellPickup(_)
+            | LevelEntityKind::Scenery(SceneryKind::Stone | SceneryKind::Tree)
+                if feature.activation_group != 0 =>
+            {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
             LevelEntityKind::SpellPickup(_)

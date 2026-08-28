@@ -369,10 +369,11 @@ partial real implementation, not a completion claim:
   imported carrier; dynamically authored Level 1 Castle and Speed, Level 2
   Shield and Invisibility, and Level 3 Morph bind their immutable authored
   feature before the package group constructs the ordinary pickup. The same
-  private kind-and-position binding covers all twelve reset-live Level 3
-  ordinary Stones and all thirty-seven reset-live ordinary Trees; their
-  callbacks consume the authored location through terrain ground/material
-  projections.
+  reset-versus-authored binding covers all fourteen package-present Stones and
+  all sixty-seven package-present Trees: Level 1/2 authored-group rows bind
+  their immutable feature before construction, while Level 3 reset-live rows
+  relocate their imported carrier. Their callbacks consume the authored
+  location through terrain ground/material projections.
   One reset-imported Level 3 area-entry trigger also consumes its authored
   location through the ordinary overlap cadence and exact group-8 constructor;
   the other reset and dynamically authored switches remain read-only. All

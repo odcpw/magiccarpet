@@ -495,6 +495,8 @@ fn move_entity_targets_are_package_projected() {
         &[
             "item.experience_scroll.at_129_149",
             "scenery.exit_portal.at_122_188",
+            "scenery.stone.at_157_155",
+            "scenery.tree.at_163_53",
         ],
         "session_reset",
     );
@@ -555,16 +557,13 @@ fn move_entity_targets_are_package_projected() {
     let level_one = level_one.to_str().expect("UTF-8 campaign path");
     assert_position_access(
         level_one,
-        &["scenery.stone.at_75_218", "scenery.tree.at_110_96"],
-        "read_only",
-    );
-    assert_position_access(
-        level_one,
         &[
             "spell_pickup.castle.at_194_213",
             "spell_pickup.speed.at_202_212",
             "item.experience_scroll.at_216_213",
             "scenery.exit_portal.at_97_221",
+            "scenery.stone.at_75_218",
+            "scenery.tree.at_110_96",
         ],
         "session_reset",
     );

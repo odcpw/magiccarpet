@@ -1906,6 +1906,25 @@ mod tests {
                 "scenery.exit_portal.at_97_221",
                 "item.experience_scroll.at_214_215",
                 "item.experience_scroll.at_214_211",
+                "scenery.stone.at_75_218",
+                "scenery.tree.at_110_96",
+                "scenery.tree.at_102_91",
+                "scenery.tree.at_104_101",
+                "scenery.tree.at_141_72",
+                "scenery.tree.at_145_70",
+                "scenery.tree.at_143_63",
+                "scenery.tree.at_129_63",
+                "scenery.tree.at_117_49",
+                "scenery.tree.at_109_37",
+                "scenery.tree.at_98_33",
+                "scenery.tree.at_37_10",
+                "scenery.tree.at_40_237",
+                "scenery.tree.at_102_214",
+                "scenery.tree.at_72_172",
+                "scenery.tree.at_70_170",
+                "scenery.tree.at_71_165",
+                "scenery.tree.at_67_165",
+                "scenery.tree.at_55_185",
                 "item.experience_scroll.at_218_211",
                 "item.experience_scroll.at_218_215",
             ]
@@ -1975,7 +1994,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 29);
+        assert_eq!(level_two_movable.len(), 42);
         assert_eq!(
             level_two_movable
                 .iter()
@@ -2000,6 +2019,24 @@ mod tests {
                 })
                 .count(),
             24
+        );
+        assert_eq!(
+            level_two_movable
+                .iter()
+                .filter(|entity| {
+                    matches!(entity.kind(), LevelEntityKind::Scenery(SceneryKind::Stone))
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            level_two_movable
+                .iter()
+                .filter(|entity| {
+                    matches!(entity.kind(), LevelEntityKind::Scenery(SceneryKind::Tree))
+                })
+                .count(),
+            12
         );
         let level_three = assert_package_content(
             &level_three_descriptor_fixture_path(),
@@ -4021,6 +4058,218 @@ mod tests {
         // makes the other four dynamic spell pickups authorable through this
         // same typed binding, but this test does not re-prove their distinct
         // package-group producers, later spell behavior, save/replay, or Unity.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_one_dynamic_tree_through_group_one_after_reopen() {
+        const TREE_RECORD: u16 = 155;
+        const PRODUCER_SLOT: u16 = 48;
+        const GROUP_ONE_ROWS: &[u16] = &[
+            31, 99, 104, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172,
+            173, 174, 175,
+        ];
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let tree = sim_definition::adapter::stable_entity_id("scenery.tree.at_110_96").unwrap();
+        let package_tile = TilePosition { x: 110, y: 96 };
+        let authored_tile = TilePosition { x: 130, y: 120 };
+        let package_entity = base.level_definition().unwrap().entity(&tree).unwrap();
+        assert_eq!(
+            package_entity.kind(),
+            LevelEntityKind::Scenery(SceneryKind::Tree)
+        );
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-dynamic-tree-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-dynamic-tree-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            75,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-dynamic-tree-placement",
+            &base,
+            "move-level-one-dynamic-tree",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(tree.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let run_group_one = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.state.entity_index;
+            let outside = crate::Position {
+                x: 0,
+                y: 0,
+                z: compatibility.state.position.z,
+            };
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player, outside)
+                .unwrap();
+            for _ in 0..8 {
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .events()
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot: PRODUCER_SLOT,
+                            group: 1,
+                            authored_indices,
+                            ..
+                        } if authored_indices.as_ref() == GROUP_ONE_ROWS
+                    ))
+            );
+        };
+        let assert_tree_near = |tree: &crate::native_world::Level2AuthoredTreeSource,
+                                tile: TilePosition| {
+            let center_x = tile.x.wrapping_shl(8).wrapping_add(128);
+            let center_y = tile.y.wrapping_shl(8).wrapping_add(128);
+            assert!(tree.position.x.abs_diff(center_x) <= 32);
+            assert!(tree.position.y.abs_diff(center_y) <= 32);
+        };
+
+        run_group_one(&mut session);
+        let package_tree = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.authored_index == TREE_RECORD)
+            .copied()
+            .unwrap();
+        assert_tree_near(&package_tree, package_tile);
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == TREE_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        assert!(compatibility.economy().authored_trees().is_empty());
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        run_group_one(&mut session);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let authored_tree = compatibility
+            .economy()
+            .authored_trees()
+            .iter()
+            .find(|source| source.authored_index == TREE_RECORD)
+            .copied()
+            .unwrap();
+        assert_tree_near(&authored_tree, authored_tile);
+        let package_center = crate::Position {
+            x: package_tile.x.wrapping_shl(8).wrapping_add(128),
+            y: package_tile.y.wrapping_shl(8).wrapping_add(128),
+            z: authored_tree.position.z,
+        };
+        assert!(authored_tree.position.x.abs_diff(package_center.x) > 32);
+        assert!(authored_tree.position.y.abs_diff(package_center.y) > 32);
+        assert_eq!(
+            authored_tree.position.z,
+            crate::FlightWorld::ground_height(
+                compatibility.canonical_terrain(),
+                authored_tree.position,
+            )
+        );
+        assert!(
+            compatibility
+                .economy()
+                .map_chains()
+                .entity_chain(
+                    (authored_tree.position.x >> 8) as u8,
+                    (authored_tree.position.y >> 8) as u8,
+                )
+                .contains(&authored_tree.source_entity_index)
+        );
+        let receipts = compatibility.cf10_production_schedule_receipts();
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                slot,
+                ..
+            } if *slot == authored_tree.source_entity_index
+        )));
+        assert!(receipts.iter().any(|receipt| matches!(
+            receipt,
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                slot,
+                ..
+            } if *slot == authored_tree.source_entity_index
+        )));
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = session.backend().campaign.level2_compatibility();
+        assert!(reset.economy().authored_trees().is_empty());
+        assert_eq!(
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == TREE_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one real Level 1 authored Tree crosses guarded
+        // publication, explicit reopen, the ordinary group-1 constructor,
+        // numeric callback/epilogue, terrain ground and map ownership, plus
+        // reset-template retention. The exact package census authorizes every
+        // other Tree/Stone through the same reset-versus-authored binding, but
+        // the player is staged away from unrelated overlap consumers and this
+        // test does not re-prove their distinct groups, damage/death, water
+        // hiding, save/replay, or Unity presentation.
     }
 
     #[test]
