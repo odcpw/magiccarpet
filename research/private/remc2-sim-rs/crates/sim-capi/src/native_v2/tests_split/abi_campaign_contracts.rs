@@ -949,7 +949,7 @@ fn campaign_goat_snapshot_maps_all_typed_variants() {
 #[test]
 fn descriptor_campaign_counts_follow_the_level_definition() {
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-cf15-level1-package-current");
+        .join("../../../generated/mc-cf15-level1-package-v3-current");
     let package = package.to_string_lossy();
     let selection = McCampaignSelectionV2 {
         abi_version: MC_NATIVE_ABI_VERSION,

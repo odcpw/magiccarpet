@@ -60,6 +60,18 @@ constexpr std::uint16_t kCollisionMaskHeaderBytes = 20;
 constexpr std::uint32_t kCollisionMaskRecordHeaderBytes = 12;
 constexpr std::size_t kBuildingParameterRecordCount = 76;
 constexpr std::size_t kBuildingParameterRecordBytes = 4;
+constexpr std::uint16_t kFireballProjectileSelector = 463;
+constexpr std::size_t kFireballProjectileDecodedBytes = 4346;
+constexpr std::uint16_t kFireballProjectileWidth = 34;
+constexpr std::uint16_t kFireballProjectileHeight = 35;
+constexpr const char* kFireballProjectileDecodedSha256 =
+    "cf185f7e35f9103be4b4ecfa2573fc9332ac8ade346b564be3971cbe73fb35ec";
+constexpr const char* kFireballProjectileIndicesSha256 =
+    "f6755ec0f9931b6748c32893cc11838fb398043dafdc962eb5e288105cf0c88d";
+constexpr const char* kNightPaletteRgb8Sha256 =
+    "7c4dfbbc6c0f68a99214fe3ca93d7a1cf0dd658e17a40ad7ecb302152264f507";
+constexpr const char* kFadePaletteRgb8Sha256 =
+    "f0091d61149264890604486b1d4aceadddf62c0cc90f0c0083a3cae881240b6f";
 constexpr std::uint32_t kFeatureStartGlobalRng = 0x0000BFCA;
 constexpr std::array<std::uint32_t, 7> kFeatureGlobalRngBarriers = {
     0x1B712AE9,
@@ -241,6 +253,100 @@ std::string sha256_file(const fs::path& path) {
         hash.update(buffer.data(), static_cast<std::size_t>(stream.gcount()));
     }
     return hash.finish();
+}
+
+std::vector<std::uint8_t> read_exact_file(
+    const fs::path& path,
+    std::size_t expected_bytes,
+    const std::string& expected_sha256) {
+    if (!fs::is_regular_file(path) || fs::file_size(path) != expected_bytes) {
+        throw std::runtime_error("owner source has wrong extent: " + path.filename().string());
+    }
+    std::ifstream stream(path, std::ios::binary);
+    std::vector<std::uint8_t> bytes(expected_bytes);
+    stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!stream || sha256(bytes) != expected_sha256) {
+        throw std::runtime_error("owner source has wrong content: " + path.filename().string());
+    }
+    return bytes;
+}
+
+std::vector<std::uint8_t> capture_level_one_fireball_projectile_asset(
+    const fs::path& owner_root,
+    const char* palette_file,
+    const char* palette_sha256,
+    const char* palette_rgb8_sha256) {
+    if (D41A0_0.terrain_2FECE.MapType != MapType_t::Night) {
+        throw std::runtime_error("Level 1 Fireball presentation requires the Night TMAP bank");
+    }
+    if (!MainInitTmaps_71520(kFireballProjectileSelector) ||
+        str_DWORD_F66F0x[kFireballProjectileSelector] == nullptr ||
+        *str_DWORD_F66F0x[kFireballProjectileSelector] == nullptr) {
+        throw std::runtime_error("cannot materialize qualified Fireball TMAP 463");
+    }
+    const type_particle_str* sprite = *str_DWORD_F66F0x[kFireballProjectileSelector];
+    if (sprite->word_0 != 5379 || sprite->width != kFireballProjectileWidth ||
+        sprite->height != kFireballProjectileHeight) {
+        throw std::runtime_error("qualified Fireball TMAP 463 header or extent changed");
+    }
+    const auto* decoded = reinterpret_cast<const std::uint8_t*>(sprite);
+    if (sha256_pointer(decoded, kFireballProjectileDecodedBytes) !=
+        kFireballProjectileDecodedSha256) {
+        throw std::runtime_error("qualified Fireball TMAP 463 decoded stream changed");
+    }
+    const std::size_t pixel_count =
+        std::size_t{kFireballProjectileWidth} * std::size_t{kFireballProjectileHeight};
+    std::vector<std::uint8_t> indices(
+        reinterpret_cast<const std::uint8_t*>(sprite->textureBuffer),
+        reinterpret_cast<const std::uint8_t*>(sprite->textureBuffer) + pixel_count);
+    if (sha256(indices) != kFireballProjectileIndicesSha256) {
+        throw std::runtime_error("qualified Fireball TMAP 463 base frame changed");
+    }
+
+    const auto palette_rgb6 = read_exact_file(
+        owner_root / "CD_Files/DATA" / palette_file,
+        768,
+        palette_sha256);
+    std::vector<std::uint8_t> palette_rgba8;
+    palette_rgba8.reserve(256 * 4);
+    for (std::size_t index = 0; index < 256; ++index) {
+        palette_rgba8.push_back(static_cast<std::uint8_t>(palette_rgb6[index * 3] * 4));
+        palette_rgba8.push_back(static_cast<std::uint8_t>(palette_rgb6[index * 3 + 1] * 4));
+        palette_rgba8.push_back(static_cast<std::uint8_t>(palette_rgb6[index * 3 + 2] * 4));
+        palette_rgba8.push_back(index == 0 ? 0 : 255);
+    }
+    std::vector<std::uint8_t> palette_rgb8;
+    palette_rgb8.reserve(768);
+    for (std::uint8_t value : palette_rgb6) {
+        palette_rgb8.push_back(static_cast<std::uint8_t>(value * 4));
+    }
+    if (sha256(palette_rgb8) != palette_rgb8_sha256) {
+        throw std::runtime_error("qualified RGB8 palette expansion changed");
+    }
+
+    const canonical_json payload = {
+        {"budgets", {
+            {"max_bytes", 32768},
+            {"max_frames", 1},
+            {"max_palette_colors", 256},
+            {"max_pixels", pixel_count}
+        }},
+        {"color_contract", "srgb-straight-alpha-rgba8"},
+        {"coordinates", "x_right_y_down"},
+        {"dependencies", canonical_json::array()},
+        {"frame_count", 1},
+        {"frame_duration_ms", 0},
+        {"height", kFireballProjectileHeight},
+        {"indices", indices},
+        {"kind", "indexed_sprite"},
+        {"origin", "center"},
+        {"palette_rgba8", palette_rgba8},
+        {"runtime_format", "indexed8-rgba8/v1"},
+        {"schema", "carpet-flight-indexed-sprite/v1"},
+        {"width", kFireballProjectileWidth}
+    };
+    const std::string text = payload.dump() + "\n";
+    return {text.begin(), text.end()};
 }
 
 class Bytes {
@@ -2025,7 +2131,7 @@ canonical_json build_campaign_definition(
     presentation_recipe["member"] = typed_campaign_member(
         file_manifest, "presentation.bin", "mc2-presentation-snapshot/v1");
     const canonical_json objective_operations = campaign_objective_operations(authored, profile);
-    return {
+    canonical_json definition = {
         {"campaign_spec", {
             {"authored_behavior_rows", campaign_behavior_rows_json(behavior_rows)},
             {"authored_records", authored_records},
@@ -2049,9 +2155,11 @@ canonical_json build_campaign_definition(
             {"map_type_id", profile.map_type_id}
         }},
         {"required_behaviors", campaign_required_behaviors(behavior_rows)},
-        {"schema", profile.external == 2
-            ? "mc2-campaign-definition/v2"
-            : "mc2-campaign-definition/v1"},
+        {"schema", profile.external == 1
+            ? "mc2-campaign-definition/v3"
+            : (profile.external == 2
+                ? "mc2-campaign-definition/v2"
+                : "mc2-campaign-definition/v1")},
         {"source", {{"remc2_commit", MC2_UPSTREAM_COMMIT}}},
         {"source_facts", campaign_source_facts(
             file_manifest,
@@ -2061,6 +2169,63 @@ canonical_json build_campaign_definition(
             profile.includes_collision_masks,
             profile.external == 2)}
     };
+    if (profile.external == 1) {
+        const auto presentation_asset = [&](
+            const char* artifact_id,
+            const char* member,
+            const char* palette_path,
+            const char* palette_sha256,
+            const char* palette_rgb8_sha256) {
+            return canonical_json{
+                {"artifact_id", artifact_id},
+                {"member", typed_campaign_member(
+                    file_manifest,
+                    member,
+                    "carpet-flight-indexed-sprite/v1")},
+                {"slot_id", "presentation.spell.fireball.projectile_asset"},
+                {"source", {
+                    {"decoded_sha256", kFireballProjectileDecodedSha256},
+                    {"frame_index", 1},
+                    {"indices_sha256", kFireballProjectileIndicesSha256},
+                    {"owner_artifacts", canonical_json::array({
+                        canonical_json{
+                            {"bytes", 1354118},
+                            {"logical_path", "CD_Files/DATA/TMAPS1-0.DAT"},
+                            {"sha256", "b091204ec21c0cf99716f3ae5c426a37113e57dda48a0d4d2eef98167e6ed0ff"}
+                        },
+                        canonical_json{
+                            {"bytes", 5050},
+                            {"logical_path", "CD_Files/DATA/TMAPS1-0.TAB"},
+                            {"sha256", "22afd08167ae415138548f99901ea037bdc2b48f56c6f3b2dbcfe9743d73c8f0"}
+                        },
+                        canonical_json{
+                            {"bytes", 768},
+                            {"logical_path", palette_path},
+                            {"sha256", palette_sha256}
+                        }
+                    })},
+                    {"palette_rgb8_sha256", palette_rgb8_sha256},
+                    {"selector", kFireballProjectileSelector},
+                    {"transform", "base_frame_indices_plus_rgb6_times_4_palette_index_zero_transparent"}
+                }}
+            };
+        };
+        definition["presentation_assets"] = canonical_json::array({
+            presentation_asset(
+                "presentation.fireball.projectile.base",
+                "fireball-projectile-base.indexed-sprite.json",
+                "CD_Files/DATA/PALN-0.DAT",
+                "6b55d0714b939e8bd25cef89466806299dbae933f2f2f96e0cf8402fc607d16f",
+                kNightPaletteRgb8Sha256),
+            presentation_asset(
+                "presentation.fireball.projectile.fade",
+                "fireball-projectile-fade.indexed-sprite.json",
+                "CD_Files/DATA/PALF-0.DAT",
+                "c83f900a3d91b68e968f20cc484c8e0ca9a2578211c4d058a747d7f8db2880b4",
+                kFadePaletteRgb8Sha256)
+        });
+    }
+    return definition;
 }
 
 std::string campaign_package_identity(const json& file_manifest) {
@@ -2419,6 +2584,20 @@ int run(const Arguments& arguments) {
     json runtime_layout;
     Bytes runtime = capture_runtime(runtime_layout);
     Bytes presentation = capture_presentation();
+    std::vector<std::uint8_t> fireball_projectile_asset;
+    std::vector<std::uint8_t> fireball_projectile_fade_asset;
+    if (arguments.campaign_package && level_one) {
+        fireball_projectile_asset = capture_level_one_fireball_projectile_asset(
+            owner_root,
+            "PALN-0.DAT",
+            "6b55d0714b939e8bd25cef89466806299dbae933f2f2f96e0cf8402fc607d16f",
+            kNightPaletteRgb8Sha256);
+        fireball_projectile_fade_asset = capture_level_one_fireball_projectile_asset(
+            owner_root,
+            "PALF-0.DAT",
+            "c83f900a3d91b68e968f20cc484c8e0ca9a2578211c4d058a747d7f8db2880b4",
+            kFadePaletteRgb8Sha256);
+    }
 
     // sub_4A1E0 consumes authored feature types in the live structure. Re-load
     // a pristine local copy only after all live state above has been copied.
@@ -3115,14 +3294,6 @@ int run(const Arguments& arguments) {
         }
         const std::string owner_export_package_sha256 =
             manifest.at("package_sha256").get<std::string>();
-        const canonical_json definition = build_campaign_definition(
-            *campaign_profile,
-            manifest,
-            file_manifest,
-            authored_bytes,
-            entities,
-            entity_record_size,
-            player_record_size);
         if (level_one) {
             const std::string owner_manifest_text = manifest.dump(2) + "\n";
             const std::vector<std::uint8_t> owner_manifest_bytes(
@@ -3132,7 +3303,29 @@ int run(const Arguments& arguments) {
                 {"bytes", owner_manifest_bytes.size()},
                 {"sha256", sha256(owner_manifest_bytes)}
             };
+            write_bytes(
+                staging / "fireball-projectile-base.indexed-sprite.json",
+                fireball_projectile_asset);
+            file_manifest["fireball-projectile-base.indexed-sprite.json"] = {
+                {"bytes", fireball_projectile_asset.size()},
+                {"sha256", sha256(fireball_projectile_asset)}
+            };
+            write_bytes(
+                staging / "fireball-projectile-fade.indexed-sprite.json",
+                fireball_projectile_fade_asset);
+            file_manifest["fireball-projectile-fade.indexed-sprite.json"] = {
+                {"bytes", fireball_projectile_fade_asset.size()},
+                {"sha256", sha256(fireball_projectile_fade_asset)}
+            };
         }
+        const canonical_json definition = build_campaign_definition(
+            *campaign_profile,
+            manifest,
+            file_manifest,
+            authored_bytes,
+            entities,
+            entity_record_size,
+            player_record_size);
         const std::string definition_text = definition.dump() + "\n";
         const std::vector<std::uint8_t> definition_bytes(
             definition_text.begin(), definition_text.end());
@@ -3143,7 +3336,7 @@ int run(const Arguments& arguments) {
         };
         if (level_one) {
             manifest = {
-                {"schema", "mc2-owner-campaign-package/v1"},
+                {"schema", "mc2-owner-campaign-package/v3"},
                 {"byte_order", "little-endian"},
                 {"level", {
                     {"external", arguments.level.external},

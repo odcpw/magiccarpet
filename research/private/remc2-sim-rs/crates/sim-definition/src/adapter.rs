@@ -3,7 +3,7 @@
 //! This module is public only because workspace crate boundaries require it.
 //! `sim-core` deliberately does not re-export it as part of its public API.
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use crate::{
     ArtifactKind, ArtifactNode, DefinitionError, DefinitionErrorCode, GameDefinition, GamePackage,
@@ -189,5 +189,25 @@ pub fn game_package(
         artifacts,
         bindings,
         provenance,
+    )
+}
+
+pub fn game_package_with_payloads(
+    package_id: &str,
+    package_version: u64,
+    required_capabilities: Vec<RequiredCapability>,
+    artifacts: Vec<ArtifactNode>,
+    bindings: Vec<(SemanticId, SemanticValue)>,
+    provenance: PackageProvenance,
+    artifact_payloads: BTreeMap<String, Vec<u8>>,
+) -> crate::Result<GamePackage> {
+    GamePackage::materialize_with_payloads(
+        package_id,
+        package_version,
+        required_capabilities,
+        artifacts,
+        bindings,
+        provenance,
+        artifact_payloads,
     )
 }

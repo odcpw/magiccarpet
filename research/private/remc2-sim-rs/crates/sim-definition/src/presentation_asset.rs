@@ -54,6 +54,16 @@ pub struct BoundPresentationAsset {
     pub asset: IndexedPresentationAsset,
 }
 
+/// One retained, typed artifact that may replace the current binding for a
+/// presentation slot without importing new bytes into the definition.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CompatiblePresentationArtifact {
+    pub artifact_id: String,
+    pub content_address: String,
+    pub kind: String,
+    pub bytes: u64,
+}
+
 impl IndexedPresentationAsset {
     fn parse_and_validate(
         bytes: &[u8],
@@ -217,4 +227,46 @@ pub(super) fn resolve_reference(
         content_address: reference.to_owned(),
         asset,
     })
+}
+
+pub(super) fn compatible_artifacts(
+    definition: &GameDefinition,
+    id: &SemanticId,
+) -> Result<Vec<CompatiblePresentationArtifact>> {
+    let bound = resolve(definition, id)?;
+    let mut result = Vec::new();
+    for artifact in definition.artifacts() {
+        if artifact.kind != ArtifactKind::Asset {
+            continue;
+        }
+        let Some(payload) = definition.artifact_payload(&artifact.id) else {
+            continue;
+        };
+        let Ok(asset) = IndexedPresentationAsset::parse_and_validate(
+            payload,
+            &artifact.dependencies,
+            &artifact.logical_path,
+        ) else {
+            continue;
+        };
+        if asset.schema == bound.asset.schema
+            && asset.kind == bound.asset.kind
+            && asset.runtime_format == bound.asset.runtime_format
+            && asset.width == bound.asset.width
+            && asset.height == bound.asset.height
+            && asset.frame_count == bound.asset.frame_count
+            && asset.color_contract == bound.asset.color_contract
+            && asset.frame_duration_ms == bound.asset.frame_duration_ms
+            && asset.origin == bound.asset.origin
+            && asset.coordinates == bound.asset.coordinates
+        {
+            result.push(CompatiblePresentationArtifact {
+                artifact_id: artifact.id.clone(),
+                content_address: format!("sha256:{}", artifact.sha256),
+                kind: "asset".to_owned(),
+                bytes: artifact.bytes,
+            });
+        }
+    }
+    Ok(result)
 }

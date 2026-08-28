@@ -18,14 +18,14 @@ namespace MagicCarpet.Native
     internal sealed class EngineSessionTransport
     {
         internal const string EngineContract = "carpet-flight-game-session/v2";
-        internal const string TransportContract = "carpet-flight-native-json/v1";
+        internal const string TransportContract = "carpet-flight-native-json/v2";
         internal const string OwnedProfile = "mc2-owned";
         internal const string CampaignProfile = "mc2-campaign";
         private const string CampaignDescriptorEnvelope = "campaign-definition.json";
         private static readonly string[] RequiredCapabilities =
             { "snapshot", "step", "reset", "events", "audio", "presentation_assets" };
         private static readonly string[] RequiredCampaignCapabilities =
-            { "snapshot", "step", "reset", "events" };
+            { "snapshot", "step", "reset", "events", "presentation_assets" };
 
         private delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
 
@@ -604,7 +604,11 @@ namespace MagicCarpet.Native
 
         internal PresentationAssetObservation PresentationAsset(string semanticId)
         {
-            RequireProfile(OwnedProfile, "the authored presentation-asset capability");
+            if (Profile != OwnedProfile && Profile != CampaignProfile)
+            {
+                throw new InvalidOperationException(
+                    "the authored presentation-asset capability is not negotiated");
+            }
             if (string.IsNullOrWhiteSpace(semanticId))
             {
                 throw new ArgumentException("semantic asset ID is required", nameof(semanticId));
@@ -618,15 +622,24 @@ namespace MagicCarpet.Native
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_session_presentation_asset_json_v1(
                         Handle,
-                        ParseCounter(Current.identity.generation, "generation"),
-                        ParseCounter(Current.identity.tick, "tick"),
+                        ParseCounter(CurrentIdentity.generation, "generation"),
+                        ParseCounter(CurrentIdentity.tick, "tick"),
                         bytes,
                         checked((uint)bytes.Length),
                         buffer,
                         capacity,
                         out length),
                 "read neutral presentation asset");
-            ValidateIdentity(result.identity);
+            ValidateIdentityForHandle(Handle, result.identity);
+            if (result.identity.generation != CurrentIdentity.generation ||
+                result.identity.tick != CurrentIdentity.tick ||
+                result.identity.package_graph_hash != CurrentIdentity.package_graph_hash ||
+                result.identity.definition_hash != CurrentIdentity.definition_hash ||
+                result.identity.definition_revision != CurrentIdentity.definition_revision)
+            {
+                throw new InvalidOperationException(
+                    "neutral presentation asset is not bound to the current session identity");
+            }
             var value = result.value;
             if (value == null || value.slot_id != semanticId || value.budgets == null ||
                 value.palette_rgba8 == null || value.indices == null ||
@@ -701,7 +714,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.engine_contract != EngineContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 1 ||
+                contract.transport_version != 2 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.u64_hash_encoding != "lowercase-hex-16" ||

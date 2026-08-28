@@ -443,7 +443,7 @@ def level1_campaign_exports() -> tuple[Path, Path, Path]:
     owner_root = Path(os.environ.get("MC2_OWNER_ROOT", str(ROOT / "research/private/remc2-native-runtime")))
     generated_root = ROOT / "research/private/generated"
     generated_root.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix="mc-cf15-level1-package-v1-", dir=generated_root))
+    scratch = Path(tempfile.mkdtemp(prefix="mc-cf15-level1-package-v3-", dir=generated_root))
     ordinary = scratch / "ordinary"
     first, second = scratch / "campaign-a", scratch / "campaign-b"
     common = [
@@ -512,12 +512,14 @@ def test_cf15_level1_campaign_wraps_exact_owner_export(
         "files",
         "package_sha256",
     }
-    assert outer["schema"] == "mc2-owner-campaign-package/v1"
+    assert outer["schema"] == "mc2-owner-campaign-package/v3"
     assert outer["level"] == owner["level"]
     assert outer["owner_export_package_sha256"] == owner["package_sha256"]
     assert outer["package_sha256"] == package_identity(outer["files"])
     assert set(outer["files"]) == set(owner["files"]) | {
         "campaign-definition.json",
+        "fireball-projectile-base.indexed-sprite.json",
+        "fireball-projectile-fade.indexed-sprite.json",
         "owner-manifest.json",
     }
     assert outer["files"]["owner-manifest.json"] == {
@@ -526,6 +528,37 @@ def test_cf15_level1_campaign_wraps_exact_owner_export(
     }
     assert "collision-masks.bin" not in outer["files"]
     assert not (first / "collision-masks.bin").exists()
+    assert definition["schema"] == "mc2-campaign-definition/v3"
+
+    assets = definition["presentation_assets"]
+    assert [asset["artifact_id"] for asset in assets] == [
+        "presentation.fireball.projectile.base",
+        "presentation.fireball.projectile.fade",
+    ]
+    assert [asset["member"]["sha256"] for asset in assets] == [
+        "331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d",
+        "61059124cba22dd3086baab36bb7d12a9ab28ebf37d394827a49bea4f6c96784",
+    ]
+    for asset in assets:
+        payload = json.loads((first / asset["member"]["member"]).read_text(encoding="utf-8"))
+        assert payload["schema"] == "carpet-flight-indexed-sprite/v1"
+        assert (payload["width"], payload["height"], payload["frame_count"]) == (34, 35, 1)
+        assert len(payload["indices"]) == 1190
+        assert len(payload["palette_rgba8"]) == 1024
+
+    mutated = json.loads(
+        (first / "fireball-projectile-base.indexed-sprite.json").read_text(encoding="utf-8")
+    )
+    mutated["indices"][0] = (mutated["indices"][0] + 1) % 256
+    expect_rejected(
+        first,
+        lambda candidate: rewrite_member(
+            candidate,
+            "fireball-projectile-base.indexed-sprite.json",
+            canonical_bytes(mutated),
+        ),
+        "presentation member binding differs",
+    )
 
     assert definition["identity"] == {
         "external_level": 1,

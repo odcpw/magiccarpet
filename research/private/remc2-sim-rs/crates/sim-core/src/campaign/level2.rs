@@ -18182,10 +18182,10 @@ mod tests {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
 
     fn level_one_descriptor_fixture_path() -> PathBuf {
-        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1").map_or_else(
+        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf15-level1-package-current")
+                    .join("../../../generated/mc-cf15-level1-package-v3-current")
             },
             PathBuf::from,
         )

@@ -1,7 +1,7 @@
 use sim_core::game_definition::{
     CHANGE_SET_SCHEMA, DefinitionError, DefinitionOperation, GAME_DEFINITION_SCHEMA,
-    GameDefinition, GamePackage, Mc2OwnedInputs, SemanticCatalog, SemanticId, default_catalog,
-    engine_capabilities, load_mc2_owned,
+    GameDefinition, GamePackage, Mc2OwnedInputs, SemanticCatalog, SemanticDescriptor, SemanticId,
+    SemanticValue, default_catalog, engine_capabilities, load_mc2_owned,
 };
 use std::process::ExitCode;
 
@@ -269,7 +269,11 @@ fn game_describe(arguments: &[String]) -> ExitCode {
     let descriptors = match request.id {
         Some(id) => {
             if let Some(descriptor) = definition.semantic_descriptor(&catalog, &id) {
-                vec![descriptor.to_json(definition.value(&id))]
+                vec![public_semantic_descriptor_json(
+                    &definition,
+                    &descriptor,
+                    definition.value(&id),
+                )]
             } else if let Some(descriptor) = definition.level_entity_position_descriptor(&id) {
                 let effective = definition.semantic_target_value(&id);
                 vec![descriptor.to_json(effective.as_ref())]
@@ -288,7 +292,13 @@ fn game_describe(arguments: &[String]) -> ExitCode {
             let mut descriptors = definition
                 .semantic_descriptors(&catalog)
                 .into_iter()
-                .map(|descriptor| descriptor.to_json(definition.value(&descriptor.id)))
+                .map(|descriptor| {
+                    public_semantic_descriptor_json(
+                        &definition,
+                        &descriptor,
+                        definition.value(&descriptor.id),
+                    )
+                })
                 .collect::<Vec<_>>();
             descriptors.extend(
                 definition
@@ -443,10 +453,46 @@ fn game_get(arguments: &[String]) -> ExitCode {
         Err(error) => return game_domain_error("get", &error),
     };
     let data = serde_json::json!({
-        "descriptor": descriptor.to_json(Some(&value)),
+        "descriptor": public_semantic_descriptor_json(&definition, &descriptor, Some(&value)),
         "value": value.to_json(),
     });
     game_success("get", definition.definition_hash(), data, Some(&definition))
+}
+
+fn public_semantic_descriptor_json(
+    definition: &GameDefinition,
+    descriptor: &SemanticDescriptor,
+    effective_value: Option<&SemanticValue>,
+) -> serde_json::Value {
+    let mut value = descriptor.to_json(effective_value);
+    if descriptor.id.as_str() != "presentation.spell.fireball.projectile_asset" {
+        return value;
+    }
+    let compatible = definition
+        .compatible_presentation_artifacts(&descriptor.id)
+        .unwrap_or_default();
+    let effective_artifact_id = effective_value.and_then(|effective| {
+        let SemanticValue::Reference(reference) = effective else {
+            return None;
+        };
+        compatible
+            .iter()
+            .find(|artifact| artifact.content_address == *reference)
+            .map(|artifact| artifact.artifact_id.clone())
+    });
+    let object = value
+        .as_object_mut()
+        .expect("semantic descriptor JSON is an object");
+    object.insert(
+        "effective_artifact_id".to_owned(),
+        serde_json::to_value(effective_artifact_id)
+            .expect("optional artifact identifier is serializable"),
+    );
+    object.insert(
+        "compatible_artifacts".to_owned(),
+        serde_json::to_value(compatible).expect("compatible artifact rows are serializable"),
+    );
+    value
 }
 
 fn public_level_entity_json(

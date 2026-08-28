@@ -19,7 +19,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use sim_definition::adapter::{
-    artifact_node, definition_error, game_package, owner_provenance, with_level_and_runtime_flow,
+    artifact_node, definition_error, game_package_with_payloads, owner_provenance,
+    with_level_and_runtime_flow,
 };
 use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
@@ -158,24 +159,55 @@ pub fn load_mc2_campaign(
         )
     })?;
     let (package_bytes, envelope_bytes) = campaign_package_bytes(package_root)?;
-    let artifacts = vec![
-        artifact_node(
-            "campaign.owner_export",
-            ArtifactKind::World,
-            "campaign/owner-export",
-            &export_sha256,
-            package_bytes - envelope_bytes,
+    let mut artifacts = vec![artifact_node(
+        "campaign.owner_export",
+        ArtifactKind::World,
+        "campaign/owner-export",
+        &export_sha256,
+        package_bytes - envelope_bytes,
+        &[],
+    )?];
+    let mut artifact_payloads = BTreeMap::new();
+    let mut package_dependencies = vec!["campaign.owner_export"];
+    let mut bindings = Vec::new();
+    for asset in descriptor.presentation_assets() {
+        let payload = descriptor
+            .read_member(&asset.member.member)
+            .map_err(|error| {
+                definition_error(
+                    DefinitionErrorCode::HashMismatch,
+                    &asset.member.member,
+                    format!("cannot retain validated presentation payload: {error}"),
+                )
+            })?;
+        artifacts.push(artifact_node(
+            &asset.artifact_id,
+            ArtifactKind::Asset,
+            &format!("campaign/presentation/{}", asset.member.member),
+            &asset.member.sha256,
+            payload.len() as u64,
             &[],
-        )?,
-        artifact_node(
-            "campaign.package",
-            ArtifactKind::Definition,
-            "campaign/package",
-            &descriptor.package_sha256,
-            package_bytes,
-            &["campaign.owner_export"],
-        )?,
-    ];
+        )?);
+        package_dependencies.push(&asset.artifact_id);
+        artifact_payloads.insert(asset.artifact_id.clone(), payload);
+    }
+    artifacts.push(artifact_node(
+        "campaign.package",
+        ArtifactKind::Definition,
+        "campaign/package",
+        &descriptor.package_sha256,
+        package_bytes,
+        &package_dependencies,
+    )?);
+    if let Some(base_asset) = descriptor.presentation_assets().first() {
+        bindings.push((
+            SemanticId::parse(&base_asset.slot_id)?,
+            sim_definition::SemanticValue::Reference(format!(
+                "sha256:{}",
+                base_asset.member.sha256
+            )),
+        ));
+    }
     let mut requirement_ids = vec![
         "engine.ai.creature_policy",
         "engine.flight.fixed_point",
@@ -223,6 +255,9 @@ pub fn load_mc2_campaign(
     if descriptor.local_player_fireball_mana_cost().is_some() {
         requirement_ids.push(FIREBALL_MANA_COST_CAPABILITY_ID);
     }
+    if !descriptor.presentation_assets().is_empty() {
+        requirement_ids.push("engine.presentation.indexed_asset");
+    }
     let requirements = requirement_ids
         .into_iter()
         .map(|id| {
@@ -232,13 +267,14 @@ pub fn load_mc2_campaign(
             })
         })
         .collect::<crate::game_definition::Result<Vec<_>>>()?;
-    let package = game_package(
+    let package = game_package_with_payloads(
         "mc2.campaign",
         1,
         requirements,
         artifacts,
-        Vec::new(),
+        bindings,
         owner_provenance(&descriptor.package_sha256)?,
+        artifact_payloads,
     )?;
     let runtime_flow = mc2_runtime_flow(selection, descriptor.level_definition())?;
     GameDefinition::from_package(package, &engine_capabilities()?, catalog).map(|definition| {
@@ -691,7 +727,12 @@ impl GameAdapter for Mc2CampaignAdapter {
             .map_err(CampaignBackendError::Definition)?;
         let fireball_binding = DefinitionFireballBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
-        require_catalog_defaults(definition, &catalog, fireball_binding.is_some())?;
+        require_catalog_defaults(
+            definition,
+            &catalog,
+            fireball_binding.is_some(),
+            consumes_fireball_projectile_asset(definition),
+        )?;
         let package_base = load_mc2_campaign(&input.package_root, &catalog)
             .map_err(CampaignBackendError::Definition)?;
         definition
@@ -752,10 +793,13 @@ fn require_catalog_defaults(
     definition: &GameDefinition,
     catalog: &SemanticCatalog,
     consumes_fireball_cost: bool,
+    consumes_fireball_projectile_asset: bool,
 ) -> Result<(), CampaignBackendError> {
     for descriptor in catalog.descriptors() {
         if DefinitionFlightBinding::consumes(&descriptor.id)
             || (consumes_fireball_cost && DefinitionFireballBinding::consumes(&descriptor.id))
+            || (consumes_fireball_projectile_asset
+                && descriptor.id.as_str() == "presentation.spell.fireball.projectile_asset")
         {
             continue;
         }
@@ -766,6 +810,20 @@ fn require_catalog_defaults(
         }
     }
     Ok(())
+}
+
+fn consumes_fireball_projectile_asset(definition: &GameDefinition) -> bool {
+    let Ok(id) = SemanticId::parse("presentation.spell.fireball.projectile_asset") else {
+        return false;
+    };
+    definition
+        .required_capabilities()
+        .iter()
+        .any(|requirement| {
+            requirement.id.as_str() == "engine.presentation.indexed_asset"
+                && requirement.exact_version == 1
+        })
+        && definition.presentation_asset(&id).is_ok()
 }
 
 impl GameSessionBackend for Mc2CampaignBackend {
@@ -898,7 +956,12 @@ impl GameSessionBackend for Mc2CampaignBackend {
         definition
             .verify_semantic_variant_of(&self.package_base, &catalog)
             .map_err(CampaignBackendError::Definition)?;
-        require_catalog_defaults(definition, &catalog, fireball_binding.is_some())?;
+        require_catalog_defaults(
+            definition,
+            &catalog,
+            fireball_binding.is_some(),
+            consumes_fireball_projectile_asset(definition),
+        )?;
         let next_generation = self.campaign.generation().wrapping_add(1);
         let mut campaign = self.package_campaign.clone();
         campaign
@@ -1104,8 +1167,8 @@ mod tests {
     use super::*;
     use crate::campaign::state::{ResetReceipt, ResetState, encode_reset_v1};
     use crate::game_definition::{
-        ChangeSetBuilder, GamePackage, IntegerParameter, PublicationFault, RequestedTiming,
-        SemanticValue, WorkspaceStore,
+        ArtifactId, ChangeSetBuilder, GamePackage, IntegerParameter, PresentationAssetSlot,
+        PublicationFault, RequestedTiming, SemanticValue, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
@@ -1115,8 +1178,8 @@ mod tests {
     };
     use crate::native_world::FireballProjectileOrigin;
     use sim_definition::adapter::{
-        build_level_definition, entity_definition, objective_definition, reissue_at_revision,
-        with_level_definition, with_replacement,
+        build_level_definition, entity_definition, game_package, objective_definition,
+        reissue_at_revision, with_level_definition, with_replacement,
     };
     use std::{
         collections::BTreeSet,
@@ -1146,10 +1209,10 @@ mod tests {
     }
 
     fn level_one_descriptor_fixture_path() -> PathBuf {
-        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1").map_or_else(
+        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf15-level1-package-current")
+                    .join("../../../generated/mc-cf15-level1-package-v3-current")
             },
             PathBuf::from,
         )
@@ -1270,6 +1333,39 @@ mod tests {
                 PublicationFault::None,
             )
             .expect("Fireball cost change publishes");
+        store.active_definition().expect("published definition")
+    }
+
+    fn publish_fireball_projectile_asset(
+        store: &WorkspaceStore,
+        catalog: &SemanticCatalog,
+        active: &GameDefinition,
+        artifact_id: &str,
+    ) -> GameDefinition {
+        let change_set = ChangeSetBuilder::new(
+            "campaign-fireball-presentation-authoring",
+            active,
+            "bind-fireball-projectile-presentation",
+            RequestedTiming::PackageReload,
+        )
+        .bind_asset(
+            PresentationAssetSlot::FireballProjectile,
+            ArtifactId::parse(artifact_id).expect("stable retained asset ID"),
+        )
+        .build()
+        .expect("typed presentation change set");
+        let validation = store
+            .validate(catalog, change_set.clone())
+            .expect("presentation change validates");
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .expect("presentation change publishes");
         store.active_definition().expect("published definition")
     }
 
@@ -2580,6 +2676,104 @@ mod tests {
         // source charge, and projectile construction. It does not author
         // higher tiers, pickup/acquisition, enemy holders, impact/damage,
         // presentation, save migration, or Level 2/3 Fireball ownership.
+    }
+
+    #[test]
+    fn campaign_backend_reopens_real_level_one_with_package_retained_fireball_presentation_asset() {
+        const SLOT: &str = "presentation.spell.fireball.projectile_asset";
+        const BASE: &str = "presentation.fireball.projectile.base";
+        const FADE: &str = "presentation.fireball.projectile.fade";
+        const BASE_SHA: &str =
+            "sha256:331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d";
+        const FADE_SHA: &str =
+            "sha256:61059124cba22dd3086baab36bb7d12a9ab28ebf37d394827a49bea4f6c96784";
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let slot = SemanticId::parse(SLOT).unwrap();
+        let descriptor = base.semantic_descriptor(&catalog, &slot).unwrap();
+        assert_eq!(descriptor.access, sim_definition::Access::Writable);
+        let compatible = base.compatible_presentation_artifacts(&slot).unwrap();
+        assert_eq!(
+            compatible
+                .iter()
+                .map(|artifact| (
+                    artifact.artifact_id.as_str(),
+                    artifact.content_address.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![(BASE, BASE_SHA), (FADE, FADE_SHA)]
+        );
+        let base_asset = base.presentation_asset(&slot).unwrap();
+        assert_eq!(base_asset.content_address, BASE_SHA);
+        assert_eq!((base_asset.asset.width, base_asset.asset.height), (34, 35));
+        assert_eq!(base_asset.asset.frame_count, 1);
+
+        let workspace_root = temporary_workspace_path("campaign-fireball-presentation");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-fireball-presentation-authoring",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            63,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let frame_zero = session.snapshot().value;
+        let published = publish_fireball_projectile_asset(&store, &catalog, &base, FADE);
+        assert_eq!(published.package_graph_hash(), base.package_graph_hash());
+        assert_eq!(published.artifact_graph_hash(), base.artifact_graph_hash());
+        assert_ne!(published.definition_hash(), base.definition_hash());
+
+        let old_observation = session.presentation_asset(guard(&session), &slot).unwrap();
+        assert_eq!(old_observation.value.content_address, BASE_SHA);
+        assert_eq!(session.snapshot().value, frame_zero);
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published.clone()))
+            .unwrap();
+        assert_eq!(
+            (reopened.identity.generation, reopened.identity.tick),
+            (2, 0)
+        );
+        assert_eq!(reopened.value, frame_zero);
+        let authored = session.presentation_asset(guard(&session), &slot).unwrap();
+        assert_eq!(authored.value.content_address, FADE_SHA);
+        assert_eq!(authored.value.asset.indices, base_asset.asset.indices);
+        assert_ne!(
+            authored.value.asset.palette_rgba8,
+            base_asset.asset.palette_rgba8
+        );
+        assert_eq!(session.snapshot().value, frame_zero);
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.snapshot().value, frame_zero);
+        let reset_asset = session.presentation_asset(guard(&session), &slot).unwrap();
+        assert_eq!(reset_asset.value, authored.value);
+
+        let restored = reissue_at_revision(&base, 3).unwrap();
+        session.reopen(guard(&session), Arc::new(restored)).unwrap();
+        assert_eq!(
+            session
+                .presentation_asset(guard(&session), &slot)
+                .unwrap()
+                .value
+                .content_address,
+            BASE_SHA
+        );
+        assert_eq!(session.snapshot().value, frame_zero);
+        std::fs::remove_dir_all(workspace_root).unwrap();
+        // No-Claim: this proves one qualified Level 1 one-frame Fireball
+        // presentation slot, one package-retained palette alternative,
+        // package-reload publication, explicit reopen, observational query,
+        // reset retention, and base-definition restoration. It does not prove
+        // animation, rendering, projectile gameplay changes, artifact import,
+        // Level 2/3 presentation, Unity consumption, saves, or distribution.
     }
 
     #[test]

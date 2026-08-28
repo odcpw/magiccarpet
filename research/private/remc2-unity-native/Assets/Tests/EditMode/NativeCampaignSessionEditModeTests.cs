@@ -24,8 +24,8 @@ namespace MagicCarpet.Native.Tests
             Path.Combine(PrivateRoot, "generated/level1-export-m");
 
         private static string Level1CampaignPackage =>
-            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_LEVEL1_V1") ??
-            Path.Combine(PrivateRoot, "generated/mc-cf15-level1-package-current");
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_PACKAGE") ??
+            Path.Combine(PrivateRoot, "generated/mc-cf15-level1-package-v3-current");
 
         private static string Level3Package =>
             Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE_LEVEL3_V1") ??

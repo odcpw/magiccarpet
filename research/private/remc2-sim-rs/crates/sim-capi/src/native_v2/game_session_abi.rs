@@ -429,8 +429,8 @@ pub extern "C" fn mc_game_session_contract_json_v1(
     boundary(|| {
         let contract = serde_json::json!({
             "engine_contract": sim_session::GAME_SESSION_CONTRACT,
-            "transport_contract": "carpet-flight-native-json/v1",
-            "transport_version": 1,
+            "transport_contract": "carpet-flight-native-json/v2",
+            "transport_version": 2,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "u64_hash_encoding": "lowercase-hex-16",
@@ -444,7 +444,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 {
                     "profile": "mc2-campaign",
                     "snapshot_value": "campaign_snapshot/v1",
-                    "capabilities": ["snapshot", "step", "reset", "events"]
+                    "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets"]
                 }
             ],
             "limits": {
@@ -869,9 +869,9 @@ mod tests {
         assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v2");
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-json/v1"
+            "carpet-flight-native-json/v2"
         );
-        assert_eq!(contract["transport_version"], 1);
+        assert_eq!(contract["transport_version"], 2);
         assert_eq!(contract["u64_counter_encoding"], "decimal-string");
         assert_eq!(contract["u64_hash_encoding"], "lowercase-hex-16");
         assert_eq!(contract["limits"]["maximum_command_json_bytes"], 4_096);
@@ -1233,7 +1233,7 @@ mod tests {
         assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v1");
         assert_eq!(
             profiles[1]["capabilities"],
-            serde_json::json!(["snapshot", "step", "reset", "events"])
+            serde_json::json!(["snapshot", "step", "reset", "events", "presentation_assets"])
         );
 
         let owned = open_fixture();
@@ -1417,8 +1417,8 @@ mod tests {
         }
         assert_eq!(paged, drained);
 
-        // Audio and authored presentation assets are not negotiated for the
-        // campaign profile; both fail closed without fabricated content.
+        // Audio and presentation remain unavailable for this real Level-2
+        // package; profile capability does not fabricate package-absent data.
         let mut audio_length = 0;
         assert_eq!(
             mc_game_session_audio_json_v1(
@@ -1509,7 +1509,7 @@ mod tests {
     fn neutral_campaign_contract_opens_steps_and_resets_real_levels_one_two_and_three() {
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let packages = [
-            generated.join("mc-cf15-level1-package-current"),
+            generated.join("mc-cf15-level1-package-v3-current"),
             generated.join("mc-cf02-campaign-package-v2-b/qualified-level2"),
             generated.join("mc-cf14-campaign-package-v1-a/qualified-level3"),
         ];
@@ -1546,10 +1546,49 @@ mod tests {
     }
 
     #[test]
+    fn neutral_level_one_campaign_presentation_asset_query_is_identity_bound_and_observational() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf15-level1-package-v3-current");
+        let handle = open_campaign_path(&package);
+        let before = campaign_snapshot(handle);
+        let slot = b"presentation.spell.fireball.projectile_asset";
+        let asset = read_json_with_capacity(32 * 1024, |buffer, capacity, length| {
+            mc_game_session_presentation_asset_json_v1(
+                handle,
+                1,
+                0,
+                slot.as_ptr(),
+                slot.len() as u32,
+                buffer,
+                capacity,
+                length,
+            )
+        });
+        assert_eq!(asset["identity"], before["identity"]);
+        assert_eq!(
+            asset["value"]["content_address"],
+            "sha256:331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d"
+        );
+        assert_eq!(
+            (
+                asset["value"]["width"].as_u64(),
+                asset["value"]["height"].as_u64()
+            ),
+            (Some(34), Some(35))
+        );
+        assert_eq!(asset["value"]["frame_count"], 1);
+        assert_eq!(campaign_snapshot(handle), before);
+        assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
+        // No-Claim: this proves only same-handle native observation of the
+        // qualified Level-1 base frame. It does not prove authoring transport,
+        // Unity rendering, animation, projectile gameplay, or Level 2/3 data.
+    }
+
+    #[test]
     fn level_one_descriptor_and_sealed_backends_match_the_public_autoplay_observation() {
         let sealed = open_fixture();
         let descriptor_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-cf15-level1-package-current");
+            .join("../../../generated/mc-cf15-level1-package-v3-current");
         let descriptor = open_campaign_path(&descriptor_package);
         let sealed_initial = campaign_snapshot(sealed);
         let descriptor_initial = campaign_snapshot(descriptor);

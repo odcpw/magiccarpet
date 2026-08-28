@@ -12,8 +12,8 @@ namespace MagicCarpet.Native.Tests
             Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
 
         private static string LevelOnePackage =>
-            Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_PACKAGE_V1") ??
-            Path.Combine(PrivateRoot, "generated/mc-cf15-level1-package-current");
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_PACKAGE") ??
+            Path.Combine(PrivateRoot, "generated/mc-cf15-level1-package-v3-current");
 
         private static string LevelTwoPackage =>
             Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE") ??

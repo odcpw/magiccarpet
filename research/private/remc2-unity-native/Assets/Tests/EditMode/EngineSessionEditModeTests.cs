@@ -82,6 +82,12 @@ namespace MagicCarpet.Native.Tests
                 PrivateRoot,
                 "generated/mc-cf02-campaign-package-v2-b/qualified-level2");
 
+        private static string LevelOneCampaignPackagePath =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_PACKAGE") ??
+            Path.Combine(
+                PrivateRoot,
+                "generated/mc-cf15-level1-package-v3-current");
+
         private static IReadOnlyDictionary<int, Checkpoint> Checkpoints()
         {
             var corpus = JsonUtility.FromJson<Corpus>(File.ReadAllText(CorpusPath));
@@ -361,7 +367,8 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v1"));
                 Assert.That(
                     campaignProfile.capabilities,
-                    Is.EqualTo(new[] { "snapshot", "step", "reset", "events" }));
+                    Is.EqualTo(new[]
+                        { "snapshot", "step", "reset", "events", "presentation_assets" }));
 
                 var initial = transport.CampaignSnapshot();
                 Assert.That(initial.identity.generation, Is.EqualTo("1"));
@@ -436,6 +443,38 @@ namespace MagicCarpet.Native.Tests
             {
                 transport.Destroy();
             }
+        }
+
+        [Test]
+        public void NeutralManagedLevelOneCampaignReadsPackageRetainedFireballBaseFrame()
+        {
+            var transport = MagicCarpetRuntime.OpenEngineSessionForPackage(
+                LevelOneCampaignPackagePath, null, null);
+            try
+            {
+                var before = transport.CampaignSnapshot();
+                var asset = transport.PresentationAsset(
+                    "presentation.spell.fireball.projectile_asset");
+                Assert.That(asset.identity.session_id, Is.EqualTo(before.identity.session_id));
+                Assert.That(asset.identity.generation, Is.EqualTo(before.identity.generation));
+                Assert.That(asset.identity.tick, Is.EqualTo(before.identity.tick));
+                Assert.That(
+                    asset.value.content_address,
+                    Is.EqualTo(
+                        "sha256:331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d"));
+                Assert.That(asset.value.width, Is.EqualTo(34));
+                Assert.That(asset.value.height, Is.EqualTo(35));
+                Assert.That(asset.value.frame_count, Is.EqualTo(1));
+                Assert.That(
+                    transport.CampaignSnapshot().value.state_hash,
+                    Is.EqualTo(before.value.state_hash));
+            }
+            finally
+            {
+                transport.Destroy();
+            }
+            // No-Claim: this is a managed transport observation of one real
+            // Level-1 base frame, not production renderer or animation proof.
         }
 
         [Test]

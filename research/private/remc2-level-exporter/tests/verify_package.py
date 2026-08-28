@@ -18,8 +18,10 @@ SCHEMA_V4 = "mc2-owner-level-export/v4"
 SCHEMA_V5 = "mc2-owner-level-export/v5"
 CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v1"
 LEVEL2_CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v2"
+LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v3"
 CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v1"
 LEVEL2_CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v2"
+LEVEL1_ASSET_CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v3"
 SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5}
 STATE_SEQUENCE = (
     "remc2-regression-test/memimages/regressions/level1/"
@@ -58,6 +60,10 @@ V5_FILES = V4_FILES
 CAMPAIGN_ENVELOPE_FILES = {"campaign-definition.json", "owner-manifest.json"}
 CAMPAIGN_FILES = V5_FILES | {"campaign-definition.json"}
 LEVEL2_CAMPAIGN_FILES = CAMPAIGN_FILES | {"building-parameters.bin"}
+LEVEL1_ASSET_FILES = V3_FILES | CAMPAIGN_ENVELOPE_FILES | {
+    "fireball-projectile-base.indexed-sprite.json",
+    "fireball-projectile-fade.indexed-sprite.json",
+}
 REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 # Census-proven per-level campaign profile facts keyed by the outer selection
 # (external, internal, map_type_id).  Level 2 values are the qualified Day
@@ -65,8 +71,8 @@ REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 # A selection without an entry fails closed before any member is decoded.
 CAMPAIGN_PROFILES = {
     (1, 0, 1): {
-        "package_schema": CAMPAIGN_PACKAGE_SCHEMA,
-        "definition_schema": CAMPAIGN_DEFINITION_SCHEMA,
+        "package_schema": LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA,
+        "definition_schema": LEVEL1_ASSET_CAMPAIGN_DEFINITION_SCHEMA,
         "map_type_name": "Night",
         "map_type_id": 1,
         "active_entities": 177,
@@ -79,7 +85,8 @@ CAMPAIGN_PROFILES = {
         "player_component_version": 2,
         "player_record_bytes": 573,
         "owner_manifest_schema": SCHEMA_V3,
-        "files": V3_FILES | CAMPAIGN_ENVELOPE_FILES,
+        "files": LEVEL1_ASSET_FILES,
+        "has_presentation_assets": True,
         "source_fact_ids": {
             "feature-construction-inputs",
             "level-records",
@@ -103,6 +110,7 @@ CAMPAIGN_PROFILES = {
         "player_record_bytes": 663,
         "owner_manifest_schema": None,
         "files": LEVEL2_CAMPAIGN_FILES,
+        "has_presentation_assets": False,
         "source_fact_ids": {
             "building-parameters",
             "collision-mask-bank",
@@ -128,6 +136,7 @@ CAMPAIGN_PROFILES = {
         "player_record_bytes": 663,
         "owner_manifest_schema": None,
         "files": CAMPAIGN_FILES,
+        "has_presentation_assets": False,
         "source_fact_ids": {
             "collision-mask-bank",
             "feature-construction-inputs",
@@ -147,6 +156,22 @@ CAMPAIGN_SOURCE_ARTIFACTS = {
     "CD_Files/LEVELS/LEVELS.TAB": (4000, "179a65f04d4aa7bc147cfd56ffb63a0da400dfd85542eb0fbda10265d6bc1bea"),
     "GAME/NETHERW/CLEVELS/LEVELS.DAT": (3063856, "3b7fae5d7c350486a4f62ad4b2e9fa2e4e52023a216b8a7f043ce02439b50222"),
     "GAME/NETHERW/CLEVELS/LEVELS.TAB": (4000, "179a65f04d4aa7bc147cfd56ffb63a0da400dfd85542eb0fbda10265d6bc1bea"),
+}
+LEVEL1_PRESENTATION_ASSETS = {
+    "presentation.fireball.projectile.base": {
+        "member": "fireball-projectile-base.indexed-sprite.json",
+        "sha256": "331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d",
+        "palette_path": "CD_Files/DATA/PALN-0.DAT",
+        "palette_sha256": "6b55d0714b939e8bd25cef89466806299dbae933f2f2f96e0cf8402fc607d16f",
+        "palette_rgb8_sha256": "7c4dfbbc6c0f68a99214fe3ca93d7a1cf0dd658e17a40ad7ecb302152264f507",
+    },
+    "presentation.fireball.projectile.fade": {
+        "member": "fireball-projectile-fade.indexed-sprite.json",
+        "sha256": "61059124cba22dd3086baab36bb7d12a9ab28ebf37d394827a49bea4f6c96784",
+        "palette_path": "CD_Files/DATA/PALF-0.DAT",
+        "palette_sha256": "c83f900a3d91b68e968f20cc484c8e0ca9a2578211c4d058a747d7f8db2880b4",
+        "palette_rgb8_sha256": "f0091d61149264890604486b1d4aceadddf62c0cc90f0c0083a3cae881240b6f",
+    },
 }
 MSPRD0_0_TAB_SHA256 = "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"
 MSPRD0_0_DAT_SHA256 = "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"
@@ -2231,6 +2256,80 @@ def _campaign_validate_owner_manifest(
     return owner_manifest
 
 
+def _campaign_validate_presentation_assets(
+    package: Path,
+    raw_assets: object,
+    files: dict,
+) -> None:
+    require(isinstance(raw_assets, list) and len(raw_assets) == 2, "campaign presentation asset set differs")
+    observed: set[str] = set()
+    for ordinal, raw in enumerate(raw_assets):
+        row = _exact_object(raw, {"artifact_id", "member", "slot_id", "source"}, f"presentation asset {ordinal}")
+        artifact_id = row["artifact_id"]
+        require(isinstance(artifact_id, str) and artifact_id in LEVEL1_PRESENTATION_ASSETS, "unknown presentation artifact ID")
+        require(artifact_id not in observed, "duplicate presentation artifact ID")
+        observed.add(artifact_id)
+        expected = LEVEL1_PRESENTATION_ASSETS[artifact_id]
+        require(row["slot_id"] == "presentation.spell.fireball.projectile_asset", "presentation slot differs")
+        member = _exact_object(row["member"], {"member", "schema", "sha256"}, f"presentation asset {artifact_id}.member")
+        require(
+            member == {
+                "member": expected["member"],
+                "schema": "carpet-flight-indexed-sprite/v1",
+                "sha256": expected["sha256"],
+            },
+            "presentation member binding differs",
+        )
+        require(
+            files[expected["member"]]["sha256"] == expected["sha256"],
+            "presentation member hash is not profile-qualified",
+        )
+        source = _exact_object(
+            row["source"],
+            {"decoded_sha256", "frame_index", "indices_sha256", "owner_artifacts", "palette_rgb8_sha256", "selector", "transform"},
+            f"presentation asset {artifact_id}.source",
+        )
+        require(source["decoded_sha256"] == "cf185f7e35f9103be4b4ecfa2573fc9332ac8ade346b564be3971cbe73fb35ec", "presentation decoded source differs")
+        require(source["frame_index"] == 1 and source["selector"] == 463, "presentation source selector/frame differs")
+        require(source["indices_sha256"] == "f6755ec0f9931b6748c32893cc11838fb398043dafdc962eb5e288105cf0c88d", "presentation base indices differ")
+        require(source["palette_rgb8_sha256"] == expected["palette_rgb8_sha256"], "presentation RGB8 palette identity differs")
+        require(source["transform"] == "base_frame_indices_plus_rgb6_times_4_palette_index_zero_transparent", "presentation transform differs")
+        require(
+            source["owner_artifacts"] == [
+                {"bytes": 1354118, "logical_path": "CD_Files/DATA/TMAPS1-0.DAT", "sha256": "b091204ec21c0cf99716f3ae5c426a37113e57dda48a0d4d2eef98167e6ed0ff"},
+                {"bytes": 5050, "logical_path": "CD_Files/DATA/TMAPS1-0.TAB", "sha256": "22afd08167ae415138548f99901ea037bdc2b48f56c6f3b2dbcfe9743d73c8f0"},
+                {"bytes": 768, "logical_path": expected["palette_path"], "sha256": expected["palette_sha256"]},
+            ],
+            "presentation owner-source provenance differs",
+        )
+
+        payload_bytes = (package / expected["member"]).read_bytes()
+        try:
+            payload = json.loads(payload_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise AssertionError(f"presentation payload is not UTF-8 JSON: {error}") from error
+        require(payload_bytes == _canonical_json_bytes(payload), "presentation payload is not canonical JSON")
+        asset = _exact_object(
+            payload,
+            {"budgets", "color_contract", "coordinates", "dependencies", "frame_count", "frame_duration_ms", "height", "indices", "kind", "origin", "palette_rgba8", "runtime_format", "schema", "width"},
+            f"presentation payload {artifact_id}",
+        )
+        require(asset["schema"] == "carpet-flight-indexed-sprite/v1" and asset["kind"] == "indexed_sprite", "presentation payload schema/kind differs")
+        require(asset["runtime_format"] == "indexed8-rgba8/v1" and asset["color_contract"] == "srgb-straight-alpha-rgba8", "presentation runtime/color contract differs")
+        require(asset["origin"] == "center" and asset["coordinates"] == "x_right_y_down", "presentation geometry contract differs")
+        require((asset["width"], asset["height"], asset["frame_count"], asset["frame_duration_ms"]) == (34, 35, 1, 0), "presentation extent/timing differs")
+        require(asset["dependencies"] == [], "presentation payload dependencies differ")
+        require(asset["budgets"] == {"max_bytes": 32768, "max_frames": 1, "max_palette_colors": 256, "max_pixels": 1190}, "presentation budgets differ")
+        indices = bytes(asset["indices"])
+        require(len(indices) == 1190 and hashlib.sha256(indices).hexdigest() == source["indices_sha256"], "presentation indices differ from qualified base frame")
+        palette = asset["palette_rgba8"]
+        require(isinstance(palette, list) and len(palette) == 1024 and all(isinstance(value, int) and 0 <= value <= 255 for value in palette), "presentation RGBA palette is invalid")
+        require(palette[3] == 0 and all(palette[index] == 255 for index in range(7, 1024, 4)), "presentation palette alpha contract differs")
+        rgb8 = bytes(value for index, value in enumerate(palette) if index % 4 != 3)
+        require(hashlib.sha256(rgb8).hexdigest() == expected["palette_rgb8_sha256"], "presentation RGB8 palette differs")
+    require(observed == set(LEVEL1_PRESENTATION_ASSETS), "presentation artifact set is incomplete")
+
+
 def verify_campaign_package(
     package: Path,
     manifest: dict,
@@ -2305,7 +2404,10 @@ def verify_campaign_package(
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise AssertionError(f"campaign definition is not canonical UTF-8 JSON: {error}") from error
     require(definition_bytes == _canonical_json_bytes(definition), "campaign definition bytes are not canonical")
-    root = _exact_object(definition, {"schema", "source", "identity", "campaign_spec", "source_facts", "required_behaviors"}, "campaign definition")
+    definition_fields = {"schema", "source", "identity", "campaign_spec", "source_facts", "required_behaviors"}
+    if profile["has_presentation_assets"]:
+        definition_fields.add("presentation_assets")
+    root = _exact_object(definition, definition_fields, "campaign definition")
     require(root["schema"] == profile["definition_schema"], "campaign definition schema differs")
     source = _exact_object(root["source"], {"remc2_commit"}, "campaign definition.source")
     require(source["remc2_commit"] == REM_C2_COMMIT, "campaign source commit differs from pinned remc2")
@@ -2323,6 +2425,8 @@ def verify_campaign_package(
     authored, _entities, _runtime = _campaign_validate_reset_members(package, spec, files, profile)
     presentation = (package / "presentation.bin").read_bytes()
     require(len(presentation) == 10720 and presentation[:4] == b"MCV1" and (u16(presentation, 4), u16(presentation, 6), u32(presentation, 8)) == (1, 0, 347), "presentation snapshot layout changed")
+    if profile["has_presentation_assets"]:
+        _campaign_validate_presentation_assets(package, root["presentation_assets"], files)
 
     # Stage 6: immutable SourceFacts; presentation output is never consulted.
     behavior_rows = spec["authored_behavior_rows"]
@@ -2366,7 +2470,11 @@ def verify(
     package = package.resolve(strict=True)
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema") in {CAMPAIGN_PACKAGE_SCHEMA, LEVEL2_CAMPAIGN_PACKAGE_SCHEMA}:
+    if manifest.get("schema") in {
+        CAMPAIGN_PACKAGE_SCHEMA,
+        LEVEL2_CAMPAIGN_PACKAGE_SCHEMA,
+        LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA,
+    }:
         return verify_campaign_package(
             package,
             manifest,

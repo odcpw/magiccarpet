@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 10.0 milestone, this is a binding target with
+As of the semantic-contract 11.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -332,8 +332,17 @@ partial real implementation, not a completion claim:
   the ordinary source callback's charge carrier before resealing the reset
   baseline; Level 2 and 3 reject cost publication because their local-player
   family-zero holder relation is absent. This does not yet author spell
-  acquisition, higher tiers, enemy holders, projectile behavior, assets or
-  presentation;
+  acquisition, higher tiers, enemy holders or projectile behavior;
+- the qualified Level 1 campaign package now retains two profile-pinned,
+  canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its
+  semantic projectile slot binds the base payload and discovers the fade
+  palette as a compatible package-retained alternative; guarded
+  `BindAsset` publication takes effect only on explicit reopen, while the
+  neutral session query is observational and reset-stable. Level 2 and 3
+  continue to advertise the dangling catalog reference as read-only because
+  their packages retain no typed compatible payloads. This does not yet prove
+  animation, arbitrary artifact ingestion, MagicCarpetRuntime rendering, or
+  distribution;
 - `LevelDefinition` exposes a complete stable-ID census for the qualified real
   Level 1, 2 and 3 package entities; those identities are frozen in the private
   MC2 adapter rather than derived from kind ordinals or runtime slots;
@@ -396,8 +405,8 @@ partial real implementation, not a completion claim:
   operations from the nested session on that same runtime handle, without a
   second session or destroy path; production presentation has not yet migrated
   to this owner;
-- placement/spawn/behavior/asset authoring and the remaining objective fields
-  are not yet complete, and
+- broader placement/spawn/behavior/asset authoring and the remaining objective
+  fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed
   composition above;
 - the MC2 adapter produces useful semantic bindings, while source-shaped

@@ -16,10 +16,10 @@ fn fixture() -> PathBuf {
 }
 
 fn level_one_campaign_fixture() -> PathBuf {
-    std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1").map_or_else(
+    std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
         || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../generated/mc-cf15-level1-package-current")
+                .join("../../../generated/mc-cf15-level1-package-v3-current")
         },
         PathBuf::from,
     )
@@ -100,7 +100,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "10.0");
+    assert_eq!(capabilities["contract_version"], "11.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v5"
@@ -317,7 +317,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "10.0");
+    assert_eq!(entities["contract_version"], "11.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -421,7 +421,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "10.0");
+    assert_eq!(described["contract_version"], "11.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v5"
@@ -944,7 +944,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "10.0");
+    assert_eq!(described["contract_version"], "11.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v5"
@@ -1271,7 +1271,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "10.0");
+    assert_eq!(described["contract_version"], "11.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v5"
@@ -1553,7 +1553,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "10.0");
+    assert_eq!(described["contract_version"], "11.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v5"
@@ -2044,6 +2044,352 @@ fn workspace_authoring_cli_stages_previews_and_refuses_unsafe_asset_timing_witho
     assert!(status.status.success());
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["data"]["status"], "not_started");
+}
+
+#[test]
+fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped() {
+    const SLOT: &str = "presentation.spell.fireball.projectile_asset";
+    const BASE: &str = "presentation.fireball.projectile.base";
+    const FADE: &str = "presentation.fireball.projectile.fade";
+    const BASE_SHA: &str =
+        "sha256:331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d";
+    const FADE_SHA: &str =
+        "sha256:61059124cba22dd3086baab36bb7d12a9ab28ebf37d394827a49bea4f6c96784";
+
+    let capabilities = run(&["game", "capabilities"]);
+    assert!(capabilities.status.success());
+    assert!(capabilities.stderr.is_empty());
+    let capabilities: Value = serde_json::from_slice(&capabilities.stdout).unwrap();
+    let bind_asset = capabilities["data"]["authoring"]["operation_schema"]["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["operation"] == "bind_asset")
+        .unwrap();
+    assert_eq!(
+        bind_asset["required_capability"],
+        serde_json::json!({"id": "engine.presentation.indexed_asset", "exact_version": 1})
+    );
+    assert_eq!(bind_asset["mutation_timing"], "package_reload");
+
+    let level_one = level_one_campaign_fixture();
+    let level_one = level_one.to_str().unwrap();
+    let described = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        level_one,
+        "--id",
+        SLOT,
+    ]);
+    assert!(described.status.success(), "{:?}", described.stderr);
+    assert!(described.stderr.is_empty());
+    let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+    assert_eq!(described["contract_version"], "11.0");
+    let descriptor = &described["data"]["descriptors"][0];
+    assert_eq!(descriptor["access"], "writable");
+    assert_eq!(descriptor["mutation_timing"], "package_reload");
+    assert_eq!(descriptor["effective_artifact_id"], BASE);
+    assert_eq!(
+        descriptor["compatible_artifacts"],
+        serde_json::json!([
+            {"artifact_id": BASE, "content_address": BASE_SHA, "kind": "asset", "bytes": 8015},
+            {"artifact_id": FADE, "content_address": FADE_SHA, "kind": "asset", "bytes": 8120}
+        ])
+    );
+
+    for package in [level_two_campaign_fixture(), level_three_campaign_fixture()] {
+        let package = package.to_str().unwrap();
+        let read_only = run(&[
+            "game",
+            "describe",
+            "--campaign-package",
+            package,
+            "--id",
+            SLOT,
+        ]);
+        assert!(read_only.status.success(), "{:?}", read_only.stderr);
+        assert!(read_only.stderr.is_empty());
+        let read_only: Value = serde_json::from_slice(&read_only.stdout).unwrap();
+        assert_eq!(read_only["data"]["descriptors"][0]["access"], "read_only");
+        assert_eq!(
+            read_only["data"]["descriptors"][0]["compatible_artifacts"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            read_only["data"]["descriptors"][0]["effective_artifact_id"],
+            Value::Null
+        );
+    }
+
+    let temporary = TempWorkspace::new("real-fireball-presentation");
+    let workspace = temporary.0.to_str().unwrap();
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "real-fireball-presentation",
+        "--campaign-package",
+        level_one,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+    assert!(created.stderr.is_empty());
+    let changes = temporary.0.join("bind-fade.json");
+    fs::write(
+        &changes,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "bind_asset",
+            "slot": SLOT,
+            "artifact": FADE,
+            "expected_artifact": BASE
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "bind-real-fireball-fade",
+        "--timing",
+        "package_reload",
+        "--changes",
+        changes.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    assert!(staged.stderr.is_empty());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(staged["data"]["published"], false);
+    let change_set = temporary.0.join("bind-fade-change-set.json");
+    fs::write(
+        &change_set,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    assert!(validated.stderr.is_empty());
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        validated["data"]["validation"]["required_timing"],
+        "package_reload"
+    );
+    assert_eq!(
+        validated["data"]["validation"]["affected_ids"],
+        serde_json::json!([SLOT])
+    );
+    let diff = run(&[
+        "game",
+        "diff",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+    ]);
+    assert!(diff.status.success(), "{:?}", diff.stderr);
+    assert!(diff.stderr.is_empty());
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(diff["data"]["diff"][0]["id"], SLOT);
+    assert_eq!(diff["data"]["diff"][0]["before"]["value"], BASE_SHA);
+    assert_eq!(diff["data"]["diff"][0]["after"]["value"], FADE_SHA);
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+        "--validation-receipt",
+        validated["data"]["validation"]["receipt_hash"]
+            .as_str()
+            .unwrap(),
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    assert!(applied.stderr.is_empty());
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(
+        applied["data"]["receipt"]["applied_ids"],
+        serde_json::json!([SLOT])
+    );
+    let authored = run(&["game", "get", "--workspace", workspace, "--id", SLOT]);
+    assert!(authored.status.success(), "{:?}", authored.stderr);
+    assert!(authored.stderr.is_empty());
+    let authored: Value = serde_json::from_slice(&authored.stdout).unwrap();
+    assert_eq!(authored["identity"]["revision"], 2);
+    assert_eq!(
+        authored["data"]["descriptor"]["effective_artifact_id"],
+        FADE
+    );
+    assert_eq!(authored["data"]["value"]["value"], FADE_SHA);
+
+    let committed = fs::read(temporary.0.join("workspace-state.json")).unwrap();
+    let invalid = temporary.0.join("bind-definition-artifact.json");
+    fs::write(
+        &invalid,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "bind_asset",
+            "slot": SLOT,
+            "artifact": "campaign.package",
+            "expected_artifact": FADE
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged_invalid = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "reject-non-asset",
+        "--timing",
+        "package_reload",
+        "--changes",
+        invalid.to_str().unwrap(),
+    ]);
+    assert!(staged_invalid.status.success());
+    let staged_invalid: Value = serde_json::from_slice(&staged_invalid.stdout).unwrap();
+    let invalid_change_set = temporary.0.join("invalid-change-set.json");
+    fs::write(
+        &invalid_change_set,
+        serde_json::to_vec(&staged_invalid["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let rejected = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        invalid_change_set.to_str().unwrap(),
+    ]);
+    assert!(rejected.status.success());
+    assert!(rejected.stderr.is_empty());
+    let rejected: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_eq!(rejected["data"]["validation"]["accepted"], false);
+    assert!(
+        rejected["data"]["validation"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "TYPE_MISMATCH")
+    );
+    assert_eq!(
+        fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+        committed
+    );
+
+    let unavailable = TempWorkspace::new("level-two-fireball-presentation");
+    let unavailable_workspace = unavailable.0.to_str().unwrap();
+    let level_two = level_two_campaign_fixture();
+    let level_two = level_two.to_str().unwrap();
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        unavailable_workspace,
+        "--workspace-id",
+        "level-two-fireball-presentation",
+        "--campaign-package",
+        level_two,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+    assert!(created.stderr.is_empty());
+    let level_two_state = fs::read(unavailable.0.join("workspace-state.json")).unwrap();
+    let unavailable_changes = unavailable.0.join("unavailable-asset.json");
+    fs::write(
+        &unavailable_changes,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "bind_asset",
+            "slot": SLOT,
+            "artifact": FADE
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        unavailable_workspace,
+        "--idempotency-key",
+        "reject-level-two-presentation",
+        "--timing",
+        "package_reload",
+        "--changes",
+        unavailable_changes.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    assert!(staged.stderr.is_empty());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    let unavailable_change_set = unavailable.0.join("unavailable-change-set.json");
+    fs::write(
+        &unavailable_change_set,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let rejected = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        unavailable_workspace,
+        "--change-set",
+        unavailable_change_set.to_str().unwrap(),
+    ]);
+    assert!(rejected.status.success());
+    assert!(rejected.stderr.is_empty());
+    let rejected: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_eq!(rejected["data"]["validation"]["accepted"], false);
+    assert!(
+        rejected["data"]["validation"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "DEPENDENCY_FAILED")
+    );
+    assert_eq!(
+        fs::read(unavailable.0.join("workspace-state.json")).unwrap(),
+        level_two_state
+    );
+    let rejected_apply = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        unavailable_workspace,
+        "--change-set",
+        unavailable_change_set.to_str().unwrap(),
+        "--validation-receipt",
+        rejected["data"]["validation"]["receipt_hash"]
+            .as_str()
+            .unwrap(),
+    ]);
+    assert_eq!(rejected_apply.status.code(), Some(3));
+    assert!(rejected_apply.stdout.is_empty());
+    let rejected_apply: Value = serde_json::from_slice(&rejected_apply.stderr).unwrap();
+    assert_eq!(rejected_apply["errors"][0]["code"], "VALIDATION_REJECTED");
+    assert_eq!(rejected_apply["errors"][0]["state_changed"], false);
+    assert_eq!(
+        fs::read(unavailable.0.join("workspace-state.json")).unwrap(),
+        level_two_state
+    );
+
+    // No-Claim: this proves package-derived Level-1 asset discovery,
+    // package-reload CAS publication, typed retained-payload readback, and
+    // atomic incompatible-artifact refusal. It does not ingest arbitrary
+    // files, render in Unity, alter projectile gameplay, animate the sprite,
+    // support Level 2/3 assets, save/replay, or establish distribution rights.
 }
 
 #[test]

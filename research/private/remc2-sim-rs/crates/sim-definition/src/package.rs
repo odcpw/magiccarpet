@@ -470,6 +470,69 @@ impl GamePackage {
             provenance,
         })
     }
+
+    pub(crate) fn materialize_with_payloads(
+        package_id: &str,
+        package_version: u64,
+        required_capabilities: Vec<RequiredCapability>,
+        artifacts: Vec<ArtifactNode>,
+        bindings: Vec<(SemanticId, SemanticValue)>,
+        provenance: PackageProvenance,
+        artifact_payloads: BTreeMap<String, Vec<u8>>,
+    ) -> Result<Self> {
+        let mut package = Self::materialize(
+            package_id,
+            package_version,
+            required_capabilities,
+            artifacts,
+            bindings,
+            provenance,
+        )?;
+        for (artifact_id, payload) in &artifact_payloads {
+            let artifact = package
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == *artifact_id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownMember,
+                        artifact_id,
+                        "adapter retained a payload outside its closed artifact graph",
+                    )
+                })?;
+            if payload.len() as u64 != artifact.bytes
+                || format!("{:x}", Sha256::digest(payload)) != artifact.sha256
+            {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::HashMismatch,
+                    artifact_id,
+                    "adapter payload does not match its declared artifact identity",
+                ));
+            }
+        }
+        for (_, value) in &package.bindings {
+            let SemanticValue::Reference(reference) = value else {
+                continue;
+            };
+            let Some(artifact) = package
+                .artifacts
+                .iter()
+                .find(|artifact| format!("sha256:{}", artifact.sha256) == *reference)
+            else {
+                continue;
+            };
+            if artifact.kind == ArtifactKind::Asset && !artifact_payloads.contains_key(&artifact.id)
+            {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    &artifact.id,
+                    "adapter-bound asset is missing its retained payload",
+                ));
+            }
+        }
+        package.artifact_payloads = artifact_payloads;
+        Ok(package)
+    }
 }
 
 fn validate_requirement_ids(requirements: &[RequiredCapability]) -> Result<()> {
@@ -1015,5 +1078,64 @@ mod tests {
             validate_artifact_graph(&collision).unwrap_err().code,
             DefinitionErrorCode::ArtifactCollision
         );
+    }
+
+    #[test]
+    fn adapter_payload_materialization_is_closed_hash_bound_and_required_for_bound_assets() {
+        let payload = b"typed asset payload".to_vec();
+        let sha256 = format!("{:x}", Sha256::digest(&payload));
+        let artifact = ArtifactNode {
+            id: "asset.bound".to_owned(),
+            kind: ArtifactKind::Asset,
+            logical_path: "presentation/asset.json".to_owned(),
+            sha256: sha256.clone(),
+            bytes: payload.len() as u64,
+            dependencies: Vec::new(),
+        };
+        let bindings = vec![(
+            SemanticId::parse("presentation.spell.fireball.projectile_asset").unwrap(),
+            SemanticValue::Reference(format!("sha256:{sha256}")),
+        )];
+        let provenance = PackageProvenance::owner_derived(&sha256).unwrap();
+        let materialize = |payloads| {
+            GamePackage::materialize_with_payloads(
+                "test.adapter.payloads",
+                1,
+                Vec::new(),
+                vec![artifact.clone()],
+                bindings.clone(),
+                provenance.clone(),
+                payloads,
+            )
+        };
+
+        assert_eq!(
+            materialize(BTreeMap::new()).unwrap_err().code,
+            DefinitionErrorCode::DependencyFailed
+        );
+        assert_eq!(
+            materialize(BTreeMap::from([(
+                "asset.bound".to_owned(),
+                b"wrong bytes".to_vec()
+            )]))
+            .unwrap_err()
+            .code,
+            DefinitionErrorCode::HashMismatch
+        );
+        assert_eq!(
+            materialize(BTreeMap::from([(
+                "asset.extra".to_owned(),
+                payload.clone()
+            )]))
+            .unwrap_err()
+            .code,
+            DefinitionErrorCode::UnknownMember
+        );
+        let package = materialize(BTreeMap::from([(
+            "asset.bound".to_owned(),
+            payload.clone(),
+        )]))
+        .expect("exact declared payload materializes");
+        assert_eq!(package.artifact_payloads["asset.bound"], payload);
     }
 }

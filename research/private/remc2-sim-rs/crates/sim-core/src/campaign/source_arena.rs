@@ -747,7 +747,7 @@ mod tests {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let cases = [
             (
-                manifest_dir.join("../../../generated/mc-cf15-level1-package-current"),
+                manifest_dir.join("../../../generated/mc-cf15-level1-package-v3-current"),
                 CampaignSelection::LEVEL1,
                 vec![(CreatureKind::Goat, 33), (CreatureKind::Villager, 28)],
             ),

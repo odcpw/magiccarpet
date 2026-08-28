@@ -13,7 +13,7 @@ use crate::level_definition::{
     BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
     LevelObjectiveId, MechanicKind, SceneryKind, SpellKind, SwitchKind,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,9 +24,15 @@ use std::{
 
 pub const CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v1";
 pub const LEVEL2_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v2";
+pub const LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v3";
 pub const CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v1";
 pub const LEVEL2_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v2";
+pub const LEVEL1_ASSET_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v3";
 pub const LEVEL2_REMC2_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
+const FIREBALL_PROJECTILE_BASE_ASSET_SHA256: &str =
+    "331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d";
+const FIREBALL_PROJECTILE_FADE_ASSET_SHA256: &str =
+    "61059124cba22dd3086baab36bb7d12a9ab28ebf37d394827a49bea4f6c96784";
 
 const FEATURE_CAMPAIGN_MEMBERS: [&str; 15] = [
     "authored-level.bin",
@@ -65,7 +71,7 @@ const LEVEL2_CAMPAIGN_MEMBERS: [&str; 16] = [
     "terrain.bin",
 ];
 
-const LEVEL1_CAMPAIGN_MEMBERS: [&str; 15] = [
+const LEVEL1_CAMPAIGN_MEMBERS: [&str; 17] = [
     "authored-level.bin",
     "campaign-definition.json",
     "entities-post-features.bin",
@@ -74,6 +80,8 @@ const LEVEL1_CAMPAIGN_MEMBERS: [&str; 15] = [
     "feature-construction-inputs.bin",
     "feature-end.bin",
     "feature-start.bin",
+    "fireball-projectile-base.indexed-sprite.json",
+    "fireball-projectile-fade.indexed-sprite.json",
     "owner-manifest.json",
     "players.bin",
     "presentation.bin",
@@ -104,6 +112,7 @@ struct CampaignPackageProfile {
     feature_allocator_trace_count: u32,
     has_collision_bank: bool,
     has_building_parameters: bool,
+    has_presentation_assets: bool,
     has_owner_manifest: bool,
 }
 
@@ -137,8 +146,8 @@ fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPack
     match selection {
         CampaignSelection::LEVEL1 => Some(CampaignPackageProfile {
             members: &LEVEL1_CAMPAIGN_MEMBERS,
-            package_schema: CAMPAIGN_PACKAGE_SCHEMA,
-            definition_schema: CAMPAIGN_DEFINITION_SCHEMA,
+            package_schema: LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA,
+            definition_schema: LEVEL1_ASSET_CAMPAIGN_DEFINITION_SCHEMA,
             player_schema: "mc2-player-arena/v2",
             player_version: 2,
             player_record_bytes: 573,
@@ -146,6 +155,7 @@ fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPack
             feature_allocator_trace_count: 51,
             has_collision_bank: false,
             has_building_parameters: false,
+            has_presentation_assets: true,
             has_owner_manifest: true,
         }),
         CampaignSelection::LEVEL2 => Some(CampaignPackageProfile {
@@ -159,6 +169,7 @@ fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPack
             feature_allocator_trace_count: 0,
             has_collision_bank: true,
             has_building_parameters: true,
+            has_presentation_assets: false,
             has_owner_manifest: false,
         }),
         CampaignSelection::LEVEL3 => Some(CampaignPackageProfile {
@@ -172,6 +183,7 @@ fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPack
             feature_allocator_trace_count: 0,
             has_collision_bank: true,
             has_building_parameters: false,
+            has_presentation_assets: false,
             has_owner_manifest: false,
         }),
         _ => None,
@@ -418,6 +430,13 @@ pub struct PresentationRecipe {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PortablePresentationAsset {
+    pub(crate) artifact_id: String,
+    pub(crate) slot_id: String,
+    pub(crate) member: MemberRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CampaignSpec {
     pub authored_records: MemberRef,
     pub authored_behavior_rows: Vec<AuthoredBehaviorRow>,
@@ -442,6 +461,7 @@ pub struct CampaignDefinition {
     pub package_sha256: String,
     pub identity: CampaignSelection,
     pub campaign_spec: CampaignSpec,
+    presentation_assets: Vec<PortablePresentationAsset>,
     pub source_facts: Vec<SourceFact>,
     pub required_behaviors: Vec<BehaviorRequirement>,
     pub reset_state_receipt: ResetStatePreflightReceipt,
@@ -790,8 +810,17 @@ impl CampaignDefinition {
                 "campaign-definition.json is not canonical sorted UTF-8 JSON",
             );
         }
-        let definition = exact_object(
-            &definition_value,
+        let definition_fields: &[&str] = if profile.has_presentation_assets {
+            &[
+                "campaign_spec",
+                "identity",
+                "presentation_assets",
+                "required_behaviors",
+                "schema",
+                "source",
+                "source_facts",
+            ]
+        } else {
             &[
                 "campaign_spec",
                 "identity",
@@ -799,7 +828,11 @@ impl CampaignDefinition {
                 "schema",
                 "source",
                 "source_facts",
-            ],
+            ]
+        };
+        let definition = exact_object(
+            &definition_value,
+            definition_fields,
             "campaign definition",
             ValidationStage::Definition,
         )?;
@@ -954,6 +987,12 @@ impl CampaignDefinition {
         )?;
         let presentation_recipe =
             validate_presentation(&spec_value["presentation_recipe"], &files, &members, outer)?;
+        let presentation_assets = validate_portable_presentation_assets(
+            definition.get("presentation_assets"),
+            &files,
+            &members,
+            profile.has_presentation_assets,
+        )?;
 
         // Stage 6: SourceFacts.  Context contains no presentation bytes.
         let authored_collision_provenance = declared_rows
@@ -1274,6 +1313,7 @@ impl CampaignDefinition {
                 objectives,
                 presentation_recipe,
             },
+            presentation_assets,
             source_facts,
             required_behaviors: declared_requirements,
             reset_state_receipt,
@@ -1314,6 +1354,10 @@ impl CampaignDefinition {
     #[must_use]
     pub const fn level_definition(&self) -> &LevelDefinition {
         &self.level_definition
+    }
+
+    pub(crate) fn presentation_assets(&self) -> &[PortablePresentationAsset] {
+        &self.presentation_assets
     }
 
     pub(crate) fn creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {
@@ -1409,7 +1453,11 @@ impl CampaignDefinition {
         for (name, expected_sha256) in &self.member_hashes {
             if matches!(
                 name.as_str(),
-                "building-parameters.bin" | "campaign-definition.json" | "owner-manifest.json"
+                "building-parameters.bin"
+                    | "campaign-definition.json"
+                    | "fireball-projectile-base.indexed-sprite.json"
+                    | "fireball-projectile-fade.indexed-sprite.json"
+                    | "owner-manifest.json"
             ) {
                 continue;
             }
@@ -1539,7 +1587,10 @@ fn validate_owner_manifest(
         .filter(|name| {
             !matches!(
                 name.as_str(),
-                "campaign-definition.json" | "owner-manifest.json"
+                "campaign-definition.json"
+                    | "fireball-projectile-base.indexed-sprite.json"
+                    | "fireball-projectile-fade.indexed-sprite.json"
+                    | "owner-manifest.json"
             )
         })
         .map(String::as_str)
@@ -2454,6 +2505,127 @@ fn validate_feature_boundary(
     Ok(references)
 }
 
+fn validate_portable_presentation_assets(
+    value: Option<&Value>,
+    files: &BTreeMap<String, (u64, String)>,
+    members: &BTreeMap<String, Vec<u8>>,
+    expected: bool,
+) -> Result<Vec<PortablePresentationAsset>> {
+    if !expected {
+        if value.is_some() {
+            return fail(
+                ValidationStage::Definition,
+                "campaign profile does not admit portable presentation assets",
+            );
+        }
+        return Ok(Vec::new());
+    }
+    let rows = value
+        .and_then(Value::as_array)
+        .filter(|rows| rows.len() == 2)
+        .ok_or_else(|| CampaignPackageError {
+            stage: ValidationStage::TypedMembers,
+            message: "Level 1 presentation asset set differs".to_owned(),
+        })?;
+    let expected_rows = [
+        (
+            "presentation.fireball.projectile.base",
+            "fireball-projectile-base.indexed-sprite.json",
+            FIREBALL_PROJECTILE_BASE_ASSET_SHA256,
+            "CD_Files/DATA/PALN-0.DAT",
+            "6b55d0714b939e8bd25cef89466806299dbae933f2f2f96e0cf8402fc607d16f",
+            "7c4dfbbc6c0f68a99214fe3ca93d7a1cf0dd658e17a40ad7ecb302152264f507",
+        ),
+        (
+            "presentation.fireball.projectile.fade",
+            "fireball-projectile-fade.indexed-sprite.json",
+            FIREBALL_PROJECTILE_FADE_ASSET_SHA256,
+            "CD_Files/DATA/PALF-0.DAT",
+            "c83f900a3d91b68e968f20cc484c8e0ca9a2578211c4d058a747d7f8db2880b4",
+            "f0091d61149264890604486b1d4aceadddf62c0cc90f0c0083a3cae881240b6f",
+        ),
+    ];
+    let mut result = Vec::with_capacity(rows.len());
+    for (ordinal, expected_row) in expected_rows.iter().enumerate() {
+        let object = exact_object(
+            &rows[ordinal],
+            &["artifact_id", "member", "slot_id", "source"],
+            "presentation asset",
+            ValidationStage::TypedMembers,
+        )?;
+        require_string_eq(
+            &object["artifact_id"],
+            expected_row.0,
+            "presentation asset.artifact_id",
+            ValidationStage::TypedMembers,
+        )?;
+        require_string_eq(
+            &object["slot_id"],
+            "presentation.spell.fireball.projectile_asset",
+            "presentation asset.slot_id",
+            ValidationStage::TypedMembers,
+        )?;
+        let member = parse_member_ref(
+            &object["member"],
+            files,
+            "presentation asset.member",
+            Some("carpet-flight-indexed-sprite/v1"),
+            None,
+            None,
+            ValidationStage::TypedMembers,
+        )?;
+        if member.member != expected_row.1 || member.sha256 != expected_row.2 {
+            return fail(
+                ValidationStage::TypedMembers,
+                "portable presentation payload differs from the qualified profile",
+            );
+        }
+        let expected_source = json!({
+            "decoded_sha256": "cf185f7e35f9103be4b4ecfa2573fc9332ac8ade346b564be3971cbe73fb35ec",
+            "frame_index": 1,
+            "indices_sha256": "f6755ec0f9931b6748c32893cc11838fb398043dafdc962eb5e288105cf0c88d",
+            "owner_artifacts": [
+                {"bytes": 1_354_118, "logical_path": "CD_Files/DATA/TMAPS1-0.DAT", "sha256": "b091204ec21c0cf99716f3ae5c426a37113e57dda48a0d4d2eef98167e6ed0ff"},
+                {"bytes": 5_050, "logical_path": "CD_Files/DATA/TMAPS1-0.TAB", "sha256": "22afd08167ae415138548f99901ea037bdc2b48f56c6f3b2dbcfe9743d73c8f0"},
+                {"bytes": 768, "logical_path": expected_row.3, "sha256": expected_row.4}
+            ],
+            "palette_rgb8_sha256": expected_row.5,
+            "selector": 463,
+            "transform": "base_frame_indices_plus_rgb6_times_4_palette_index_zero_transparent"
+        });
+        if object["source"] != expected_source {
+            return fail(
+                ValidationStage::TypedMembers,
+                "portable presentation source provenance differs",
+            );
+        }
+        let payload = &members[&member.member];
+        let payload_value: Value =
+            serde_json::from_slice(payload).map_err(|error| CampaignPackageError {
+                stage: ValidationStage::TypedMembers,
+                message: format!("cannot parse portable presentation payload: {error}"),
+            })?;
+        let mut canonical =
+            serde_json::to_vec(&payload_value).map_err(|error| CampaignPackageError {
+                stage: ValidationStage::TypedMembers,
+                message: format!("cannot canonicalize portable presentation payload: {error}"),
+            })?;
+        canonical.push(b'\n');
+        if canonical != *payload {
+            return fail(
+                ValidationStage::TypedMembers,
+                "portable presentation payload is not canonical sorted JSON",
+            );
+        }
+        result.push(PortablePresentationAsset {
+            artifact_id: expected_row.0.to_owned(),
+            slot_id: "presentation.spell.fireball.projectile_asset".to_owned(),
+            member,
+        });
+    }
+    Ok(result)
+}
+
 fn validate_presentation(
     value: &Value,
     files: &BTreeMap<String, (u64, String)>,
@@ -3255,10 +3427,10 @@ mod tests {
     }
 
     fn level1_fixture() -> PathBuf {
-        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE_V1").map_or_else(
+        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf15-level1-package-current")
+                    .join("../../../generated/mc-cf15-level1-package-v3-current")
             },
             PathBuf::from,
         )

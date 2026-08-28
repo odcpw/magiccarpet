@@ -351,7 +351,7 @@ The managed consumer similarly stops growing `OpenLevelN` methods and per-level
 hash dictionaries. Today it pins a Level 2 file dictionary and calls
 `CampaignSelection.Level2Day()` (`research/private/remc2-unity-native/Assets/Scripts/NativeCampaignSession.cs:20-51`, `95-144`). The generic consumer validates the package/definition identity once, passes the existing selection triple, and selects presentation recipes from validated descriptor data. Level 2 wrappers remain adapters until their accepted tests retire them.
 
-## Campaign package contracts v1/v2 and SourceFacts schema
+## Campaign package contracts v1/v2/v3 and SourceFacts schema
 
 ### Physical package envelope
 
@@ -383,9 +383,14 @@ Qualified Level 2 uses `mc2-owner-campaign-package/v2` and
 304-byte `building-parameters.bin` owner member and its version-1
 `building-parameters` SourceFact. That private fact binds the standing-building
 objective's authored `par1_14` root to its bounded BLDGPRM successor chain.
-Levels 1 and 3 remain on the v1 envelope because they do not carry that source
-fact. The public semantic objective remains `NoStandingBuildings`; raw owner
-selectors do not cross the MC2 adapter.
+Level 3 remains on the v1 envelope because it does not carry that source fact.
+Qualified Level 1 uses `mc2-owner-campaign-package/v3` and
+`mc2-campaign-definition/v3`: its campaign envelope adds two exact canonical
+one-frame `carpet-flight-indexed-sprite/v1` payloads for the semantic Fireball
+projectile slot, derived and pinned from owner TMAP 463 plus the Night/fade
+palettes before package identity is computed. The wrapped owner-export identity
+remains unchanged. The public semantic objective remains
+`NoStandingBuildings`; raw owner selectors do not cross the MC2 adapter.
 
 ### Definition schema
 

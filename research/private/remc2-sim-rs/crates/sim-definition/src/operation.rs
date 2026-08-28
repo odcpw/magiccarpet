@@ -192,6 +192,16 @@ impl DefinitionOperation {
                     "required_fields": ["slot", "artifact"],
                     "optional_fields": ["expected_artifact"],
                     "slot_ids": [PresentationAssetSlot::FireballProjectile.as_str()],
+                    "required_capability": {
+                        "id": "engine.presentation.indexed_asset",
+                        "exact_version": 1,
+                    },
+                    "artifact_ids": "target descriptor -> compatible_artifacts[].artifact_id",
+                    "expected_artifact": "target descriptor -> effective_artifact_id",
+                    "writable_when": "the active definition retains at least two compatible typed artifacts",
+                    "mutation_timing": "package_reload",
+                    "describe": "game describe --id presentation.spell.fireball.projectile_asset",
+                    "read_back": "game get --id presentation.spell.fireball.projectile_asset",
                 },
                 {
                     "operation": "move_entity",
@@ -312,6 +322,30 @@ impl DefinitionOperation {
                 "definition has no package-qualified Fireball mana-cost runtime consumer",
             ));
         }
+        let asset_descriptor = matches!(self, Self::BindAsset { .. }).then(|| {
+            crate::default_catalog().and_then(|catalog| {
+                definition
+                    .semantic_descriptor(
+                        &catalog,
+                        &PresentationAssetSlot::FireballProjectile.semantic_id(),
+                    )
+                    .ok_or_else(|| {
+                        DefinitionError::new(
+                            DefinitionErrorCode::UnknownSemanticId,
+                            self.target_id().as_str(),
+                            "definition has no presentation-asset descriptor",
+                        )
+                    })
+            })
+        });
+        if matches!(asset_descriptor.transpose()?, Some(descriptor) if descriptor.access != Access::Writable)
+        {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                self.target_id().as_str(),
+                "definition has no package-qualified compatible presentation-asset choice",
+            ));
+        }
         let playable_operation_is_supported = matches!(
             self,
             Self::SetInteger {
@@ -320,7 +354,8 @@ impl DefinitionOperation {
             } | Self::MoveEntity { .. }
                 | Self::PutObjective { .. }
                 | Self::SetMechanicCountdown { .. }
-        ) || is_fireball_cost_operation;
+        ) || is_fireball_cost_operation
+            || matches!(self, Self::BindAsset { .. });
         if definition.level_definition().is_some() && !playable_operation_is_supported {
             return Err(DefinitionError::new(
                 DefinitionErrorCode::DependencyFailed,

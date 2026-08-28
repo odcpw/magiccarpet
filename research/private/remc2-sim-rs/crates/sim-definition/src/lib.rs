@@ -29,8 +29,8 @@ pub use package::{
     RequiredCapability, engine_capabilities,
 };
 pub use presentation_asset::{
-    BoundPresentationAsset, INDEXED_SPRITE_SCHEMA, IndexedPresentationAsset,
-    PresentationAssetBudgets,
+    BoundPresentationAsset, CompatiblePresentationArtifact, INDEXED_SPRITE_SCHEMA,
+    IndexedPresentationAsset, PresentationAssetBudgets,
 };
 pub use transaction::{
     APPLY_RECEIPT_SCHEMA, ApplyReceipt, ApplyStatus, CHANGE_SET_SCHEMA, ChangeSet,
@@ -53,7 +53,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v5";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "10.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "11.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -206,6 +206,19 @@ impl GameDefinition {
             })
         {
             descriptor.access = Access::ReadOnly;
+        }
+        if id.as_str() == PresentationAssetSlot::FireballProjectile.as_str() {
+            let capability_present = self.required_capabilities.iter().any(|requirement| {
+                requirement.id.as_str() == "engine.presentation.indexed_asset"
+                    && requirement.exact_version == 1
+            });
+            let has_choice = matches!(
+                self.compatible_presentation_artifacts(id),
+                Ok(artifacts) if artifacts.len() >= 2
+            );
+            if !capability_present || !has_choice {
+                descriptor.access = Access::ReadOnly;
+            }
         }
         Some(descriptor)
     }
@@ -360,6 +373,16 @@ impl GameDefinition {
         presentation_asset::resolve(self, id)
     }
 
+    /// Enumerate package-retained, typed alternatives compatible with the
+    /// current presentation slot. No path or source selector crosses this
+    /// definition-owned discovery surface.
+    pub fn compatible_presentation_artifacts(
+        &self,
+        id: &SemanticId,
+    ) -> Result<Vec<CompatiblePresentationArtifact>> {
+        presentation_asset::compatible_artifacts(self, id)
+    }
+
     pub(crate) fn validate_presentation_asset_value(
         &self,
         id: &SemanticId,
@@ -373,6 +396,17 @@ impl GameDefinition {
             ));
         };
         let _ = presentation_asset::resolve_reference(self, id, reference)?;
+        if !self
+            .compatible_presentation_artifacts(id)?
+            .iter()
+            .any(|artifact| artifact.content_address == *reference)
+        {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::TypeMismatch,
+                id.as_str(),
+                "presentation replacement is not structurally compatible with the active slot",
+            ));
+        }
         Ok(())
     }
 
