@@ -1171,6 +1171,12 @@ impl CampaignDefinition {
                     })?;
             if let Mc2MovableRuntimeHint::AuthoredFeature(authored_record) = hint {
                 let carrier_matches = match entity.kind() {
+                    LevelEntityKind::Creature(expected_kind) => {
+                        semantic_level
+                            .creature_by_authored_record
+                            .get(authored_record)
+                            == Some(&expected_kind)
+                    }
                     LevelEntityKind::Item(expected_kind) => {
                         semantic_level.item_by_authored_record.get(authored_record)
                             == Some(&expected_kind)

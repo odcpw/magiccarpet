@@ -43,9 +43,9 @@ impl CreatureKind {
 }
 
 /// Whether the shared runtime has a complete production, damage, hide, and
-/// following-pass cleanup lifecycle suitable for an absence objective.
+/// following-pass cleanup lifecycle for this authored creature family.
 #[must_use]
-pub const fn supports_no_living_creatures_objective(kind: CreatureKind) -> bool {
+pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
     matches!(
         kind,
         CreatureKind::Bee
@@ -651,7 +651,7 @@ impl LevelDefinition {
                 ));
             }
             if let ObjectiveCondition::NoLivingCreatures(kind) = objective.condition
-                && (!supports_no_living_creatures_objective(kind)
+                && (!supports_complete_creature_lifecycle(kind)
                     || !package_creature_kinds.contains(&kind))
             {
                 return Err(format!(
@@ -1024,7 +1024,7 @@ impl LevelDefinition {
     #[must_use]
     pub fn no_living_creatures_objective_kinds(&self) -> BTreeSet<CreatureKind> {
         self.creature_kinds()
-            .filter(|kind| supports_no_living_creatures_objective(*kind))
+            .filter(|kind| supports_complete_creature_lifecycle(*kind))
             .collect()
     }
 

@@ -17,7 +17,7 @@ use crate::{
         BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
         LevelObjectiveId, MechanicKind, ObjectiveCondition, RivalWizardId, SceneryKind, SpellKind,
-        SwitchKind, TilePosition,
+        SwitchKind, TilePosition, supports_complete_creature_lifecycle,
     },
     level1_mission::parse_authored_features,
 };
@@ -815,6 +815,11 @@ fn bind_private_entity(
     }
     if access == LevelEntityPositionAccess::SessionReset {
         let hint = match kind {
+            LevelEntityKind::Creature(kind)
+                if feature.activation_group > 0 && supports_complete_creature_lifecycle(kind) =>
+            {
+                Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
+            }
             LevelEntityKind::Switch(_) if feature.activation_group != 0 => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }

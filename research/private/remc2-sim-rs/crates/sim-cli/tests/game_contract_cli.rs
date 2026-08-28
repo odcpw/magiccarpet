@@ -500,6 +500,9 @@ fn move_entity_targets_are_package_projected() {
             "switch.area_entry_trigger.at_2_152",
             "switch.area_exit_trigger.at_2_153",
             "switch.exit_sequence_trigger.at_121_155",
+            "creature.bee.at_116_232",
+            "creature.archer.at_150_144",
+            "creature.skeleton.at_140_220",
         ],
         "session_reset",
     );
@@ -549,6 +552,9 @@ fn move_entity_targets_are_package_projected() {
             "switch.exit_sequence_trigger.at_213_220",
             "item.experience_scroll.at_160_107",
             "scenery.exit_portal.at_14_220",
+            "creature.dragon.at_107_150",
+            "creature.bee.at_108_136",
+            "creature.archer.at_30_97",
         ],
         "session_reset",
     );
@@ -570,14 +576,17 @@ fn move_entity_targets_are_package_projected() {
             "scenery.tree.at_110_96",
             "switch.area_exit_trigger.at_189_212",
             "switch.exit_sequence_trigger.at_75_218",
+            "creature.archer.at_202_209",
+            "creature.firefly.at_213_125",
         ],
         "session_reset",
     );
     // No-Claim: this is the public package-projection gate. The already-focused
     // reset-live Shield, dynamic Castle, Stone, Tree, overlap-sensitive
-    // switches, Experience Scroll, and Exit Portal authoring tests own
-    // publication/reopen/reset and their ordinary consumers; this test does
-    // not duplicate those lifecycles.
+    // switches, complete-lifecycle grouped creatures, Experience Scroll, and
+    // Exit Portal authoring tests own publication/reopen/reset and their
+    // ordinary consumers; this test does not duplicate those lifecycles or
+    // claim reset-live/unsupported creature-family placements.
 }
 
 #[test]

@@ -5375,7 +5375,7 @@ impl Level2ResetSession {
                             // that creature's complete production, damage,
                             // hide, and following-pass cleanup lifecycle is
                             // shared by the authoritative arena.
-                            && sim_definition::level_definition::supports_no_living_creatures_objective(kind)
+                            && sim_definition::level_definition::supports_complete_creature_lifecycle(kind)
                             && self
                                 .session
                                 .definition

@@ -1266,6 +1266,7 @@ mod tests {
         ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
         MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
+        supports_complete_creature_lifecycle,
     };
     use crate::native_world::FireballProjectileOrigin;
     use sim_definition::adapter::{
@@ -1677,6 +1678,28 @@ mod tests {
         for (kind, count) in expected_creatures {
             assert_eq!(level.authored_creature_count(*kind), *count);
         }
+        for entity in level
+            .entities()
+            .iter()
+            .filter(|entity| matches!(entity.kind(), LevelEntityKind::Creature(_)))
+        {
+            let LevelEntityKind::Creature(kind) = entity.kind() else {
+                unreachable!("filtered to semantic creatures")
+            };
+            let expected_access = if entity.activation_group().is_some()
+                && supports_complete_creature_lifecycle(kind)
+            {
+                LevelEntityPositionAccess::SessionReset
+            } else {
+                LevelEntityPositionAccess::ReadOnly
+            };
+            assert_eq!(
+                entity.position_access(),
+                expected_access,
+                "creature placement access diverged for {}",
+                entity.id().as_str()
+            );
+        }
         assert_eq!(
             level.spell_kinds().collect::<Vec<_>>(),
             expected_spells
@@ -1905,9 +1928,16 @@ mod tests {
                 "spell_pickup.castle.at_194_213",
                 "switch.area_entry_trigger.at_165_198",
                 "spell_pickup.speed.at_202_212",
+                "creature.archer.at_202_209",
+                "creature.archer.at_202_217",
+                "creature.archer.at_195_217",
                 "switch.area_entry_trigger.at_198_213",
+                "creature.archer.at_195_209",
+                "creature.firefly.at_217_126",
                 "scenery.exit_portal.at_97_221",
                 "switch.area_entry_trigger.at_165_186",
+                "creature.firefly.at_213_125",
+                "creature.firefly.at_211_132",
                 "switch.exit_sequence_trigger.at_75_218",
                 "item.experience_scroll.at_214_215",
                 "item.experience_scroll.at_214_211",
@@ -1937,6 +1967,8 @@ mod tests {
                 "scenery.tree.at_67_165",
                 "scenery.tree.at_55_185",
                 "switch.area_entry_trigger.at_233_194",
+                "creature.firefly.at_209_129",
+                "creature.firefly.at_215_129",
                 "switch.area_entry_trigger.at_233_228",
                 "switch.area_entry_trigger.at_233_240",
                 "switch.area_entry_trigger.at_221_240",
@@ -1953,6 +1985,7 @@ mod tests {
                 "switch.area_entry_trigger.at_116_213",
                 "item.experience_scroll.at_218_215",
                 "switch.area_entry_trigger.at_217_213",
+                "creature.firefly.at_217_210",
             ]
         );
         let level_two = assert_package_content(
@@ -2020,7 +2053,20 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 64);
+        assert_eq!(level_two_movable.len(), 86);
+        for (kind, expected) in [
+            (CreatureKind::Archer, 4),
+            (CreatureKind::Bee, 12),
+            (CreatureKind::Skeleton, 6),
+        ] {
+            assert_eq!(
+                level_two_movable
+                    .iter()
+                    .filter(|entity| entity.kind() == LevelEntityKind::Creature(kind))
+                    .count(),
+                expected
+            );
+        }
         assert_eq!(
             level_two_movable
                 .iter()
@@ -2152,7 +2198,20 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 68);
+        assert_eq!(level_three_movable.len(), 97);
+        for (kind, expected) in [
+            (CreatureKind::Archer, 18),
+            (CreatureKind::Bee, 6),
+            (CreatureKind::Dragon, 5),
+        ] {
+            assert_eq!(
+                level_three_movable
+                    .iter()
+                    .filter(|entity| entity.kind() == LevelEntityKind::Creature(kind))
+                    .count(),
+                expected
+            );
+        }
         assert_eq!(
             level_three_movable
                 .iter()
@@ -4070,6 +4129,217 @@ mod tests {
         // publication, explicit reopen, ordinary construction/cadence, exact
         // group-8 consumption, and reset. It does not re-prove the other switch
         // groups, organic prior progression, save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_grouped_firefly_before_ordinary_creature_visit_after_reopen() {
+        const FIREFLY_RECORD: u16 = 134;
+        const GROUP_SIX_ROWS: &[u16] = &[108, 134, 135, 154, 189, 193];
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let firefly =
+            sim_definition::adapter::stable_entity_id("creature.firefly.at_213_125").unwrap();
+        let package_tile = TilePosition { x: 213, y: 125 };
+        let authored_tile = TilePosition { x: 220, y: 126 };
+        let package_entity = base.level_definition().unwrap().entity(&firefly).unwrap();
+        assert_eq!(
+            package_entity.kind(),
+            LevelEntityKind::Creature(CreatureKind::Firefly)
+        );
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-grouped-firefly-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-grouped-firefly-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            77,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-grouped-firefly-placement",
+            &base,
+            "move-level-one-grouped-firefly",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(firefly.clone(), package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_six = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(6)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 6,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == GROUP_SIX_ROWS
+            )));
+            compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == FIREFLY_RECORD)
+                .copied()
+                .unwrap()
+        };
+
+        let package_firefly = construct_group_six(&mut session);
+        assert_eq!(
+            (
+                package_firefly.position.x >> 8,
+                package_firefly.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y),
+            "publication must not mutate an already-open session"
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == FIREFLY_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        let authored_firefly = construct_group_six(&mut session);
+        assert_eq!(
+            (
+                authored_firefly.position.x >> 8,
+                authored_firefly.position.y >> 8
+            ),
+            (authored_tile.x, authored_tile.y)
+        );
+        assert_ne!(
+            (
+                authored_firefly.position.x >> 8,
+                authored_firefly.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y)
+        );
+        let source_slot = authored_firefly.source_entity_index;
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .map_chains()
+                .is_linked(source_slot)
+        );
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let visited = compatibility
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            visited.source_byte_3e,
+            authored_firefly.source_byte_3e.wrapping_add(1)
+        );
+        assert_ne!(visited.position, authored_firefly.position);
+        assert!(visited.active && visited.drawing_enabled);
+        assert!(compatibility.economy().map_chains().is_linked(source_slot));
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot: actual,
+                        kind: crate::native_world::Level2DynamicArenaKind::AuthoredClass5,
+                        ..
+                    } if *actual == source_slot
+                ))
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot: actual,
+                        ..
+                    } if *actual == source_slot
+                ))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = session.backend().campaign.level2_compatibility();
+        assert!(reset.economy().authored_class5().is_empty());
+        assert_eq!(
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == FIREFLY_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        let reset_firefly = construct_group_six(&mut session);
+        assert_eq!(
+            (reset_firefly.position.x >> 8, reset_firefly.position.y >> 8),
+            (authored_tile.x, authored_tile.y)
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the already-proven Level 1 group-6 boundary to
+        // prove that one grouped complete-lifecycle creature placement crosses
+        // guarded publication, explicit reopen, ordinary Firefly movement/map
+        // consumption, and reset. It does not re-prove creature combat/death,
+        // each family's distinct callback, organic prior objectives, reset-live
+        // Skeleton placement, unsupported creature families, save/replay, or
+        // Unity presentation.
     }
 
     #[test]
