@@ -1250,7 +1250,9 @@ fn campaign_api_selects_level_profiles_and_preserves_old_level1_values() {
         ),
         MC_STATUS_OK
     );
+    assert_eq!(written, 8);
     assert_eq!(level2_players[0].active + level2_players[1].active, 2);
+    assert!(level2_players[2..].iter().all(|player| player.active == 0));
     let mut entities = [McCampaignEntitySnapshotV2::default(); 4];
     assert_eq!(
         mc_native_campaign_entities_copy(
@@ -1420,9 +1422,10 @@ fn level2_campaign_objective_stage_state_is_live_generation_bound() {
             ),
             MC_STATUS_OK
         );
+        events[..event_count as usize].to_vec()
     };
 
-    step_at(handle, 0, state.axis_x, state.axis_y);
+    let _ = step_at(handle, 0, state.axis_x, state.axis_y);
     let mut progressed = McCampaignObjectiveStageSnapshotV2::default();
     assert_eq!(
         mc_native_campaign_objective_stage_state(
@@ -1438,7 +1441,7 @@ fn level2_campaign_objective_stage_state_is_live_generation_bound() {
     assert_eq!(progressed.stage_state, 2);
     assert_eq!(progressed.done, 0);
 
-    step_at(handle, 0, state.axis_x, state.axis_y);
+    let second_events = step_at(handle, 0, state.axis_x, state.axis_y);
     let mut completed = McCampaignObjectiveStageSnapshotV2::default();
     assert_eq!(
         mc_native_campaign_objective_stage_state(
@@ -1452,7 +1455,35 @@ fn level2_campaign_objective_stage_state_is_live_generation_bound() {
         MC_STATUS_OK
     );
     assert_eq!(completed.stage_state, 2);
-    assert_eq!(completed.done, 1);
+    assert_eq!(completed.done, 0);
+    assert!(
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "objective proof requires a Level 2 campaign session",
+                ));
+            };
+            Ok(reset.level2_objective_done())
+        })
+        .expect("read the persistent ObjectiveDone production carrier"),
+        "the frame-local public byte is zero only after the real persistent ObjectiveDone carrier was produced"
+    );
+    assert_eq!(
+        campaign_authored_group_events(handle)
+            .into_iter()
+            .filter(|event| event.group == 8 && event.source_slot == 32)
+            .map(|event| event.authored_index)
+            .collect::<Vec<_>>(),
+        [153, 154],
+        "the frame-local ObjectiveDone pulse is consumed only after the real group-8 producer publishes its exact package rows"
+    );
+    assert!(second_events.iter().any(|event| {
+        event.kind == MC_CAMPAIGN_EVENT_AUTHORED_GROUP
+            && event.family == 8
+            && event.flags == 2
+            && event.source_slot == 32
+    }));
 
     assert_eq!(
         mc_native_campaign_objective_stage_state(
@@ -3092,7 +3123,7 @@ fn cf14_level3_uses_generic_campaign_abi() {
         ),
         MC_STATUS_OK
     );
-    assert_eq!(player_count, 8);
+    assert_eq!(player_count, 1);
     let local = players[0];
     assert_eq!((local.slot, local.active, local.is_ai), (0, 1, 0));
 
