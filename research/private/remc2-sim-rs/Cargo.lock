@@ -208,6 +208,7 @@ dependencies = [
  "sha2",
  "sim-collision",
  "sim-definition",
+ "sim-ground-motion",
  "sim-input",
  "sim-session",
  "sim-terrain-raster",
@@ -222,6 +223,10 @@ dependencies = [
  "serde_json",
  "sha2",
 ]
+
+[[package]]
+name = "sim-ground-motion"
+version = "0.1.0"
 
 [[package]]
 name = "sim-input"

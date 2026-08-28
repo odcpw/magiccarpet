@@ -1,35 +1,55 @@
-//! Shared source-shaped ground-creature movement.
+//! `sim-core` bridge to the shared `sim-ground-motion` owner crate.
 //!
-//! remc2's `sub_1B8C0` movement packet is used by several class-5 creature
-//! families.  This module owns the integer retry/terrain transition; family
-//! modules retain their own cadence, targeting, RNG, and lifecycle rules.
+//! Creature families keep their established crate-private API and authoritative
+//! [`crate::FlightWorld`] projection. The extracted crate owns only the pure
+//! retry and terrain-transition algorithm.
 
-use crate::{FlightWorld, Position, move_entity, turn_toward};
+use crate::{FlightWorld, Position};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GroundCreatureMoveResult {
-    DirectSameTile,
-    DirectCrossTile,
-    Alternate,
-    Blocked,
+pub(crate) use sim_ground_motion::{GroundCreatureMotionConfig, GroundCreatureMoveResult};
+
+pub(crate) type GroundCreatureMotion = sim_ground_motion::GroundCreatureMotion<Position>;
+
+impl sim_ground_motion::GroundPosition for Position {
+    fn from_components(x: u16, y: u16, z: i16) -> Self {
+        Self { x, y, z }
+    }
+
+    fn x(self) -> u16 {
+        self.x
+    }
+
+    fn y(self) -> u16 {
+        self.y
+    }
+
+    fn z(self) -> i16 {
+        self.z
+    }
+
+    fn with_z(self, z: i16) -> Self {
+        Self { z, ..self }
+    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct GroundCreatureMotion {
-    pub(crate) position: Position,
-    pub(crate) yaw: i16,
-    pub(crate) movement_blocked: bool,
-    pub(crate) killed: bool,
-    pub(crate) result: GroundCreatureMoveResult,
-}
+struct GroundWorldAdapter<'a, W>(&'a W);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct GroundCreatureMotionConfig {
-    pub(crate) ground_clearance: i16,
-    pub(crate) descent: i16,
-    pub(crate) turn_limit: i16,
-    pub(crate) terrain_mask: u32,
-    pub(crate) maximum_tile_slope: i32,
+impl<W: FlightWorld> sim_ground_motion::GroundMotionWorld<Position> for GroundWorldAdapter<'_, W> {
+    fn ground_height(&self, position: Position) -> i16 {
+        self.0.ground_height(position)
+    }
+
+    fn material_mask(&self, position: Position) -> u32 {
+        self.0.material_mask(position)
+    }
+
+    fn move_entity(&self, position: &mut Position, yaw: i16, pitch: i16, speed: i16) {
+        crate::move_entity(position, yaw, pitch, speed);
+    }
+
+    fn turn_toward(&self, from: i16, to: i16, maximum: i16) -> i16 {
+        crate::turn_toward(from, to, maximum)
+    }
 }
 
 #[must_use]
@@ -41,59 +61,14 @@ pub(crate) fn step_ground_creature_motion<W: FlightWorld>(
     world: &W,
     config: GroundCreatureMotionConfig,
 ) -> GroundCreatureMotion {
-    let headings = [
-        yaw,
-        yaw.wrapping_add(341) & 0x07ff,
-        second_avoidance_heading(yaw),
-        opposite_heading(yaw),
-    ];
-
-    for (attempt, heading) in headings.into_iter().enumerate() {
-        let mut predicted = position;
-        relax_to_terrain(
-            &mut predicted,
-            world,
-            config.ground_clearance,
-            config.descent,
-        );
-        move_entity(&mut predicted, heading, 0, actual_speed);
-
-        let changed_tile =
-            (position.x >> 8, position.y >> 8) != (predicted.x >> 8, predicted.y >> 8);
-        if changed_tile
-            && !candidate_is_valid(
-                world,
-                predicted,
-                config.terrain_mask,
-                config.maximum_tile_slope,
-            )
-        {
-            continue;
-        }
-
-        return GroundCreatureMotion {
-            position: predicted,
-            yaw: heading.wrapping_add(turn_toward(heading, desired_heading, config.turn_limit))
-                & 0x07ff,
-            movement_blocked: attempt != 0,
-            killed: false,
-            result: if attempt == 0 && changed_tile {
-                GroundCreatureMoveResult::DirectCrossTile
-            } else if attempt == 0 {
-                GroundCreatureMoveResult::DirectSameTile
-            } else {
-                GroundCreatureMoveResult::Alternate
-            },
-        };
-    }
-
-    GroundCreatureMotion {
+    sim_ground_motion::step_ground_creature_motion(
         position,
-        yaw: opposite_heading(yaw),
-        movement_blocked: true,
-        killed: true,
-        result: GroundCreatureMoveResult::Blocked,
-    }
+        yaw,
+        desired_heading,
+        actual_speed,
+        &GroundWorldAdapter(world),
+        config,
+    )
 }
 
 pub(crate) fn relax_to_terrain<W: FlightWorld>(
@@ -102,52 +77,40 @@ pub(crate) fn relax_to_terrain<W: FlightWorld>(
     ground_clearance: i16,
     vertical_relaxation: i16,
 ) {
-    let ground = world.ground_height(*position);
-    if position.z > ground {
-        position.z = position.z.wrapping_add(vertical_relaxation);
-    }
-    if position.z <= ground.wrapping_add(ground_clearance) {
-        position.z = ground.wrapping_add(ground_clearance);
-    }
+    sim_ground_motion::relax_to_terrain(
+        position,
+        &GroundWorldAdapter(world),
+        ground_clearance,
+        vertical_relaxation,
+    );
 }
 
+#[cfg(test)]
 pub(crate) fn candidate_is_valid<W: FlightWorld>(
     world: &W,
     position: Position,
     terrain_mask: u32,
     maximum_tile_slope: i32,
 ) -> bool {
-    world.material_mask(position) & !terrain_mask == 0
-        && tile_slope_metric(world, position) < maximum_tile_slope
+    sim_ground_motion::candidate_is_valid(
+        &GroundWorldAdapter(world),
+        position,
+        terrain_mask,
+        maximum_tile_slope,
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn second_avoidance_heading(original: i16) -> i16 {
-    let original = original.cast_unsigned();
-    let low = original.wrapping_sub(85) & 0x00ff;
-    let high = original.wrapping_sub(341) & 0x0700;
-    (high | low).cast_signed()
+    sim_ground_motion::second_avoidance_heading(original)
 }
 
+#[cfg(test)]
 pub(crate) fn opposite_heading(original: i16) -> i16 {
-    let original = original.cast_unsigned();
-    (((original.wrapping_add(0x0400)) & 0x0700) | (original & 0x00ff)).cast_signed()
+    sim_ground_motion::opposite_heading(original)
 }
 
+#[cfg(test)]
 pub(crate) fn tile_slope_metric<W: FlightWorld>(world: &W, position: Position) -> i32 {
-    let x = position.x & 0xff00;
-    let y = position.y & 0xff00;
-    let sample = |sample_x: u16, sample_y: u16| {
-        i32::from(world.ground_height(Position {
-            x: sample_x,
-            y: sample_y,
-            z: 0,
-        }))
-    };
-    let point_1 = sample(x, y);
-    let point_2 = sample(x.wrapping_add(0x0100), y);
-    let point_3 = sample(x.wrapping_add(0x0100), y.wrapping_add(0x0100));
-    let point_4 = sample(x, y.wrapping_add(0x0100));
-    let diagonal_1 = (point_1 + point_4 - point_2 - point_3).abs();
-    let diagonal_2 = (point_1 + point_2 - point_4 - point_3).abs();
-    diagonal_1.max(diagonal_2) / 32
+    sim_ground_motion::tile_slope_metric(&GroundWorldAdapter(world), position)
 }

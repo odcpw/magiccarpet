@@ -452,7 +452,13 @@ partial real implementation, not a completion claim:
   package definition/behavior artifacts are not yet fully parsed as the typed
   composition above;
 - the MC2 adapter produces useful semantic bindings, while source-shaped
-  compatibility types remain implementation-visible; and
+  compatibility types remain implementation-visible. The shared, pure
+  ground-creature retry and terrain-transition algorithm is now owned by the
+  internal `sim-ground-motion` crate; `sim-core` retains only its fixed-width
+  `FlightWorld` projection while Archer, Dragon and Firefly lifecycles keep
+  their existing scheduler/RNG authority. This is the first bounded physical
+  extraction, not a claim that the remaining `sim-core` monolith has been
+  decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
   coverage remain open; the current Unity build enters one gameplay scene
   directly, neutral campaign saves/loads do not yet exist, and level completion

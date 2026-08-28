@@ -16,6 +16,7 @@ serde_json = "=1.0.149"
 sha2 = "=0.10.9"
 sim-collision = { path = "../sim-collision" }
 sim-definition = { path = "../sim-definition" }
+sim-ground-motion = { path = "../sim-ground-motion" }
 sim-input = { path = "../sim-input" }
 sim-session = { path = "../sim-session" }
 sim-terrain-raster = { path = "../sim-terrain-raster" }
