@@ -412,6 +412,79 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void ProductionMagicCarpetRuntimeRendersTheSemanticFireballAssetWithoutOwnerCache()
+        {
+            const string content =
+                "sha256:331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d";
+            var nativeSessions = NativeSession.ActiveSessionCount;
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+            var root = new GameObject("semantic Fireball runtime owner");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                var texture = runtime.GameRuntimeProductionFireballTexture;
+                Assert.That(texture, Is.Not.Null);
+                Assert.That(texture.width, Is.EqualTo(34));
+                Assert.That(texture.height, Is.EqualTo(35));
+                Assert.That(
+                    runtime.GameRuntimeProductionFireballContentAddress,
+                    Is.EqualTo(content));
+                Assert.That(runtime.GameRuntimeProductionFireballMarkerCount, Is.Zero);
+                Assert.That(
+                    runtime.GameRuntimeProductionCampaignSnapshot.value.presentation_entities,
+                    Is.Empty);
+
+                runtime.QualificationRequestGameRuntimeFireball();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var snapshot = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(snapshot.identity.tick, Is.EqualTo("1"));
+                Assert.That(snapshot.value.presentation_entities, Has.Length.EqualTo(1));
+                var fireball = snapshot.value.presentation_entities[0];
+                Assert.That(fireball.kind, Is.EqualTo("spell.fireball.projectile"));
+                Assert.That(fireball.logical_height, Is.EqualTo(100));
+                Assert.That(
+                    fireball.asset.id,
+                    Is.EqualTo("presentation.spell.fireball.projectile_asset"));
+                Assert.That(fireball.asset.content_address, Is.EqualTo(content));
+                Assert.That(ulong.Parse(fireball.actor), Is.Not.Zero);
+                Assert.That(runtime.GameRuntimeProductionFireballMarkerCount, Is.EqualTo(1));
+                Assert.That(
+                    runtime.GameRuntimeProductionRenderedFireballTexture,
+                    Is.SameAs(texture));
+                Assert.That(runtime.GameRuntimeProductionFireballTexture, Is.SameAs(texture));
+
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(
+                    runtime.GameRuntimeProductionCampaignSnapshot.identity.generation,
+                    Is.EqualTo("2"));
+                Assert.That(
+                    runtime.GameRuntimeProductionCampaignSnapshot.value.presentation_entities,
+                    Is.Empty);
+                Assert.That(runtime.GameRuntimeProductionFireballMarkerCount, Is.Zero);
+                Assert.That(runtime.GameRuntimeProductionFireballTexture, Is.SameAs(texture));
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions + 1));
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+
+            // No-Claim: this proves one real L1 one-frame Fireball asset is
+            // queried and rendered from the resolver-owned runtime snapshot
+            // without an owner-cache/TMAP selector path. It does not prove
+            // terrain, other entities, impacts, animation, L2/L3 assets,
+            // completion transitions, or a complete playable scene.
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void RustGameRuntimePauseResumeFreezesTheSameLevelOneSession()
         {
             using var runtime = new GameRuntimeTransport();

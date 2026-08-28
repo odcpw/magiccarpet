@@ -199,6 +199,14 @@ namespace MagicCarpet.Native
                 "session does not own a game runtime");
         }
 
+        internal EngineSessionTransport.PresentationAssetObservation
+            GameRuntimePresentationAsset(string semanticId)
+        {
+            return gameRuntime?.PresentationAsset(semanticId) ??
+                throw new InvalidOperationException(
+                    "session does not own a game runtime presentation asset");
+        }
+
         internal EngineSessionTransport.EventObservation EngineEvents(
             string cursor,
             uint limit = 1024)

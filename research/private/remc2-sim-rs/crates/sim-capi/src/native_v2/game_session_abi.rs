@@ -429,12 +429,12 @@ pub extern "C" fn mc_game_session_contract_json_v1(
     boundary(|| {
         let contract = serde_json::json!({
             "engine_contract": sim_session::GAME_SESSION_CONTRACT,
-            "transport_contract": "carpet-flight-native-json/v2",
-            "transport_version": 2,
+            "transport_contract": "carpet-flight-native-json/v3",
+            "transport_version": 3,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "u64_hash_encoding": "lowercase-hex-16",
-            "capabilities": ["snapshot", "step", "reset", "events", "audio", "presentation_assets"],
+            "capabilities": ["snapshot", "step", "reset", "events", "audio", "presentation_assets", "presentation_entities"],
             "session_profiles": [
                 {
                     "profile": "mc2-owned",
@@ -443,8 +443,8 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 },
                 {
                     "profile": "mc2-campaign",
-                    "snapshot_value": "campaign_snapshot/v1",
-                    "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets"]
+                    "snapshot_value": "campaign_snapshot/v2",
+                    "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities"]
                 }
             ],
             "limits": {
@@ -866,12 +866,12 @@ mod tests {
         let contract = read_json(|buffer, capacity, length| {
             mc_game_session_contract_json_v1(buffer, capacity, length)
         });
-        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v2");
+        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v3");
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-json/v2"
+            "carpet-flight-native-json/v3"
         );
-        assert_eq!(contract["transport_version"], 2);
+        assert_eq!(contract["transport_version"], 3);
         assert_eq!(contract["u64_counter_encoding"], "decimal-string");
         assert_eq!(contract["u64_hash_encoding"], "lowercase-hex-16");
         assert_eq!(contract["limits"]["maximum_command_json_bytes"], 4_096);
@@ -1230,10 +1230,17 @@ mod tests {
             ])
         );
         assert_eq!(profiles[1]["profile"], "mc2-campaign");
-        assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v1");
+        assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v2");
         assert_eq!(
             profiles[1]["capabilities"],
-            serde_json::json!(["snapshot", "step", "reset", "events", "presentation_assets"])
+            serde_json::json!([
+                "snapshot",
+                "step",
+                "reset",
+                "events",
+                "presentation_assets",
+                "presentation_entities"
+            ])
         );
 
         let owned = open_fixture();
@@ -1582,6 +1589,55 @@ mod tests {
         // No-Claim: this proves only same-handle native observation of the
         // qualified Level-1 base frame. It does not prove authoring transport,
         // Unity rendering, animation, projectile gameplay, or Level 2/3 data.
+    }
+
+    #[test]
+    fn neutral_level_one_campaign_snapshot_projects_the_live_semantic_fireball() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf15-level1-package-v3-current");
+        let handle = open_campaign_path(&package);
+        let initial = campaign_snapshot(handle);
+        assert_eq!(
+            initial["value"]["presentation_entities"],
+            serde_json::json!([])
+        );
+
+        let command = br#"{"longitudinal":"coast","lateral":"neutral","roll_axis":0,"pitch_axis":0,"cast_left":true,"cast_right":false,"cast_selected":false,"look_yaw":0,"look_pitch":0}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32,),
+            MC_STATUS_OK
+        );
+        let launched = campaign_snapshot(handle);
+        let entities = launched["value"]["presentation_entities"]
+            .as_array()
+            .expect("presentation entity array");
+        assert_eq!(entities.len(), 1);
+        let entity = &entities[0];
+        assert_eq!(entity["kind"], "spell.fireball.projectile");
+        assert_eq!(entity["logical_height"], 100);
+        assert_eq!(
+            entity["asset"],
+            serde_json::json!({
+                "id": "presentation.spell.fireball.projectile_asset",
+                "content_address": "sha256:331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d"
+            })
+        );
+        assert!(entity["actor"].as_str().unwrap().parse::<u64>().unwrap() != 0);
+        assert!(entity["pose"]["x"].is_u64());
+        assert!(entity["pose"]["y"].is_u64());
+        assert!(entity["pose"]["z"].is_i64() || entity["pose"]["z"].is_u64());
+
+        assert_eq!(mc_game_session_reset_v1(handle, 1, 1), MC_STATUS_OK);
+        let reset = campaign_snapshot(handle);
+        assert_eq!(reset["identity"]["generation"], "2");
+        assert_eq!(
+            reset["value"]["presentation_entities"],
+            serde_json::json!([])
+        );
+        assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
+        // No-Claim: this proves the real native campaign snapshot carries one
+        // live semantic Fireball and drops it on reset. It does not prove a
+        // Unity renderer, authored asset variants, animation, or L2/L3 data.
     }
 
     #[test]

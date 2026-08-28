@@ -42,10 +42,12 @@ use crate::{
         SemanticId, default_catalog, engine_capabilities,
     },
     game_session::{
-        CampaignSnapshot, EventPage, GameAdapter, GameAudioCommand, GameCommand, GameCompletion,
-        GameCompletionStatus, GameEvent, GameSessionBackend, LateralControl, LongitudinalControl,
-        PlayerMotion, PlayerPose, RuntimeActorId, RuntimeParticipantId,
+        CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
+        GameCommand, GameCompletion, GameCompletionStatus, GameEvent, GameSessionBackend,
+        LateralControl, LongitudinalControl, PlayerMotion, PlayerPose, PresentationEntity,
+        PresentationPose, RuntimeActorId, RuntimeParticipantId,
     },
+    level1_mission::FIREBALL_LOGICAL_HEIGHT,
     native_world::{Level2DispatchEvent, Level2SharedSpellEvent},
 };
 
@@ -725,6 +727,7 @@ pub struct Mc2CampaignBackend {
     package_campaign: CampaignSession,
     flight_binding: DefinitionFlightBinding,
     fireball_binding: Option<DefinitionFireballBinding>,
+    fireball_projectile_asset: Option<GameAssetReference>,
     goat_policy_binding: Option<DefinitionGoatPolicyBinding>,
     package_base: GameDefinition,
     package_graph_hash: String,
@@ -748,6 +751,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             .map_err(CampaignBackendError::Definition)?;
         let goat_policy_binding = DefinitionGoatPolicyBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
+        let fireball_projectile_asset = fireball_projectile_asset_reference(definition)?;
         require_catalog_defaults(
             definition,
             &catalog,
@@ -804,6 +808,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             package_campaign,
             flight_binding,
             fireball_binding,
+            fireball_projectile_asset,
             goat_policy_binding,
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
@@ -854,6 +859,23 @@ fn consumes_fireball_projectile_asset(definition: &GameDefinition) -> bool {
         && definition.presentation_asset(&id).is_ok()
 }
 
+fn fireball_projectile_asset_reference(
+    definition: &GameDefinition,
+) -> Result<Option<GameAssetReference>, CampaignBackendError> {
+    if !consumes_fireball_projectile_asset(definition) {
+        return Ok(None);
+    }
+    let id = SemanticId::parse("presentation.spell.fireball.projectile_asset")
+        .map_err(CampaignBackendError::Definition)?;
+    let asset = definition
+        .presentation_asset(&id)
+        .map_err(CampaignBackendError::Definition)?;
+    Ok(Some(GameAssetReference {
+        id: id.as_str().to_owned(),
+        content_address: asset.content_address,
+    }))
+}
+
 impl GameSessionBackend for Mc2CampaignBackend {
     type Command = GameCommand;
     type Snapshot = CampaignSnapshot;
@@ -882,6 +904,36 @@ impl GameSessionBackend for Mc2CampaignBackend {
 
     fn snapshot(&self) -> Self::Snapshot {
         let flight = &self.campaign.level2.state;
+        let presentation_entities = self
+            .fireball_projectile_asset
+            .as_ref()
+            .map(|asset| {
+                let kind = SemanticId::parse("spell.fireball.projectile")
+                    .expect("compiled semantic Fireball projectile ID");
+                self.campaign
+                    .level2_compatibility()
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .filter(|projectile| projectile.active && !projectile.drawing_disabled)
+                    .map(|projectile| PresentationEntity {
+                        actor: self
+                            .actor(u64::from(projectile.source_entity_index))
+                            .expect("opaque actor projection is total"),
+                        kind: kind.clone(),
+                        pose: PresentationPose {
+                            x: projectile.position.x,
+                            y: projectile.position.y,
+                            z: projectile.position.z,
+                            yaw: projectile.yaw,
+                            pitch: projectile.pitch,
+                        },
+                        logical_height: FIREBALL_LOGICAL_HEIGHT,
+                        asset: asset.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         CampaignSnapshot {
             tick: flight.tick,
             effect_head: self.campaign.effect_cursor().next_sequence,
@@ -904,6 +956,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 actual_speed: flight.actual_speed,
                 strafe_speed: flight.strafe_speed,
             },
+            presentation_entities,
         }
     }
 
@@ -983,6 +1036,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .map_err(CampaignBackendError::Definition)?;
         let goat_policy_binding = DefinitionGoatPolicyBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
+        let fireball_projectile_asset = fireball_projectile_asset_reference(definition)?;
         definition
             .verify_semantic_variant_of(&self.package_base, &catalog)
             .map_err(CampaignBackendError::Definition)?;
@@ -1018,6 +1072,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.campaign = campaign;
         self.flight_binding = flight_binding;
         self.fireball_binding = fireball_binding;
+        self.fireball_projectile_asset = fireball_projectile_asset;
         self.goat_policy_binding = goat_policy_binding;
         Ok(())
     }
@@ -3040,6 +3095,118 @@ mod tests {
         // reset retention, and base-definition restoration. It does not prove
         // animation, rendering, projectile gameplay changes, artifact import,
         // Level 2/3 presentation, Unity consumption, saves, or distribution.
+    }
+
+    #[test]
+    fn campaign_snapshot_projects_live_fireball_through_the_bound_semantic_asset() {
+        const SLOT: &str = "presentation.spell.fireball.projectile_asset";
+        const BASE_SHA: &str =
+            "sha256:331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d";
+        const FADE_SHA: &str =
+            "sha256:61059124cba22dd3086baab36bb7d12a9ab28ebf37d394827a49bea4f6c96784";
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let workspace_root = temporary_workspace_path("campaign-fireball-presentation-entity");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-fireball-presentation-authoring",
+            base.clone(),
+        )
+        .unwrap();
+        let authored = publish_fireball_projectile_asset(
+            &store,
+            &catalog,
+            &base,
+            "presentation.fireball.projectile.fade",
+        );
+        let mut baseline = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base),
+            64,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let mut variant = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(authored),
+            65,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        assert!(baseline.snapshot().value.presentation_entities.is_empty());
+        assert!(variant.snapshot().value.presentation_entities.is_empty());
+
+        let command = GameCommand {
+            cast_left: true,
+            ..GameCommand::default()
+        };
+        let baseline_snapshot = baseline.step(guard(&baseline), command).unwrap().value;
+        let variant_snapshot = variant.step(guard(&variant), command).unwrap().value;
+        assert_eq!(baseline_snapshot.state_hash, variant_snapshot.state_hash);
+        assert_eq!(
+            baseline_snapshot.terrain_hash,
+            variant_snapshot.terrain_hash
+        );
+        assert_eq!(
+            baseline_snapshot.effect_journal_sha256,
+            variant_snapshot.effect_journal_sha256
+        );
+        let baseline_entity = baseline_snapshot
+            .presentation_entities
+            .first()
+            .expect("ordinary cast projects one live Fireball");
+        let variant_entity = variant_snapshot
+            .presentation_entities
+            .first()
+            .expect("authored asset retains the same live Fireball");
+        assert_eq!(baseline_snapshot.presentation_entities.len(), 1);
+        assert_eq!(variant_snapshot.presentation_entities.len(), 1);
+        assert_eq!(baseline_entity.kind.as_str(), "spell.fireball.projectile");
+        assert_eq!(baseline_entity.logical_height, FIREBALL_LOGICAL_HEIGHT);
+        assert_eq!(baseline_entity.asset.id, SLOT);
+        assert_eq!(baseline_entity.asset.content_address, BASE_SHA);
+        assert_eq!(variant_entity.asset.content_address, FADE_SHA);
+        let source = &baseline
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .fireball_projectiles()[0];
+        assert_eq!(
+            baseline_entity.pose,
+            PresentationPose {
+                x: source.position.x,
+                y: source.position.y,
+                z: source.position.z,
+                yaw: source.yaw,
+                pitch: source.pitch,
+            }
+        );
+        assert_eq!(baseline_entity.actor, variant_entity.actor);
+        assert_eq!(baseline_entity.pose, variant_entity.pose);
+        assert_eq!(baseline_entity.kind, variant_entity.kind);
+        assert_eq!(
+            baseline_entity.logical_height,
+            variant_entity.logical_height
+        );
+
+        variant.reset(guard(&variant)).unwrap();
+        assert!(variant.snapshot().value.presentation_entities.is_empty());
+        assert_eq!(
+            variant
+                .presentation_asset(guard(&variant), &SemanticId::parse(SLOT).unwrap())
+                .unwrap()
+                .value
+                .content_address,
+            FADE_SHA
+        );
+        std::fs::remove_dir_all(workspace_root).unwrap();
+        // No-Claim: this proves the real Level-1 ordinary Fireball is projected
+        // as one opaque semantic presentation entity whose asset follows the
+        // immutable definition binding. It does not render Unity pixels,
+        // animate frames, project impacts, or support Level 2/3 assets.
     }
 
     #[test]

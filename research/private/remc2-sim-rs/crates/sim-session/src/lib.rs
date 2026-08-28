@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v2";
+pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v3";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -45,6 +45,29 @@ pub struct PlayerMotion {
     pub target_speed: i16,
     pub actual_speed: i16,
     pub strafe_speed: i16,
+}
+
+/// Package-neutral pose for one live presentation entity. Coordinates use
+/// the same deterministic world units as [`PlayerPose`]; adapter-private
+/// source slots and render selectors never cross this projection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct PresentationPose {
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub yaw: i16,
+    pub pitch: i16,
+}
+
+/// One live semantic presentation entity bound to an immutable package asset.
+/// The opaque actor ID is stable only for the current session generation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PresentationEntity {
+    pub actor: RuntimeActorId,
+    pub kind: SemanticId,
+    pub pose: PresentationPose,
+    pub logical_height: u16,
+    pub asset: GameAssetReference,
 }
 
 /// Canonical bounded session observation used by adapters and transports.
@@ -88,6 +111,7 @@ pub struct CampaignSnapshot {
     pub effect_journal_sha256: String,
     pub player_pose: PlayerPose,
     pub player_motion: PlayerMotion,
+    pub presentation_entities: Vec<PresentationEntity>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

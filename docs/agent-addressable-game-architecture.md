@@ -346,11 +346,19 @@ partial real implementation, not a completion claim:
   semantic projectile slot binds the base payload and discovers the fade
   palette as a compatible package-retained alternative; guarded
   `BindAsset` publication takes effect only on explicit reopen, while the
-  neutral session query is observational and reset-stable. Level 2 and 3
+  neutral session query is observational and reset-stable. The ordinary
+  Level 1 Fireball producer now also projects a live opaque semantic
+  presentation entity carrying its package-bound asset, pose and logical
+  height. The production `MagicCarpetRuntime` resolver mode consumes that
+  projection from the same Rust session handle and renders the actual
+  content-addressed one-frame texture without consulting an owner cache or
+  raw TMAP selector. The additive observation is negotiated through
+  game-session contract v3/native-session JSON v3; the semantic and outer-runtime
+  contracts are unchanged. Level 2 and 3
   continue to advertise the dangling catalog reference as read-only because
   their packages retain no typed compatible payloads. This does not yet prove
-  animation, arbitrary artifact ingestion, MagicCarpetRuntime rendering, or
-  distribution;
+  animation, impacts, other entity presentation, arbitrary artifact ingestion,
+  a complete playable scene, or distribution;
 - `LevelDefinition` exposes a complete stable-ID census for the qualified real
   Level 1, 2 and 3 package entities; those identities are frozen in the private
   MC2 adapter rather than derived from kind ordinals or runtime slots;
@@ -420,8 +428,9 @@ partial real implementation, not a completion claim:
   facet without opening either legacy registry. `MagicCarpetRuntime` has an
   explicit headless production mode that admits an unordered owner-local
   package set, lets Rust select the semantic entry, and drives fixed-step/reset
-  through that same handle. Terrain, entity, HUD, audio and effects
-  presentation have not yet migrated to this owner;
+  through that same handle. Its first bounded presentation consumer renders the
+  live Level 1 Fireball described above. Terrain, other entities, HUD, audio
+  and effects presentation have not yet migrated to this owner;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed

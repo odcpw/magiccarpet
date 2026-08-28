@@ -358,6 +358,17 @@ namespace MagicCarpet.Native
             return result;
         }
 
+        internal EngineSessionTransport.PresentationAssetObservation PresentationAsset(
+            string semanticId)
+        {
+            RequireSessionMode(allowPaused: true, "presentation asset");
+            return EngineSessionTransport.PresentationAssetForHandle(
+                RequireHandle(),
+                Current.session,
+                semanticId,
+                NegotiatedSessionContract.limits.maximum_asset_id_bytes);
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignReset()
         {
             RequireSessionMode(allowPaused: false, "campaign reset");

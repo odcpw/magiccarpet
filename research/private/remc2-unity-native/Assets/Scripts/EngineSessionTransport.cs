@@ -17,15 +17,17 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class EngineSessionTransport
     {
-        internal const string EngineContract = "carpet-flight-game-session/v2";
-        internal const string TransportContract = "carpet-flight-native-json/v2";
+        internal const string EngineContract = "carpet-flight-game-session/v3";
+        internal const string TransportContract = "carpet-flight-native-json/v3";
         internal const string OwnedProfile = "mc2-owned";
         internal const string CampaignProfile = "mc2-campaign";
         private const string CampaignDescriptorEnvelope = "campaign-definition.json";
         private static readonly string[] RequiredCapabilities =
+            { "snapshot", "step", "reset", "events", "audio", "presentation_assets", "presentation_entities" };
+        private static readonly string[] RequiredOwnedCapabilities =
             { "snapshot", "step", "reset", "events", "audio", "presentation_assets" };
         private static readonly string[] RequiredCampaignCapabilities =
-            { "snapshot", "step", "reset", "events", "presentation_assets" };
+            { "snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities" };
 
         private delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
 
@@ -125,6 +127,7 @@ namespace MagicCarpet.Native
             public string effect_journal_sha256;
             public Pose player_pose;
             public Motion player_motion;
+            public PresentationEntity[] presentation_entities;
         }
 
         [Serializable]
@@ -139,6 +142,26 @@ namespace MagicCarpet.Native
         {
             public string id;
             public string content_address;
+        }
+
+        [Serializable]
+        internal sealed class PresentationPose
+        {
+            public ushort x;
+            public ushort y;
+            public short z;
+            public short yaw;
+            public short pitch;
+        }
+
+        [Serializable]
+        internal sealed class PresentationEntity
+        {
+            public string actor;
+            public string kind;
+            public PresentationPose pose;
+            public ushort logical_height;
+            public AssetReference asset;
         }
 
         [Serializable]
@@ -609,33 +632,47 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "the authored presentation-asset capability is not negotiated");
             }
+            return PresentationAssetForHandle(
+                Handle,
+                CurrentIdentity,
+                semanticId,
+                NegotiatedContract.limits.maximum_asset_id_bytes);
+        }
+
+        internal static PresentationAssetObservation PresentationAssetForHandle(
+            ulong handle,
+            Identity identity,
+            string semanticId,
+            uint maximumAssetIdBytes)
+        {
+            ValidateIdentityForHandle(handle, identity);
             if (string.IsNullOrWhiteSpace(semanticId))
             {
                 throw new ArgumentException("semantic asset ID is required", nameof(semanticId));
             }
             var bytes = Encoding.UTF8.GetBytes(semanticId);
-            if (bytes.Length > NegotiatedContract.limits.maximum_asset_id_bytes)
+            if (bytes.Length > maximumAssetIdBytes)
             {
                 throw new ArgumentOutOfRangeException(nameof(semanticId));
             }
             var result = ReadJson<PresentationAssetObservation>(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_session_presentation_asset_json_v1(
-                        Handle,
-                        ParseCounter(CurrentIdentity.generation, "generation"),
-                        ParseCounter(CurrentIdentity.tick, "tick"),
+                        handle,
+                        ParseCounter(identity.generation, "generation"),
+                        ParseCounter(identity.tick, "tick"),
                         bytes,
                         checked((uint)bytes.Length),
                         buffer,
                         capacity,
                         out length),
                 "read neutral presentation asset");
-            ValidateIdentityForHandle(Handle, result.identity);
-            if (result.identity.generation != CurrentIdentity.generation ||
-                result.identity.tick != CurrentIdentity.tick ||
-                result.identity.package_graph_hash != CurrentIdentity.package_graph_hash ||
-                result.identity.definition_hash != CurrentIdentity.definition_hash ||
-                result.identity.definition_revision != CurrentIdentity.definition_revision)
+            ValidateIdentityForHandle(handle, result.identity);
+            if (result.identity.generation != identity.generation ||
+                result.identity.tick != identity.tick ||
+                result.identity.package_graph_hash != identity.package_graph_hash ||
+                result.identity.definition_hash != identity.definition_hash ||
+                result.identity.definition_revision != identity.definition_revision)
             {
                 throw new InvalidOperationException(
                     "neutral presentation asset is not bound to the current session identity");
@@ -714,7 +751,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.engine_contract != EngineContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 2 ||
+                contract.transport_version != 3 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.u64_hash_encoding != "lowercase-hex-16" ||
@@ -732,11 +769,11 @@ namespace MagicCarpet.Native
                     "native engine contract or required capabilities are unsupported");
             }
             ValidateProfile(
-                contract, OwnedProfile, "game_snapshot/v1", RequiredCapabilities);
+                contract, OwnedProfile, "game_snapshot/v1", RequiredOwnedCapabilities);
             ValidateProfile(
                 contract,
                 CampaignProfile,
-                "campaign_snapshot/v1",
+                "campaign_snapshot/v2",
                 RequiredCampaignCapabilities);
         }
 
@@ -807,6 +844,7 @@ namespace MagicCarpet.Native
         internal static void ValidateCampaignSnapshot(CampaignSnapshotValue value, Identity identity)
         {
             if (value == null || value.player_pose == null || value.player_motion == null ||
+                value.presentation_entities == null ||
                 value.tick != identity.tick)
             {
                 throw new InvalidOperationException("neutral campaign snapshot is incomplete");
@@ -814,6 +852,19 @@ namespace MagicCarpet.Native
             ParseCounter(value.effect_head, "effect_head");
             ParseHash(value.state_hash, "state_hash");
             ParseHash(value.terrain_hash, "terrain_hash");
+            foreach (var entity in value.presentation_entities)
+            {
+                if (entity == null || entity.pose == null || entity.asset == null ||
+                    string.IsNullOrWhiteSpace(entity.kind) ||
+                    string.IsNullOrWhiteSpace(entity.asset.id) ||
+                    string.IsNullOrWhiteSpace(entity.asset.content_address) ||
+                    entity.logical_height == 0)
+                {
+                    throw new InvalidOperationException(
+                        "neutral presentation entity is incomplete");
+                }
+                ParseCounter(entity.actor, "presentation_actor");
+            }
             if (value.effect_journal_sha256 == null ||
                 value.effect_journal_sha256.Length != 64 ||
                 value.effect_journal_sha256.Any(character =>

@@ -229,7 +229,8 @@ namespace MagicCarpet.Native.Tests
             Assert.That(contract.engine_contract, Is.EqualTo(EngineSessionTransport.EngineContract));
             Assert.That(contract.transport_contract, Is.EqualTo(EngineSessionTransport.TransportContract));
             Assert.That(contract.capabilities, Is.EqualTo(new[]
-                { "snapshot", "step", "reset", "events", "audio", "presentation_assets" }));
+                { "snapshot", "step", "reset", "events", "audio", "presentation_assets",
+                  "presentation_entities" }));
 
             var unsupported = new EngineSessionTransport.Contract
             {
@@ -364,11 +365,12 @@ namespace MagicCarpet.Native.Tests
                 var campaignProfile = transport.NegotiatedContract.session_profiles
                     .Single(profile =>
                         profile.profile == EngineSessionTransport.CampaignProfile);
-                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v1"));
+                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v2"));
                 Assert.That(
                     campaignProfile.capabilities,
                     Is.EqualTo(new[]
-                        { "snapshot", "step", "reset", "events", "presentation_assets" }));
+                        { "snapshot", "step", "reset", "events", "presentation_assets",
+                          "presentation_entities" }));
 
                 var initial = transport.CampaignSnapshot();
                 Assert.That(initial.identity.generation, Is.EqualTo("1"));
@@ -378,6 +380,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(initial.value.state_hash, Has.Length.EqualTo(16));
                 Assert.That(initial.value.terrain_hash, Has.Length.EqualTo(16));
                 Assert.That(initial.value.effect_journal_sha256, Has.Length.EqualTo(64));
+                Assert.That(initial.value.presentation_entities, Is.Empty);
 
                 for (var poll = 0; poll < 3; poll++)
                 {

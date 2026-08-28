@@ -530,9 +530,24 @@ namespace MagicCarpet.Native
 
         private NativeSession session;
         private NativeCampaignSession campaignSession;
+        private const string GameRuntimeFireballAssetSlot =
+            "presentation.spell.fireball.projectile_asset";
+        private const string GameRuntimeFireballKind = "spell.fireball.projectile";
         private bool gameRuntimeMode;
         private bool gameRuntimeStartupReady;
         private EngineSessionTransport.CampaignSnapshotObservation gameRuntimeCampaignSnapshot;
+        private EngineSessionTransport.PresentationAssetObservation gameRuntimeFireballAsset;
+        private SemanticPresentationAssetCache gameRuntimePresentationAssetCache;
+        private readonly Dictionary<ulong, GameRuntimePresentationMarker>
+            gameRuntimeFireballMarkers = new();
+        private Transform gameRuntimeWorldRoot;
+        private Transform gameRuntimeCameraRig;
+        private Camera gameRuntimeCamera;
+        private Material gameRuntimeFireballMaterial;
+        private ushort gameRuntimePriorPlayerX;
+        private ushort gameRuntimePriorPlayerY;
+        private long gameRuntimeUnwrappedPlayerX;
+        private long gameRuntimeUnwrappedPlayerY;
         private NativeSim.CampaignWorldInfo campaignWorldInfo;
         private NativeSim.CampaignStepSnapshot level2StepSnapshot;
         private NativeSim.CampaignTerrainState level2TerrainState;
@@ -975,6 +990,8 @@ namespace MagicCarpet.Native
             string.IsNullOrEmpty(fatalError) &&
             session != null &&
             session.UsesGameRuntimeContract &&
+            gameRuntimePresentationAssetCache != null &&
+            gameRuntimeFireballAsset?.value != null &&
             campaignSession == null;
 
         internal GameRuntimeTransport.Identity GameRuntimeProductionIdentity =>
@@ -983,6 +1000,21 @@ namespace MagicCarpet.Native
 
         internal EngineSessionTransport.CampaignSnapshotObservation
             GameRuntimeProductionCampaignSnapshot => gameRuntimeCampaignSnapshot;
+
+        internal Texture2D GameRuntimeProductionFireballTexture =>
+            gameRuntimeFireballAsset?.value == null
+                ? null
+                : gameRuntimePresentationAssetCache?.Bind(gameRuntimeFireballAsset);
+
+        internal string GameRuntimeProductionFireballContentAddress =>
+            gameRuntimeFireballAsset?.value?.content_address;
+
+        internal int GameRuntimeProductionFireballMarkerCount =>
+            gameRuntimeFireballMarkers.Count;
+
+        internal Texture GameRuntimeProductionRenderedFireballTexture =>
+            gameRuntimeFireballMarkers.Values.FirstOrDefault()?.Renderer
+                ?.sharedMaterial?.mainTexture;
 
         internal NativeSim.CampaignWorldInfo Level2ProductionWorldInfo =>
             campaignWorldInfo;
@@ -2526,6 +2558,7 @@ namespace MagicCarpet.Native
                 unchecked((sbyte)flags),
                 0,
                 0);
+            UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
         }
 
         private void PresentLevel2SpellEffects(
@@ -8519,6 +8552,15 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady,
                 "game runtime reset route requires a validated production owner");
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignReset();
+            UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+        }
+
+        internal void QualificationRequestGameRuntimeFireball()
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "game runtime Fireball input requires a validated production owner");
+            fireRequested = true;
         }
 
         internal void QualificationInitializeLevel2Production(
@@ -11878,6 +11920,8 @@ namespace MagicCarpet.Native
             {
                 var identity = opened.GameRuntimeIdentity();
                 var observation = opened.GameRuntimeCampaignSnapshot();
+                var fireballAsset = opened.GameRuntimePresentationAsset(
+                    GameRuntimeFireballAssetSlot);
                 Require(
                     identity.mode == GameRuntimeTransport.PlayingMode &&
                     identity.active_runtime_flow != null &&
@@ -11891,6 +11935,13 @@ namespace MagicCarpet.Native
                     observation.identity.generation == identity.session.generation &&
                     observation.identity.tick == identity.session.tick,
                     "production game runtime snapshot is bound to the same nested session");
+                Require(
+                    fireballAsset.identity.session_id == identity.session.session_id &&
+                    fireballAsset.identity.generation == identity.session.generation &&
+                    fireballAsset.identity.tick == identity.session.tick &&
+                    fireballAsset.value.slot_id == GameRuntimeFireballAssetSlot,
+                    "production Fireball asset is bound to the same nested session");
+                ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
                 session = opened;
                 gameRuntimeCampaignSnapshot = observation;
                 gameRuntimeMode = true;
@@ -11902,9 +11953,185 @@ namespace MagicCarpet.Native
             }
             catch
             {
+                DestroyGameRuntimeFireballPresentation();
                 opened.Dispose();
                 throw;
             }
+        }
+
+        private void ConfigureGameRuntimeFireballPresentation(
+            EngineSessionTransport.PresentationAssetObservation asset,
+            EngineSessionTransport.CampaignSnapshotObservation observation)
+        {
+            DestroyGameRuntimeFireballPresentation();
+            var cache = new SemanticPresentationAssetCache();
+            try
+            {
+                var texture = cache.Bind(asset);
+                Require(
+                    texture.width == asset.value.width &&
+                    texture.height == asset.value.height &&
+                    asset.value.frame_count == 1,
+                    "runtime Fireball texture matches its typed one-frame asset");
+                var shader = Shader.Find("Unlit/Transparent") ??
+                    Shader.Find("Sprites/Default");
+                Require(shader != null, "runtime semantic sprite shader");
+                var material = new Material(shader)
+                {
+                    name = "Semantic Fireball " + asset.value.content_address,
+                    mainTexture = texture
+                };
+                var worldRoot = new GameObject("Game Runtime Semantic World").transform;
+                worldRoot.SetParent(transform, false);
+                var cameraRig = new GameObject("Game Runtime Semantic Camera").transform;
+                cameraRig.SetParent(transform, false);
+                var camera = cameraRig.gameObject.AddComponent<Camera>();
+                camera.enabled = !Application.isBatchMode;
+                camera.nearClipPlane = 0.035f;
+                camera.farClipPlane = 1800f;
+                camera.fieldOfView = Level1ExitPresentationMath.UnityVerticalFov(128);
+                camera.rect = Level1ExitPresentationMath.SourceDisplayRect(
+                    Screen.width, Screen.height);
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = new Color(0.055f, 0.065f, 0.09f);
+
+                gameRuntimePresentationAssetCache = cache;
+                gameRuntimeFireballAsset = asset;
+                gameRuntimeFireballMaterial = material;
+                gameRuntimeWorldRoot = worldRoot;
+                gameRuntimeCameraRig = cameraRig;
+                gameRuntimeCamera = camera;
+                var player = observation.value.player_pose;
+                gameRuntimePriorPlayerX = player.x;
+                gameRuntimePriorPlayerY = player.y;
+                gameRuntimeUnwrappedPlayerX = player.x;
+                gameRuntimeUnwrappedPlayerY = player.y;
+                UpdateGameRuntimeFireballPresentation(observation);
+                Debug.Log(
+                    "MC_GAME_RUNTIME_PRESENTATION VERIFIED " +
+                    $"slot={asset.value.slot_id} " +
+                    $"content={asset.value.content_address} " +
+                    $"size={asset.value.width}x{asset.value.height}");
+            }
+            catch
+            {
+                cache.Dispose();
+                DestroyGameRuntimeFireballPresentation();
+                throw;
+            }
+        }
+
+        private void UpdateGameRuntimeFireballPresentation(
+            EngineSessionTransport.CampaignSnapshotObservation observation)
+        {
+            Require(
+                observation?.value?.player_pose != null &&
+                observation.value.presentation_entities != null &&
+                gameRuntimeFireballAsset?.value != null &&
+                gameRuntimePresentationAssetCache != null &&
+                gameRuntimeWorldRoot != null &&
+                gameRuntimeCameraRig != null &&
+                gameRuntimeFireballMaterial != null,
+                "runtime semantic Fireball presentation is initialized");
+            var player = observation.value.player_pose;
+            gameRuntimeUnwrappedPlayerX +=
+                ModularDelta(player.x, gameRuntimePriorPlayerX);
+            gameRuntimeUnwrappedPlayerY +=
+                ModularDelta(player.y, gameRuntimePriorPlayerY);
+            gameRuntimePriorPlayerX = player.x;
+            gameRuntimePriorPlayerY = player.y;
+            var cameraPosition = SourceToUnity(
+                gameRuntimeUnwrappedPlayerX,
+                gameRuntimeUnwrappedPlayerY,
+                player.z);
+            var cameraRotation = Quaternion.Euler(
+                -SignedAngle11(player.display_pitch) * (360f / 2048f),
+                180f - player.yaw * (360f / 2048f),
+                -SignedAngle11(player.roll) * (360f / 2048f));
+            gameRuntimeCameraRig.SetPositionAndRotation(cameraPosition, cameraRotation);
+
+            var live = new HashSet<ulong>();
+            foreach (var entity in observation.value.presentation_entities)
+            {
+                var parsedActor = ulong.TryParse(entity?.actor, out var actor);
+                Require(
+                    entity != null &&
+                    entity.kind == GameRuntimeFireballKind &&
+                    entity.pose != null &&
+                    entity.asset != null &&
+                    entity.asset.id == GameRuntimeFireballAssetSlot &&
+                    entity.asset.content_address ==
+                        gameRuntimeFireballAsset.value.content_address &&
+                    entity.logical_height > 0 &&
+                    parsedActor &&
+                    actor != 0 &&
+                    live.Add(actor),
+                    "runtime Fireball presentation entity is semantic and unique");
+                if (!gameRuntimeFireballMarkers.TryGetValue(actor, out var marker))
+                {
+                    var node = new GameObject(
+                        $"Semantic Fireball actor {actor}").transform;
+                    node.SetParent(gameRuntimeWorldRoot, false);
+                    var visual = new GameObject("Content-addressed Fireball frame").transform;
+                    visual.SetParent(node, false);
+                    visual.gameObject.AddComponent<MeshFilter>().sharedMesh = EntityQuad(false);
+                    var renderer = visual.gameObject.AddComponent<MeshRenderer>();
+                    renderer.sharedMaterial = gameRuntimeFireballMaterial;
+                    marker = new GameRuntimePresentationMarker
+                    {
+                        Actor = actor,
+                        Node = node,
+                        Visual = visual,
+                        Renderer = renderer
+                    };
+                    gameRuntimeFireballMarkers.Add(actor, marker);
+                }
+                var x = gameRuntimeUnwrappedPlayerX +
+                    ModularDelta(entity.pose.x, player.x);
+                var y = gameRuntimeUnwrappedPlayerY +
+                    ModularDelta(entity.pose.y, player.y);
+                marker.Node.position = SourceToUnity(x, y, entity.pose.z);
+                marker.Node.rotation = cameraRotation;
+                var height = entity.logical_height / SourceUnitsPerUnityUnit;
+                var width = height * gameRuntimeFireballAsset.value.width /
+                    gameRuntimeFireballAsset.value.height;
+                marker.Visual.localPosition = new Vector3(0f, height * 0.5f, 0f);
+                marker.Visual.localScale = new Vector3(width, height, 1f);
+                marker.Renderer.sharedMaterial = gameRuntimeFireballMaterial;
+                marker.Renderer.enabled = true;
+            }
+            var removed = gameRuntimeFireballMarkers.Keys
+                .Where(actor => !live.Contains(actor))
+                .ToArray();
+            foreach (var actor in removed)
+            {
+                var marker = gameRuntimeFireballMarkers[actor];
+                if (marker.Node != null)
+                    DestroyOwnedPresentationObject(marker.Node.gameObject);
+                gameRuntimeFireballMarkers.Remove(actor);
+            }
+        }
+
+        private void DestroyGameRuntimeFireballPresentation()
+        {
+            gameRuntimeFireballMarkers.Clear();
+            if (gameRuntimeWorldRoot != null)
+                DestroyOwnedPresentationObject(gameRuntimeWorldRoot.gameObject);
+            if (gameRuntimeCameraRig != null)
+                DestroyOwnedPresentationObject(gameRuntimeCameraRig.gameObject);
+            if (gameRuntimeFireballMaterial != null)
+                DestroyOwnedPresentationObject(gameRuntimeFireballMaterial);
+            gameRuntimePresentationAssetCache?.Dispose();
+            gameRuntimePresentationAssetCache = null;
+            gameRuntimeFireballAsset = null;
+            gameRuntimeFireballMaterial = null;
+            gameRuntimeWorldRoot = null;
+            gameRuntimeCameraRig = null;
+            gameRuntimeCamera = null;
+            gameRuntimePriorPlayerX = 0;
+            gameRuntimePriorPlayerY = 0;
+            gameRuntimeUnwrappedPlayerX = 0;
+            gameRuntimeUnwrappedPlayerY = 0;
         }
 
         private static NativeSession OpenSessionWithAssetCache(
@@ -12442,6 +12669,7 @@ namespace MagicCarpet.Native
             level2PresentationOrder.Clear();
             campaignSession?.Dispose();
             campaignSession = null;
+            DestroyGameRuntimeFireballPresentation();
             gameRuntimeMode = false;
             gameRuntimeStartupReady = false;
             gameRuntimeCampaignSnapshot = null;
@@ -12508,6 +12736,14 @@ namespace MagicCarpet.Native
             internal Transform Visual;
             internal Renderer Renderer;
             internal int Selector;
+        }
+
+        private sealed class GameRuntimePresentationMarker
+        {
+            internal ulong Actor;
+            internal Transform Node;
+            internal Transform Visual;
+            internal Renderer Renderer;
         }
 
         private sealed class EntityGalleryItem
