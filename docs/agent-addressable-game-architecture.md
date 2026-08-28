@@ -367,11 +367,11 @@ partial real implementation, not a completion claim:
   semantic spell pickup in the first three qualified packages: Level 2 Beyond
   Sight and Speed, plus Level 3 Shield and Invisibility. The same private
   kind-and-position binding covers all twelve reset-live Level 3 ordinary
-  Stones; their ordinary callback consumes the authored location through its
-  terrain-ground projection. Movement preserves sub-tile position and map
-  membership, plus the shared spell projection for pickups. Every other
-  placement remains read-only until its own runtime materialization binding is
-  implemented;
+  Stones and all thirty-seven reset-live ordinary Trees; their callbacks
+  consume the authored location through terrain ground/material projections.
+  Movement preserves sub-tile position and map membership, plus the shared
+  spell projection for pickups. Every other placement remains read-only until
+  its own runtime materialization binding is implemented;
 - all fifteen qualified Level 1, 2 and 3 objectives have stable semantic IDs;
   typed `PutObjective` authoring is published atomically and consumed on
   explicit reopen/reset for the five package-present `ReachLocation`

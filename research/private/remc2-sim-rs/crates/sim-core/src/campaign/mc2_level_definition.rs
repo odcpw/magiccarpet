@@ -824,7 +824,8 @@ fn bind_private_entity(
                 })?;
                 Mc2MovableRuntimeHint::AuthoredRecord(source_id)
             }
-            LevelEntityKind::SpellPickup(_) | LevelEntityKind::Scenery(SceneryKind::Stone) => {
+            LevelEntityKind::SpellPickup(_)
+            | LevelEntityKind::Scenery(SceneryKind::Stone | SceneryKind::Tree) => {
                 Mc2MovableRuntimeHint::ResetKindAndPosition
             }
             _ => {
