@@ -5,7 +5,9 @@
 //! writable only when all four authoring callbacks exist. That alone does not
 //! prove a live gameplay consumer uses the published value.
 
-use super::{DefinitionError, DefinitionErrorCode, GameDefinition, Result};
+use super::{
+    DefinitionError, DefinitionErrorCode, GameDefinition, Result, level_definition::TilePosition,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -70,6 +72,7 @@ pub enum SemanticValue {
     Integer(i64),
     Enum(String),
     Reference(String),
+    Position(TilePosition),
 }
 
 impl SemanticValue {
@@ -79,6 +82,7 @@ impl SemanticValue {
             Self::Integer(value) => json!({"type": "integer", "value": value}),
             Self::Enum(value) => json!({"type": "enum", "value": value}),
             Self::Reference(value) => json!({"type": "reference", "value": value}),
+            Self::Position(value) => json!({"type": "position", "value": value}),
         }
     }
 }
@@ -89,6 +93,7 @@ pub enum DescriptorKind {
     AssetSlot,
     Rule,
     Behavior,
+    Placement,
 }
 
 impl DescriptorKind {
@@ -99,6 +104,7 @@ impl DescriptorKind {
             Self::AssetSlot => "asset_slot",
             Self::Rule => "rule",
             Self::Behavior => "behavior",
+            Self::Placement => "placement",
         }
     }
 }
@@ -108,6 +114,7 @@ pub enum ValueType {
     Integer,
     Enum,
     Reference,
+    Position,
 }
 
 impl ValueType {
@@ -117,6 +124,7 @@ impl ValueType {
             Self::Integer => "integer",
             Self::Enum => "enum",
             Self::Reference => "reference",
+            Self::Position => "position",
         }
     }
 }
@@ -262,6 +270,23 @@ impl SemanticDescriptor {
             }
             (ValueType::Reference, SemanticValue::Reference(value)) => {
                 super::lower_content_hash(value, path)?;
+            }
+            (ValueType::Position, SemanticValue::Position(value)) => {
+                let x = i64::from(value.x);
+                let y = i64::from(value.y);
+                if self
+                    .minimum
+                    .is_some_and(|minimum| x < minimum || y < minimum)
+                    || self
+                        .maximum
+                        .is_some_and(|maximum| x > maximum || y > maximum)
+                {
+                    return Err(DefinitionError::new(
+                        DefinitionErrorCode::OutOfRange,
+                        path,
+                        "position semantic value is outside descriptor bounds",
+                    ));
+                }
             }
             _ => {
                 return Err(DefinitionError::new(

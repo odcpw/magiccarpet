@@ -9,6 +9,7 @@ use super::{
     MutationTiming, OptionParameter, PresentationAssetSlot, SemanticCatalog, SemanticId,
     SemanticValue,
 };
+use crate::operation::ResolvedOperation;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -21,7 +22,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v2";
+pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v3";
 pub const WORKSPACE_SCHEMA: &str = "carpet-flight-definition-workspace/v1";
 pub const VALIDATION_RECEIPT_SCHEMA: &str = "carpet-flight-validation-receipt/v1";
 pub const APPLY_RECEIPT_SCHEMA: &str = "carpet-flight-apply-receipt/v1";
@@ -335,6 +336,45 @@ impl ChangeSetBuilder {
     }
 
     #[must_use]
+    pub fn move_entity(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        position: crate::level_definition::TilePosition,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::MoveEntity {
+                entity,
+                position,
+                expected_position: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn move_entity_from(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        expected_position: crate::level_definition::TilePosition,
+        position: crate::level_definition::TilePosition,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::MoveEntity {
+                entity,
+                position,
+                expected_position: Some(expected_position),
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn operation(mut self, operation: DefinitionOperation) -> Self {
+        self.change_set.operations.push(operation);
+        self
+    }
+
+    #[must_use]
     pub fn intent(mut self, intent: impl Into<String>) -> Self {
         self.change_set.intent = Some(intent.into());
         self
@@ -612,8 +652,8 @@ impl WorkspaceStore {
                     let id = SemanticId::parse(id).ok()?;
                     Some(DefinitionDiff {
                         id: id.as_str().to_owned(),
-                        before: active.value(&id)?.clone(),
-                        after: candidate.value(&id)?.clone(),
+                        before: active.semantic_target_value(&id)?,
+                        after: candidate.semantic_target_value(&id)?,
                     })
                 })
                 .collect()
@@ -1114,108 +1154,163 @@ fn validate_against(
             Err(error) => diagnostics.push(error.into()),
         }
     }
-    for replacement in &resolved_operations {
-        let descriptor = catalog.descriptor(&replacement.id);
-        if let Some(descriptor) = descriptor {
-            required_timing = Some(match (required_timing, descriptor.mutation_timing) {
-                (Some(RequestedTiming::PackageReload), _) | (_, MutationTiming::PackageReload) => {
-                    RequestedTiming::PackageReload
-                }
-                _ => RequestedTiming::SessionReset,
-            });
-            if !change_set
-                .requested_timing
-                .permits(descriptor.mutation_timing)
-            {
-                diagnostics.push(Diagnostic {
-                    code: "UNSAFE_TIMING".to_owned(),
-                    path_or_id: replacement.id.as_str().to_owned(),
-                    message: format!(
-                        "requested {} is earlier than required {}",
-                        change_set.requested_timing.as_str(),
-                        descriptor.mutation_timing.as_str()
-                    ),
-                });
-                continue;
-            }
-            if descriptor.access == Access::ReadOnly {
-                diagnostics.push(Diagnostic {
-                    code: "READ_ONLY".to_owned(),
-                    path_or_id: replacement.id.as_str().to_owned(),
-                    message: "semantic descriptor is read-only at this engine revision".to_owned(),
-                });
-                continue;
-            }
-        }
-        if let Some(expected) = &replacement.expected_value
-            && active.value(&replacement.id) != Some(expected)
-        {
-            diagnostics.push(Diagnostic {
-                code: "CONFLICT".to_owned(),
-                path_or_id: replacement.id.as_str().to_owned(),
-                message: "replacement expected value does not match the active definition"
-                    .to_owned(),
-            });
-            continue;
-        }
-        if active.value(&replacement.id) == Some(&replacement.value) {
-            diagnostics.push(Diagnostic {
-                code: "INVALID_REQUEST".to_owned(),
-                path_or_id: replacement.id.as_str().to_owned(),
-                message: "replacement is identical to the active definition value".to_owned(),
-            });
-            continue;
-        }
-        match catalog.validate_replacement_shape(active, &replacement.id, &replacement.value) {
-            Ok(()) => {
-                if let SemanticValue::Reference(reference) = &replacement.value {
-                    let present = active.artifacts().iter().any(|artifact| {
-                        reference
-                            .strip_prefix("sha256:")
-                            .is_some_and(|hash| hash == artifact.sha256)
+    for resolved in &resolved_operations {
+        match resolved {
+            ResolvedOperation::CatalogReplacement {
+                id,
+                value,
+                expected_value,
+            } => {
+                let descriptor = catalog.descriptor(id);
+                if let Some(descriptor) = descriptor {
+                    required_timing = Some(match (required_timing, descriptor.mutation_timing) {
+                        (Some(RequestedTiming::PackageReload), _)
+                        | (_, MutationTiming::PackageReload) => RequestedTiming::PackageReload,
+                        _ => RequestedTiming::SessionReset,
                     });
-                    if !present {
+                    if !change_set
+                        .requested_timing
+                        .permits(descriptor.mutation_timing)
+                    {
                         diagnostics.push(Diagnostic {
-                            code: "DEPENDENCY_FAILED".to_owned(),
-                            path_or_id: replacement.id.as_str().to_owned(),
-                            message: "replacement asset is absent from the retained artifact graph"
+                            code: "UNSAFE_TIMING".to_owned(),
+                            path_or_id: id.as_str().to_owned(),
+                            message: format!(
+                                "requested {} is earlier than required {}",
+                                change_set.requested_timing.as_str(),
+                                descriptor.mutation_timing.as_str()
+                            ),
+                        });
+                        continue;
+                    }
+                    if descriptor.access == Access::ReadOnly {
+                        diagnostics.push(Diagnostic {
+                            code: "READ_ONLY".to_owned(),
+                            path_or_id: id.as_str().to_owned(),
+                            message: "semantic descriptor is read-only at this engine revision"
                                 .to_owned(),
                         });
                         continue;
                     }
                 }
-                match proposed.with_replacement(
-                    &replacement.id,
-                    replacement.value.clone(),
-                    candidate_revision,
-                ) {
-                    Ok(updated) => {
-                        proposed = updated;
-                        preliminarily_valid.insert(replacement.id.clone());
+                if let Some(expected) = expected_value
+                    && active.value(id) != Some(expected)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "replacement expected value does not match the active definition"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                if active.value(id) == Some(value) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "replacement is identical to the active definition value"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                match catalog.validate_replacement_shape(active, id, value) {
+                    Ok(()) => {
+                        if let SemanticValue::Reference(reference) = value {
+                            let present = active.artifacts().iter().any(|artifact| {
+                                reference
+                                    .strip_prefix("sha256:")
+                                    .is_some_and(|hash| hash == artifact.sha256)
+                            });
+                            if !present {
+                                diagnostics.push(Diagnostic {
+                                    code: "DEPENDENCY_FAILED".to_owned(),
+                                    path_or_id: id.as_str().to_owned(),
+                                    message: "replacement asset is absent from the retained artifact graph"
+                                        .to_owned(),
+                                });
+                                continue;
+                            }
+                        }
+                        match proposed.with_replacement(id, value.clone(), candidate_revision) {
+                            Ok(updated) => {
+                                proposed = updated;
+                                preliminarily_valid.insert(id.clone());
+                            }
+                            Err(error) => diagnostics.push(error.into()),
+                        }
                     }
                     Err(error) => diagnostics.push(error.into()),
                 }
             }
-            Err(error) => diagnostics.push(error.into()),
+            ResolvedOperation::EntityMove {
+                id,
+                entity,
+                position,
+                expected_position,
+            } => {
+                required_timing = Some(required_timing.unwrap_or(RequestedTiming::SessionReset));
+                if !change_set
+                    .requested_timing
+                    .permits(MutationTiming::SessionReset)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "UNSAFE_TIMING".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "entity movement requires session_reset timing".to_owned(),
+                    });
+                    continue;
+                }
+                let current = active
+                    .level_definition()
+                    .and_then(|level| level.entity(entity))
+                    .map(|candidate| candidate.position());
+                if expected_position.is_some() && current != *expected_position {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "move expected position does not match the active definition"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                if current == Some(*position) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "entity already has the requested position".to_owned(),
+                    });
+                    continue;
+                }
+                match proposed.with_moved_level_entity(entity, *position, candidate_revision) {
+                    Ok(updated) => {
+                        proposed = updated;
+                        preliminarily_valid.insert(id.clone());
+                    }
+                    Err(error) => diagnostics.push(error.into()),
+                }
+            }
         }
     }
-    for replacement in &resolved_operations {
-        if preliminarily_valid.contains(&replacement.id)
-            && let Err(error) =
-                catalog.validate_replacement(&proposed, &replacement.id, &replacement.value)
+    for resolved in &resolved_operations {
+        if let ResolvedOperation::CatalogReplacement { id, value, .. } = resolved
+            && preliminarily_valid.contains(id)
+            && let Err(error) = catalog.validate_replacement(&proposed, id, value)
         {
             diagnostics.push(error.into());
         }
     }
     let mut candidate = active.clone();
     if diagnostics.is_empty() {
-        for replacement in &resolved_operations {
-            match catalog.apply_replacement(
-                &candidate,
-                &replacement.id,
-                &replacement.value,
-                candidate_revision,
-            ) {
+        for resolved in &resolved_operations {
+            let applied = match resolved {
+                ResolvedOperation::CatalogReplacement { id, value, .. } => {
+                    catalog.apply_replacement(&candidate, id, value, candidate_revision)
+                }
+                ResolvedOperation::EntityMove {
+                    entity, position, ..
+                } => candidate.with_moved_level_entity(entity, *position, candidate_revision),
+            };
+            match applied {
                 Ok(updated) => candidate = updated,
                 Err(error) => diagnostics.push(error.into()),
             }
@@ -1392,7 +1487,7 @@ fn read_back_hash(definition: &GameDefinition, ids: &[String]) -> String {
         .filter_map(|id| SemanticId::parse(id).ok())
         .filter_map(|id| {
             definition
-                .value(&id)
+                .semantic_target_value(&id)
                 .map(|value| json!({"id": id.as_str(), "value": value.to_json()}))
         })
         .collect::<Vec<_>>();
@@ -1467,6 +1562,13 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{
+        build_level_definition, entity_definition_with_position_access, stable_entity_id,
+        with_level_definition,
+    };
+    use crate::level_definition::{
+        LevelEntityKind, LevelEntityPositionAccess, SceneryKind, SwitchKind, TilePosition,
+    };
     use crate::{
         GamePackage, Result as DefinitionResult, SemanticBinding, default_catalog,
         engine_capabilities,
@@ -1621,6 +1723,27 @@ mod tests {
         .expect("definition")
     }
 
+    fn fixture_definition_with_movable_entity() -> GameDefinition {
+        let movable = entity_definition_with_position_access(
+            stable_entity_id("switch.start_area_exit").unwrap(),
+            LevelEntityKind::Switch(SwitchKind::AreaExitTrigger),
+            TilePosition { x: 74, y: 212 },
+            None,
+            LevelEntityPositionAccess::SessionReset,
+        );
+        let read_only = entity_definition_with_position_access(
+            stable_entity_id("scenery.old_oak").unwrap(),
+            LevelEntityKind::Scenery(SceneryKind::Tree),
+            TilePosition { x: 80, y: 210 },
+            None,
+            LevelEntityPositionAccess::ReadOnly,
+        );
+        with_level_definition(
+            fixture_definition(),
+            build_level_definition(vec![movable, read_only], Vec::new(), Vec::new()).unwrap(),
+        )
+    }
+
     fn temporary_workspace(label: &str) -> PathBuf {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
@@ -1639,6 +1762,296 @@ mod tests {
         .set_integer(IntegerParameter::PlayerMaxForwardSpeed, value)
         .build()
         .expect("change set")
+    }
+
+    #[test]
+    fn move_entity_publication_diff_readback_and_rollback_are_typed_and_atomic() {
+        let root = temporary_workspace("move-entity");
+        let definition = fixture_definition_with_movable_entity();
+        let store = WorkspaceStore::create(&root, "move-workspace", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let entity = stable_entity_id("switch.start_area_exit").unwrap();
+        let target_id = SemanticId::parse("switch.start_area_exit.position").unwrap();
+        let original = TilePosition { x: 74, y: 212 };
+        let moved = TilePosition { x: 150, y: 100 };
+        let base_descriptor = definition
+            .level_entity_position_descriptor(&target_id)
+            .unwrap();
+        assert_eq!(base_descriptor.kind, crate::DescriptorKind::Placement);
+        assert_eq!(base_descriptor.access, Access::Writable);
+        assert_eq!(
+            base_descriptor.default_value,
+            SemanticValue::Position(original)
+        );
+        assert_eq!(
+            definition.semantic_target_value(&target_id),
+            Some(SemanticValue::Position(original))
+        );
+        let request = ChangeSetBuilder::new(
+            "move-workspace",
+            &definition,
+            "move-start-trigger",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(entity.clone(), original, moved)
+        .build()
+        .unwrap();
+        let before = store.state_bytes().unwrap();
+        let validation = store.validate(&catalog, request.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        assert_eq!(
+            validation.affected_ids,
+            vec!["switch.start_area_exit.position"]
+        );
+        let (_, diff) = store.diff(&catalog, request.clone()).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].before, SemanticValue::Position(original));
+        assert_eq!(diff[0].after, SemanticValue::Position(moved));
+        assert_eq!(store.state_bytes().unwrap(), before);
+
+        let applied = store
+            .apply(
+                &catalog,
+                request,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        assert_eq!(applied.applied_ids, vec!["switch.start_area_exit.position"]);
+        let active = store.active_definition().unwrap();
+        assert_eq!(
+            active
+                .level_definition()
+                .unwrap()
+                .entity(&entity)
+                .unwrap()
+                .position(),
+            moved
+        );
+        assert_ne!(active.definition_hash(), definition.definition_hash());
+        let moved_descriptor = active.level_entity_position_descriptor(&target_id).unwrap();
+        assert_eq!(
+            moved_descriptor.default_value,
+            SemanticValue::Position(original)
+        );
+        assert_eq!(
+            active.semantic_target_value(&target_id),
+            Some(SemanticValue::Position(moved))
+        );
+
+        let rolled = store
+            .rollback(
+                active.definition_hash(),
+                active.revision(),
+                &applied.transaction_id,
+                "rollback-start-trigger",
+                PublicationFault::None,
+            )
+            .unwrap();
+        assert_eq!(rolled.resulting_definition_revision, 3);
+        assert_eq!(
+            store
+                .active_definition()
+                .unwrap()
+                .level_definition()
+                .unwrap()
+                .entity(&entity)
+                .unwrap()
+                .position(),
+            original
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mixed_parameter_and_entity_move_publish_atomically_or_not_at_all() {
+        let root = temporary_workspace("mixed-entity-move");
+        let definition = fixture_definition_with_movable_entity();
+        let store = WorkspaceStore::create(&root, "mixed-workspace", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let entity = stable_entity_id("switch.start_area_exit").unwrap();
+        let original = TilePosition { x: 74, y: 212 };
+        let moved = TilePosition { x: 150, y: 100 };
+        let before = store.state_bytes().unwrap();
+
+        let invalid = ChangeSetBuilder::new(
+            "mixed-workspace",
+            &definition,
+            "mixed-invalid",
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 20)
+        .move_entity_from(entity.clone(), original, moved)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, invalid).unwrap();
+        assert!(!validation.accepted);
+        assert_eq!(store.state_bytes().unwrap(), before);
+
+        let request = ChangeSetBuilder::new(
+            "mixed-workspace",
+            &definition,
+            "mixed-valid",
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 96)
+        .move_entity_from(entity.clone(), original, moved)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, request.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        assert_eq!(
+            validation.affected_ids,
+            [
+                "flight.player.max_forward_speed",
+                "switch.start_area_exit.position",
+            ]
+        );
+        let (_, diff) = store.diff(&catalog, request.clone()).unwrap();
+        assert_eq!(diff.len(), 2);
+        assert_eq!(
+            diff.iter()
+                .map(|entry| (entry.id.as_str(), &entry.before, &entry.after))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "flight.player.max_forward_speed",
+                    &SemanticValue::Integer(80),
+                    &SemanticValue::Integer(96),
+                ),
+                (
+                    "switch.start_area_exit.position",
+                    &SemanticValue::Position(original),
+                    &SemanticValue::Position(moved),
+                ),
+            ]
+        );
+        assert_eq!(store.state_bytes().unwrap(), before);
+
+        let applied = store
+            .apply(
+                &catalog,
+                request,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        assert_eq!(applied.applied_ids, validation.affected_ids);
+        let active = store.active_definition().unwrap();
+        assert_eq!(
+            active.semantic_target_value(
+                &SemanticId::parse("flight.player.max_forward_speed").unwrap()
+            ),
+            Some(SemanticValue::Integer(96))
+        );
+        assert_eq!(
+            active
+                .level_definition()
+                .unwrap()
+                .entity(&entity)
+                .unwrap()
+                .position(),
+            moved
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn move_entity_rejections_preserve_workspace_and_raw_identity_is_unrepresentable() {
+        let root = temporary_workspace("move-entity-rejections");
+        let definition = fixture_definition_with_movable_entity();
+        let store = WorkspaceStore::create(&root, "move-workspace", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let before = store.state_bytes().unwrap();
+        let movable = stable_entity_id("switch.start_area_exit").unwrap();
+
+        let rejected = [
+            DefinitionOperation::MoveEntity {
+                entity: stable_entity_id("scenery.old_oak").unwrap(),
+                position: TilePosition { x: 81, y: 210 },
+                expected_position: None,
+            },
+            DefinitionOperation::MoveEntity {
+                entity: stable_entity_id("switch.unknown_trigger").unwrap(),
+                position: TilePosition { x: 150, y: 100 },
+                expected_position: None,
+            },
+            DefinitionOperation::MoveEntity {
+                entity: movable.clone(),
+                position: TilePosition { x: 150, y: 100 },
+                expected_position: Some(TilePosition { x: 75, y: 212 }),
+            },
+            DefinitionOperation::MoveEntity {
+                entity: movable.clone(),
+                position: TilePosition { x: 256, y: 100 },
+                expected_position: None,
+            },
+            DefinitionOperation::MoveEntity {
+                entity: movable.clone(),
+                position: TilePosition { x: 150, y: 100 },
+                expected_position: Some(TilePosition { x: 256, y: 100 }),
+            },
+        ];
+        for (index, operation) in rejected.into_iter().enumerate() {
+            let request = ChangeSetBuilder::new(
+                "move-workspace",
+                &definition,
+                format!("rejected-move-{index}"),
+                RequestedTiming::SessionReset,
+            )
+            .operation(operation)
+            .build()
+            .unwrap();
+            let validation = store.validate(&catalog, request).unwrap();
+            assert!(!validation.accepted);
+            assert_eq!(store.state_bytes().unwrap(), before);
+        }
+
+        let duplicate = ChangeSetBuilder::new(
+            "move-workspace",
+            &definition,
+            "duplicate-move",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity(movable.clone(), TilePosition { x: 150, y: 100 })
+        .move_entity(movable, TilePosition { x: 151, y: 100 })
+        .build()
+        .expect_err("duplicate semantic target must reject");
+        assert_eq!(duplicate.code, TransactionErrorCode::InvalidRequest);
+
+        for raw_identity in [
+            "action17.firefly",
+            "creature.class5_model3_action17",
+            "switch.source48",
+            "switch.raw48",
+            "switch.level_1",
+        ] {
+            assert!(stable_entity_id(raw_identity).is_err());
+        }
+        let raw_field = serde_json::json!({
+            "operation": "move_entity",
+            "entity": "switch.start_area_exit",
+            "position": {"x": 150, "y": 100},
+            "source_slot": 48
+        });
+        assert!(serde_json::from_value::<DefinitionOperation>(raw_field).is_err());
+        for nested_raw_field in [
+            serde_json::json!({
+                "operation": "move_entity",
+                "entity": "switch.start_area_exit",
+                "position": {"x": 150, "y": 100, "source_slot": 48}
+            }),
+            serde_json::json!({
+                "operation": "move_entity",
+                "entity": "switch.start_area_exit",
+                "position": {"x": 150, "y": 100},
+                "expected_position": {"x": 74, "y": 212, "raw": 48}
+            }),
+        ] {
+            assert!(serde_json::from_value::<DefinitionOperation>(nested_raw_field).is_err());
+        }
+        assert_eq!(store.state_bytes().unwrap(), before);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

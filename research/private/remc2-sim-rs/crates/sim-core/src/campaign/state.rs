@@ -395,6 +395,19 @@ impl CampaignDefinition {
         self.initial_source_mechanics = bindings.initial_source_mechanics;
     }
 
+    pub(crate) fn replace_semantic_level(
+        &mut self,
+        level: LevelDefinition,
+    ) -> std::result::Result<(), String> {
+        let current = self
+            .semantic_level
+            .as_ref()
+            .ok_or_else(|| "runtime definition has no semantic level to replace".to_owned())?;
+        level.verify_position_variant_of(current)?;
+        self.semantic_level = Some(level);
+        Ok(())
+    }
+
     #[must_use]
     pub fn semantic_level(&self) -> Option<&LevelDefinition> {
         self.semantic_level.as_ref()

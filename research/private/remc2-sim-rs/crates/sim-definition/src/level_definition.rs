@@ -5,7 +5,8 @@
 //! values, while the shared engine and read-only inspection remain expressed
 //! in game concepts.
 
-use serde::{Deserialize, Serialize};
+use crate::{DefinitionError, DefinitionErrorCode, SemanticId};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -164,42 +165,30 @@ impl MechanicKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct LevelEntityId(String);
 
 impl LevelEntityId {
-    pub(crate) fn creature(kind: CreatureKind, ordinal: u16) -> Self {
-        Self(format!("creature.{}.{}", kind.as_str(), ordinal + 1))
-    }
-
-    pub(crate) fn spell_pickup(kind: SpellKind, ordinal: u16) -> Self {
-        Self(format!("spell_pickup.{}.{}", kind.as_str(), ordinal + 1))
-    }
-
-    pub(crate) fn mechanic(kind: MechanicKind, ordinal: u16) -> Self {
-        Self(format!(
-            "mechanic.{}.{}.{}",
-            kind.as_str(),
-            kind.creature().as_str(),
-            ordinal + 1
-        ))
-    }
-
-    pub(crate) fn scenery(kind: SceneryKind, ordinal: u16) -> Self {
-        Self(format!("scenery.{}.{}", kind.as_str(), ordinal + 1))
-    }
-
-    pub(crate) fn item(kind: ItemKind, ordinal: u16) -> Self {
-        Self(format!("item.{}.{}", kind.as_str(), ordinal + 1))
-    }
-
-    pub(crate) fn building(kind: BuildingKind, ordinal: u16) -> Self {
-        Self(format!("building.{}.{}", kind.as_str(), ordinal + 1))
-    }
-
-    pub(crate) fn switch(kind: SwitchKind, ordinal: u16) -> Self {
-        Self(format!("switch.{}.{}", kind.as_str(), ordinal + 1))
+    /// Parse one stable author-facing entity identity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects IDs which expose private source selectors or Level-N layout.
+    pub fn parse(value: &str) -> crate::Result<Self> {
+        let semantic = SemanticId::parse(value)?;
+        if semantic
+            .as_str()
+            .split('.')
+            .any(is_private_source_identity_segment)
+        {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidSemanticId,
+                value,
+                "level entity ID must be stable game meaning, not source selector identity",
+            ));
+        }
+        Ok(Self(semantic.as_str().to_owned()))
     }
 
     #[must_use]
@@ -208,7 +197,55 @@ impl LevelEntityId {
     }
 }
 
+impl<'de> Deserialize<'de> for LevelEntityId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+pub(crate) fn is_private_source_identity_segment(segment: &str) -> bool {
+    let components = segment.split('_').collect::<Vec<_>>();
+    components
+        .iter()
+        .copied()
+        .any(is_private_source_identity_component)
+        || components.windows(2).any(|window| {
+            window[0] == "level"
+                && !window[1].is_empty()
+                && window[1].bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn is_private_source_identity_component(component: &str) -> bool {
+    if ["source", "raw"].into_iter().any(|prefix| {
+        component == prefix
+            || component.strip_prefix(prefix).is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    }) {
+        return true;
+    }
+    if component.strip_prefix("level").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return true;
+    }
+    ["class", "model", "action", "selector", "family", "slot"]
+        .into_iter()
+        .any(|prefix| {
+            component == prefix
+                || component.strip_prefix(prefix).is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        })
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TilePosition {
     pub x: u16,
     pub y: u16,
@@ -229,7 +266,7 @@ impl ActivationGroupId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LevelEntityKind {
     Creature(CreatureKind),
@@ -239,6 +276,14 @@ pub enum LevelEntityKind {
     Building(BuildingKind),
     Switch(SwitchKind),
     Mechanic(MechanicKind),
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelEntityPositionAccess {
+    #[default]
+    ReadOnly,
+    SessionReset,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -271,9 +316,12 @@ impl LevelObjectiveDefinition {
 pub struct LevelEntityDefinition {
     id: LevelEntityId,
     kind: LevelEntityKind,
+    default_position: TilePosition,
     position: TilePosition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     activation_group: Option<ActivationGroupId>,
+    #[serde(default, skip_serializing_if = "is_read_only_position")]
+    position_access: LevelEntityPositionAccess,
 }
 
 impl LevelEntityDefinition {
@@ -282,12 +330,15 @@ impl LevelEntityDefinition {
         kind: LevelEntityKind,
         position: TilePosition,
         activation_group: Option<ActivationGroupId>,
+        position_access: LevelEntityPositionAccess,
     ) -> Self {
         Self {
             id,
             kind,
+            default_position: position,
             position,
             activation_group,
+            position_access,
         }
     }
 
@@ -306,10 +357,25 @@ impl LevelEntityDefinition {
         self.position
     }
 
+    /// Package-authored position before any immutable authoring variant.
+    #[must_use]
+    pub const fn default_position(&self) -> TilePosition {
+        self.default_position
+    }
+
     #[must_use]
     pub const fn activation_group(&self) -> Option<ActivationGroupId> {
         self.activation_group
     }
+
+    #[must_use]
+    pub const fn position_access(&self) -> LevelEntityPositionAccess {
+        self.position_access
+    }
+}
+
+const fn is_read_only_position(access: &LevelEntityPositionAccess) -> bool {
+    matches!(access, LevelEntityPositionAccess::ReadOnly)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -352,6 +418,82 @@ impl LevelDefinition {
     #[must_use]
     pub fn entities(&self) -> &[LevelEntityDefinition] {
         &self.entities
+    }
+
+    #[must_use]
+    pub fn entity(&self, id: &LevelEntityId) -> Option<&LevelEntityDefinition> {
+        self.entities.iter().find(|entity| entity.id == *id)
+    }
+
+    pub(crate) fn with_moved_entity(
+        &self,
+        id: &LevelEntityId,
+        position: TilePosition,
+    ) -> Result<Self, String> {
+        if position.x > u16::from(u8::MAX) || position.y > u16::from(u8::MAX) {
+            return Err(format!(
+                "semantic level entity {} position is outside the 256x256 world",
+                id.as_str()
+            ));
+        }
+        let mut candidate = self.clone();
+        let entity = candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == *id)
+            .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
+        if entity.position_access != LevelEntityPositionAccess::SessionReset {
+            return Err(format!(
+                "semantic level entity {} position has no runtime consumer",
+                id.as_str()
+            ));
+        }
+        if entity.position == position {
+            return Err(format!(
+                "semantic level entity {} already has the requested position",
+                id.as_str()
+            ));
+        }
+        entity.position = position;
+        Ok(candidate)
+    }
+
+    /// Verify that this definition differs from `base` only through position
+    /// changes explicitly admitted at session reset.
+    ///
+    /// This is public for engine adapters that materialize a validated
+    /// definition in another crate. Authoring callers should use the guarded
+    /// transaction API rather than invoking this validator directly.
+    #[doc(hidden)]
+    pub fn verify_position_variant_of(&self, base: &Self) -> Result<(), String> {
+        if self.objectives != base.objectives
+            || self.activation_groups != base.activation_groups
+            || self.entities.len() != base.entities.len()
+        {
+            return Err("semantic level variant changes level structure".to_owned());
+        }
+        for (candidate, original) in self.entities.iter().zip(&base.entities) {
+            if candidate.id != original.id
+                || candidate.kind != original.kind
+                || candidate.default_position != original.default_position
+                || candidate.activation_group != original.activation_group
+                || candidate.position_access != original.position_access
+            {
+                return Err(format!(
+                    "semantic level variant changes entity identity or structure at {}",
+                    original.id.as_str()
+                ));
+            }
+            if candidate.position != original.position
+                && original.position_access != LevelEntityPositionAccess::SessionReset
+            {
+                return Err(format!(
+                    "semantic level variant moves read-only entity {}",
+                    original.id.as_str()
+                ));
+            }
+        }
+        Ok(())
     }
 
     #[must_use]

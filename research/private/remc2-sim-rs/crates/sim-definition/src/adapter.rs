@@ -10,7 +10,7 @@ use crate::{
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
     level_definition::{
         ActivationGroupId, LevelDefinition, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
-        LevelObjectiveDefinition, ObjectiveCondition, TilePosition,
+        LevelEntityPositionAccess, LevelObjectiveDefinition, ObjectiveCondition, TilePosition,
     },
 };
 
@@ -52,17 +52,8 @@ pub const fn activation_group_id(value: u16) -> ActivationGroupId {
     ActivationGroupId::new(value)
 }
 
-#[must_use]
-pub fn entity_id(kind: LevelEntityKind, ordinal: u16) -> LevelEntityId {
-    match kind {
-        LevelEntityKind::Creature(kind) => LevelEntityId::creature(kind, ordinal),
-        LevelEntityKind::SpellPickup(kind) => LevelEntityId::spell_pickup(kind, ordinal),
-        LevelEntityKind::Scenery(kind) => LevelEntityId::scenery(kind, ordinal),
-        LevelEntityKind::Item(kind) => LevelEntityId::item(kind, ordinal),
-        LevelEntityKind::Building(kind) => LevelEntityId::building(kind, ordinal),
-        LevelEntityKind::Switch(kind) => LevelEntityId::switch(kind, ordinal),
-        LevelEntityKind::Mechanic(kind) => LevelEntityId::mechanic(kind, ordinal),
-    }
+pub fn stable_entity_id(value: &str) -> crate::Result<LevelEntityId> {
+    LevelEntityId::parse(value)
 }
 
 #[must_use]
@@ -72,7 +63,24 @@ pub const fn entity_definition(
     position: TilePosition,
     activation_group: Option<ActivationGroupId>,
 ) -> LevelEntityDefinition {
-    LevelEntityDefinition::new(id, kind, position, activation_group)
+    LevelEntityDefinition::new(
+        id,
+        kind,
+        position,
+        activation_group,
+        LevelEntityPositionAccess::ReadOnly,
+    )
+}
+
+#[must_use]
+pub const fn entity_definition_with_position_access(
+    id: LevelEntityId,
+    kind: LevelEntityKind,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(id, kind, position, activation_group, position_access)
 }
 
 #[must_use]

@@ -9,8 +9,8 @@ use super::source_facts::{
     SelectorProvenance, SourceFact, SourceFactContext, SourceField, validate_source_facts,
 };
 use crate::level_definition::{
-    BuildingKind, CreatureKind, ItemKind, LevelDefinition, MechanicKind, SceneryKind, SpellKind,
-    SwitchKind,
+    BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
+    MechanicKind, SceneryKind, SpellKind, SwitchKind,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -377,10 +377,28 @@ pub struct CampaignDefinition {
     switch_by_initial_source_slot: BTreeMap<u16, SwitchKind>,
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
+    movable_entity_bindings: BTreeMap<LevelEntityId, Mc2EntityRuntimeBinding>,
     member_hashes: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Mc2EntityRuntimeBinding {
+    pub(crate) initial_source_slot: u16,
+    pub(crate) kind: LevelEntityKind,
+    pub(crate) source_id: u16,
+}
+
 impl CampaignDefinition {
+    pub(crate) fn with_level_definition_variant(
+        &self,
+        level: LevelDefinition,
+    ) -> std::result::Result<Self, String> {
+        level.verify_position_variant_of(&self.level_definition)?;
+        let mut candidate = self.clone();
+        candidate.level_definition = level;
+        Ok(candidate)
+    }
+
     /// Read the bounded selection declared by a campaign package. Full schema,
     /// identity, member, and behavior validation still happens in
     /// [`Self::preflight`]; this helper only lets neutral adapters avoid a
@@ -888,11 +906,12 @@ impl CampaignDefinition {
         // Stage 7: closed census-proven operations and RNG source fields.
         let (initial_rng, objectives) =
             validate_operations(spec_value, authored, &files, &members)?;
-        let semantic_level = Mc2LevelDefinition::from_authored_bytes(authored, &objectives)
-            .map_err(|message| CampaignPackageError {
-                stage: ValidationStage::TypedOperations,
-                message: format!("cannot derive semantic level content: {message}"),
-            })?;
+        let semantic_level =
+            Mc2LevelDefinition::from_authored_bytes(authored, &objectives, descriptor_selection)
+                .map_err(|message| CampaignPackageError {
+                    stage: ValidationStage::TypedOperations,
+                    message: format!("cannot derive semantic level content: {message}"),
+                })?;
         let creature_by_initial_source_slot = expected_rows
             .iter()
             .filter_map(|row| {
@@ -948,6 +967,55 @@ impl CampaignDefinition {
                 ))
             })
             .collect::<BTreeMap<_, _>>();
+        let mut movable_entity_bindings = BTreeMap::new();
+        for (entity_id, source_id) in &semantic_level.movable_source_id_by_entity_id {
+            let entity =
+                semantic_level
+                    .semantic
+                    .entity(entity_id)
+                    .ok_or_else(|| CampaignPackageError {
+                        stage: ValidationStage::TypedOperations,
+                        message: format!(
+                            "movable semantic entity {} is absent from its level definition",
+                            entity_id.as_str()
+                        ),
+                    })?;
+            let matching = expected_rows
+                .iter()
+                .filter(|row| {
+                    row.initial_source_slot.is_some() && row.authored_record == *source_id
+                })
+                .filter(|row| match entity.kind() {
+                    LevelEntityKind::Switch(expected) => {
+                        Mc2LevelDefinition::switch_for_reset_selector(
+                            row.class, row.model, row.action,
+                        ) == Some(expected)
+                    }
+                    _ => false,
+                })
+                .collect::<Vec<_>>();
+            if matching.len() != 1 {
+                return fail(
+                    ValidationStage::TypedOperations,
+                    format!(
+                        "movable semantic entity {} has {} frame-zero MC2 carriers",
+                        entity_id.as_str(),
+                        matching.len()
+                    ),
+                );
+            }
+            let row = matching[0];
+            movable_entity_bindings.insert(
+                entity_id.clone(),
+                Mc2EntityRuntimeBinding {
+                    initial_source_slot: row
+                        .initial_source_slot
+                        .expect("movable carrier is frame-zero"),
+                    kind: entity.kind(),
+                    source_id: *source_id,
+                },
+            );
+        }
         for scenery in scenery_by_initial_source_slot.values() {
             if !semantic_level.semantic.entities().iter().any(|entity| {
                 entity.kind() == crate::level_definition::LevelEntityKind::Scenery(*scenery)
@@ -1083,6 +1151,7 @@ impl CampaignDefinition {
             switch_by_initial_source_slot,
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
             mechanic_by_initial_source_slot,
+            movable_entity_bindings,
             member_hashes: files
                 .into_iter()
                 .map(|(name, (_, sha256))| (name, sha256))
@@ -1155,6 +1224,13 @@ impl CampaignDefinition {
 
     pub(crate) fn initial_mechanic_bindings(&self) -> &BTreeMap<u16, MechanicKind> {
         &self.mechanic_by_initial_source_slot
+    }
+
+    pub(crate) fn movable_entity_binding(
+        &self,
+        entity_id: &LevelEntityId,
+    ) -> Option<&Mc2EntityRuntimeBinding> {
+        self.movable_entity_bindings.get(entity_id)
     }
 
     /// Reconstruct the identity of the wrapped owner-level export.

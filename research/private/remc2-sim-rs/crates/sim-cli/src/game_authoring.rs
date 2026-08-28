@@ -35,6 +35,7 @@ fn workspace_create(arguments: &[String]) -> ExitCode {
     let mut workspace = None;
     let mut workspace_id = None;
     let mut package = None;
+    let mut campaign_package = None;
     let mut owner_export = None;
     let mut owner_closure = None;
     let mut owner_cache = None;
@@ -42,6 +43,7 @@ fn workspace_create(arguments: &[String]) -> ExitCode {
         "--workspace" => set_once(&mut workspace, value, flag),
         "--workspace-id" => set_once(&mut workspace_id, value, flag),
         "--package" => set_once(&mut package, value, flag),
+        "--campaign-package" => set_once(&mut campaign_package, value, flag),
         "--owner-export" => set_once(&mut owner_export, value, flag),
         "--owner-closure" => set_once(&mut owner_closure, value, flag),
         "--owner-cache" => set_once(&mut owner_cache, value, flag),
@@ -63,9 +65,20 @@ fn workspace_create(arguments: &[String]) -> ExitCode {
             "--workspace-id is required",
         );
     };
-    let source = match (package, owner_export, owner_closure, owner_cache) {
-        (Some(package), None, None, None) => DefinitionSource::Portable(PathBuf::from(package)),
-        (None, Some(export), Some(closure), Some(cache)) => {
+    let source = match (
+        package,
+        campaign_package,
+        owner_export,
+        owner_closure,
+        owner_cache,
+    ) {
+        (Some(package), None, None, None, None) => {
+            DefinitionSource::Portable(PathBuf::from(package))
+        }
+        (None, Some(package), None, None, None) => {
+            DefinitionSource::Campaign(PathBuf::from(package))
+        }
+        (None, None, Some(export), Some(closure), Some(cache)) => {
             DefinitionSource::Owner(Mc2OwnedInputs::new(
                 PathBuf::from(export),
                 PathBuf::from(closure),
@@ -76,7 +89,7 @@ fn workspace_create(arguments: &[String]) -> ExitCode {
             return game_request_error(
                 "workspace-create",
                 "AMBIGUOUS_DEFINITION_SOURCE",
-                "provide --package or all three owner input paths",
+                "provide --package, --campaign-package, or all three owner input paths",
             );
         }
     };

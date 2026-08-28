@@ -9,7 +9,8 @@
 use std::{fmt, path::Path, sync::Arc};
 
 use crate::{
-    PlayerCommand, StepEvidence,
+    PlayerCommand, Position, StepEvidence,
+    level_definition::{LevelDefinition, LevelEntityPositionAccess},
     native_world::{Level2DispatchEvent, NativeWorld, NativeWorldError, NativeWorldInspection},
 };
 
@@ -146,6 +147,100 @@ impl CampaignSession {
 
     pub fn reset(&mut self) {
         self.level2.reset();
+    }
+
+    pub(crate) fn apply_semantic_placement_variant(
+        &mut self,
+        level: &LevelDefinition,
+    ) -> Result<(), NativeWorldError> {
+        level
+            .verify_position_variant_of(self.definition.level_definition())
+            .map_err(NativeWorldError::new)?;
+        for entity in level.entities() {
+            let original = self
+                .definition
+                .level_definition()
+                .entity(entity.id())
+                .expect("position variant preserves every package entity");
+            if entity.position() == original.position() {
+                continue;
+            }
+            if entity.position_access() != LevelEntityPositionAccess::SessionReset {
+                return Err(NativeWorldError::new(format!(
+                    "semantic entity {} is not placement-writable",
+                    entity.id().as_str()
+                )));
+            }
+            let binding = self
+                .definition
+                .movable_entity_binding(entity.id())
+                .ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "semantic entity {} has no private MC2 runtime binding",
+                        entity.id().as_str()
+                    ))
+                })?;
+            if binding.kind != entity.kind() {
+                return Err(NativeWorldError::new(format!(
+                    "semantic entity {} private binding kind diverges",
+                    entity.id().as_str()
+                )));
+            }
+            let source = self
+                .level2
+                .entities()
+                .get(usize::from(binding.initial_source_slot))
+                .filter(|source| {
+                    source.active
+                        && source.index == binding.initial_source_slot
+                        && source.source_id == binding.source_id
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "semantic entity {} lost its frame-zero MC2 carrier",
+                        entity.id().as_str()
+                    ))
+                })?;
+            let original_tile = original.position();
+            if source.position.x >> 8 != original_tile.x
+                || source.position.y >> 8 != original_tile.y
+            {
+                return Err(NativeWorldError::new(format!(
+                    "semantic entity {} private binding position diverges",
+                    entity.id().as_str()
+                )));
+            }
+            let position = entity.position();
+            self.level2.set_level2_entity_position(
+                binding.initial_source_slot,
+                Position {
+                    x: position.x.wrapping_shl(8) | (source.position.x & 0xff),
+                    y: position.y.wrapping_shl(8) | (source.position.y & 0xff),
+                    z: source.position.z,
+                },
+            )?;
+        }
+        let active_definition = self
+            .definition
+            .with_level_definition_variant(level.clone())
+            .map_err(NativeWorldError::new)?;
+        self.level2
+            .replace_semantic_level_definition(level.clone())
+            .map_err(NativeWorldError::new)?;
+        self.definition = Arc::new(active_definition);
+        self.level2.session.rebase();
+        Ok(())
+    }
+
+    pub(crate) fn set_runtime_generation(&mut self, generation: u64) {
+        self.level2.session.generation = generation;
+        self.level2.session.state.scratch = self
+            .level2
+            .session
+            .state
+            .live
+            .reset_scratch(generation, false);
     }
 
     /// Current runtime generation of the one folded session authority.

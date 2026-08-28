@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-operation v2 milestone, this is a binding target with
+As of the semantic-operation v3 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -326,12 +326,16 @@ partial real implementation, not a completion claim:
   `flight.player.max_forward_speed` through the ordinary neutral campaign
   player callback for the real Level 1, 2 and 3 packages, while operations
   without campaign runtime consumers fail before publication;
-- `LevelDefinition` is a package-derived read-only semantic census whose IDs
-  are still ordinal-derived; it is not yet the complete typed placement/spawn/
-  behavior/asset authoring model above;
-- semantic level changes are not yet accepted and consumed through the neutral
-  runtime, and package definition/behavior artifacts are not yet fully parsed
-  as this typed composition;
+- `LevelDefinition` exposes a complete stable-ID census for the qualified real
+  Level 1, 2 and 3 package entities; those identities are frozen in the private
+  MC2 adapter rather than derived from kind ordinals or runtime slots;
+- the first typed semantic level change, `MoveEntity`, is published atomically
+  and consumed on explicit reopen by the real Level 1 start-area trigger and
+  its ordinary scheduler/group lifecycle; every other placement remains
+  read-only until its own runtime materialization binding is implemented;
+- placement/spawn/objective/behavior/asset authoring is not yet complete, and
+  package definition/behavior artifacts are not yet fully parsed as the typed
+  composition above;
 - the MC2 adapter produces useful semantic bindings, while source-shaped
   compatibility types remain implementation-visible; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
@@ -339,8 +343,8 @@ partial real implementation, not a completion claim:
   directly, neutral campaign saves/loads do not yet exist, and level completion
   does not yet drive a Rust-owned 1 -> 2 -> 3 handoff.
 
-The next foundation implementation seam is stable author-chosen entity identity
-plus a private MC2 instance-to-runtime binding, followed by one real typed
-placement operation and its ordinary scheduler consumer. Creature-family
-closure continues as capability implementation under that definition; it does
-not replace the authoring seam or become another public architecture.
+The next foundation seam extends the same stable definition-to-runtime binding
+to the next package-present semantic domain without adding another arena,
+scheduler or Level-N authority. Creature-family closure continues as capability
+implementation under that definition; it does not replace the authoring seam
+or become another public architecture.

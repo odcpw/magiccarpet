@@ -4230,6 +4230,16 @@ impl Level2ResetSession {
         self.session.definition = Arc::new(definition);
     }
 
+    pub(crate) fn replace_semantic_level_definition(
+        &mut self,
+        level: crate::level_definition::LevelDefinition,
+    ) -> std::result::Result<(), String> {
+        let mut definition = (*self.session.definition).clone();
+        definition.replace_semantic_level(level)?;
+        self.session.definition = Arc::new(definition);
+        Ok(())
+    }
+
     pub(crate) fn creature_identity_for_source_slot(
         &self,
         source_slot: u16,
@@ -4682,6 +4692,11 @@ impl Level2ResetSession {
         self.session.state.live.economy.entities()
     }
 
+    #[must_use]
+    pub fn semantic_level_definition(&self) -> Option<&crate::level_definition::LevelDefinition> {
+        self.session.definition.semantic_level()
+    }
+
     /// Return the source `str_D93C0` byte-2 flags for one entity-parameter
     /// selector. Level 2 presentation carries the selector from the raw
     /// entity record's byte 74; consumers need this single source-owned byte
@@ -5104,6 +5119,16 @@ impl Level2ResetSession {
             .map_err(NativeWorldError::new)?;
         if entity_index == self.session.state.live.core.state.entity_index {
             self.session.state.live.core.state.position = position;
+        }
+        if let Some(root) = self
+            .session
+            .state
+            .live
+            .level2_imported_switch_roots
+            .iter_mut()
+            .find(|root| root.source_slot == entity_index)
+        {
+            root.position = position;
         }
         Ok(())
     }

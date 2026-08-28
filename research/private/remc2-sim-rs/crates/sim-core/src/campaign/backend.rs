@@ -286,6 +286,7 @@ impl Mc2CampaignInputs {
 #[derive(Debug)]
 pub struct Mc2CampaignBackend {
     campaign: CampaignSession,
+    package_campaign: CampaignSession,
     flight_binding: DefinitionFlightBinding,
     package_base: GameDefinition,
     package_graph_hash: String,
@@ -313,7 +314,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             .map_err(CampaignBackendError::Definition)?;
         let selection = CampaignDescriptor::declared_selection(&input.package_root)
             .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Preflight(error)))?;
-        let mut campaign = match &input.owner_cache {
+        let mut package_campaign = match &input.owner_cache {
             Some(owner_cache) => {
                 CampaignSession::open_with_owner_cache(&input.package_root, owner_cache, selection)
             }
@@ -326,12 +327,23 @@ impl GameAdapter for Mc2CampaignAdapter {
         // generation-0 state rebases, so reset restores the entry-staged
         // baseline instead of the raw package selector.
         if selection == CampaignSelection::LEVEL2 {
-            campaign
+            package_campaign
                 .level2_compatibility_mut()
                 .select_level2_campaign_entry_stage();
         }
+        let mut campaign = package_campaign.clone();
+        campaign
+            .apply_semantic_placement_variant(
+                definition
+                    .level_definition()
+                    .expect("campaign semantic variant retains its level definition"),
+            )
+            .map_err(|error| {
+                CampaignBackendError::Open(CampaignOpenError::Materialization(error))
+            })?;
         Ok(Mc2CampaignBackend {
             campaign,
+            package_campaign,
             flight_binding,
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
@@ -472,7 +484,19 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .verify_semantic_variant_of(&self.package_base, &catalog)
             .map_err(CampaignBackendError::Definition)?;
         require_catalog_defaults(definition, &catalog)?;
-        self.campaign.reset();
+        let next_generation = self.campaign.generation().wrapping_add(1);
+        let mut campaign = self.package_campaign.clone();
+        campaign
+            .apply_semantic_placement_variant(
+                definition
+                    .level_definition()
+                    .expect("campaign semantic variant retains its level definition"),
+            )
+            .map_err(|error| {
+                CampaignBackendError::Open(CampaignOpenError::Materialization(error))
+            })?;
+        campaign.set_runtime_generation(next_generation);
+        self.campaign = campaign;
         self.flight_binding = flight_binding;
         Ok(())
     }
@@ -661,8 +685,8 @@ mod tests {
         ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
     };
     use sim_definition::adapter::{
-        build_level_definition, entity_definition, entity_id, objective_definition,
-        reissue_at_revision, with_replacement,
+        build_level_definition, entity_definition, objective_definition, reissue_at_revision,
+        with_replacement,
     };
     use std::{
         collections::BTreeSet,
@@ -740,6 +764,38 @@ mod tests {
                 PublicationFault::None,
             )
             .expect("flight change publishes");
+        store.active_definition().expect("published definition")
+    }
+
+    fn publish_start_trigger_move(
+        store: &WorkspaceStore,
+        catalog: &SemanticCatalog,
+        active: &GameDefinition,
+        idempotency_key: &str,
+        position: TilePosition,
+    ) -> GameDefinition {
+        let entity = sim_definition::adapter::stable_entity_id("switch.start_area_exit").unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-placement-authoring",
+            active,
+            idempotency_key,
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(entity, TilePosition { x: 74, y: 212 }, position)
+        .build()
+        .expect("typed placement change set");
+        let validation = store
+            .validate(catalog, change_set.clone())
+            .expect("placement change validates");
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .expect("placement change publishes");
         store.active_definition().expect("published definition")
     }
 
@@ -1050,19 +1106,14 @@ mod tests {
         let swapped = level
             .entities()
             .iter()
-            .enumerate()
-            .map(|(ordinal, entity)| match entity.kind() {
+            .map(|entity| match entity.kind() {
                 LevelEntityKind::Creature(kind) => {
                     let wrong_kind = match kind {
                         CreatureKind::Archer => CreatureKind::Firefly,
                         _ => CreatureKind::Archer,
                     };
                     entity_definition(
-                        entity_id(
-                            LevelEntityKind::Creature(wrong_kind),
-                            u16::try_from(ordinal)
-                                .expect("Level 1 semantic entity ordinal fits u16"),
-                        ),
+                        entity.id().clone(),
                         LevelEntityKind::Creature(wrong_kind),
                         entity.position(),
                         entity.activation_group(),
@@ -1400,6 +1451,291 @@ mod tests {
 
             std::fs::remove_dir_all(&workspace_root).unwrap();
         }
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_start_trigger_only_on_reopen_and_runs_ordinary_group_chain() {
+        const TRIGGER_SLOT: usize = 48;
+        const GROUP_ONE_ROWS: &[u16] = &[
+            31, 99, 104, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 168, 169, 170, 171, 172,
+            173, 174, 175,
+        ];
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let start_trigger =
+            sim_definition::adapter::stable_entity_id("switch.start_area_exit").unwrap();
+        let fixed_trigger =
+            sim_definition::adapter::stable_entity_id("switch.area_exit_trigger.at_189_212")
+                .unwrap();
+        assert_eq!(
+            base.level_definition()
+                .unwrap()
+                .entity(&start_trigger)
+                .unwrap()
+                .position(),
+            TilePosition { x: 74, y: 212 }
+        );
+        assert_eq!(
+            base.level_definition()
+                .unwrap()
+                .entity(&fixed_trigger)
+                .unwrap()
+                .position(),
+            TilePosition { x: 189, y: 212 }
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-placement-authoring",
+            base.clone(),
+        )
+        .unwrap();
+        let mut existing = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            70,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let base_state_hash = existing.backend().compatibility_campaign().state_hash();
+
+        let before_rejection = store.state_bytes().unwrap();
+        let unsupported = ChangeSetBuilder::new(
+            "campaign-placement-authoring",
+            &base,
+            "reject-read-only-trigger",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity(fixed_trigger.clone(), TilePosition { x: 188, y: 212 })
+        .build()
+        .unwrap();
+        let rejected = store.validate(&catalog, unsupported).unwrap();
+        assert!(!rejected.accepted);
+        assert_eq!(rejected.diagnostics[0].code, "DEPENDENCY_FAILED");
+        assert_eq!(store.state_bytes().unwrap(), before_rejection);
+
+        let moved_tile = TilePosition { x: 150, y: 100 };
+        let moved =
+            publish_start_trigger_move(&store, &catalog, &base, "move-start-trigger", moved_tile);
+        assert_eq!(existing.identity().definition_hash, base.definition_hash());
+        assert_eq!(
+            existing
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .entities()[TRIGGER_SLOT]
+                .position,
+            crate::Position {
+                x: 19_072,
+                y: 54_400,
+                z: 4_896,
+            }
+        );
+        for _ in 0..8 {
+            existing
+                .step(guard(&existing), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            !existing
+                .backend()
+                .compatibility_campaign()
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                ))
+        );
+
+        let reopened = existing
+            .reopen(guard(&existing), Arc::new(moved.clone()))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        assert_ne!(moved.definition_hash(), base.definition_hash());
+        let moved_reset_hash = existing.backend().compatibility_campaign().state_hash();
+        assert_ne!(moved_reset_hash, base_state_hash);
+        let active_campaign = existing.backend().compatibility_campaign();
+        assert_eq!(
+            active_campaign
+                .definition()
+                .level_definition()
+                .entity(&start_trigger)
+                .unwrap()
+                .position(),
+            moved_tile
+        );
+        assert_eq!(
+            active_campaign
+                .level2_compatibility()
+                .semantic_level_definition()
+                .unwrap()
+                .entity(&start_trigger)
+                .unwrap()
+                .position(),
+            moved_tile
+        );
+        let moved_source = &active_campaign.level2_compatibility().entities()[TRIGGER_SLOT];
+        let moved_position = crate::Position {
+            x: 38_528,
+            y: 25_728,
+            z: 4_896,
+        };
+        assert_eq!(moved_source.position, moved_position);
+        assert_eq!(moved_source.phase, 49);
+        let map_chains = active_campaign
+            .level2_compatibility()
+            .economy()
+            .map_chains();
+        assert!(map_chains.is_linked(TRIGGER_SLOT as u16));
+        assert_eq!(
+            map_chains.tile_of(TRIGGER_SLOT as u16),
+            u16::from_le_bytes([150, 100])
+        );
+        assert!(
+            !map_chains
+                .entity_chain(74, 212)
+                .contains(&(TRIGGER_SLOT as u16))
+        );
+        assert!(
+            map_chains
+                .entity_chain(150, 100)
+                .contains(&(TRIGGER_SLOT as u16))
+        );
+        assert_eq!(
+            active_campaign
+                .level2
+                .session
+                .state
+                .live
+                .level2_imported_switch_roots
+                .iter()
+                .find(|root| root.source_slot == TRIGGER_SLOT as u16)
+                .unwrap()
+                .position,
+            moved_position
+        );
+        assert_eq!(
+            moved
+                .level_definition()
+                .unwrap()
+                .entity(&fixed_trigger)
+                .unwrap()
+                .position(),
+            TilePosition { x: 189, y: 212 }
+        );
+
+        for _ in 0..7 {
+            existing
+                .step(guard(&existing), GameCommand::default())
+                .unwrap();
+            assert!(
+                !existing
+                    .backend()
+                    .compatibility_campaign()
+                    .events()
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                    ))
+            );
+        }
+        existing
+            .step(guard(&existing), GameCommand::default())
+            .unwrap();
+        let campaign = existing.backend().compatibility_campaign();
+        let activations = campaign
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot,
+                    group: 1,
+                    authored_indices,
+                    ..
+                } => Some((*source_slot, authored_indices.as_ref())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(activations, vec![(TRIGGER_SLOT as u16, GROUP_ONE_ROWS)]);
+        assert!(
+            !campaign
+                .events()
+                .iter()
+                .any(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        let hidden = &campaign.level2_compatibility().entities()[TRIGGER_SLOT];
+        assert!(hidden.active);
+        assert!(hidden.drawing_disabled());
+        assert_eq!(hidden.phase, 57);
+
+        existing
+            .step(guard(&existing), GameCommand::default())
+            .unwrap();
+        let reclaimed = &existing
+            .backend()
+            .compatibility_campaign()
+            .level2_compatibility()
+            .entities()[TRIGGER_SLOT];
+        assert!(!reclaimed.active);
+        assert!(
+            !existing
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .economy()
+                .map_chains()
+                .is_linked(TRIGGER_SLOT as u16)
+        );
+
+        existing.reset(guard(&existing)).unwrap();
+        let reset_campaign = existing.backend().compatibility_campaign();
+        assert_eq!(reset_campaign.state_hash(), moved_reset_hash);
+        let reset_trigger = &reset_campaign.level2_compatibility().entities()[TRIGGER_SLOT];
+        assert!(reset_trigger.active);
+        assert!(!reset_trigger.drawing_disabled());
+        assert_eq!(reset_trigger.phase, 49);
+        assert_eq!(reset_trigger.position, moved_position);
+        assert_eq!(
+            reset_campaign
+                .level2
+                .session
+                .state
+                .live
+                .level2_imported_switch_roots
+                .iter()
+                .find(|root| root.source_slot == TRIGGER_SLOT as u16)
+                .unwrap()
+                .position,
+            moved_position
+        );
+        for _ in 0..8 {
+            existing
+                .step(guard(&existing), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            existing
+                .backend()
+                .compatibility_campaign()
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: 48,
+                        group: 1,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == GROUP_ONE_ROWS
+                ))
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
     }
 
     #[test]

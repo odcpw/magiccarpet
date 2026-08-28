@@ -6,18 +6,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sim_definition::adapter::{
-    activation_group_id, build_level_definition, entity_definition, entity_id, objective_definition,
+    activation_group_id, build_level_definition, entity_definition_with_position_access,
+    objective_definition, stable_entity_id,
 };
 
 use crate::{
     level_definition::{
-        BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityKind, MechanicKind,
-        ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
+        BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
+        LevelEntityPositionAccess, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind,
+        SwitchKind, TilePosition,
     },
     level1_mission::parse_authored_features,
 };
 
-use super::spec::ObjectiveOperation;
+use super::spec::{CampaignSelection, ObjectiveOperation};
+
+const MC2_LEVEL_ENTITY_IDS: &str = include_str!("mc2_level_entity_ids.tsv");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Mc2LevelDefinition {
@@ -31,6 +35,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
     pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
+    pub(crate) movable_source_id_by_entity_id: BTreeMap<LevelEntityId, u16>,
 }
 
 impl Mc2LevelDefinition {
@@ -129,24 +134,21 @@ impl Mc2LevelDefinition {
     pub(crate) fn from_authored_bytes(
         bytes: &[u8],
         objective_operations: &[ObjectiveOperation],
+        selection: CampaignSelection,
     ) -> Result<Self, String> {
         let features = parse_authored_features(bytes)?;
-        let mut creature_ordinals = BTreeMap::<CreatureKind, u16>::new();
-        let mut spell_ordinals = BTreeMap::<SpellKind, u16>::new();
-        let mut scenery_ordinals = BTreeMap::<SceneryKind, u16>::new();
-        let mut item_ordinals = BTreeMap::<ItemKind, u16>::new();
-        let mut switch_ordinals = BTreeMap::<SwitchKind, u16>::new();
-        let mut mechanic_ordinals = BTreeMap::<MechanicKind, u16>::new();
+        let mut stable_entity_ids = stable_entity_ids(selection.external_level)?;
         let mut creature_by_authored_record = BTreeMap::new();
         let mut creature_model_by_kind = BTreeMap::new();
         let mut spell_by_authored_record = BTreeMap::new();
         let mut spell_family_by_kind = BTreeMap::new();
-        let mut building_ordinals = BTreeMap::<BuildingKind, u16>::new();
         let mut building_by_authored_record = BTreeMap::new();
         let mut scenery_by_authored_record = BTreeMap::new();
         let mut item_by_authored_record = BTreeMap::new();
         let mut switch_by_authored_record = BTreeMap::new();
         let mut mechanic_by_authored_record = BTreeMap::new();
+        let mut authored_record_by_entity_id = BTreeMap::new();
+        let mut movable_source_id_by_entity_id = BTreeMap::new();
         let mut entities = Vec::new();
         let activation_groups = features
             .iter()
@@ -195,16 +197,24 @@ impl Mc2LevelDefinition {
                         kind.as_str()
                     ));
                 }
-                let ordinal = creature_ordinals.entry(kind).or_default();
-                let id = entity_id(LevelEntityKind::Creature(kind), *ordinal);
-                *ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| format!("too many authored {} creatures", kind.as_str()))?;
-                entities.push(entity_definition(
+                let (id, position_access) = take_stable_entity_id(
+                    &mut stable_entity_ids,
+                    feature.index,
+                    LevelEntityKind::Creature(kind),
+                )?;
+                bind_private_entity(
+                    &mut authored_record_by_entity_id,
+                    &mut movable_source_id_by_entity_id,
+                    feature,
+                    &id,
+                    position_access,
+                )?;
+                entities.push(entity_definition_with_position_access(
                     id,
                     LevelEntityKind::Creature(kind),
                     position,
                     activation_group,
+                    position_access,
                 ));
                 creature_by_authored_record.insert(feature.index, kind);
                 continue;
@@ -219,16 +229,24 @@ impl Mc2LevelDefinition {
                 _ => None,
             };
             if let Some(kind) = scenery_kind {
-                let ordinal = scenery_ordinals.entry(kind).or_default();
-                let id = entity_id(LevelEntityKind::Scenery(kind), *ordinal);
-                *ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| format!("too many authored {} rows", kind.as_str()))?;
-                entities.push(entity_definition(
+                let (id, position_access) = take_stable_entity_id(
+                    &mut stable_entity_ids,
+                    feature.index,
+                    LevelEntityKind::Scenery(kind),
+                )?;
+                bind_private_entity(
+                    &mut authored_record_by_entity_id,
+                    &mut movable_source_id_by_entity_id,
+                    feature,
+                    &id,
+                    position_access,
+                )?;
+                entities.push(entity_definition_with_position_access(
                     id,
                     LevelEntityKind::Scenery(kind),
                     position,
                     activation_group,
+                    position_access,
                 ));
                 scenery_by_authored_record.insert(feature.index, kind);
                 continue;
@@ -241,16 +259,24 @@ impl Mc2LevelDefinition {
                 _ => None,
             };
             if let Some(kind) = building_kind {
-                let ordinal = building_ordinals.entry(kind).or_default();
-                let id = entity_id(LevelEntityKind::Building(kind), *ordinal);
-                *ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| format!("too many authored {} buildings", kind.as_str()))?;
-                entities.push(entity_definition(
+                let (id, position_access) = take_stable_entity_id(
+                    &mut stable_entity_ids,
+                    feature.index,
+                    LevelEntityKind::Building(kind),
+                )?;
+                bind_private_entity(
+                    &mut authored_record_by_entity_id,
+                    &mut movable_source_id_by_entity_id,
+                    feature,
+                    &id,
+                    position_access,
+                )?;
+                entities.push(entity_definition_with_position_access(
                     id,
                     LevelEntityKind::Building(kind),
                     position,
                     activation_group,
+                    position_access,
                 ));
                 building_by_authored_record.insert(feature.index, kind);
                 continue;
@@ -264,16 +290,24 @@ impl Mc2LevelDefinition {
                 _ => None,
             };
             if let Some(kind) = item_kind {
-                let ordinal = item_ordinals.entry(kind).or_default();
-                let id = entity_id(LevelEntityKind::Item(kind), *ordinal);
-                *ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| format!("too many authored {} items", kind.as_str()))?;
-                entities.push(entity_definition(
+                let (id, position_access) = take_stable_entity_id(
+                    &mut stable_entity_ids,
+                    feature.index,
+                    LevelEntityKind::Item(kind),
+                )?;
+                bind_private_entity(
+                    &mut authored_record_by_entity_id,
+                    &mut movable_source_id_by_entity_id,
+                    feature,
+                    &id,
+                    position_access,
+                )?;
+                entities.push(entity_definition_with_position_access(
                     id,
                     LevelEntityKind::Item(kind),
                     position,
                     activation_group,
+                    position_access,
                 ));
                 item_by_authored_record.insert(feature.index, kind);
                 continue;
@@ -295,16 +329,24 @@ impl Mc2LevelDefinition {
                 _ => None,
             };
             if let Some(kind) = switch_kind {
-                let ordinal = switch_ordinals.entry(kind).or_default();
-                let id = entity_id(LevelEntityKind::Switch(kind), *ordinal);
-                *ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| format!("too many authored {} switches", kind.as_str()))?;
-                entities.push(entity_definition(
+                let (id, position_access) = take_stable_entity_id(
+                    &mut stable_entity_ids,
+                    feature.index,
+                    LevelEntityKind::Switch(kind),
+                )?;
+                bind_private_entity(
+                    &mut authored_record_by_entity_id,
+                    &mut movable_source_id_by_entity_id,
+                    feature,
+                    &id,
+                    position_access,
+                )?;
+                entities.push(entity_definition_with_position_access(
                     id,
                     LevelEntityKind::Switch(kind),
                     position,
                     activation_group,
+                    position_access,
                 ));
                 switch_by_authored_record.insert(feature.index, kind);
                 continue;
@@ -333,16 +375,24 @@ impl Mc2LevelDefinition {
                         kind.as_str()
                     ));
                 }
-                let ordinal = spell_ordinals.entry(kind).or_default();
-                let id = entity_id(LevelEntityKind::SpellPickup(kind), *ordinal);
-                *ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| format!("too many authored {} spell pickups", kind.as_str()))?;
-                entities.push(entity_definition(
+                let (id, position_access) = take_stable_entity_id(
+                    &mut stable_entity_ids,
+                    feature.index,
+                    LevelEntityKind::SpellPickup(kind),
+                )?;
+                bind_private_entity(
+                    &mut authored_record_by_entity_id,
+                    &mut movable_source_id_by_entity_id,
+                    feature,
+                    &id,
+                    position_access,
+                )?;
+                entities.push(entity_definition_with_position_access(
                     id,
                     LevelEntityKind::SpellPickup(kind),
                     position,
                     activation_group,
+                    position_access,
                 ));
                 spell_by_authored_record.insert(feature.index, kind);
                 continue;
@@ -360,16 +410,24 @@ impl Mc2LevelDefinition {
                 },
                 _ => continue,
             };
-            let ordinal = mechanic_ordinals.entry(mechanic_kind).or_default();
-            let id = entity_id(LevelEntityKind::Mechanic(mechanic_kind), *ordinal);
-            *ordinal = ordinal
-                .checked_add(1)
-                .ok_or_else(|| format!("too many authored {} mechanics", mechanic_kind.as_str()))?;
-            entities.push(entity_definition(
+            let (id, position_access) = take_stable_entity_id(
+                &mut stable_entity_ids,
+                feature.index,
+                LevelEntityKind::Mechanic(mechanic_kind),
+            )?;
+            bind_private_entity(
+                &mut authored_record_by_entity_id,
+                &mut movable_source_id_by_entity_id,
+                feature,
+                &id,
+                position_access,
+            )?;
+            entities.push(entity_definition_with_position_access(
                 id,
                 LevelEntityKind::Mechanic(mechanic_kind),
                 position,
                 activation_group,
+                position_access,
             ));
             mechanic_by_authored_record.insert(feature.index, mechanic_kind);
         }
@@ -464,6 +522,14 @@ impl Mc2LevelDefinition {
             })
             .collect::<Result<Vec<_>, String>>()?;
 
+        if !stable_entity_ids.is_empty() {
+            return Err(format!(
+                "stable MC2 entity identity manifest has {} unconsumed entries for external level {}",
+                stable_entity_ids.len(),
+                selection.external_level
+            ));
+        }
+
         Ok(Self {
             semantic: build_level_definition(entities, objectives, activation_groups)?,
             creature_by_authored_record,
@@ -475,6 +541,107 @@ impl Mc2LevelDefinition {
             item_by_authored_record,
             switch_by_authored_record,
             mechanic_by_authored_record,
+            movable_source_id_by_entity_id,
         })
     }
+}
+
+fn stable_entity_ids(
+    external_level: u16,
+) -> Result<BTreeMap<u16, (LevelEntityId, LevelEntityPositionAccess)>, String> {
+    let mut ids = BTreeMap::new();
+    for (line_index, line) in MC2_LEVEL_ENTITY_IDS.lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 4 {
+            return Err(format!(
+                "invalid MC2 entity identity manifest line {}",
+                line_index + 1
+            ));
+        }
+        let level = fields[0]
+            .parse::<u16>()
+            .map_err(|_| format!("invalid MC2 identity level at line {}", line_index + 1))?;
+        if level != external_level {
+            continue;
+        }
+        let authored_record = fields[1]
+            .parse::<u16>()
+            .map_err(|_| format!("invalid MC2 identity row at line {}", line_index + 1))?;
+        let id = stable_entity_id(fields[2]).map_err(|error| error.to_string())?;
+        let access = match fields[3] {
+            "read_only" => LevelEntityPositionAccess::ReadOnly,
+            "session_reset" => LevelEntityPositionAccess::SessionReset,
+            _ => {
+                return Err(format!(
+                    "invalid position access at manifest line {}",
+                    line_index + 1
+                ));
+            }
+        };
+        if ids.insert(authored_record, (id, access)).is_some() {
+            return Err(format!(
+                "duplicate MC2 entity identity for external level {external_level} row {authored_record}"
+            ));
+        }
+    }
+    Ok(ids)
+}
+
+fn take_stable_entity_id(
+    ids: &mut BTreeMap<u16, (LevelEntityId, LevelEntityPositionAccess)>,
+    authored_record: u16,
+    kind: LevelEntityKind,
+) -> Result<(LevelEntityId, LevelEntityPositionAccess), String> {
+    let (id, access) = ids.remove(&authored_record).ok_or_else(|| {
+        format!(
+            "semantic {:?} row {authored_record} has no stable MC2 entity identity",
+            kind
+        )
+    })?;
+    let namespace = match kind {
+        LevelEntityKind::Creature(_) => "creature.",
+        LevelEntityKind::SpellPickup(_) => "spell_pickup.",
+        LevelEntityKind::Scenery(_) => "scenery.",
+        LevelEntityKind::Item(_) => "item.",
+        LevelEntityKind::Building(_) => "building.",
+        LevelEntityKind::Switch(_) => "switch.",
+        LevelEntityKind::Mechanic(_) => "mechanic.",
+    };
+    if !id.as_str().starts_with(namespace) {
+        return Err(format!(
+            "stable MC2 entity identity {} does not match semantic {:?}",
+            id.as_str(),
+            kind
+        ));
+    }
+    Ok((id, access))
+}
+
+fn bind_private_entity(
+    authored: &mut BTreeMap<LevelEntityId, u16>,
+    movable_sources: &mut BTreeMap<LevelEntityId, u16>,
+    feature: &crate::level1_mission::AuthoredFeature,
+    id: &LevelEntityId,
+    access: LevelEntityPositionAccess,
+) -> Result<(), String> {
+    if authored.insert(id.clone(), feature.index).is_some() {
+        return Err(format!(
+            "duplicate stable MC2 entity identity {}",
+            id.as_str()
+        ));
+    }
+    if access == LevelEntityPositionAccess::SessionReset {
+        let source_id = u16::try_from(feature.stage_tag).map_err(|_| {
+            format!(
+                "movable semantic entity {} has invalid MC2 source identity {}",
+                id.as_str(),
+                feature.stage_tag
+            )
+        })?;
+        movable_sources.insert(id.clone(), source_id);
+    }
+    Ok(())
 }

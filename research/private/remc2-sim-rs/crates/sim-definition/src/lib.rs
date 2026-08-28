@@ -49,8 +49,8 @@ use std::{
 use level_definition::LevelDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v1";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "2.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v2";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "3.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -350,7 +350,6 @@ impl GameDefinition {
             || self.required_capabilities != base.required_capabilities
             || self.artifacts != base.artifacts
             || self.artifact_payloads != base.artifact_payloads
-            || self.level_definition != base.level_definition
             || self.provenance != base.provenance
         {
             return Err(DefinitionError::new(
@@ -358,6 +357,25 @@ impl GameDefinition {
                 "definition.package_graph_hash",
                 "semantic variant cannot substitute package, artifact, capability, or provenance roots",
             ));
+        }
+        match (&self.level_definition, &base.level_definition) {
+            (Some(candidate), Some(original)) => candidate
+                .verify_position_variant_of(original)
+                .map_err(|message| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::HashMismatch,
+                        "definition.level_definition",
+                        message,
+                    )
+                })?,
+            (None, None) => {}
+            _ => {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::HashMismatch,
+                    "definition.level_definition",
+                    "semantic variant cannot add or remove a level definition",
+                ));
+            }
         }
         if self.values.keys().ne(base.values.keys()) {
             return Err(DefinitionError::new(
@@ -407,6 +425,130 @@ impl GameDefinition {
         candidate.values.insert(id.clone(), value);
         candidate.definition_hash = candidate.compute_hash();
         Ok(candidate)
+    }
+
+    pub(crate) fn with_moved_level_entity(
+        &self,
+        id: &level_definition::LevelEntityId,
+        position: level_definition::TilePosition,
+        revision: u64,
+    ) -> Result<Self> {
+        if revision < self.revision {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidRequest,
+                "definition.revision",
+                "candidate definition revision must not move backward",
+            ));
+        }
+        let level = self.level_definition.as_ref().ok_or_else(|| {
+            DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                id.as_str(),
+                "definition has no semantic level placement consumer",
+            )
+        })?;
+        let mut candidate = self.clone();
+        candidate.level_definition =
+            Some(level.with_moved_entity(id, position).map_err(|message| {
+                DefinitionError::new(DefinitionErrorCode::InvalidRequest, id.as_str(), message)
+            })?);
+        candidate.revision = revision;
+        candidate.definition_hash = candidate.compute_hash();
+        Ok(candidate)
+    }
+
+    /// Read one semantic authoring target from the immutable definition.
+    #[must_use]
+    pub fn semantic_target_value(&self, id: &SemanticId) -> Option<SemanticValue> {
+        if let Some(value) = self.value(id) {
+            return Some(value.clone());
+        }
+        let entity = id.as_str().strip_suffix(".position")?;
+        let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
+        self.level_definition
+            .as_ref()?
+            .entity(&entity_id)
+            .map(|entity| SemanticValue::Position(entity.position()))
+    }
+
+    /// Describe one stable semantic level-entity position target.
+    #[must_use]
+    pub fn level_entity_position_descriptor(&self, id: &SemanticId) -> Option<SemanticDescriptor> {
+        let entity_id = id.as_str().strip_suffix(".position")?;
+        let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
+        let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
+        let writable = matches!(
+            entity.position_access(),
+            level_definition::LevelEntityPositionAccess::SessionReset
+        );
+        let target_id = id.as_str().to_owned();
+        Some(SemanticDescriptor {
+            id: id.clone(),
+            descriptor_version: 1,
+            kind: DescriptorKind::Placement,
+            value_type: ValueType::Position,
+            unit: Some("level_tile".to_owned()),
+            default_value: SemanticValue::Position(entity.default_position()),
+            minimum: Some(0),
+            maximum: Some(i64::from(u8::MAX)),
+            enum_values: Vec::new(),
+            access: if writable {
+                Access::Writable
+            } else {
+                Access::ReadOnly
+            },
+            mutation_timing: MutationTiming::SessionReset,
+            determinism_role: "immutable package placement authoring target".to_owned(),
+            dependencies: vec![
+                entity.id().as_str().to_owned(),
+                "package runtime carrier binding".to_owned(),
+            ],
+            side_effects: if writable {
+                vec![
+                    "explicit reopen/reset materializes a new runtime position".to_owned(),
+                    "new runtime generation updates map membership and semantic projections"
+                        .to_owned(),
+                ]
+            } else {
+                Vec::new()
+            },
+            scope: format!(
+                "stable level entity {} ({:?})",
+                entity.id().as_str(),
+                entity.kind()
+            ),
+            provenance_origin: "package semantic level definition".to_owned(),
+            provenance_content_hash: self.package_graph_hash.clone(),
+            temporal_contract: Some(TemporalContract {
+                dispatch_phase: "definition_publication".to_owned(),
+                dispatch_key: target_id.clone(),
+                ordinary_producer: "validated MoveEntity candidate".to_owned(),
+                handler: "guarded atomic definition compare-and-swap".to_owned(),
+                same_pass_epilogue:
+                    "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
+                following_pass_cleanup: "explicit reset/reopen creates a new runtime generation and materializes position, map membership, and semantic projections before gameplay".to_owned(),
+                authoritative_reads: vec![target_id],
+                authoritative_writes: vec!["immutable LevelDefinition position".to_owned()],
+                rng_and_event_effects:
+                    "none during definition publication or placement materialization".to_owned(),
+            }),
+            summary: "Tile position of one stable semantic level entity.".to_owned(),
+        })
+    }
+
+    /// Describe every position target in stable level-definition order.
+    #[must_use]
+    pub fn level_entity_position_descriptors(&self) -> Vec<SemanticDescriptor> {
+        self.level_definition
+            .as_ref()
+            .into_iter()
+            .flat_map(level_definition::LevelDefinition::entities)
+            .filter_map(|entity| {
+                SemanticId::parse(&format!("{}.position", entity.id().as_str()))
+                    .ok()
+                    .and_then(|id| self.level_entity_position_descriptor(&id))
+            })
+            .collect()
     }
 
     pub(crate) fn reissue_at_revision(&self, revision: u64) -> Result<Self> {

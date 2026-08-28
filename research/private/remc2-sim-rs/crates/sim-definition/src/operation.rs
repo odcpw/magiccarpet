@@ -5,7 +5,10 @@
 //! representable here. More structural operations join this enum only with a
 //! stable author identity and a real runtime consumer.
 
-use crate::{DefinitionError, DefinitionErrorCode, GameDefinition, SemanticId, SemanticValue};
+use crate::{
+    Access, DefinitionError, DefinitionErrorCode, GameDefinition, SemanticId, SemanticValue,
+    level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
@@ -130,6 +133,12 @@ pub enum DefinitionOperation {
         #[serde(default)]
         expected_artifact: Option<ArtifactId>,
     },
+    MoveEntity {
+        entity: LevelEntityId,
+        position: TilePosition,
+        #[serde(default)]
+        expected_position: Option<TilePosition>,
+    },
 }
 
 impl DefinitionOperation {
@@ -161,6 +170,26 @@ impl DefinitionOperation {
                     "optional_fields": ["expected_artifact"],
                     "slot_ids": [PresentationAssetSlot::FireballProjectile.as_str()],
                 },
+                {
+                    "operation": "move_entity",
+                    "required_fields": ["entity", "position"],
+                    "optional_fields": ["expected_position"],
+                    "entity_ids": "game entities -> data.entities[].id",
+                    "target_id": "<entity-id>.position",
+                    "position": {
+                        "shape": {"x": "integer", "y": "integer"},
+                        "unit": "level_tile",
+                        "bounds": {
+                            "x": {"minimum": 0, "maximum": 255},
+                            "y": {"minimum": 0, "maximum": 255},
+                        },
+                    },
+                    "expected_position": "same shape, unit, and bounds as position",
+                    "writable_when": "entity.position_access == session_reset",
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id <entity-id>.position",
+                    "read_back": "game get --id <entity-id>.position",
+                },
             ],
         })
     }
@@ -170,6 +199,10 @@ impl DefinitionOperation {
             Self::SetInteger { parameter, .. } => parameter.semantic_id(),
             Self::SelectOption { parameter, .. } => parameter.semantic_id(),
             Self::BindAsset { slot, .. } => slot.semantic_id(),
+            Self::MoveEntity { entity, .. } => {
+                SemanticId::parse(&format!("{}.position", entity.as_str()))
+                    .expect("validated entity ID plus position is a semantic target")
+            }
         }
     }
 
@@ -180,7 +213,7 @@ impl DefinitionOperation {
                 Self::SetInteger {
                     parameter: IntegerParameter::PlayerMaxForwardSpeed,
                     ..
-                }
+                } | Self::MoveEntity { .. }
             )
         {
             return Err(DefinitionError::new(
@@ -188,6 +221,43 @@ impl DefinitionOperation {
                 self.target_id().as_str(),
                 "playable campaign definitions have no runtime consumer for this operation yet",
             ));
+        }
+        if let Self::MoveEntity {
+            entity,
+            position,
+            expected_position,
+        } = self
+        {
+            let id = self.target_id();
+            let descriptor = definition
+                .level_entity_position_descriptor(&id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownSemanticId,
+                        entity.as_str(),
+                        "move names no entity in the active level definition",
+                    )
+                })?;
+            if descriptor.access != Access::Writable {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    entity.as_str(),
+                    "entity position has no runtime consumer in this package",
+                ));
+            }
+            descriptor.validate_value(&SemanticValue::Position(*position), id.as_str())?;
+            if let Some(expected_position) = expected_position {
+                descriptor.validate_value(
+                    &SemanticValue::Position(*expected_position),
+                    "expected_position",
+                )?;
+            }
+            return Ok(ResolvedOperation::EntityMove {
+                id,
+                entity: entity.clone(),
+                position: *position,
+                expected_position: *expected_position,
+            });
         }
         let (id, value, expected_value) = match self {
             Self::SetInteger {
@@ -221,8 +291,9 @@ impl DefinitionOperation {
                     .transpose()?
                     .map(SemanticValue::Reference),
             ),
+            Self::MoveEntity { .. } => unreachable!("entity moves return above"),
         };
-        Ok(ResolvedOperation {
+        Ok(ResolvedOperation::CatalogReplacement {
             id,
             value,
             expected_value,
@@ -231,10 +302,18 @@ impl DefinitionOperation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedOperation {
-    pub id: SemanticId,
-    pub value: SemanticValue,
-    pub expected_value: Option<SemanticValue>,
+pub(crate) enum ResolvedOperation {
+    CatalogReplacement {
+        id: SemanticId,
+        value: SemanticValue,
+        expected_value: Option<SemanticValue>,
+    },
+    EntityMove {
+        id: SemanticId,
+        entity: LevelEntityId,
+        position: TilePosition,
+        expected_position: Option<TilePosition>,
+    },
 }
 
 fn content_address(definition: &GameDefinition, artifact: &ArtifactId) -> crate::Result<String> {
@@ -253,17 +332,7 @@ fn content_address(definition: &GameDefinition, artifact: &ArtifactId) -> crate:
 }
 
 fn is_source_selector_segment(segment: &str) -> bool {
-    if matches!(segment, "source" | "source_slot" | "raw") || segment.starts_with("source_") {
-        return true;
-    }
-    ["class", "model", "action", "selector", "family", "slot"]
-        .into_iter()
-        .any(|prefix| {
-            segment == prefix
-                || segment.strip_prefix(prefix).is_some_and(|suffix| {
-                    !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
-                })
-        })
+    is_private_source_identity_segment(segment)
 }
 
 #[cfg(test)]
@@ -299,6 +368,21 @@ mod tests {
                 "operation": "bind_asset",
                 "slot": "presentation.spell.fireball.projectile_asset",
                 "artifact": "action17.firefly"
+            }),
+            serde_json::json!({
+                "operation": "bind_asset",
+                "slot": "presentation.spell.fireball.projectile_asset",
+                "artifact": "asset.source48"
+            }),
+            serde_json::json!({
+                "operation": "bind_asset",
+                "slot": "presentation.spell.fireball.projectile_asset",
+                "artifact": "asset.raw48"
+            }),
+            serde_json::json!({
+                "operation": "bind_asset",
+                "slot": "presentation.spell.fireball.projectile_asset",
+                "artifact": "asset.level_1"
             }),
         ] {
             assert!(serde_json::from_value::<DefinitionOperation>(value).is_err());

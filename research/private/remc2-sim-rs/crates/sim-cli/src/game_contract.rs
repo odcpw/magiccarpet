@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 pub(crate) enum DefinitionSource {
     Portable(std::path::PathBuf),
+    Campaign(std::path::PathBuf),
     Owner(Mc2OwnedInputs),
     Workspace(std::path::PathBuf),
 }
@@ -24,12 +25,13 @@ pub(crate) fn run() -> ExitCode {
         return game_request_error(
             "game",
             "MISSING_OPERATION",
-            "expected capabilities, describe, or get",
+            "expected capabilities, describe, entities, get, workspace-create, set, validate, diff, apply, apply-status, rollback, inspect, or preview",
         );
     };
     match operation {
         "capabilities" if arguments.len() == 3 => game_capabilities(),
         "describe" => game_describe(&arguments[3..]),
+        "entities" => game_entities(&arguments[3..]),
         "get" => game_get(&arguments[3..]),
         "workspace-create" | "set" | "validate" | "diff" | "apply" | "apply-status"
         | "rollback" | "inspect" | "preview" => {
@@ -48,7 +50,7 @@ pub(crate) fn run() -> ExitCode {
         _ => game_request_error(
             operation,
             "UNKNOWN_OPERATION",
-            "expected capabilities, describe, get, workspace-create, set, validate, diff, apply, apply-status, rollback, inspect, or preview",
+            "expected capabilities, describe, entities, get, workspace-create, set, validate, diff, apply, apply-status, rollback, inspect, or preview",
         ),
     }
 }
@@ -75,6 +77,7 @@ fn game_capabilities() -> ExitCode {
         "operations": {
             "capabilities": {"mutation": "none"},
             "describe": {"mutation": "none", "arguments": ["definition_source", "id", "limit", "cursor"]},
+            "entities": {"mutation": "none", "arguments": ["definition_source", "id", "limit", "cursor"]},
             "get": {"mutation": "none", "arguments": ["definition_source", "id"]},
             "workspace-create": {"mutation": "create_workspace"},
             "set": {"mutation": "stage_only"},
@@ -92,6 +95,84 @@ fn game_capabilities() -> ExitCode {
     game_success("capabilities", catalog.catalog_hash(), data, None)
 }
 
+fn game_entities(arguments: &[String]) -> ExitCode {
+    let request = match parse_definition_request(arguments, false) {
+        Ok(request) => request,
+        Err((code, message)) => return game_request_error("entities", code, &message),
+    };
+    let catalog = match default_catalog() {
+        Ok(catalog) => catalog,
+        Err(error) => return game_domain_error("entities", &error),
+    };
+    let definition = match load_definition(request.source, &catalog) {
+        Ok(definition) => definition,
+        Err(error) => return game_domain_error("entities", &error),
+    };
+    let Some(level) = definition.level_definition() else {
+        return game_request_error(
+            "entities",
+            "NO_LEVEL_DEFINITION",
+            "definition contains no semantic level entities",
+        );
+    };
+    let entities = if let Some(id) = request.id {
+        let Ok(id) = sim_core::level_definition::LevelEntityId::parse(id.as_str()) else {
+            return game_unknown_id("entities", id.as_str());
+        };
+        let Some(entity) = level.entity(&id) else {
+            return game_unknown_id("entities", id.as_str());
+        };
+        vec![public_level_entity_json(entity)]
+    } else {
+        level
+            .entities()
+            .iter()
+            .map(public_level_entity_json)
+            .collect()
+    };
+    let offset = match parse_cursor(
+        request.cursor.as_deref(),
+        catalog.catalog_hash(),
+        definition.definition_hash(),
+    ) {
+        Ok(offset) => offset,
+        Err(message) => return game_request_error("entities", "INVALID_CURSOR", &message),
+    };
+    let total = entities.len();
+    if offset > total {
+        return game_request_error(
+            "entities",
+            "INVALID_CURSOR",
+            "cursor offset exceeds result set",
+        );
+    }
+    let end = offset.saturating_add(request.limit).min(total);
+    let entities = entities[offset..end].to_vec();
+    let next_cursor = (end < total).then(|| {
+        format!(
+            "v1.{}.{}.{}",
+            catalog.catalog_hash().trim_start_matches("sha256:"),
+            definition.definition_hash().trim_start_matches("sha256:"),
+            end
+        )
+    });
+    let data = serde_json::json!({
+        "entities": entities,
+        "page": {
+            "total": total,
+            "limit": request.limit,
+            "next_cursor": next_cursor,
+            "complete": end == total,
+        },
+    });
+    game_success(
+        "entities",
+        definition.definition_hash(),
+        data,
+        Some(&definition),
+    )
+}
+
 fn game_describe(arguments: &[String]) -> ExitCode {
     let request = match parse_definition_request(arguments, false) {
         Ok(request) => request,
@@ -107,15 +188,31 @@ fn game_describe(arguments: &[String]) -> ExitCode {
     };
     let descriptors = match request.id {
         Some(id) => {
-            let Some(descriptor) = catalog.descriptor(&id) else {
+            if let Some(descriptor) = catalog.descriptor(&id) {
+                vec![descriptor.to_json(definition.value(&id))]
+            } else if let Some(descriptor) = definition.level_entity_position_descriptor(&id) {
+                let effective = definition.semantic_target_value(&id);
+                vec![descriptor.to_json(effective.as_ref())]
+            } else {
                 return game_unknown_id("describe", id.as_str());
-            };
-            vec![descriptor.to_json(definition.value(&id))]
+            }
         }
-        None => catalog
-            .descriptors()
-            .map(|descriptor| descriptor.to_json(definition.value(&descriptor.id)))
-            .collect(),
+        None => {
+            let mut descriptors = catalog
+                .descriptors()
+                .map(|descriptor| descriptor.to_json(definition.value(&descriptor.id)))
+                .collect::<Vec<_>>();
+            descriptors.extend(
+                definition
+                    .level_entity_position_descriptors()
+                    .into_iter()
+                    .map(|descriptor| {
+                        let effective = definition.semantic_target_value(&descriptor.id);
+                        descriptor.to_json(effective.as_ref())
+                    }),
+            );
+            descriptors
+        }
     };
     let offset = match parse_cursor(
         request.cursor.as_deref(),
@@ -176,7 +273,36 @@ fn game_get(arguments: &[String]) -> ExitCode {
     };
     let id = request.id.expect("get request parser requires an ID");
     let Some(descriptor) = catalog.descriptor(&id) else {
-        return game_unknown_id("get", id.as_str());
+        if let Some(descriptor) = definition.level_entity_position_descriptor(&id) {
+            let value = definition
+                .semantic_target_value(&id)
+                .expect("position descriptor has semantic readback");
+            return game_success(
+                "get",
+                definition.definition_hash(),
+                serde_json::json!({
+                    "descriptor": descriptor.to_json(Some(&value)),
+                    "value": value.to_json(),
+                }),
+                Some(&definition),
+            );
+        }
+        let entity = sim_core::level_definition::LevelEntityId::parse(id.as_str())
+            .ok()
+            .and_then(|entity_id| {
+                definition
+                    .level_definition()
+                    .and_then(|level| level.entity(&entity_id))
+            });
+        let Some(entity) = entity else {
+            return game_unknown_id("get", id.as_str());
+        };
+        return game_success(
+            "get",
+            definition.definition_hash(),
+            serde_json::json!({"entity": public_level_entity_json(entity)}),
+            Some(&definition),
+        );
     };
     let value = match catalog.read(&definition, &id) {
         Ok(value) => value,
@@ -189,11 +315,23 @@ fn game_get(arguments: &[String]) -> ExitCode {
     game_success("get", definition.definition_hash(), data, Some(&definition))
 }
 
+fn public_level_entity_json(
+    entity: &sim_core::level_definition::LevelEntityDefinition,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": entity.id(),
+        "kind": entity.kind(),
+        "position": entity.position(),
+        "position_access": entity.position_access(),
+    })
+}
+
 fn parse_definition_request(
     arguments: &[String],
     require_id: bool,
 ) -> Result<DefinitionRequest, (&'static str, String)> {
     let mut package = None;
+    let mut campaign_package = None;
     let mut workspace = None;
     let mut owner_export = None;
     let mut owner_closure = None;
@@ -209,6 +347,7 @@ fn parse_definition_request(
         };
         let target = match flag {
             "--package" => &mut package,
+            "--campaign-package" => &mut campaign_package,
             "--workspace" => &mut workspace,
             "--owner-export" => &mut owner_export,
             "--owner-closure" => &mut owner_closure,
@@ -270,23 +409,31 @@ fn parse_definition_request(
     if require_id && id.is_none() {
         return Err(("MISSING_ID", "get requires --id <semantic-id>".to_owned()));
     }
-    let source = match (workspace, package, owner_export, owner_closure, owner_cache) {
-        (Some(path), None, None, None, None) => DefinitionSource::Workspace(path),
-        (None, Some(path), None, None, None) => DefinitionSource::Portable(path),
-        (None, None, Some(export), Some(closure), Some(cache)) => {
+    let source = match (
+        workspace,
+        package,
+        campaign_package,
+        owner_export,
+        owner_closure,
+        owner_cache,
+    ) {
+        (Some(path), None, None, None, None, None) => DefinitionSource::Workspace(path),
+        (None, Some(path), None, None, None, None) => DefinitionSource::Portable(path),
+        (None, None, Some(path), None, None, None) => DefinitionSource::Campaign(path),
+        (None, None, None, Some(export), Some(closure), Some(cache)) => {
             DefinitionSource::Owner(Mc2OwnedInputs::new(export, closure, cache))
         }
-        (None, None, None, None, None) => {
+        (None, None, None, None, None, None) => {
             return Err((
                 "MISSING_DEFINITION_SOURCE",
-                "provide --workspace, --package, or all three --owner-export/--owner-closure/--owner-cache paths"
+                "provide --workspace, --package, --campaign-package, or all three --owner-export/--owner-closure/--owner-cache paths"
                     .to_owned(),
             ));
         }
         _ => {
             return Err((
                 "AMBIGUOUS_DEFINITION_SOURCE",
-                "workspace, portable, and owner inputs are mutually exclusive; owner input requires all three paths"
+                "workspace, portable, campaign, and owner inputs are mutually exclusive; owner input requires all three paths"
                     .to_owned(),
             ));
         }
@@ -333,6 +480,9 @@ pub(crate) fn load_definition(
     match source {
         DefinitionSource::Portable(path) => {
             GameDefinition::from_package(GamePackage::load(path)?, &engine_capabilities()?, catalog)
+        }
+        DefinitionSource::Campaign(path) => {
+            sim_core::campaign::backend::load_mc2_campaign(path, catalog)
         }
         DefinitionSource::Owner(inputs) => load_mc2_owned(&inputs, catalog),
         DefinitionSource::Workspace(path) => sim_core::game_definition::WorkspaceStore::open(path)
