@@ -2351,14 +2351,14 @@ impl SessionRecord {
         Ok(receipt)
     }
 
-    pub(crate) fn game_snapshot(&self) -> sim_core::game_session::GameSnapshot {
+    pub(crate) fn game_snapshot(&self) -> sim_session::GameSnapshot {
         let fire = self.context.spell_fire.as_ref();
-        sim_core::game_session::GameSnapshot {
+        sim_session::GameSnapshot {
             tick: self.state.tick,
             event_head: self.event_head,
             state_hash: state_hash(&self.state),
             conformance_hash: conformance_hash_v2(&self.state, &self.context),
-            player_pose: sim_core::game_session::PlayerPose {
+            player_pose: sim_session::PlayerPose {
                 x: self.state.position.x,
                 y: self.state.position.y,
                 z: self.state.position.z,
@@ -2367,7 +2367,7 @@ impl SessionRecord {
                 effective_pitch: self.state.effective_pitch,
                 roll: self.state.roll_accumulator,
             },
-            player_motion: sim_core::game_session::PlayerMotion {
+            player_motion: sim_session::PlayerMotion {
                 target_speed: self.state.target_speed,
                 actual_speed: self.state.actual_speed,
                 strafe_speed: self.state.strafe_speed,

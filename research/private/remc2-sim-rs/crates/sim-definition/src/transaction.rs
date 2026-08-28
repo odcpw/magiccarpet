@@ -1893,8 +1893,8 @@ mod tests {
     }
 
     fn fixture_definition() -> GameDefinition {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../sim-core/tests/fixtures/custom-synthetic-v1");
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/custom-synthetic-v1");
         GameDefinition::from_package(
             GamePackage::load(root).expect("load fixture"),
             &engine_capabilities().expect("capabilities"),

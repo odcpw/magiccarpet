@@ -3,6 +3,7 @@ members = [
     "crates/atlas-registry",
     "crates/sim-collision",
     "crates/sim-definition",
+    "crates/sim-session",
     "crates/sim-input",
     "crates/sim-terrain-raster",
     "crates/sim-voxel",

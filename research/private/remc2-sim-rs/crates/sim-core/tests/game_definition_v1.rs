@@ -11,7 +11,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-const SYNTHETIC_FIXTURE: &str = "tests/fixtures/custom-synthetic-v1";
+const SYNTHETIC_FIXTURE: &str = "../sim-definition/tests/fixtures/custom-synthetic-v1";
 const CENSUS_PATH: &str = "conformance/semantic-required-surfaces-v1.json";
 
 fn manifest_dir() -> PathBuf {

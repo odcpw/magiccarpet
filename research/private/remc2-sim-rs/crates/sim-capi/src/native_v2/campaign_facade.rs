@@ -13,13 +13,13 @@ use sim_core::{
     game_definition::{
         GameDefinition, Mc2OwnedInputs, SemanticId, SemanticValue, default_catalog, load_mc2_owned,
     },
-    game_session::{
-        AudioAction, CompatibilityReceipt, EventPage, GameAdapter, GameAssetReference,
-        GameAudioCommand, GameCommand, GameEvent, GameSessionBackend, LateralControl,
-        LongitudinalControl, RuntimeActorId, RuntimeParticipantId,
-    },
     goat::GoatBehaviorConfig,
     native_world::{Level2SharedSpellEvent, NativeWorld},
+};
+use sim_session::{
+    AudioAction, CompatibilityReceipt, EventPage, GameAdapter, GameAssetReference,
+    GameAudioCommand, GameCommand, GameEvent, GameSessionBackend, LateralControl,
+    LongitudinalControl, RuntimeActorId, RuntimeParticipantId,
 };
 
 use super::{
@@ -407,7 +407,7 @@ impl GameAdapter for SealedLevel1Adapter {
 
 impl GameSessionBackend for SealedLevel1Backend {
     type Command = GameCommand;
-    type Snapshot = sim_core::game_session::GameSnapshot;
+    type Snapshot = sim_session::GameSnapshot;
     type Error = AbiError;
 
     fn tick(&self) -> u64 {

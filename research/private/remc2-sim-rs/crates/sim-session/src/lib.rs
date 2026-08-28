@@ -6,9 +6,8 @@
 //! new definition cannot affect an existing session; only an explicit reset or
 //! reopen operation may advance that session's generation.
 
-use crate::game_definition::{BoundPresentationAsset, DefinitionError};
-use crate::game_definition::{GameDefinition, SemanticId};
 use serde::{Deserialize, Serialize};
+use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
 use std::{error::Error, fmt, sync::Arc};
 
 pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v1";
@@ -608,8 +607,8 @@ impl<E: Error + 'static> Error for OpenSessionError<E> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game_definition::GamePackage;
-    use crate::game_definition::{
+    use sim_definition::GamePackage;
+    use sim_definition::{
         ChangeSetBuilder, IntegerParameter, PublicationFault, RequestedTiming, WorkspaceStore,
         default_catalog, engine_capabilities,
     };
@@ -702,8 +701,8 @@ mod tests {
     }
 
     fn definition() -> GameDefinition {
-        let root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/custom-synthetic-v1");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../sim-definition/tests/fixtures/custom-synthetic-v1");
         GameDefinition::from_package(
             GamePackage::load(root).unwrap(),
             &engine_capabilities().unwrap(),

@@ -17,6 +17,7 @@ sha2 = "=0.10.9"
 sim-collision = { path = "../sim-collision" }
 sim-definition = { path = "../sim-definition" }
 sim-input = { path = "../sim-input" }
+sim-session = { path = "../sim-session" }
 sim-terrain-raster = { path = "../sim-terrain-raster" }
 sim-voxel = { path = "../sim-voxel" }
 

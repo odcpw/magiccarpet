@@ -16,11 +16,10 @@ use sim_core::{
         BoundPresentationAsset, GameDefinition, Mc2OwnedInputs, SemanticId, WorkspaceStore,
         default_catalog, load_mc2_owned,
     },
-    game_session::{
-        EventPage, GameAudioCommand, GameCommand, GameSession, GameSessionAssetError,
-        GameSessionError, OpenSessionError, SessionGuard, SessionGuardError, SessionGuardErrorCode,
-        SessionObservation,
-    },
+};
+use sim_session::{
+    EventPage, GameAudioCommand, GameCommand, GameSession, GameSessionAssetError, GameSessionError,
+    OpenSessionError, SessionGuard, SessionGuardError, SessionGuardErrorCode, SessionObservation,
 };
 
 const MAX_COMMAND_JSON_BYTES: u32 = 4 * 1024;
@@ -429,7 +428,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
 ) -> i32 {
     boundary(|| {
         let contract = serde_json::json!({
-            "engine_contract": sim_core::game_session::GAME_SESSION_CONTRACT,
+            "engine_contract": sim_session::GAME_SESSION_CONTRACT,
             "transport_contract": "carpet-flight-native-json/v1",
             "transport_version": 1,
             "encoding": "utf-8-json",
@@ -1012,7 +1011,7 @@ mod tests {
         use sim_core::game_definition::{GamePackage, engine_capabilities};
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../sim-core/tests/fixtures/custom-synthetic-v1");
+            .join("../sim-definition/tests/fixtures/custom-synthetic-v1");
         let catalog = default_catalog().unwrap();
         let original = GameDefinition::from_package(
             GamePackage::load(fixture).unwrap(),

@@ -15,8 +15,8 @@ use sim_core::{
         GameRuntime, OpenLevelError, RuntimeGuard, RuntimeGuardError, RuntimeGuardErrorCode,
         RuntimeMode, RuntimeTransitionError,
     },
-    game_session::{GameSession, OpenSessionError},
 };
+use sim_session::{GameSession, OpenSessionError};
 
 const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v1";
 

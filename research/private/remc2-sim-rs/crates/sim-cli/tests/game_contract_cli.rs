@@ -11,7 +11,8 @@ use std::{
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sim-core/tests/fixtures/custom-synthetic-v1")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../sim-definition/tests/fixtures/custom-synthetic-v1")
 }
 
 fn level_one_campaign_fixture() -> PathBuf {

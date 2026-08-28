@@ -2597,7 +2597,7 @@ mod tests {
         let synthetic = GameDefinition::from_package(
             GamePackage::load(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/fixtures/custom-synthetic-v1"),
+                    .join("../sim-definition/tests/fixtures/custom-synthetic-v1"),
             )
             .unwrap(),
             &engine_capabilities().unwrap(),

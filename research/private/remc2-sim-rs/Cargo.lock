@@ -179,6 +179,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sim-core",
+ "sim-session",
 ]
 
 [[package]]
@@ -208,6 +209,7 @@ dependencies = [
  "sim-collision",
  "sim-definition",
  "sim-input",
+ "sim-session",
  "sim-terrain-raster",
  "sim-voxel",
 ]
@@ -224,6 +226,14 @@ dependencies = [
 [[package]]
 name = "sim-input"
 version = "0.1.0"
+
+[[package]]
+name = "sim-session"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sim-definition",
+]
 
 [[package]]
 name = "sim-terrain-raster"
