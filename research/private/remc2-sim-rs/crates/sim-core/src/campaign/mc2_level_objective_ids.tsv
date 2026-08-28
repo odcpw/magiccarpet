@@ -1,0 +1,17 @@
+# Private MC2-owned stable semantic objective identities for qualified Levels 1-3.
+# external_level	objective_slot	level_objective_id	condition_access
+1	0	objective.reach.my_beacon	session_reset
+1	1	objective.reach.foot_of_spire	session_reset
+1	2	objective.clear.spire_archers	read_only
+1	3	objective.charge.first_castle	read_only
+1	4	objective.clear.lethal_fireflies	read_only
+2	0	objective.reach.sight_beacon	session_reset
+2	1	objective.defeat.nyphur	read_only
+2	2	objective.clear.plague_bees	read_only
+2	3	objective.reach.payahandra_ruins	session_reset
+2	4	objective.clear.payahandra_vaults	read_only
+3	0	objective.clear.undead_horde	read_only
+3	1	objective.clear.guardian_dragons	read_only
+3	2	objective.charge.reveal_entrance	read_only
+3	3	objective.reach.revealed_way	session_reset
+3	4	objective.clear.final_bees	read_only

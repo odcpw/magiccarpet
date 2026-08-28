@@ -6,7 +6,8 @@
 //! prove a live gameplay consumer uses the published value.
 
 use super::{
-    DefinitionError, DefinitionErrorCode, GameDefinition, Result, level_definition::TilePosition,
+    DefinitionError, DefinitionErrorCode, GameDefinition, Result,
+    level_definition::{ObjectiveCondition, TilePosition},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
@@ -73,6 +74,7 @@ pub enum SemanticValue {
     Enum(String),
     Reference(String),
     Position(TilePosition),
+    ObjectiveCondition(ObjectiveCondition),
 }
 
 impl SemanticValue {
@@ -83,6 +85,9 @@ impl SemanticValue {
             Self::Enum(value) => json!({"type": "enum", "value": value}),
             Self::Reference(value) => json!({"type": "reference", "value": value}),
             Self::Position(value) => json!({"type": "position", "value": value}),
+            Self::ObjectiveCondition(value) => {
+                json!({"type": "objective_condition", "value": value})
+            }
         }
     }
 }
@@ -94,6 +99,7 @@ pub enum DescriptorKind {
     Rule,
     Behavior,
     Placement,
+    Objective,
 }
 
 impl DescriptorKind {
@@ -105,6 +111,7 @@ impl DescriptorKind {
             Self::Rule => "rule",
             Self::Behavior => "behavior",
             Self::Placement => "placement",
+            Self::Objective => "objective",
         }
     }
 }
@@ -115,6 +122,7 @@ pub enum ValueType {
     Enum,
     Reference,
     Position,
+    ObjectiveCondition,
 }
 
 impl ValueType {
@@ -125,6 +133,7 @@ impl ValueType {
             Self::Enum => "enum",
             Self::Reference => "reference",
             Self::Position => "position",
+            Self::ObjectiveCondition => "objective_condition",
         }
     }
 }
@@ -287,6 +296,33 @@ impl SemanticDescriptor {
                         "position semantic value is outside descriptor bounds",
                     ));
                 }
+            }
+            (
+                ValueType::ObjectiveCondition,
+                SemanticValue::ObjectiveCondition(ObjectiveCondition::ReachLocation(position)),
+            ) => {
+                let x = i64::from(position.x);
+                let y = i64::from(position.y);
+                if self
+                    .minimum
+                    .is_some_and(|minimum| x < minimum || y < minimum)
+                    || self
+                        .maximum
+                        .is_some_and(|maximum| x > maximum || y > maximum)
+                {
+                    return Err(DefinitionError::new(
+                        DefinitionErrorCode::OutOfRange,
+                        path,
+                        "objective location is outside descriptor bounds",
+                    ));
+                }
+            }
+            (ValueType::ObjectiveCondition, SemanticValue::ObjectiveCondition(_)) => {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::TypeMismatch,
+                    path,
+                    "objective authoring cannot change the objective condition family",
+                ));
             }
             _ => {
                 return Err(DefinitionError::new(

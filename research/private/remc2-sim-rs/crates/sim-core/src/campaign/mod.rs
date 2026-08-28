@@ -149,12 +149,12 @@ impl CampaignSession {
         self.level2.reset();
     }
 
-    pub(crate) fn apply_semantic_placement_variant(
+    pub(crate) fn apply_semantic_level_variant(
         &mut self,
         level: &LevelDefinition,
     ) -> Result<(), NativeWorldError> {
         level
-            .verify_position_variant_of(self.definition.level_definition())
+            .verify_session_reset_variant_of(self.definition.level_definition())
             .map_err(NativeWorldError::new)?;
         for entity in level.entities() {
             let original = self

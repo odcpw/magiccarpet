@@ -403,7 +403,7 @@ impl CampaignDefinition {
             .semantic_level
             .as_ref()
             .ok_or_else(|| "runtime definition has no semantic level to replace".to_owned())?;
-        level.verify_position_variant_of(current)?;
+        level.verify_session_reset_variant_of(current)?;
         self.semantic_level = Some(level);
         Ok(())
     }

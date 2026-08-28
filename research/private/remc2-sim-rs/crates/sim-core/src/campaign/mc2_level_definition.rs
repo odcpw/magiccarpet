@@ -7,14 +7,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sim_definition::adapter::{
     activation_group_id, build_level_definition, entity_definition_with_position_access,
-    objective_definition, stable_entity_id,
+    objective_definition, stable_entity_id, stable_objective_id,
 };
 
 use crate::{
     level_definition::{
         BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
-        LevelEntityPositionAccess, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind,
-        SwitchKind, TilePosition,
+        LevelEntityPositionAccess, LevelObjectiveConditionAccess, LevelObjectiveId, MechanicKind,
+        ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
     },
     level1_mission::parse_authored_features,
 };
@@ -22,6 +22,7 @@ use crate::{
 use super::spec::{CampaignSelection, ObjectiveOperation};
 
 const MC2_LEVEL_ENTITY_IDS: &str = include_str!("mc2_level_entity_ids.tsv");
+const MC2_LEVEL_OBJECTIVE_IDS: &str = include_str!("mc2_level_objective_ids.tsv");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Mc2LevelDefinition {
@@ -138,6 +139,7 @@ impl Mc2LevelDefinition {
     ) -> Result<Self, String> {
         let features = parse_authored_features(bytes)?;
         let mut stable_entity_ids = stable_entity_ids(selection.external_level)?;
+        let mut stable_objective_ids = stable_objective_ids(selection.external_level)?;
         let mut creature_by_authored_record = BTreeMap::new();
         let mut creature_model_by_kind = BTreeMap::new();
         let mut spell_by_authored_record = BTreeMap::new();
@@ -435,6 +437,14 @@ impl Mc2LevelDefinition {
         let objectives = objective_operations
             .iter()
             .map(|operation| {
+                let (id, condition_access) = stable_objective_ids
+                    .remove(&u16::from(operation.objective_slot))
+                    .ok_or_else(|| {
+                        format!(
+                            "objective {} has no stable MC2 objective identity",
+                            operation.objective_slot
+                        )
+                    })?;
                 let condition = match operation.stage_index {
                     0 => ObjectiveCondition::CastleManaPercent(
                         u16::try_from(operation.objective_selector).map_err(|_| {
@@ -518,7 +528,15 @@ impl Mc2LevelDefinition {
                         ));
                     }
                 };
-                Ok(objective_definition(condition))
+                if condition_access == LevelObjectiveConditionAccess::SessionReset
+                    && !matches!(condition, ObjectiveCondition::ReachLocation(_))
+                {
+                    return Err(format!(
+                        "writable semantic objective {} is not a ReachLocation condition",
+                        id.as_str()
+                    ));
+                }
+                Ok(objective_definition(id, condition, condition_access))
             })
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -526,6 +544,13 @@ impl Mc2LevelDefinition {
             return Err(format!(
                 "stable MC2 entity identity manifest has {} unconsumed entries for external level {}",
                 stable_entity_ids.len(),
+                selection.external_level
+            ));
+        }
+        if !stable_objective_ids.is_empty() {
+            return Err(format!(
+                "stable MC2 objective identity manifest has {} unconsumed entries for external level {}",
+                stable_objective_ids.len(),
                 selection.external_level
             ));
         }
@@ -544,6 +569,62 @@ impl Mc2LevelDefinition {
             movable_source_id_by_entity_id,
         })
     }
+}
+
+fn stable_objective_ids(
+    external_level: u16,
+) -> Result<BTreeMap<u16, (LevelObjectiveId, LevelObjectiveConditionAccess)>, String> {
+    let mut ids = BTreeMap::new();
+    for (line_index, line) in MC2_LEVEL_OBJECTIVE_IDS.lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 4 {
+            return Err(format!(
+                "invalid MC2 objective identity manifest line {}",
+                line_index + 1
+            ));
+        }
+        let level = fields[0].parse::<u16>().map_err(|_| {
+            format!(
+                "invalid MC2 objective identity level at line {}",
+                line_index + 1
+            )
+        })?;
+        if level != external_level {
+            continue;
+        }
+        let objective_slot = fields[1].parse::<u16>().map_err(|_| {
+            format!(
+                "invalid MC2 objective identity slot at line {}",
+                line_index + 1
+            )
+        })?;
+        let id = stable_objective_id(fields[2]).map_err(|error| error.to_string())?;
+        if !id.as_str().starts_with("objective.") {
+            return Err(format!(
+                "stable MC2 objective identity {} is outside the objective namespace",
+                id.as_str()
+            ));
+        }
+        let access = match fields[3] {
+            "read_only" => LevelObjectiveConditionAccess::ReadOnly,
+            "session_reset" => LevelObjectiveConditionAccess::SessionReset,
+            _ => {
+                return Err(format!(
+                    "invalid objective condition access at manifest line {}",
+                    line_index + 1
+                ));
+            }
+        };
+        if ids.insert(objective_slot, (id, access)).is_some() {
+            return Err(format!(
+                "duplicate MC2 objective identity for external level {external_level} slot {objective_slot}"
+            ));
+        }
+    }
+    Ok(ids)
 }
 
 fn stable_entity_ids(

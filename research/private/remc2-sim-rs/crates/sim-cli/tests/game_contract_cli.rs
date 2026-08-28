@@ -79,10 +79,10 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "3.0");
+    assert_eq!(capabilities["contract_version"], "4.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
-        "carpet-flight-change-set/v3"
+        "carpet-flight-change-set/v4"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["operation"],
@@ -101,6 +101,16 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(
         move_entity["entity_ids"],
         "game entities -> data.entities[].id"
+    );
+    let put_objective = capabilities["data"]["authoring"]["operation_schema"]["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["operation"] == "put_objective")
+        .expect("put_objective is discoverable");
+    assert_eq!(
+        put_objective["objective_ids"],
+        "game objectives -> data.objectives[].id"
     );
     assert_eq!(
         capabilities["data"]["compiled_capabilities"]
@@ -196,7 +206,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "3.0");
+    assert_eq!(entities["contract_version"], "4.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -405,6 +415,131 @@ fn campaign_workspace_moves_a_semantic_entity_through_the_typed_cli_lifecycle() 
     assert_ne!(
         get["data"]["descriptor"]["provenance"]["content_hash"],
         get["identity"]["definition_hash"]
+    );
+}
+
+#[test]
+fn campaign_workspace_discovers_and_authors_reach_objective_through_typed_cli() {
+    let temporary = TempWorkspace::new("semantic-put-objective");
+    let workspace = temporary.0.to_str().unwrap();
+    let campaign = level_one_campaign_fixture();
+    let campaign = campaign.to_str().expect("UTF-8 campaign path");
+    let objectives = run(&[
+        "game",
+        "objectives",
+        "--campaign-package",
+        campaign,
+        "--id",
+        "objective.reach.my_beacon",
+    ]);
+    assert!(objectives.status.success(), "{:?}", objectives.stderr);
+    let objectives: Value = serde_json::from_slice(&objectives.stdout).unwrap();
+    assert_eq!(objectives["data"]["page"]["total"], 1);
+    assert_eq!(
+        objectives["data"]["objectives"][0],
+        serde_json::json!({
+            "id": "objective.reach.my_beacon",
+            "condition": {"reach_location": {"x": 115, "y": 212}},
+            "condition_access": "session_reset"
+        })
+    );
+
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "semantic-objective-workspace",
+        "--campaign-package",
+        campaign,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+    let changes_path = temporary.0.join("put-objective.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "put_objective",
+            "objective": "objective.reach.my_beacon",
+            "condition": {"reach_location": {"x": 120, "y": 120}},
+            "expected_condition": {"reach_location": {"x": 115, "y": 212}}
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "semantic-objective-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    let change_set_path = temporary.0.join("objective-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let preview = run(&[
+        "game",
+        "preview",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(preview.status.success(), "{:?}", preview.stderr);
+    let preview: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(preview["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        preview["data"]["diff"],
+        serde_json::json!([{
+            "id": "objective.reach.my_beacon.condition",
+            "before": {"type": "objective_condition", "value": {"reach_location": {"x": 115, "y": 212}}},
+            "after": {"type": "objective_condition", "value": {"reach_location": {"x": 120, "y": 120}}}
+        }])
+    );
+    let validation = preview["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validation,
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+
+    let get = run(&[
+        "game",
+        "get",
+        "--workspace",
+        workspace,
+        "--id",
+        "objective.reach.my_beacon.condition",
+    ]);
+    assert!(get.status.success(), "{:?}", get.stderr);
+    let get: Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(get["data"]["descriptor"]["kind"], "objective");
+    assert_eq!(get["data"]["descriptor"]["access"], "writable");
+    assert_eq!(
+        get["data"]["descriptor"]["default_value"]["value"],
+        serde_json::json!({"reach_location": {"x": 115, "y": 212}})
+    );
+    assert_eq!(
+        get["data"]["value"],
+        serde_json::json!({"type": "objective_condition", "value": {"reach_location": {"x": 120, "y": 120}}})
     );
 }
 
@@ -667,7 +802,7 @@ fn authoring_cli_rejects_session_generation_and_duplicate_workspace_creation() {
     fs::write(
         &invalid_path,
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": "carpet-flight-change-set/v3",
+            "schema_version": "carpet-flight-change-set/v4",
             "target_workspace": "schema-workspace",
             "expected_definition_hash": definition_hash,
             "expected_definition_revision": 1,

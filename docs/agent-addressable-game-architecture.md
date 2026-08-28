@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-operation v3 milestone, this is a binding target with
+As of the semantic-operation v4 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -333,7 +333,12 @@ partial real implementation, not a completion claim:
   and consumed on explicit reopen by the real Level 1 start-area trigger and
   its ordinary scheduler/group lifecycle; every other placement remains
   read-only until its own runtime materialization binding is implemented;
-- placement/spawn/objective/behavior/asset authoring is not yet complete, and
+- all fifteen qualified Level 1, 2 and 3 objectives have stable semantic IDs;
+  typed `PutObjective` authoring is published atomically and consumed on
+  explicit reopen/reset for the five package-present `ReachLocation`
+  conditions, while the ten other condition families remain read-only;
+- placement/spawn/behavior/asset authoring and the remaining objective fields
+  are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed
   composition above;
 - the MC2 adapter produces useful semantic bindings, while source-shaped

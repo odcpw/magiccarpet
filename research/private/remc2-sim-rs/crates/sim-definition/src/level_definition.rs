@@ -197,6 +197,48 @@ impl LevelEntityId {
     }
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct LevelObjectiveId(String);
+
+impl LevelObjectiveId {
+    /// Parse one stable author-facing objective identity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects IDs which expose private source selectors or Level-N layout.
+    pub fn parse(value: &str) -> crate::Result<Self> {
+        let semantic = SemanticId::parse(value)?;
+        if semantic
+            .as_str()
+            .split('.')
+            .any(is_private_source_identity_segment)
+        {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidSemanticId,
+                value,
+                "level objective ID must be stable game meaning, not source selector identity",
+            ));
+        }
+        Ok(Self(semantic.as_str().to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for LevelObjectiveId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl<'de> Deserialize<'de> for LevelEntityId {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -296,20 +338,60 @@ pub enum ObjectiveCondition {
     NoStandingBuildings,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelObjectiveConditionAccess {
+    #[default]
+    ReadOnly,
+    SessionReset,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LevelObjectiveDefinition {
+    id: LevelObjectiveId,
+    default_condition: ObjectiveCondition,
     condition: ObjectiveCondition,
+    #[serde(default, skip_serializing_if = "is_read_only_objective_condition")]
+    condition_access: LevelObjectiveConditionAccess,
 }
 
 impl LevelObjectiveDefinition {
-    pub(crate) const fn new(condition: ObjectiveCondition) -> Self {
-        Self { condition }
+    pub(crate) const fn new(
+        id: LevelObjectiveId,
+        condition: ObjectiveCondition,
+        condition_access: LevelObjectiveConditionAccess,
+    ) -> Self {
+        Self {
+            id,
+            default_condition: condition,
+            condition,
+            condition_access,
+        }
     }
 
     #[must_use]
-    pub const fn condition(self) -> ObjectiveCondition {
+    pub const fn id(&self) -> &LevelObjectiveId {
+        &self.id
+    }
+
+    #[must_use]
+    pub const fn default_condition(&self) -> ObjectiveCondition {
+        self.default_condition
+    }
+
+    #[must_use]
+    pub const fn condition(&self) -> ObjectiveCondition {
         self.condition
     }
+
+    #[must_use]
+    pub const fn condition_access(&self) -> LevelObjectiveConditionAccess {
+        self.condition_access
+    }
+}
+
+const fn is_read_only_objective_condition(access: &LevelObjectiveConditionAccess) -> bool {
+    matches!(access, LevelObjectiveConditionAccess::ReadOnly)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -400,6 +482,23 @@ impl LevelDefinition {
                 ));
             }
         }
+        let mut objective_ids = BTreeSet::new();
+        for objective in &objectives {
+            if !objective_ids.insert(objective.id.clone()) {
+                return Err(format!(
+                    "duplicate semantic level objective {}",
+                    objective.id.as_str()
+                ));
+            }
+            if objective.condition_access == LevelObjectiveConditionAccess::SessionReset
+                && !matches!(objective.condition, ObjectiveCondition::ReachLocation(_))
+            {
+                return Err(format!(
+                    "semantic objective {} exposes an unsupported writable condition",
+                    objective.id.as_str()
+                ));
+            }
+        }
         let unique_groups = activation_groups.iter().copied().collect::<BTreeSet<_>>();
         if unique_groups.len() != activation_groups.len()
             || activation_groups
@@ -458,17 +557,65 @@ impl LevelDefinition {
         Ok(candidate)
     }
 
-    /// Verify that this definition differs from `base` only through position
+    pub(crate) fn with_put_objective(
+        &self,
+        id: &LevelObjectiveId,
+        condition: ObjectiveCondition,
+    ) -> Result<Self, String> {
+        let ObjectiveCondition::ReachLocation(position) = condition else {
+            return Err(format!(
+                "semantic objective {} only admits ReachLocation authoring",
+                id.as_str()
+            ));
+        };
+        if position.x > u16::from(u8::MAX) || position.y > u16::from(u8::MAX) {
+            return Err(format!(
+                "semantic objective {} location is outside the 256x256 world",
+                id.as_str()
+            ));
+        }
+        let mut candidate = self.clone();
+        let objective = candidate
+            .objectives
+            .iter_mut()
+            .find(|objective| objective.id == *id)
+            .ok_or_else(|| format!("unknown semantic level objective {}", id.as_str()))?;
+        if objective.condition_access != LevelObjectiveConditionAccess::SessionReset {
+            return Err(format!(
+                "semantic objective {} condition has no runtime consumer",
+                id.as_str()
+            ));
+        }
+        if !matches!(
+            objective.default_condition,
+            ObjectiveCondition::ReachLocation(_)
+        ) {
+            return Err(format!(
+                "semantic objective {} cannot change condition family",
+                id.as_str()
+            ));
+        }
+        if objective.condition == condition {
+            return Err(format!(
+                "semantic objective {} already has the requested condition",
+                id.as_str()
+            ));
+        }
+        objective.condition = condition;
+        Ok(candidate)
+    }
+
+    /// Verify that this definition differs from `base` only through semantic
     /// changes explicitly admitted at session reset.
     ///
     /// This is public for engine adapters that materialize a validated
     /// definition in another crate. Authoring callers should use the guarded
     /// transaction API rather than invoking this validator directly.
     #[doc(hidden)]
-    pub fn verify_position_variant_of(&self, base: &Self) -> Result<(), String> {
-        if self.objectives != base.objectives
-            || self.activation_groups != base.activation_groups
+    pub fn verify_session_reset_variant_of(&self, base: &Self) -> Result<(), String> {
+        if self.activation_groups != base.activation_groups
             || self.entities.len() != base.entities.len()
+            || self.objectives.len() != base.objectives.len()
         {
             return Err("semantic level variant changes level structure".to_owned());
         }
@@ -492,6 +639,48 @@ impl LevelDefinition {
                     original.id.as_str()
                 ));
             }
+            if candidate.position.x > u16::from(u8::MAX)
+                || candidate.position.y > u16::from(u8::MAX)
+            {
+                return Err(format!(
+                    "semantic level variant moves entity {} outside the 256x256 world",
+                    original.id.as_str()
+                ));
+            }
+        }
+        for (candidate, original) in self.objectives.iter().zip(&base.objectives) {
+            if candidate.id != original.id
+                || candidate.default_condition != original.default_condition
+                || candidate.condition_access != original.condition_access
+            {
+                return Err(format!(
+                    "semantic level variant changes objective identity or structure at {}",
+                    original.id.as_str()
+                ));
+            }
+            if candidate.condition != original.condition
+                && (original.condition_access != LevelObjectiveConditionAccess::SessionReset
+                    || !matches!(
+                        (original.default_condition, candidate.condition),
+                        (
+                            ObjectiveCondition::ReachLocation(_),
+                            ObjectiveCondition::ReachLocation(_)
+                        )
+                    ))
+            {
+                return Err(format!(
+                    "semantic level variant changes read-only objective {}",
+                    original.id.as_str()
+                ));
+            }
+            if let ObjectiveCondition::ReachLocation(position) = candidate.condition
+                && (position.x > u16::from(u8::MAX) || position.y > u16::from(u8::MAX))
+            {
+                return Err(format!(
+                    "semantic level variant moves objective {} outside the 256x256 world",
+                    original.id.as_str()
+                ));
+            }
         }
         Ok(())
     }
@@ -499,6 +688,11 @@ impl LevelDefinition {
     #[must_use]
     pub fn objectives(&self) -> &[LevelObjectiveDefinition] {
         &self.objectives
+    }
+
+    #[must_use]
+    pub fn objective(&self, id: &LevelObjectiveId) -> Option<&LevelObjectiveDefinition> {
+        self.objectives.iter().find(|objective| objective.id == *id)
     }
 
     pub fn objective_conditions(&self) -> impl Iterator<Item = ObjectiveCondition> + '_ {

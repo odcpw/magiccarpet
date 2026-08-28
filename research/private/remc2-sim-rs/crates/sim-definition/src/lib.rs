@@ -49,8 +49,8 @@ use std::{
 use level_definition::LevelDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v2";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "3.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v3";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "4.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -360,7 +360,7 @@ impl GameDefinition {
         }
         match (&self.level_definition, &base.level_definition) {
             (Some(candidate), Some(original)) => candidate
-                .verify_position_variant_of(original)
+                .verify_session_reset_variant_of(original)
                 .map_err(|message| {
                     DefinitionError::new(
                         DefinitionErrorCode::HashMismatch,
@@ -457,18 +457,59 @@ impl GameDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_put_level_objective(
+        &self,
+        id: &level_definition::LevelObjectiveId,
+        condition: level_definition::ObjectiveCondition,
+        revision: u64,
+    ) -> Result<Self> {
+        if revision < self.revision {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidRequest,
+                "definition.revision",
+                "candidate definition revision must not move backward",
+            ));
+        }
+        let level = self.level_definition.as_ref().ok_or_else(|| {
+            DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                id.as_str(),
+                "definition has no semantic objective consumer",
+            )
+        })?;
+        let mut candidate = self.clone();
+        candidate.level_definition =
+            Some(level.with_put_objective(id, condition).map_err(|message| {
+                DefinitionError::new(DefinitionErrorCode::InvalidRequest, id.as_str(), message)
+            })?);
+        candidate.revision = revision;
+        candidate.definition_hash = candidate.compute_hash();
+        Ok(candidate)
+    }
+
     /// Read one semantic authoring target from the immutable definition.
     #[must_use]
     pub fn semantic_target_value(&self, id: &SemanticId) -> Option<SemanticValue> {
         if let Some(value) = self.value(id) {
             return Some(value.clone());
         }
-        let entity = id.as_str().strip_suffix(".position")?;
-        let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
-        self.level_definition
-            .as_ref()?
-            .entity(&entity_id)
-            .map(|entity| SemanticValue::Position(entity.position()))
+        if let Some(entity) = id.as_str().strip_suffix(".position") {
+            let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
+            return self
+                .level_definition
+                .as_ref()?
+                .entity(&entity_id)
+                .map(|entity| SemanticValue::Position(entity.position()));
+        }
+        if let Some(objective) = id.as_str().strip_suffix(".condition") {
+            let objective_id = level_definition::LevelObjectiveId::parse(objective).ok()?;
+            return self
+                .level_definition
+                .as_ref()?
+                .objective(&objective_id)
+                .map(|objective| SemanticValue::ObjectiveCondition(objective.condition()));
+        }
+        None
     }
 
     /// Describe one stable semantic level-entity position target.
@@ -547,6 +588,87 @@ impl GameDefinition {
                 SemanticId::parse(&format!("{}.position", entity.id().as_str()))
                     .ok()
                     .and_then(|id| self.level_entity_position_descriptor(&id))
+            })
+            .collect()
+    }
+
+    /// Describe one stable semantic objective-condition target.
+    #[must_use]
+    pub fn level_objective_condition_descriptor(
+        &self,
+        id: &SemanticId,
+    ) -> Option<SemanticDescriptor> {
+        let objective_id = id.as_str().strip_suffix(".condition")?;
+        let objective_id = level_definition::LevelObjectiveId::parse(objective_id).ok()?;
+        let objective = self.level_definition.as_ref()?.objective(&objective_id)?;
+        let writable = matches!(
+            objective.condition_access(),
+            level_definition::LevelObjectiveConditionAccess::SessionReset
+        );
+        let target_id = id.as_str().to_owned();
+        Some(SemanticDescriptor {
+            id: id.clone(),
+            descriptor_version: 1,
+            kind: DescriptorKind::Objective,
+            value_type: ValueType::ObjectiveCondition,
+            unit: Some("level_tile".to_owned()),
+            default_value: SemanticValue::ObjectiveCondition(objective.default_condition()),
+            minimum: Some(0),
+            maximum: Some(i64::from(u8::MAX)),
+            enum_values: Vec::new(),
+            access: if writable {
+                Access::Writable
+            } else {
+                Access::ReadOnly
+            },
+            mutation_timing: MutationTiming::SessionReset,
+            determinism_role: "immutable package objective authoring target".to_owned(),
+            dependencies: vec![
+                objective.id().as_str().to_owned(),
+                "ordered runtime objective-stage binding".to_owned(),
+            ],
+            side_effects: if writable {
+                vec![
+                    "already-open sessions remain unchanged until explicit reopen/reset".to_owned(),
+                    "new runtime generations evaluate the authored location in the ordinary objective pass"
+                        .to_owned(),
+                ]
+            } else {
+                Vec::new()
+            },
+            scope: format!("stable level objective {}", objective.id().as_str()),
+            provenance_origin: "package semantic level definition".to_owned(),
+            provenance_content_hash: self.package_graph_hash.clone(),
+            temporal_contract: Some(TemporalContract {
+                dispatch_phase: "definition_publication".to_owned(),
+                dispatch_key: target_id.clone(),
+                ordinary_producer: "validated PutObjective candidate".to_owned(),
+                handler: "guarded atomic definition compare-and-swap".to_owned(),
+                same_pass_epilogue:
+                    "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
+                following_pass_cleanup: "explicit reset/reopen creates a new runtime generation; the ordinary objective evaluator reads the authored condition"
+                    .to_owned(),
+                authoritative_reads: vec![target_id],
+                authoritative_writes: vec!["immutable LevelDefinition objective condition".to_owned()],
+                rng_and_event_effects:
+                    "none during publication; gameplay effects remain owned by the objective scheduler"
+                        .to_owned(),
+            }),
+            summary: "Condition of one stable semantic level objective.".to_owned(),
+        })
+    }
+
+    /// Describe every objective-condition target in stable stage order.
+    #[must_use]
+    pub fn level_objective_condition_descriptors(&self) -> Vec<SemanticDescriptor> {
+        self.level_definition
+            .as_ref()
+            .into_iter()
+            .flat_map(level_definition::LevelDefinition::objectives)
+            .filter_map(|objective| {
+                SemanticId::parse(&format!("{}.condition", objective.id().as_str()))
+                    .ok()
+                    .and_then(|id| self.level_objective_condition_descriptor(&id))
             })
             .collect()
     }

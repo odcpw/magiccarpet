@@ -10,7 +10,8 @@ use crate::{
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
     level_definition::{
         ActivationGroupId, LevelDefinition, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
-        LevelEntityPositionAccess, LevelObjectiveDefinition, ObjectiveCondition, TilePosition,
+        LevelEntityPositionAccess, LevelObjectiveConditionAccess, LevelObjectiveDefinition,
+        LevelObjectiveId, ObjectiveCondition, TilePosition,
     },
 };
 
@@ -56,6 +57,10 @@ pub fn stable_entity_id(value: &str) -> crate::Result<LevelEntityId> {
     LevelEntityId::parse(value)
 }
 
+pub fn stable_objective_id(value: &str) -> crate::Result<LevelObjectiveId> {
+    LevelObjectiveId::parse(value)
+}
+
 #[must_use]
 pub const fn entity_definition(
     id: LevelEntityId,
@@ -84,8 +89,12 @@ pub const fn entity_definition_with_position_access(
 }
 
 #[must_use]
-pub const fn objective_definition(condition: ObjectiveCondition) -> LevelObjectiveDefinition {
-    LevelObjectiveDefinition::new(condition)
+pub const fn objective_definition(
+    id: LevelObjectiveId,
+    condition: ObjectiveCondition,
+    condition_access: LevelObjectiveConditionAccess,
+) -> LevelObjectiveDefinition {
+    LevelObjectiveDefinition::new(id, condition, condition_access)
 }
 
 pub fn build_level_definition(

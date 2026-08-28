@@ -22,7 +22,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v3";
+pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v4";
 pub const WORKSPACE_SCHEMA: &str = "carpet-flight-definition-workspace/v1";
 pub const VALIDATION_RECEIPT_SCHEMA: &str = "carpet-flight-validation-receipt/v1";
 pub const APPLY_RECEIPT_SCHEMA: &str = "carpet-flight-apply-receipt/v1";
@@ -364,6 +364,39 @@ impl ChangeSetBuilder {
                 entity,
                 position,
                 expected_position: Some(expected_position),
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn put_objective(
+        mut self,
+        objective: crate::level_definition::LevelObjectiveId,
+        condition: crate::level_definition::ObjectiveCondition,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::PutObjective {
+                objective,
+                condition,
+                expected_condition: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn put_objective_from(
+        mut self,
+        objective: crate::level_definition::LevelObjectiveId,
+        expected_condition: crate::level_definition::ObjectiveCondition,
+        condition: crate::level_definition::ObjectiveCondition,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::PutObjective {
+                objective,
+                condition,
+                expected_condition: Some(expected_condition),
             });
         self
     }
@@ -1289,6 +1322,53 @@ fn validate_against(
                     Err(error) => diagnostics.push(error.into()),
                 }
             }
+            ResolvedOperation::ObjectivePut {
+                id,
+                objective,
+                condition,
+                expected_condition,
+            } => {
+                required_timing = Some(required_timing.unwrap_or(RequestedTiming::SessionReset));
+                if !change_set
+                    .requested_timing
+                    .permits(MutationTiming::SessionReset)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "UNSAFE_TIMING".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "objective authoring requires session_reset timing".to_owned(),
+                    });
+                    continue;
+                }
+                let current = active
+                    .level_definition()
+                    .and_then(|level| level.objective(objective))
+                    .map(|candidate| candidate.condition());
+                if expected_condition.is_some() && current != *expected_condition {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "put expected condition does not match the active definition"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                if current == Some(*condition) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "objective already has the requested condition".to_owned(),
+                    });
+                    continue;
+                }
+                match proposed.with_put_level_objective(objective, *condition, candidate_revision) {
+                    Ok(updated) => {
+                        proposed = updated;
+                        preliminarily_valid.insert(id.clone());
+                    }
+                    Err(error) => diagnostics.push(error.into()),
+                }
+            }
         }
     }
     for resolved in &resolved_operations {
@@ -1309,6 +1389,11 @@ fn validate_against(
                 ResolvedOperation::EntityMove {
                     entity, position, ..
                 } => candidate.with_moved_level_entity(entity, *position, candidate_revision),
+                ResolvedOperation::ObjectivePut {
+                    objective,
+                    condition,
+                    ..
+                } => candidate.with_put_level_objective(objective, *condition, candidate_revision),
             };
             match applied {
                 Ok(updated) => candidate = updated,
@@ -1563,11 +1648,12 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::adapter::{
-        build_level_definition, entity_definition_with_position_access, stable_entity_id,
-        with_level_definition,
+        build_level_definition, entity_definition_with_position_access, objective_definition,
+        stable_entity_id, stable_objective_id, with_level_definition,
     };
     use crate::level_definition::{
-        LevelEntityKind, LevelEntityPositionAccess, SceneryKind, SwitchKind, TilePosition,
+        LevelEntityKind, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
+        ObjectiveCondition, SceneryKind, SwitchKind, TilePosition,
     };
     use crate::{
         GamePackage, Result as DefinitionResult, SemanticBinding, default_catalog,
@@ -1744,6 +1830,23 @@ mod tests {
         )
     }
 
+    fn fixture_definition_with_objectives() -> GameDefinition {
+        let writable = objective_definition(
+            stable_objective_id("objective.reach.sight_beacon").unwrap(),
+            ObjectiveCondition::ReachLocation(TilePosition { x: 2, y: 152 }),
+            LevelObjectiveConditionAccess::SessionReset,
+        );
+        let read_only = objective_definition(
+            stable_objective_id("objective.clear.plague_bees").unwrap(),
+            ObjectiveCondition::NoLivingCreatures(crate::level_definition::CreatureKind::Bee),
+            LevelObjectiveConditionAccess::ReadOnly,
+        );
+        with_level_definition(
+            fixture_definition(),
+            build_level_definition(Vec::new(), vec![writable, read_only], Vec::new()).unwrap(),
+        )
+    }
+
     fn temporary_workspace(label: &str) -> PathBuf {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
@@ -1859,6 +1962,224 @@ mod tests {
                 .unwrap()
                 .position(),
             original
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn put_objective_publication_diff_readback_and_rollback_are_typed_and_atomic() {
+        let root = temporary_workspace("put-objective");
+        let definition = fixture_definition_with_objectives();
+        let store =
+            WorkspaceStore::create(&root, "objective-workspace", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let objective = stable_objective_id("objective.reach.sight_beacon").unwrap();
+        let target = SemanticId::parse("objective.reach.sight_beacon.condition").unwrap();
+        let original = ObjectiveCondition::ReachLocation(TilePosition { x: 2, y: 152 });
+        let authored = ObjectiveCondition::ReachLocation(TilePosition { x: 120, y: 120 });
+        let descriptor = definition
+            .level_objective_condition_descriptor(&target)
+            .unwrap();
+        assert_eq!(descriptor.kind, crate::DescriptorKind::Objective);
+        assert_eq!(descriptor.access, Access::Writable);
+        assert_eq!(
+            descriptor.default_value,
+            SemanticValue::ObjectiveCondition(original)
+        );
+        let request = ChangeSetBuilder::new(
+            "objective-workspace",
+            &definition,
+            "move-sight-beacon",
+            RequestedTiming::SessionReset,
+        )
+        .put_objective_from(objective.clone(), original, authored)
+        .build()
+        .unwrap();
+        let before = store.state_bytes().unwrap();
+        let validation = store.validate(&catalog, request.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        assert_eq!(
+            validation.affected_ids,
+            vec!["objective.reach.sight_beacon.condition"]
+        );
+        let (_, diff) = store.diff(&catalog, request.clone()).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].before, SemanticValue::ObjectiveCondition(original));
+        assert_eq!(diff[0].after, SemanticValue::ObjectiveCondition(authored));
+        assert_eq!(store.state_bytes().unwrap(), before);
+
+        let applied = store
+            .apply(
+                &catalog,
+                request,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let active = store.active_definition().unwrap();
+        assert_eq!(
+            active.semantic_target_value(&target),
+            Some(SemanticValue::ObjectiveCondition(authored))
+        );
+        let moved_descriptor = active
+            .level_objective_condition_descriptor(&target)
+            .unwrap();
+        assert_eq!(
+            moved_descriptor.default_value,
+            SemanticValue::ObjectiveCondition(original)
+        );
+
+        store
+            .rollback(
+                active.definition_hash(),
+                active.revision(),
+                &applied.transaction_id,
+                "rollback-sight-beacon",
+                PublicationFault::None,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .active_definition()
+                .unwrap()
+                .semantic_target_value(&target),
+            Some(SemanticValue::ObjectiveCondition(original))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn put_objective_rejects_family_change_and_read_only_target_without_mutation() {
+        let root = temporary_workspace("put-objective-rejections");
+        let definition = fixture_definition_with_objectives();
+        let store =
+            WorkspaceStore::create(&root, "objective-workspace", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let before = store.state_bytes().unwrap();
+        let requests = [
+            DefinitionOperation::PutObjective {
+                objective: stable_objective_id("objective.reach.sight_beacon").unwrap(),
+                condition: ObjectiveCondition::DefeatRivalWizard,
+                expected_condition: None,
+            },
+            DefinitionOperation::PutObjective {
+                objective: stable_objective_id("objective.clear.plague_bees").unwrap(),
+                condition: ObjectiveCondition::ReachLocation(TilePosition { x: 10, y: 10 }),
+                expected_condition: None,
+            },
+            DefinitionOperation::PutObjective {
+                objective: stable_objective_id("objective.reach.sight_beacon").unwrap(),
+                condition: ObjectiveCondition::ReachLocation(TilePosition { x: 256, y: 10 }),
+                expected_condition: None,
+            },
+        ];
+        for (index, operation) in requests.into_iter().enumerate() {
+            let request = ChangeSetBuilder::new(
+                "objective-workspace",
+                &definition,
+                format!("rejected-objective-{index}"),
+                RequestedTiming::SessionReset,
+            )
+            .operation(operation)
+            .build()
+            .unwrap();
+            let validation = store.validate(&catalog, request).unwrap();
+            assert!(!validation.accepted);
+            assert_eq!(store.state_bytes().unwrap(), before);
+        }
+        let stale_expected = ChangeSetBuilder::new(
+            "objective-workspace",
+            &definition,
+            "rejected-objective-stale-expected",
+            RequestedTiming::SessionReset,
+        )
+        .put_objective_from(
+            stable_objective_id("objective.reach.sight_beacon").unwrap(),
+            ObjectiveCondition::ReachLocation(TilePosition { x: 1, y: 1 }),
+            ObjectiveCondition::ReachLocation(TilePosition { x: 10, y: 10 }),
+        )
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, stale_expected).unwrap();
+        assert!(!validation.accepted);
+        assert!(
+            validation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "CONFLICT")
+        );
+        assert_eq!(store.state_bytes().unwrap(), before);
+        let base_level = definition.level_definition().unwrap();
+        let mut raw_level = serde_json::to_value(base_level).unwrap();
+        raw_level["objectives"][0]["condition"]["reach_location"]["x"] = serde_json::json!(256);
+        let out_of_world: crate::level_definition::LevelDefinition =
+            serde_json::from_value(raw_level).unwrap();
+        assert!(
+            out_of_world
+                .verify_session_reset_variant_of(base_level)
+                .is_err(),
+            "the runtime variant boundary must repeat the transaction's world-bounds gate"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mixed_parameter_and_objective_put_publish_atomically_or_not_at_all() {
+        let root = temporary_workspace("mixed-objective-put");
+        let definition = fixture_definition_with_objectives();
+        let store = WorkspaceStore::create(&root, "mixed-objective", definition.clone()).unwrap();
+        let catalog = writable_catalog();
+        let objective = stable_objective_id("objective.reach.sight_beacon").unwrap();
+        let original = ObjectiveCondition::ReachLocation(TilePosition { x: 2, y: 152 });
+        let authored = ObjectiveCondition::ReachLocation(TilePosition { x: 120, y: 120 });
+        let before = store.state_bytes().unwrap();
+
+        let invalid = ChangeSetBuilder::new(
+            "mixed-objective",
+            &definition,
+            "mixed-objective-invalid",
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 21)
+        .put_objective_from(objective.clone(), original, authored)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, invalid).unwrap();
+        assert!(!validation.accepted);
+        assert_eq!(store.state_bytes().unwrap(), before);
+
+        let valid = ChangeSetBuilder::new(
+            "mixed-objective",
+            &definition,
+            "mixed-objective-valid",
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 96)
+        .put_objective_from(objective, original, authored)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, valid.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                valid,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let active = store.active_definition().unwrap();
+        assert_eq!(
+            active.semantic_target_value(
+                &SemanticId::parse("flight.player.max_forward_speed").unwrap()
+            ),
+            Some(SemanticValue::Integer(96))
+        );
+        assert_eq!(
+            active.semantic_target_value(
+                &SemanticId::parse("objective.reach.sight_beacon.condition").unwrap()
+            ),
+            Some(SemanticValue::ObjectiveCondition(authored))
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -2050,6 +2371,17 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<DefinitionOperation>(nested_raw_field).is_err());
         }
+        let base_level = definition.level_definition().unwrap();
+        let mut raw_level = serde_json::to_value(base_level).unwrap();
+        raw_level["entities"][0]["position"]["x"] = serde_json::json!(256);
+        let out_of_world: crate::level_definition::LevelDefinition =
+            serde_json::from_value(raw_level).unwrap();
+        assert!(
+            out_of_world
+                .verify_session_reset_variant_of(base_level)
+                .is_err(),
+            "the runtime variant boundary must repeat the transaction's world-bounds gate"
+        );
         assert_eq!(store.state_bytes().unwrap(), before);
         let _ = fs::remove_dir_all(root);
     }

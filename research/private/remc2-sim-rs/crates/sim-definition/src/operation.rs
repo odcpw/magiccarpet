@@ -5,6 +5,7 @@
 //! representable here. More structural operations join this enum only with a
 //! stable author identity and a real runtime consumer.
 
+use crate::level_definition::{LevelObjectiveId, ObjectiveCondition};
 use crate::{
     Access, DefinitionError, DefinitionErrorCode, GameDefinition, SemanticId, SemanticValue,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
@@ -139,6 +140,12 @@ pub enum DefinitionOperation {
         #[serde(default)]
         expected_position: Option<TilePosition>,
     },
+    PutObjective {
+        objective: LevelObjectiveId,
+        condition: ObjectiveCondition,
+        #[serde(default)]
+        expected_condition: Option<ObjectiveCondition>,
+    },
 }
 
 impl DefinitionOperation {
@@ -190,6 +197,26 @@ impl DefinitionOperation {
                     "describe": "game describe --id <entity-id>.position",
                     "read_back": "game get --id <entity-id>.position",
                 },
+                {
+                    "operation": "put_objective",
+                    "required_fields": ["objective", "condition"],
+                    "optional_fields": ["expected_condition"],
+                    "objective_ids": "game objectives -> data.objectives[].id",
+                    "target_id": "<objective-id>.condition",
+                    "condition": {
+                        "shape": {"reach_location": {"x": "integer", "y": "integer"}},
+                        "unit": "level_tile",
+                        "bounds": {
+                            "x": {"minimum": 0, "maximum": 255},
+                            "y": {"minimum": 0, "maximum": 255}
+                        }
+                    },
+                    "expected_condition": "same shape, unit, and bounds as condition",
+                    "writable_when": "objective.condition_access == session_reset",
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id <objective-id>.condition",
+                    "read_back": "game get --id <objective-id>.condition"
+                },
             ],
         })
     }
@@ -203,6 +230,10 @@ impl DefinitionOperation {
                 SemanticId::parse(&format!("{}.position", entity.as_str()))
                     .expect("validated entity ID plus position is a semantic target")
             }
+            Self::PutObjective { objective, .. } => {
+                SemanticId::parse(&format!("{}.condition", objective.as_str()))
+                    .expect("validated objective ID plus condition is a semantic target")
+            }
         }
     }
 
@@ -214,6 +245,7 @@ impl DefinitionOperation {
                     parameter: IntegerParameter::PlayerMaxForwardSpeed,
                     ..
                 } | Self::MoveEntity { .. }
+                    | Self::PutObjective { .. }
             )
         {
             return Err(DefinitionError::new(
@@ -259,6 +291,44 @@ impl DefinitionOperation {
                 expected_position: *expected_position,
             });
         }
+        if let Self::PutObjective {
+            objective,
+            condition,
+            expected_condition,
+        } = self
+        {
+            let id = self.target_id();
+            let descriptor = definition
+                .level_objective_condition_descriptor(&id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownSemanticId,
+                        objective.as_str(),
+                        "put names no objective in the active level definition",
+                    )
+                })?;
+            if descriptor.access != Access::Writable {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    objective.as_str(),
+                    "objective condition has no authoring consumer in this package",
+                ));
+            }
+            descriptor
+                .validate_value(&SemanticValue::ObjectiveCondition(*condition), id.as_str())?;
+            if let Some(expected_condition) = expected_condition {
+                descriptor.validate_value(
+                    &SemanticValue::ObjectiveCondition(*expected_condition),
+                    "expected_condition",
+                )?;
+            }
+            return Ok(ResolvedOperation::ObjectivePut {
+                id,
+                objective: objective.clone(),
+                condition: *condition,
+                expected_condition: *expected_condition,
+            });
+        }
         let (id, value, expected_value) = match self {
             Self::SetInteger {
                 parameter,
@@ -292,6 +362,7 @@ impl DefinitionOperation {
                     .map(SemanticValue::Reference),
             ),
             Self::MoveEntity { .. } => unreachable!("entity moves return above"),
+            Self::PutObjective { .. } => unreachable!("objective puts return above"),
         };
         Ok(ResolvedOperation::CatalogReplacement {
             id,
@@ -313,6 +384,12 @@ pub(crate) enum ResolvedOperation {
         entity: LevelEntityId,
         position: TilePosition,
         expected_position: Option<TilePosition>,
+    },
+    ObjectivePut {
+        id: SemanticId,
+        objective: LevelObjectiveId,
+        condition: ObjectiveCondition,
+        expected_condition: Option<ObjectiveCondition>,
     },
 }
 
@@ -383,6 +460,17 @@ mod tests {
                 "operation": "bind_asset",
                 "slot": "presentation.spell.fireball.projectile_asset",
                 "artifact": "asset.level_1"
+            }),
+            serde_json::json!({
+                "operation": "put_objective",
+                "objective": "objective.source48",
+                "condition": {"reach_location": {"x": 10, "y": 20}}
+            }),
+            serde_json::json!({
+                "operation": "put_objective",
+                "objective": "objective.reach.sight_beacon",
+                "condition": {"reach_location": {"x": 10, "y": 20}},
+                "source_slot": 48
             }),
         ] {
             assert!(serde_json::from_value::<DefinitionOperation>(value).is_err());

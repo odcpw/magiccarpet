@@ -333,7 +333,7 @@ impl GameAdapter for Mc2CampaignAdapter {
         }
         let mut campaign = package_campaign.clone();
         campaign
-            .apply_semantic_placement_variant(
+            .apply_semantic_level_variant(
                 definition
                     .level_definition()
                     .expect("campaign semantic variant retains its level definition"),
@@ -487,7 +487,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let next_generation = self.campaign.generation().wrapping_add(1);
         let mut campaign = self.package_campaign.clone();
         campaign
-            .apply_semantic_placement_variant(
+            .apply_semantic_level_variant(
                 definition
                     .level_definition()
                     .expect("campaign semantic variant retains its level definition"),
@@ -681,8 +681,9 @@ mod tests {
     };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::level_definition::{
-        ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind, MechanicKind,
-        ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
+        ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind,
+        LevelObjectiveConditionAccess, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind,
+        SwitchKind, TilePosition,
     };
     use sim_definition::adapter::{
         build_level_definition, entity_definition, objective_definition, reissue_at_revision,
@@ -796,6 +797,40 @@ mod tests {
                 PublicationFault::None,
             )
             .expect("placement change publishes");
+        store.active_definition().expect("published definition")
+    }
+
+    fn publish_reach_objective(
+        store: &WorkspaceStore,
+        catalog: &SemanticCatalog,
+        active: &GameDefinition,
+        workspace: &str,
+        objective_id: &str,
+        original: ObjectiveCondition,
+        authored: ObjectiveCondition,
+    ) -> GameDefinition {
+        let objective = sim_definition::adapter::stable_objective_id(objective_id).unwrap();
+        let change_set = ChangeSetBuilder::new(
+            workspace,
+            active,
+            "author-reach-objective",
+            RequestedTiming::SessionReset,
+        )
+        .put_objective_from(objective, original, authored)
+        .build()
+        .expect("typed objective change set");
+        let validation = store
+            .validate(catalog, change_set.clone())
+            .expect("objective change validates");
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .expect("objective change publishes");
         store.active_definition().expect("published definition")
     }
 
@@ -1143,7 +1178,12 @@ mod tests {
         assert!(matches!(error, CampaignBackendError::Definition(_)));
 
         let mut wrong_objectives = level.objectives().to_vec();
-        wrong_objectives[0] = objective_definition(ObjectiveCondition::CastleManaPercent(99));
+        let wrong_objective_id = wrong_objectives[0].id().clone();
+        wrong_objectives[0] = objective_definition(
+            wrong_objective_id,
+            ObjectiveCondition::CastleManaPercent(99),
+            LevelObjectiveConditionAccess::ReadOnly,
+        );
         let tampered = with_level_definition(
             definition.clone(),
             build_level_definition(
@@ -1181,6 +1221,69 @@ mod tests {
         Mc2CampaignAdapter
             .open_backend(&definition, Mc2CampaignInputs::new(&root))
             .expect("the package-derived semantic definition opens the shared campaign engine");
+    }
+
+    #[test]
+    fn semantic_objective_ids_and_access_follow_first_three_packages() {
+        let catalog = default_catalog().unwrap();
+        let cases = [
+            (
+                level_one_descriptor_fixture_path(),
+                [
+                    "objective.reach.my_beacon",
+                    "objective.reach.foot_of_spire",
+                    "objective.clear.spire_archers",
+                    "objective.charge.first_castle",
+                    "objective.clear.lethal_fireflies",
+                ],
+                [true, true, false, false, false],
+            ),
+            (
+                descriptor_fixture_path(),
+                [
+                    "objective.reach.sight_beacon",
+                    "objective.defeat.nyphur",
+                    "objective.clear.plague_bees",
+                    "objective.reach.payahandra_ruins",
+                    "objective.clear.payahandra_vaults",
+                ],
+                [true, false, false, true, false],
+            ),
+            (
+                level_three_descriptor_fixture_path(),
+                [
+                    "objective.clear.undead_horde",
+                    "objective.clear.guardian_dragons",
+                    "objective.charge.reveal_entrance",
+                    "objective.reach.revealed_way",
+                    "objective.clear.final_bees",
+                ],
+                [false, false, false, true, false],
+            ),
+        ];
+        let mut writable = 0;
+        for (root, expected_ids, expected_writable) in cases {
+            let definition = load_mc2_campaign(root, &catalog).unwrap();
+            let objectives = definition.level_definition().unwrap().objectives();
+            assert_eq!(objectives.len(), 5);
+            assert_eq!(
+                objectives
+                    .iter()
+                    .map(|objective| objective.id().as_str())
+                    .collect::<Vec<_>>(),
+                expected_ids
+            );
+            for (objective, expected_writable) in
+                objectives.iter().zip(expected_writable.into_iter())
+            {
+                assert_eq!(
+                    objective.condition_access() == LevelObjectiveConditionAccess::SessionReset,
+                    expected_writable
+                );
+                writable += usize::from(expected_writable);
+            }
+        }
+        assert_eq!(writable, 5);
     }
 
     fn guard(session: &GameSession<Mc2CampaignBackend>) -> SessionGuard {
@@ -1736,6 +1839,231 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&workspace_root).unwrap();
+    }
+
+    #[test]
+    fn campaign_backend_reach_location_override_drives_ordinary_objective_after_reopen_and_reset() {
+        const STAGE: usize = 3;
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let objective_id = "objective.reach.payahandra_ruins";
+        let original = ObjectiveCondition::ReachLocation(TilePosition { x: 154, y: 229 });
+        let authored = ObjectiveCondition::ReachLocation(TilePosition { x: 120, y: 120 });
+        let workspace_root = temporary_workspace_path("campaign-objective-authoring");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-objective-authoring",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            71,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .objectives[0]
+                .stage_selectors[STAGE],
+            1
+        );
+
+        let published = publish_reach_objective(
+            &store,
+            &catalog,
+            &base,
+            "campaign-objective-authoring",
+            objective_id,
+            original,
+            authored,
+        );
+        let player_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let z = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .position
+            .z;
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(
+                player_slot,
+                crate::Position {
+                    x: 120 << 8,
+                    y: 120 << 8,
+                    z,
+                },
+            )
+            .unwrap();
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .objectives[0]
+                .stage_selectors[STAGE],
+            1,
+            "the already-open base session must not adopt the published waypoint"
+        );
+
+        session
+            .reopen(guard(&session), Arc::new(published.clone()))
+            .unwrap();
+        let objective = sim_definition::adapter::stable_objective_id(objective_id).unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .definition()
+                .level_definition()
+                .objective(&objective)
+                .unwrap()
+                .condition(),
+            authored
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .semantic_level_definition()
+                .unwrap()
+                .objective(&objective)
+                .unwrap()
+                .condition(),
+            authored
+        );
+        let stage = &session
+            .backend()
+            .campaign
+            .level2
+            .session
+            .state
+            .live
+            .core
+            .runtime
+            .stages[STAGE];
+        assert_eq!((stage.axis_x, stage.axis_y), (-26_112, -6_912));
+
+        for (tile, expected) in [
+            (TilePosition { x: 154, y: 229 }, 1),
+            (TilePosition { x: 120, y: 120 }, 2),
+        ] {
+            let player_slot = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(
+                    player_slot,
+                    crate::Position {
+                        x: tile.x << 8,
+                        y: tile.y << 8,
+                        z,
+                    },
+                )
+                .unwrap();
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2
+                    .session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .objectives[0]
+                    .stage_selectors[STAGE],
+                expected
+            );
+        }
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .semantic_level_definition()
+                .unwrap()
+                .objective(&objective)
+                .unwrap()
+                .condition(),
+            authored
+        );
+        let player_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(
+                player_slot,
+                crate::Position {
+                    x: 120 << 8,
+                    y: 120 << 8,
+                    z,
+                },
+            )
+            .unwrap();
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .objectives[0]
+                .stage_selectors[STAGE],
+            2
+        );
+        std::fs::remove_dir_all(workspace_root).unwrap();
     }
 
     #[test]

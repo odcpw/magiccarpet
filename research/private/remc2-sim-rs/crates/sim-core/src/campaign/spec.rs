@@ -393,7 +393,7 @@ impl CampaignDefinition {
         &self,
         level: LevelDefinition,
     ) -> std::result::Result<Self, String> {
-        level.verify_position_variant_of(&self.level_definition)?;
+        level.verify_session_reset_variant_of(&self.level_definition)?;
         let mut candidate = self.clone();
         candidate.level_definition = level;
         Ok(candidate)
