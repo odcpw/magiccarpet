@@ -4386,6 +4386,17 @@ impl Level2ResetSession {
         self.session.definition = Arc::new(definition);
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_rival_wizard_binding_for_test(
+        &mut self,
+        id: sim_definition::level_definition::RivalWizardId,
+        entity_index: u16,
+    ) {
+        let mut definition = (*self.session.definition).clone();
+        definition.replace_rival_wizard_binding_for_test(id, entity_index);
+        self.session.definition = Arc::new(definition);
+    }
+
     pub(crate) fn replace_semantic_level_definition(
         &mut self,
         level: crate::level_definition::LevelDefinition,
@@ -5315,7 +5326,7 @@ impl Level2ResetSession {
                                             >= required_percent
                                 })
                         }
-                        ObjectiveCondition::DefeatRivalWizard => {
+                        ObjectiveCondition::DefeatRivalWizard(target) => {
                             // The source type-3 predicate is independent of
                             // ObjectiveText and reads the bound player's
                             // Type_str_0x2BDE byte, not the compact
@@ -5323,7 +5334,12 @@ impl Level2ResetSession {
                             // fields.
                             if stage.flags & 1 == 0 {
                                 false
-                            } else if let RuntimeRelation::LiveEntity(target_index) = stage.relation
+                            } else if let Some(target_index) =
+                                self.session.definition.rival_wizard_entity(&target).filter(
+                                    |target_index| {
+                                        stage.relation == RuntimeRelation::LiveEntity(*target_index)
+                                    },
+                                )
                             {
                                 self.session
                                     .state

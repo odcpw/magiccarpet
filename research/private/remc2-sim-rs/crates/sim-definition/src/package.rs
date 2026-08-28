@@ -131,6 +131,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
                 "Owned-Castle mana percentage objective evaluation.",
             ),
             (
+                "engine.objective.defeat_rival_wizard",
+                "Package-bound semantic rival-wizard defeat objective evaluation.",
+            ),
+            (
                 "engine.objective.no_living_creatures",
                 "Package-bound complete-lifecycle creature absence objective evaluation.",
             ),

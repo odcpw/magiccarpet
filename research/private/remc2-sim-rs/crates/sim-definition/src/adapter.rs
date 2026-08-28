@@ -12,7 +12,7 @@ use crate::{
         AbsenceCountdownDefinition, ActivationGroupId, LevelDefinition, LevelEntityDefinition,
         LevelEntityId, LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
         LevelObjectiveConditionAccess, LevelObjectiveDefinition, LevelObjectiveId,
-        ObjectiveCondition, TilePosition,
+        ObjectiveCondition, RivalWizardId, TilePosition,
     },
     runtime_flow::RuntimeFlowDefinition,
 };
@@ -72,6 +72,10 @@ pub fn stable_objective_id(value: &str) -> crate::Result<LevelObjectiveId> {
     LevelObjectiveId::parse(value)
 }
 
+pub fn stable_rival_wizard_id(value: &str) -> crate::Result<RivalWizardId> {
+    RivalWizardId::parse(value)
+}
+
 #[must_use]
 pub const fn entity_definition(
     id: LevelEntityId,
@@ -128,7 +132,7 @@ pub const fn absence_countdown_entity_definition(
 }
 
 #[must_use]
-pub const fn objective_definition(
+pub fn objective_definition(
     id: LevelObjectiveId,
     condition: ObjectiveCondition,
     condition_access: LevelObjectiveConditionAccess,

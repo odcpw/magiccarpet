@@ -38,29 +38,50 @@ impl ObjectiveState {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::{PlayerCommand, native_world::NativeWorld};
+    use crate::{PlayerCommand, level_definition::ObjectiveCondition};
+
+    use crate::campaign::{CampaignSelection, CampaignSession};
 
     fn level_two_session() -> crate::native_world::Level2ResetSession {
-        let package = std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/l2-debug3.fJ3PaM/level2")
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
             },
             PathBuf::from,
         );
-        NativeWorld::inspect_level2(package)
+        CampaignSession::open(package, CampaignSelection::LEVEL2)
             .expect("qualified Level 2 package")
-            .level2_reset_session()
-            .expect("qualified Level 2 session")
+            .level2_compatibility()
+            .clone()
     }
 
     #[test]
-    fn cf08_following_turn_visibility_matches_omega() {
+    fn level_two_rival_wizard_semantic_target_drives_following_turn_objective_gate() {
+        // No-Claim: this gate stages Nyphur's already-proven terminal player
+        // state and the row-11 trigger position. It proves the qualified
+        // semantic target binding, ordinary objective pass, and following-turn
+        // model-32 consumer only; it does not prove organic combat/banishment,
+        // alternate rival authoring, later objectives, transition, or clients.
         let mut session = level_two_session();
+        let objective_id =
+            sim_definition::adapter::stable_objective_id("objective.defeat.nyphur").unwrap();
+        let target =
+            sim_definition::adapter::stable_rival_wizard_id("rival_wizard.nyphur").unwrap();
+        assert_eq!(
+            session
+                .semantic_level_definition()
+                .unwrap()
+                .objective(&objective_id)
+                .unwrap()
+                .condition(),
+            ObjectiveCondition::DefeatRivalWizard(target.clone())
+        );
         let target_index = match session.runtime().stages[1].relation {
             crate::native_world::RuntimeRelation::LiveEntity(index) => index,
             _ => panic!("qualified objective stage 1 binds a live player"),
         };
+        assert_eq!(target_index, 112, "qualified Nyphur entity binding");
         session
             .players
             .iter_mut()
@@ -115,6 +136,23 @@ mod tests {
                 .authored_model32()
                 .iter()
                 .any(|source| source.authored_index == 206 && source.fired)
+        );
+
+        let mut mismatched = level_two_session();
+        mismatched
+            .players
+            .iter_mut()
+            .find(|player| player.entity_index == target_index)
+            .expect("objective target player")
+            .banishment_state_0x006 = Some(0);
+        let local_player_index = mismatched.players[0].entity_index;
+        mismatched.replace_rival_wizard_binding_for_test(target, local_player_index);
+        mismatched.state.position = row11_position;
+        mismatched.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            mismatched.runtime().objectives[0].stage_selectors[1],
+            1,
+            "the raw stage target cannot override the semantic Nyphur binding"
         );
     }
 }

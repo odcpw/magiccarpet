@@ -11,7 +11,7 @@ use super::source_facts::{
 };
 use crate::level_definition::{
     BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
-    LevelObjectiveId, MechanicKind, SceneryKind, SpellKind, SwitchKind,
+    LevelObjectiveId, MechanicKind, RivalWizardId, SceneryKind, SpellKind, SwitchKind,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -483,6 +483,7 @@ pub struct CampaignDefinition {
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
     mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
+    rival_wizard_by_id: BTreeMap<RivalWizardId, u16>,
     mechanic_entity_by_initial_source_slot: BTreeMap<u16, LevelEntityId>,
     movable_entity_bindings: BTreeMap<LevelEntityId, Mc2EntityRuntimeBinding>,
     local_player_fireball_mana_cost: Option<i32>,
@@ -1335,6 +1336,7 @@ impl CampaignDefinition {
             mechanic_by_initial_source_slot,
             mechanic_entity_by_authored_record: semantic_level.mechanic_entity_by_authored_record,
             standing_building_chains: semantic_level.standing_building_chains,
+            rival_wizard_by_id: semantic_level.rival_wizard_by_id,
             mechanic_entity_by_initial_source_slot,
             movable_entity_bindings,
             local_player_fireball_mana_cost,
@@ -1426,6 +1428,10 @@ impl CampaignDefinition {
 
     pub(crate) fn standing_building_chains(&self) -> &BTreeMap<LevelObjectiveId, Box<[u8]>> {
         &self.standing_building_chains
+    }
+
+    pub(crate) fn rival_wizard_bindings(&self) -> &BTreeMap<RivalWizardId, u16> {
+        &self.rival_wizard_by_id
     }
 
     pub(crate) fn movable_entity_binding(

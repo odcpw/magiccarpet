@@ -1377,7 +1377,7 @@ fn validate_against(
                     .level_definition()
                     .and_then(|level| level.objective(objective))
                     .map(|candidate| candidate.condition());
-                if expected_condition.is_some() && current != *expected_condition {
+                if expected_condition.is_some() && current != expected_condition.clone() {
                     diagnostics.push(Diagnostic {
                         code: "CONFLICT".to_owned(),
                         path_or_id: id.as_str().to_owned(),
@@ -1386,7 +1386,7 @@ fn validate_against(
                     });
                     continue;
                 }
-                if current == Some(*condition) {
+                if current == Some(condition.clone()) {
                     diagnostics.push(Diagnostic {
                         code: "INVALID_REQUEST".to_owned(),
                         path_or_id: id.as_str().to_owned(),
@@ -1394,7 +1394,11 @@ fn validate_against(
                     });
                     continue;
                 }
-                match proposed.with_put_level_objective(objective, *condition, candidate_revision) {
+                match proposed.with_put_level_objective(
+                    objective,
+                    condition.clone(),
+                    candidate_revision,
+                ) {
                     Ok(updated) => {
                         proposed = updated;
                         preliminarily_valid.insert(id.clone());
@@ -1478,7 +1482,11 @@ fn validate_against(
                     objective,
                     condition,
                     ..
-                } => candidate.with_put_level_objective(objective, *condition, candidate_revision),
+                } => candidate.with_put_level_objective(
+                    objective,
+                    condition.clone(),
+                    candidate_revision,
+                ),
                 ResolvedOperation::MechanicCountdownSet {
                     entity,
                     arming_ticks,
@@ -2148,7 +2156,7 @@ mod tests {
         assert_eq!(descriptor.access, Access::Writable);
         assert_eq!(
             descriptor.default_value,
-            SemanticValue::ObjectiveCondition(original)
+            SemanticValue::ObjectiveCondition(original.clone())
         );
         let request = ChangeSetBuilder::new(
             "objective-workspace",
@@ -2156,7 +2164,7 @@ mod tests {
             "move-sight-beacon",
             RequestedTiming::SessionReset,
         )
-        .put_objective_from(objective.clone(), original, authored)
+        .put_objective_from(objective.clone(), original.clone(), authored.clone())
         .build()
         .unwrap();
         let before = store.state_bytes().unwrap();
@@ -2168,8 +2176,14 @@ mod tests {
         );
         let (_, diff) = store.diff(&catalog, request.clone()).unwrap();
         assert_eq!(diff.len(), 1);
-        assert_eq!(diff[0].before, SemanticValue::ObjectiveCondition(original));
-        assert_eq!(diff[0].after, SemanticValue::ObjectiveCondition(authored));
+        assert_eq!(
+            diff[0].before,
+            SemanticValue::ObjectiveCondition(original.clone())
+        );
+        assert_eq!(
+            diff[0].after,
+            SemanticValue::ObjectiveCondition(authored.clone())
+        );
         assert_eq!(store.state_bytes().unwrap(), before);
 
         let applied = store
@@ -2183,14 +2197,14 @@ mod tests {
         let active = store.active_definition().unwrap();
         assert_eq!(
             active.semantic_target_value(&target),
-            Some(SemanticValue::ObjectiveCondition(authored))
+            Some(SemanticValue::ObjectiveCondition(authored.clone()))
         );
         let moved_descriptor = active
             .level_objective_condition_descriptor(&target)
             .unwrap();
         assert_eq!(
             moved_descriptor.default_value,
-            SemanticValue::ObjectiveCondition(original)
+            SemanticValue::ObjectiveCondition(original.clone())
         );
 
         store
@@ -2207,7 +2221,7 @@ mod tests {
                 .active_definition()
                 .unwrap()
                 .semantic_target_value(&target),
-            Some(SemanticValue::ObjectiveCondition(original))
+            Some(SemanticValue::ObjectiveCondition(original.clone()))
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -2371,7 +2385,7 @@ mod tests {
         assert_eq!(descriptor.access, Access::Writable);
         assert_eq!(
             descriptor.default_value,
-            SemanticValue::ObjectiveCondition(original)
+            SemanticValue::ObjectiveCondition(original.clone())
         );
 
         let request = ChangeSetBuilder::new(
@@ -2380,7 +2394,7 @@ mod tests {
             "retarget-spire-absence",
             RequestedTiming::SessionReset,
         )
-        .put_objective_from(objective.clone(), original, authored)
+        .put_objective_from(objective.clone(), original.clone(), authored.clone())
         .build()
         .unwrap();
         let before = store.state_bytes().unwrap();
@@ -2388,8 +2402,14 @@ mod tests {
         assert!(validation.accepted, "{:?}", validation.diagnostics);
         let (_, diff) = store.diff(&catalog, request.clone()).unwrap();
         assert_eq!(diff.len(), 1);
-        assert_eq!(diff[0].before, SemanticValue::ObjectiveCondition(original));
-        assert_eq!(diff[0].after, SemanticValue::ObjectiveCondition(authored));
+        assert_eq!(
+            diff[0].before,
+            SemanticValue::ObjectiveCondition(original.clone())
+        );
+        assert_eq!(
+            diff[0].after,
+            SemanticValue::ObjectiveCondition(authored.clone())
+        );
         assert_eq!(store.state_bytes().unwrap(), before);
         let applied = store
             .apply(
@@ -2402,14 +2422,14 @@ mod tests {
         let active = store.active_definition().unwrap();
         assert_eq!(
             active.semantic_target_value(&target),
-            Some(SemanticValue::ObjectiveCondition(authored))
+            Some(SemanticValue::ObjectiveCondition(authored.clone()))
         );
         assert_eq!(
             active
                 .level_objective_condition_descriptor(&target)
                 .unwrap()
                 .default_value,
-            SemanticValue::ObjectiveCondition(original)
+            SemanticValue::ObjectiveCondition(original.clone())
         );
         store
             .rollback(
@@ -2425,7 +2445,7 @@ mod tests {
                 .active_definition()
                 .unwrap()
                 .semantic_target_value(&target),
-            Some(SemanticValue::ObjectiveCondition(original))
+            Some(SemanticValue::ObjectiveCondition(original.clone()))
         );
 
         let unchanged = store.state_bytes().unwrap();
@@ -2446,11 +2466,11 @@ mod tests {
                 "TYPE_MISMATCH",
             ),
             (
-                authored,
+                authored.clone(),
                 Some(ObjectiveCondition::NoLivingCreatures(CreatureKind::Bee)),
                 "OUT_OF_RANGE",
             ),
-            (original, None, "INVALID_REQUEST"),
+            (original.clone(), None, "INVALID_REQUEST"),
         ]
         .into_iter()
         .enumerate()
@@ -2489,7 +2509,7 @@ mod tests {
         .put_objective_from(
             objective,
             ObjectiveCondition::NoLivingCreatures(CreatureKind::Firefly),
-            authored,
+            authored.clone(),
         )
         .build()
         .unwrap();
@@ -2552,7 +2572,9 @@ mod tests {
         let requests = [
             DefinitionOperation::PutObjective {
                 objective: stable_objective_id("objective.reach.sight_beacon").unwrap(),
-                condition: ObjectiveCondition::DefeatRivalWizard,
+                condition: ObjectiveCondition::DefeatRivalWizard(
+                    crate::adapter::stable_rival_wizard_id("rival_wizard.nyphur").unwrap(),
+                ),
                 expected_condition: None,
             },
             DefinitionOperation::PutObjective {
@@ -2779,7 +2801,7 @@ mod tests {
             RequestedTiming::SessionReset,
         )
         .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 21)
-        .put_objective_from(objective.clone(), original, authored)
+        .put_objective_from(objective.clone(), original.clone(), authored.clone())
         .build()
         .unwrap();
         let validation = store.validate(&catalog, invalid).unwrap();
@@ -2793,7 +2815,7 @@ mod tests {
             RequestedTiming::SessionReset,
         )
         .set_integer(IntegerParameter::PlayerMaxForwardSpeed, 96)
-        .put_objective_from(objective, original, authored)
+        .put_objective_from(objective, original, authored.clone())
         .build()
         .unwrap();
         let validation = store.validate(&catalog, valid.clone()).unwrap();

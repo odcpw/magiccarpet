@@ -263,6 +263,52 @@ impl<'de> Deserialize<'de> for LevelEntityId {
     }
 }
 
+/// Stable semantic identity for a rival wizard targeted by an objective.
+///
+/// The identity is package meaning, not a player slot or source-entity index.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct RivalWizardId(String);
+
+impl RivalWizardId {
+    /// Parse one stable rival-wizard identity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects source-shaped IDs and IDs outside the `rival_wizard` namespace.
+    pub fn parse(value: &str) -> crate::Result<Self> {
+        let semantic = SemanticId::parse(value)?;
+        if !semantic.as_str().starts_with("rival_wizard.")
+            || semantic
+                .as_str()
+                .split('.')
+                .any(is_private_source_identity_segment)
+        {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidSemanticId,
+                value,
+                "rival-wizard ID must use stable rival_wizard.* game meaning",
+            ));
+        }
+        Ok(Self(semantic.as_str().to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RivalWizardId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 pub(crate) fn is_private_source_identity_segment(segment: &str) -> bool {
     let components = segment.split('_').collect::<Vec<_>>();
     components
@@ -391,11 +437,11 @@ const fn is_read_only_entity_parameter(access: &LevelEntityParameterAccess) -> b
     matches!(access, LevelEntityParameterAccess::ReadOnly)
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectiveCondition {
     ReachLocation(TilePosition),
-    DefeatRivalWizard,
+    DefeatRivalWizard(RivalWizardId),
     NoLivingCreatures(CreatureKind),
     CastleManaPercent(u16),
     NoStandingBuildings,
@@ -419,14 +465,14 @@ pub struct LevelObjectiveDefinition {
 }
 
 impl LevelObjectiveDefinition {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         id: LevelObjectiveId,
         condition: ObjectiveCondition,
         condition_access: LevelObjectiveConditionAccess,
     ) -> Self {
         Self {
             id,
-            default_condition: condition,
+            default_condition: condition.clone(),
             condition,
             condition_access,
         }
@@ -438,13 +484,13 @@ impl LevelObjectiveDefinition {
     }
 
     #[must_use]
-    pub const fn default_condition(&self) -> ObjectiveCondition {
-        self.default_condition
+    pub fn default_condition(&self) -> ObjectiveCondition {
+        self.default_condition.clone()
     }
 
     #[must_use]
-    pub const fn condition(&self) -> ObjectiveCondition {
-        self.condition
+    pub fn condition(&self) -> ObjectiveCondition {
+        self.condition.clone()
     }
 
     #[must_use]
@@ -703,7 +749,7 @@ impl LevelDefinition {
                 id.as_str()
             ));
         }
-        match (objective.default_condition, condition) {
+        match (objective.default_condition.clone(), condition.clone()) {
             (ObjectiveCondition::ReachLocation(_), ObjectiveCondition::ReachLocation(position)) => {
                 if position.x > u16::from(u8::MAX) || position.y > u16::from(u8::MAX) {
                     return Err(format!(
@@ -882,7 +928,10 @@ impl LevelDefinition {
             if candidate.condition != original.condition
                 && (original.condition_access != LevelObjectiveConditionAccess::SessionReset
                     || !matches!(
-                        (original.default_condition, candidate.condition),
+                        (
+                            original.default_condition.clone(),
+                            candidate.condition.clone()
+                        ),
                         (
                             ObjectiveCondition::ReachLocation(_),
                             ObjectiveCondition::ReachLocation(_)
@@ -939,7 +988,9 @@ impl LevelDefinition {
     }
 
     pub fn objective_conditions(&self) -> impl Iterator<Item = ObjectiveCondition> + '_ {
-        self.objectives.iter().map(|objective| objective.condition)
+        self.objectives
+            .iter()
+            .map(|objective| objective.condition.clone())
     }
 
     pub fn activation_groups(&self) -> impl Iterator<Item = ActivationGroupId> + '_ {
@@ -1119,5 +1170,36 @@ impl LevelDefinition {
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ObjectiveCondition, RivalWizardId};
+
+    #[test]
+    fn rival_wizard_objective_uses_a_closed_semantic_target_identity() {
+        let target = RivalWizardId::parse("rival_wizard.nyphur").unwrap();
+        let condition = ObjectiveCondition::DefeatRivalWizard(target);
+        assert_eq!(
+            serde_json::to_value(&condition).unwrap(),
+            serde_json::json!({"defeat_rival_wizard": "rival_wizard.nyphur"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ObjectiveCondition>(serde_json::json!({
+                "defeat_rival_wizard": "rival_wizard.nyphur"
+            }))
+            .unwrap(),
+            condition
+        );
+        assert!(RivalWizardId::parse("rival_wizard").is_err());
+        assert!(RivalWizardId::parse("wizard.nyphur").is_err());
+        assert!(RivalWizardId::parse("rival_wizard.source112").is_err());
+        assert!(
+            serde_json::from_value::<ObjectiveCondition>(serde_json::json!({
+                "defeat_rival_wizard": "rival_wizard.source112"
+            }))
+            .is_err()
+        );
     }
 }

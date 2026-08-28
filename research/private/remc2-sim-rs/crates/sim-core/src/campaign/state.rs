@@ -18,7 +18,7 @@ use crate::{
     collision_mask::CollisionMaskBank,
     level_definition::{
         BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelObjectiveId,
-        MechanicKind, SceneryKind, SpellKind, SwitchKind,
+        MechanicKind, RivalWizardId, SceneryKind, SpellKind, SwitchKind,
     },
     native_world::{
         Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
@@ -89,6 +89,7 @@ pub struct CampaignDefinition {
     authored_mechanic_entities: BTreeMap<u16, LevelEntityId>,
     initial_source_mechanic_entities: BTreeMap<u16, LevelEntityId>,
     standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
+    rival_wizard_by_id: BTreeMap<RivalWizardId, u16>,
     pub(crate) collision_masks: Option<CollisionMaskBank>,
     pub(crate) presentation: PresentationSelectors,
 }
@@ -116,6 +117,7 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) authored_mechanic_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) initial_source_mechanic_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
+    pub(crate) rival_wizard_by_id: BTreeMap<RivalWizardId, u16>,
 }
 
 /// Source slot/map topology observed alongside the lossless entity records.
@@ -381,6 +383,7 @@ impl CampaignDefinition {
             authored_mechanic_entities: BTreeMap::new(),
             initial_source_mechanic_entities: BTreeMap::new(),
             standing_building_chains: BTreeMap::new(),
+            rival_wizard_by_id: BTreeMap::new(),
             collision_masks,
             presentation,
         }
@@ -405,6 +408,7 @@ impl CampaignDefinition {
         self.authored_mechanic_entities = bindings.authored_mechanic_entities;
         self.initial_source_mechanic_entities = bindings.initial_source_mechanic_entities;
         self.standing_building_chains = bindings.standing_building_chains;
+        self.rival_wizard_by_id = bindings.rival_wizard_by_id;
     }
 
     pub(crate) fn replace_semantic_level(
@@ -429,6 +433,19 @@ impl CampaignDefinition {
         self.standing_building_chains
             .get(objective_id)
             .map(AsRef::as_ref)
+    }
+
+    pub(crate) fn rival_wizard_entity(&self, id: &RivalWizardId) -> Option<u16> {
+        self.rival_wizard_by_id.get(id).copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_rival_wizard_binding_for_test(
+        &mut self,
+        id: RivalWizardId,
+        entity_index: u16,
+    ) {
+        self.rival_wizard_by_id.insert(id, entity_index);
     }
 
     pub(crate) fn authored_creature_bindings(&self) -> &BTreeMap<u16, CreatureKind> {

@@ -100,14 +100,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "12.0");
+    assert_eq!(capabilities["contract_version"], "13.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v5"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["game_definition_schema"],
-        "carpet-flight-game-definition/v5"
+        "carpet-flight-game-definition/v6"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["operation"],
@@ -196,7 +196,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        8
+        9
     );
     let castle_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
@@ -206,6 +206,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         .expect("Castle objective capability is discoverable");
     assert_eq!(castle_capability["version"], 1);
     assert_eq!(castle_capability["provider"], "engine_compiled");
+    let rival_wizard_capability = capabilities["data"]["compiled_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["id"] == "engine.objective.defeat_rival_wizard")
+        .expect("rival-wizard objective capability is discoverable");
+    assert_eq!(rival_wizard_capability["version"], 1);
+    assert_eq!(rival_wizard_capability["provider"], "engine_compiled");
     let absence_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
         .unwrap()
@@ -317,7 +325,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "12.0");
+    assert_eq!(entities["contract_version"], "13.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -421,10 +429,10 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "12.0");
+    assert_eq!(described["contract_version"], "13.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v5"
+        "carpet-flight-game-definition/v6"
     );
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "mechanic");
@@ -944,10 +952,10 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "12.0");
+    assert_eq!(described["contract_version"], "13.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v5"
+        "carpet-flight-game-definition/v6"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -1271,10 +1279,10 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "12.0");
+    assert_eq!(described["contract_version"], "13.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v5"
+        "carpet-flight-game-definition/v6"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -1553,10 +1561,10 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "12.0");
+    assert_eq!(described["contract_version"], "13.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v5"
+        "carpet-flight-game-definition/v6"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -2084,7 +2092,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "12.0");
+        assert_eq!(described["contract_version"], "13.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -2269,7 +2277,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "12.0");
+    assert_eq!(described["contract_version"], "13.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");

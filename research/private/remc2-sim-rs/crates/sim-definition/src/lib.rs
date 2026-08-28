@@ -52,8 +52,8 @@ use level_definition::{CreatureKind, LevelDefinition, LevelEntityKind};
 use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v5";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "12.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v6";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "13.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {

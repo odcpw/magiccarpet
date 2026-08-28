@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 12.0 milestone, this is a binding target with
+As of the semantic-contract 13.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -368,8 +368,12 @@ partial real implementation, not a completion claim:
   `NoStandingBuildings` condition is now evaluated, but remains read-only, from
   its package-bound private BLDGPRM chain, distinct source frame cadence, and
   frozen pass-start model-45 membership before its following-turn exit-group
-  consumer. It and the rival-wizard condition remain the two read-only
-  objective conditions;
+  consumer. The Level 2 rival-wizard condition now carries the stable semantic
+  target `rival_wizard.nyphur`; the private MC2 adapter binds that identity to
+  the validated Nyphur player/entity relation, and the ordinary objective pass
+  fails closed if the semantic and runtime targets diverge. It and
+  `NoStandingBuildings` remain read-only: this does not provide alternate
+  rival selection or author rival players;
 - every package-present `AbsenceCountdown` in the first three levels has a
   stable instance ID and a typed `arming_ticks` descriptor; guarded
   `SetMechanicCountdown` publication is consumed by both dynamically authored

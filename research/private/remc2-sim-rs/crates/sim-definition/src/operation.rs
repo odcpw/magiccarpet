@@ -455,19 +455,21 @@ impl DefinitionOperation {
                     "objective condition has no authoring consumer in this package",
                 ));
             }
-            descriptor
-                .validate_value(&SemanticValue::ObjectiveCondition(*condition), id.as_str())?;
+            descriptor.validate_value(
+                &SemanticValue::ObjectiveCondition(condition.clone()),
+                id.as_str(),
+            )?;
             if let Some(expected_condition) = expected_condition {
                 descriptor.validate_value(
-                    &SemanticValue::ObjectiveCondition(*expected_condition),
+                    &SemanticValue::ObjectiveCondition(expected_condition.clone()),
                     "expected_condition",
                 )?;
             }
             return Ok(ResolvedOperation::ObjectivePut {
                 id,
                 objective: objective.clone(),
-                condition: *condition,
-                expected_condition: *expected_condition,
+                condition: condition.clone(),
+                expected_condition: expected_condition.clone(),
             });
         }
         if let Self::SetMechanicCountdown {

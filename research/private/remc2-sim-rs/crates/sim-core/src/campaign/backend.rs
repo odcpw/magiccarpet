@@ -225,6 +225,19 @@ pub fn load_mc2_campaign(
         .any(|objective| {
             matches!(
                 objective.condition(),
+                sim_definition::level_definition::ObjectiveCondition::DefeatRivalWizard(_)
+            )
+        })
+    {
+        requirement_ids.push("engine.objective.defeat_rival_wizard");
+    }
+    if descriptor
+        .level_definition()
+        .objectives()
+        .iter()
+        .any(|objective| {
+            matches!(
+                objective.condition(),
                 sim_definition::level_definition::ObjectiveCondition::CastleManaPercent(_)
             )
         })
@@ -1857,7 +1870,9 @@ mod tests {
             &[],
             &[
                 ObjectiveCondition::ReachLocation(TilePosition { x: 2, y: 152 }),
-                ObjectiveCondition::DefeatRivalWizard,
+                ObjectiveCondition::DefeatRivalWizard(
+                    sim_definition::adapter::stable_rival_wizard_id("rival_wizard.nyphur").unwrap(),
+                ),
                 ObjectiveCondition::NoLivingCreatures(CreatureKind::Bee),
                 ObjectiveCondition::ReachLocation(TilePosition { x: 154, y: 229 }),
                 ObjectiveCondition::NoStandingBuildings,
@@ -2048,6 +2063,7 @@ mod tests {
                 [true, true, true, true, true],
                 &["archer", "firefly"][..],
                 false,
+                false,
             ),
             (
                 descriptor_fixture_path(),
@@ -2060,6 +2076,7 @@ mod tests {
                 ],
                 [true, false, true, true, false],
                 &["bee", "archer", "skeleton"][..],
+                true,
                 true,
             ),
             (
@@ -2074,6 +2091,7 @@ mod tests {
                 [true, true, true, true, true],
                 &["dragon", "bee", "archer", "skeleton"][..],
                 false,
+                false,
             ),
         ];
         let mut writable = 0;
@@ -2083,6 +2101,7 @@ mod tests {
             expected_writable,
             expected_no_living_kinds,
             expects_standing_building_capability,
+            expects_rival_wizard_capability,
         ) in cases
         {
             let definition = load_mc2_campaign(root, &catalog).unwrap();
@@ -2104,6 +2123,16 @@ mod tests {
                             && requirement.exact_version == 1
                     }),
                 expects_standing_building_capability
+            );
+            assert_eq!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == "engine.objective.defeat_rival_wizard"
+                            && requirement.exact_version == 1
+                    }),
+                expects_rival_wizard_capability
             );
             let objectives = definition.level_definition().unwrap().objectives();
             assert_eq!(objectives.len(), 5);
@@ -3461,7 +3490,7 @@ mod tests {
             "campaign-objective-authoring",
             objective_id,
             original,
-            authored,
+            authored.clone(),
         );
         let player_slot = session
             .backend()

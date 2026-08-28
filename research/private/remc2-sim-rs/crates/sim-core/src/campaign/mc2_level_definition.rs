@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
     build_level_definition, entity_definition_with_position_access, objective_definition,
-    stable_entity_id, stable_objective_id,
+    stable_entity_id, stable_objective_id, stable_rival_wizard_id,
 };
 
 use crate::{
@@ -16,8 +16,8 @@ use crate::{
     level_definition::{
         BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
-        LevelObjectiveId, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind,
-        TilePosition,
+        LevelObjectiveId, MechanicKind, ObjectiveCondition, RivalWizardId, SceneryKind, SpellKind,
+        SwitchKind, TilePosition,
     },
     level1_mission::parse_authored_features,
 };
@@ -26,6 +26,12 @@ use super::spec::{CampaignSelection, ObjectiveOperation};
 
 const MC2_LEVEL_ENTITY_IDS: &str = include_str!("mc2_level_entity_ids.tsv");
 const MC2_LEVEL_OBJECTIVE_IDS: &str = include_str!("mc2_level_objective_ids.tsv");
+const NYPHUR_RIVAL_WIZARD_ID: &str = "rival_wizard.nyphur";
+const LEVEL_TWO_NYPHUR_OBJECTIVE_SLOT: u8 = 1;
+// MC2 stage type 3 stores a one-based player selector, not an entity slot.
+// The qualified player census binds selector 2 to Nyphur's entity row 112.
+const LEVEL_TWO_NYPHUR_PLAYER_SELECTOR: u16 = 2;
+const LEVEL_TWO_NYPHUR_ENTITY_INDEX: u16 = 112;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Mc2LevelDefinition {
@@ -42,6 +48,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) movable_source_id_by_entity_id: BTreeMap<LevelEntityId, u16>,
     pub(crate) standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
+    pub(crate) rival_wizard_by_id: BTreeMap<RivalWizardId, u16>,
 }
 
 impl Mc2LevelDefinition {
@@ -159,6 +166,7 @@ impl Mc2LevelDefinition {
         let mut authored_record_by_entity_id = BTreeMap::new();
         let mut movable_source_id_by_entity_id = BTreeMap::new();
         let mut standing_building_chains = BTreeMap::new();
+        let mut rival_wizard_by_id = BTreeMap::new();
         let mut entities = Vec::new();
         let activation_groups = features
             .iter()
@@ -465,13 +473,30 @@ impl Mc2LevelDefinition {
                         })?,
                     ),
                     3 => {
-                        if operation.objective_selector <= 0 {
-                            return Err(format!(
+                        let player_selector = u16::try_from(operation.objective_selector).map_err(|_| {
+                            format!(
                                 "rival-wizard objective {} has invalid target {}",
                                 operation.objective_slot, operation.objective_selector
+                            )
+                        })?;
+                        if selection.external_level != 2
+                            || operation.objective_slot != LEVEL_TWO_NYPHUR_OBJECTIVE_SLOT
+                            || player_selector != LEVEL_TWO_NYPHUR_PLAYER_SELECTOR
+                        {
+                            return Err(format!(
+                                "rival-wizard objective {} does not match the qualified Nyphur target binding",
+                                operation.objective_slot
                             ));
                         }
-                        ObjectiveCondition::DefeatRivalWizard
+                        let target = stable_rival_wizard_id(NYPHUR_RIVAL_WIZARD_ID)
+                            .map_err(|error| error.to_string())?;
+                        if rival_wizard_by_id
+                            .insert(target.clone(), LEVEL_TWO_NYPHUR_ENTITY_INDEX)
+                            .is_some()
+                        {
+                            return Err("duplicate qualified rival-wizard target binding".to_owned());
+                        }
+                        ObjectiveCondition::DefeatRivalWizard(target)
                     }
                     5 => ObjectiveCondition::ReachLocation(TilePosition {
                         x: u16::try_from(operation.axis_x).map_err(|_| {
@@ -611,6 +636,7 @@ impl Mc2LevelDefinition {
             mechanic_entity_by_authored_record,
             movable_source_id_by_entity_id,
             standing_building_chains,
+            rival_wizard_by_id,
         })
     }
 }

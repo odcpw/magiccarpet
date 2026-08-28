@@ -3742,6 +3742,7 @@ impl NativeWorldInspection {
             authored_mechanic_entities: definition.mechanic_entity_bindings().clone(),
             initial_source_mechanic_entities: definition.initial_mechanic_entity_bindings().clone(),
             standing_building_chains: definition.standing_building_chains().clone(),
+            rival_wizard_by_id: definition.rival_wizard_bindings().clone(),
         });
         Ok(session)
     }
