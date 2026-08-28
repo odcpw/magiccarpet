@@ -224,6 +224,11 @@ impl DefinitionOperation {
                                 "unit": "percent",
                                 "minimum": 0,
                                 "maximum": 100
+                            },
+                            {
+                                "no_living_creatures": "semantic_creature_kind",
+                                "unit": "creature_kind",
+                                "values": "target descriptor -> bounds_or_enum.values"
                             }
                         ]
                     },

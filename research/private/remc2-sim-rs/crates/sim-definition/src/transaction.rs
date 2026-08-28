@@ -1741,8 +1741,8 @@ mod tests {
     use super::*;
     use crate::adapter::{
         absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
-        build_level_definition, entity_definition_with_position_access, objective_definition,
-        stable_entity_id, stable_objective_id, with_level_definition,
+        build_level_definition, entity_definition, entity_definition_with_position_access,
+        objective_definition, stable_entity_id, stable_objective_id, with_level_definition,
     };
     use crate::level_definition::{
         CreatureKind, LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
@@ -1925,6 +1925,12 @@ mod tests {
     }
 
     fn fixture_definition_with_objectives() -> GameDefinition {
+        let bee = entity_definition(
+            stable_entity_id("creature.bee.plague_root").unwrap(),
+            LevelEntityKind::Creature(CreatureKind::Bee),
+            TilePosition { x: 1, y: 1 },
+            None,
+        );
         let writable = objective_definition(
             stable_objective_id("objective.reach.sight_beacon").unwrap(),
             ObjectiveCondition::ReachLocation(TilePosition { x: 2, y: 152 }),
@@ -1943,7 +1949,7 @@ mod tests {
         with_level_definition(
             fixture_definition(),
             build_level_definition(
-                Vec::new(),
+                vec![bee],
                 vec![writable, read_only, castle_mana],
                 Vec::new(),
             )
@@ -1975,6 +1981,33 @@ mod tests {
         with_level_definition(
             fixture_definition(),
             build_level_definition(vec![worm, archer], Vec::new(), Vec::new()).unwrap(),
+        )
+    }
+
+    fn fixture_definition_with_no_living_objective() -> GameDefinition {
+        let entities = [
+            ("creature.archer.spire_root", CreatureKind::Archer),
+            ("creature.firefly.lethal_root", CreatureKind::Firefly),
+            ("creature.worm.exit_root", CreatureKind::Worm),
+        ]
+        .into_iter()
+        .map(|(id, kind)| {
+            entity_definition(
+                stable_entity_id(id).unwrap(),
+                LevelEntityKind::Creature(kind),
+                TilePosition { x: 1, y: 1 },
+                None,
+            )
+        })
+        .collect();
+        let objective = objective_definition(
+            stable_objective_id("objective.clear.spire_archers").unwrap(),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Archer),
+            LevelObjectiveConditionAccess::SessionReset,
+        );
+        with_level_definition(
+            fixture_definition(),
+            build_level_definition(entities, vec![objective], Vec::new()).unwrap(),
         )
     }
 
@@ -2314,6 +2347,197 @@ mod tests {
         let error = build_level_definition(Vec::new(), vec![invalid_read_only], Vec::new())
             .expect_err("read-only package content still obeys the percent vocabulary");
         assert!(error.contains("outside 0..=100"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn no_living_creatures_publication_is_package_bound_same_family_and_atomic() {
+        let root = temporary_workspace("no-living-objective");
+        let definition = fixture_definition_with_no_living_objective();
+        let store =
+            WorkspaceStore::create(&root, "no-living-objective", definition.clone()).unwrap();
+        let catalog = default_catalog().unwrap();
+        let objective = stable_objective_id("objective.clear.spire_archers").unwrap();
+        let target = SemanticId::parse("objective.clear.spire_archers.condition").unwrap();
+        let original = ObjectiveCondition::NoLivingCreatures(CreatureKind::Archer);
+        let authored = ObjectiveCondition::NoLivingCreatures(CreatureKind::Firefly);
+        let descriptor = definition
+            .level_objective_condition_descriptor(&target)
+            .unwrap();
+        assert_eq!(descriptor.unit.as_deref(), Some("creature_kind"));
+        assert_eq!(descriptor.minimum, None);
+        assert_eq!(descriptor.maximum, None);
+        assert_eq!(descriptor.enum_values, ["archer", "firefly"]);
+        assert_eq!(descriptor.access, Access::Writable);
+        assert_eq!(
+            descriptor.default_value,
+            SemanticValue::ObjectiveCondition(original)
+        );
+
+        let request = ChangeSetBuilder::new(
+            "no-living-objective",
+            &definition,
+            "retarget-spire-absence",
+            RequestedTiming::SessionReset,
+        )
+        .put_objective_from(objective.clone(), original, authored)
+        .build()
+        .unwrap();
+        let before = store.state_bytes().unwrap();
+        let validation = store.validate(&catalog, request.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        let (_, diff) = store.diff(&catalog, request.clone()).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].before, SemanticValue::ObjectiveCondition(original));
+        assert_eq!(diff[0].after, SemanticValue::ObjectiveCondition(authored));
+        assert_eq!(store.state_bytes().unwrap(), before);
+        let applied = store
+            .apply(
+                &catalog,
+                request,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let active = store.active_definition().unwrap();
+        assert_eq!(
+            active.semantic_target_value(&target),
+            Some(SemanticValue::ObjectiveCondition(authored))
+        );
+        assert_eq!(
+            active
+                .level_objective_condition_descriptor(&target)
+                .unwrap()
+                .default_value,
+            SemanticValue::ObjectiveCondition(original)
+        );
+        store
+            .rollback(
+                active.definition_hash(),
+                active.revision(),
+                &applied.transaction_id,
+                "rollback-spire-absence",
+                PublicationFault::None,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .active_definition()
+                .unwrap()
+                .semantic_target_value(&target),
+            Some(SemanticValue::ObjectiveCondition(original))
+        );
+
+        let unchanged = store.state_bytes().unwrap();
+        for (index, (condition, expected, code)) in [
+            (
+                ObjectiveCondition::NoLivingCreatures(CreatureKind::Bee),
+                None,
+                "OUT_OF_RANGE",
+            ),
+            (
+                ObjectiveCondition::NoLivingCreatures(CreatureKind::Worm),
+                None,
+                "OUT_OF_RANGE",
+            ),
+            (
+                ObjectiveCondition::CastleManaPercent(10),
+                None,
+                "TYPE_MISMATCH",
+            ),
+            (
+                authored,
+                Some(ObjectiveCondition::NoLivingCreatures(CreatureKind::Bee)),
+                "OUT_OF_RANGE",
+            ),
+            (original, None, "INVALID_REQUEST"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rejected = ChangeSetBuilder::new(
+                "no-living-objective",
+                &store.active_definition().unwrap(),
+                format!("reject-spire-absence-{index}"),
+                RequestedTiming::SessionReset,
+            )
+            .operation(DefinitionOperation::PutObjective {
+                objective: objective.clone(),
+                condition,
+                expected_condition: expected,
+            })
+            .build()
+            .unwrap();
+            let validation = store.validate(&catalog, rejected).unwrap();
+            assert!(!validation.accepted);
+            assert!(
+                validation
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == code),
+                "case {index}: {:?}",
+                validation.diagnostics
+            );
+            assert_eq!(store.state_bytes().unwrap(), unchanged);
+        }
+        let stale_expected = ChangeSetBuilder::new(
+            "no-living-objective",
+            &store.active_definition().unwrap(),
+            "reject-spire-absence-stale",
+            RequestedTiming::SessionReset,
+        )
+        .put_objective_from(
+            objective,
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Firefly),
+            authored,
+        )
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, stale_expected).unwrap();
+        assert!(!validation.accepted);
+        assert!(
+            validation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "CONFLICT")
+        );
+        assert_eq!(store.state_bytes().unwrap(), unchanged);
+
+        let worm = entity_definition(
+            stable_entity_id("creature.worm.invalid_absence_root").unwrap(),
+            LevelEntityKind::Creature(CreatureKind::Worm),
+            TilePosition { x: 1, y: 1 },
+            None,
+        );
+        let unsupported_read_only = objective_definition(
+            stable_objective_id("objective.clear.invalid_worms").unwrap(),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Worm),
+            LevelObjectiveConditionAccess::ReadOnly,
+        );
+        let error = build_level_definition(vec![worm], vec![unsupported_read_only], Vec::new())
+            .expect_err("read-only package content still requires a complete absence lifecycle");
+        assert!(error.contains("complete absence lifecycle"), "{error}");
+        let absent_read_only = objective_definition(
+            stable_objective_id("objective.clear.absent_archers").unwrap(),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Archer),
+            LevelObjectiveConditionAccess::ReadOnly,
+        );
+        let error = build_level_definition(Vec::new(), vec![absent_read_only], Vec::new())
+            .expect_err("absence objectives cannot target a package-absent creature");
+        assert!(error.contains("package-present"), "{error}");
+
+        let base_level = definition.level_definition().unwrap();
+        let mut raw_level = serde_json::to_value(base_level).unwrap();
+        raw_level["objectives"][0]["condition"] =
+            serde_json::json!({"no_living_creatures": "worm"});
+        let bypassed: crate::level_definition::LevelDefinition =
+            serde_json::from_value(raw_level).unwrap();
+        assert!(
+            bypassed
+                .verify_session_reset_variant_of(base_level)
+                .is_err(),
+            "the runtime variant boundary must reject a package-present creature without a complete absence lifecycle"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -545,6 +545,7 @@ impl Mc2LevelDefinition {
                     match condition {
                         ObjectiveCondition::ReachLocation(_) => {}
                         ObjectiveCondition::CastleManaPercent(percent) if percent <= 100 => {}
+                        ObjectiveCondition::NoLivingCreatures(_) => {}
                         _ => {
                             return Err(format!(
                                 "writable semantic objective {} has no supported authoring consumer",

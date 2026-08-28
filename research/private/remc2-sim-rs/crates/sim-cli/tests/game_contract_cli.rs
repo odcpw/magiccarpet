@@ -80,7 +80,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "6.0");
+    assert_eq!(capabilities["contract_version"], "7.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v5"
@@ -133,6 +133,11 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
                 "unit": "percent",
                 "minimum": 0,
                 "maximum": 100
+            },
+            {
+                "no_living_creatures": "semantic_creature_kind",
+                "unit": "creature_kind",
+                "values": "target descriptor -> bounds_or_enum.values"
             }
         ])
     );
@@ -151,7 +156,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        5
+        6
     );
     let castle_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
@@ -161,6 +166,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         .expect("Castle objective capability is discoverable");
     assert_eq!(castle_capability["version"], 1);
     assert_eq!(castle_capability["provider"], "engine_compiled");
+    let absence_capability = capabilities["data"]["compiled_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["id"] == "engine.objective.no_living_creatures")
+        .expect("creature-absence objective capability is discoverable");
+    assert_eq!(absence_capability["version"], 1);
+    assert_eq!(absence_capability["provider"], "engine_compiled");
     assert_eq!(
         capabilities["data"]["semantic_ids"]
             .as_array()
@@ -248,7 +261,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "6.0");
+    assert_eq!(entities["contract_version"], "7.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -352,7 +365,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "6.0");
+    assert_eq!(described["contract_version"], "7.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v4"
@@ -895,7 +908,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "6.0");
+    assert_eq!(described["contract_version"], "7.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v4"
@@ -1135,6 +1148,314 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     // publication/readback only. Runtime evaluation, reset/reopen consumption,
     // organic Castle funding, Level 3, the sealed legacy Level1Mission route,
     // and save/replay are owned by separate focused gates.
+}
+
+#[test]
+fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed_cli() {
+    const OBJECTIVE: &str = "objective.clear.spire_archers";
+    const TARGET: &str = "objective.clear.spire_archers.condition";
+
+    let temporary = TempWorkspace::new("semantic-creature-absence-objective");
+    let workspace = temporary.0.to_str().unwrap();
+    let campaign = level_one_campaign_fixture();
+    let campaign = campaign.to_str().expect("UTF-8 campaign path");
+
+    let objectives = run(&[
+        "game",
+        "objectives",
+        "--campaign-package",
+        campaign,
+        "--id",
+        OBJECTIVE,
+    ]);
+    assert!(objectives.status.success(), "{:?}", objectives.stderr);
+    let objectives: Value = serde_json::from_slice(&objectives.stdout).unwrap();
+    assert_eq!(objectives["data"]["page"]["total"], 1);
+    assert_eq!(
+        objectives["data"]["objectives"][0],
+        serde_json::json!({
+            "id": OBJECTIVE,
+            "condition": {"no_living_creatures": "archer"},
+            "condition_access": "session_reset"
+        })
+    );
+
+    let described = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        campaign,
+        "--id",
+        TARGET,
+    ]);
+    assert!(described.status.success(), "{:?}", described.stderr);
+    let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+    assert_eq!(described["contract_version"], "7.0");
+    assert_eq!(
+        described["identity"]["schema"],
+        "carpet-flight-game-definition/v4"
+    );
+    let descriptor = &described["data"]["descriptors"][0];
+    assert_eq!(descriptor["id"], TARGET);
+    assert_eq!(descriptor["kind"], "objective");
+    assert_eq!(descriptor["value_type"], "objective_condition");
+    assert_eq!(descriptor["unit"], "creature_kind");
+    assert_eq!(descriptor["access"], "writable");
+    assert_eq!(descriptor["mutation_timing"], "session_reset");
+    assert_eq!(
+        descriptor["bounds_or_enum"]["values"],
+        serde_json::json!(["archer", "firefly"])
+    );
+    assert_eq!(
+        descriptor["default_value"]["value"],
+        serde_json::json!({"no_living_creatures": "archer"})
+    );
+    assert_eq!(
+        descriptor["effective_value"]["value"],
+        serde_json::json!({"no_living_creatures": "archer"})
+    );
+
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "semantic-creature-absence-workspace",
+        "--campaign-package",
+        campaign,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+
+    let changes_path = temporary.0.join("put-creature-absence-objective.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "put_objective",
+            "objective": OBJECTIVE,
+            "condition": {"no_living_creatures": "firefly"},
+            "expected_condition": {"no_living_creatures": "archer"}
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "semantic-creature-absence-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(
+        staged["data"]["change_set"]["schema_version"],
+        "carpet-flight-change-set/v5"
+    );
+    let change_set_path = temporary.0.join("creature-absence-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        validated["data"]["validation"]["affected_ids"],
+        serde_json::json!([TARGET])
+    );
+    let diff = run(&[
+        "game",
+        "diff",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(diff.status.success(), "{:?}", diff.stderr);
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(
+        diff["data"]["diff"],
+        serde_json::json!([{
+            "id": TARGET,
+            "before": {"type": "objective_condition", "value": {"no_living_creatures": "archer"}},
+            "after": {"type": "objective_condition", "value": {"no_living_creatures": "firefly"}}
+        }])
+    );
+    let receipt = validated["data"]["validation"]["receipt_hash"]
+        .as_str()
+        .unwrap();
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        receipt,
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    assert!(applied.stderr.is_empty());
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(
+        applied["data"]["receipt"]["applied_ids"],
+        serde_json::json!([TARGET])
+    );
+    let authored = run(&["game", "get", "--workspace", workspace, "--id", TARGET]);
+    assert!(authored.status.success(), "{:?}", authored.stderr);
+    let authored: Value = serde_json::from_slice(&authored.stdout).unwrap();
+    assert_eq!(authored["identity"]["revision"], 2);
+    assert_eq!(
+        authored["data"]["descriptor"]["default_value"]["value"],
+        serde_json::json!({"no_living_creatures": "archer"})
+    );
+    assert_eq!(
+        authored["data"]["descriptor"]["effective_value"]["value"],
+        serde_json::json!({"no_living_creatures": "firefly"})
+    );
+    assert_eq!(
+        authored["data"]["value"],
+        serde_json::json!({
+            "type": "objective_condition",
+            "value": {"no_living_creatures": "firefly"}
+        })
+    );
+
+    let committed_state = fs::read(temporary.0.join("workspace-state.json")).unwrap();
+    let rejected_cases = [
+        (
+            "unsupported",
+            serde_json::json!({"no_living_creatures": "goat"}),
+            serde_json::json!({"no_living_creatures": "firefly"}),
+            "OUT_OF_RANGE",
+        ),
+        (
+            "package-absent",
+            serde_json::json!({"no_living_creatures": "bee"}),
+            serde_json::json!({"no_living_creatures": "firefly"}),
+            "OUT_OF_RANGE",
+        ),
+        (
+            "wrong-family",
+            serde_json::json!({"castle_mana_percent": 20}),
+            serde_json::json!({"no_living_creatures": "firefly"}),
+            "TYPE_MISMATCH",
+        ),
+        (
+            "stale-expected",
+            serde_json::json!({"no_living_creatures": "archer"}),
+            serde_json::json!({"no_living_creatures": "archer"}),
+            "CONFLICT",
+        ),
+    ];
+    let mut rejected_apply = None;
+    for (label, condition, expected_condition, expected_code) in rejected_cases {
+        let path = temporary.0.join(format!("creature-absence-{label}.json"));
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!([{
+                "operation": "put_objective",
+                "objective": OBJECTIVE,
+                "condition": condition,
+                "expected_condition": expected_condition
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        let staged = run(&[
+            "game",
+            "set",
+            "--workspace",
+            workspace,
+            "--idempotency-key",
+            &format!("semantic-creature-absence-{label}"),
+            "--timing",
+            "session_reset",
+            "--changes",
+            path.to_str().unwrap(),
+        ]);
+        assert!(staged.status.success(), "{:?}", staged.stderr);
+        let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+        let rejected_path = temporary
+            .0
+            .join(format!("creature-absence-{label}-set.json"));
+        fs::write(
+            &rejected_path,
+            serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+        )
+        .unwrap();
+        let rejected = run(&[
+            "game",
+            "validate",
+            "--workspace",
+            workspace,
+            "--change-set",
+            rejected_path.to_str().unwrap(),
+        ]);
+        assert!(rejected.status.success(), "{:?}", rejected.stderr);
+        let rejected: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+        assert_eq!(rejected["data"]["validation"]["accepted"], false);
+        assert!(
+            rejected["data"]["validation"]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == expected_code)
+        );
+        assert_eq!(
+            fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+            committed_state
+        );
+        if label == "unsupported" {
+            rejected_apply = Some((
+                rejected_path,
+                rejected["data"]["validation"]["receipt_hash"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            ));
+        }
+    }
+    let (rejected_path, rejected_receipt) = rejected_apply.unwrap();
+    let rejected = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        rejected_path.to_str().unwrap(),
+        "--validation-receipt",
+        &rejected_receipt,
+    ]);
+    assert_eq!(rejected.status.code(), Some(3));
+    assert!(rejected.stdout.is_empty());
+    let rejected: Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert_eq!(rejected["errors"][0]["code"], "VALIDATION_REJECTED");
+    assert_eq!(rejected["errors"][0]["state_changed"], false);
+    assert_eq!(
+        fs::read(temporary.0.join("workspace-state.json")).unwrap(),
+        committed_state
+    );
+
+    // No-Claim: this proves the real Level-1 closed typed transport,
+    // package-derived creature enum, CAS, and atomic definition publication.
+    // It does not prove organic creature death, runtime evaluation,
+    // reopen/reset consumption, other levels, presentation copy, or save/replay.
 }
 
 #[test]

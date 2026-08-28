@@ -50,7 +50,7 @@ use level_definition::LevelDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v4";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "6.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "7.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -732,20 +732,42 @@ impl GameDefinition {
             level_definition::LevelObjectiveConditionAccess::SessionReset
         );
         let target_id = id.as_str().to_owned();
-        let (unit, minimum, maximum, runtime_effect) = match objective.default_condition() {
+        let (unit, minimum, maximum, enum_values, runtime_effect) = match objective
+            .default_condition()
+        {
             level_definition::ObjectiveCondition::ReachLocation(_) => (
                 Some("level_tile".to_owned()),
                 Some(0),
                 Some(i64::from(u8::MAX)),
+                Vec::new(),
                 "new runtime generations evaluate the authored location in the ordinary objective pass",
             ),
             level_definition::ObjectiveCondition::CastleManaPercent(_) => (
                 Some("percent".to_owned()),
                 Some(0),
                 Some(100),
+                Vec::new(),
                 "new runtime generations evaluate the authored Castle-mana threshold in the ordinary objective pass",
             ),
-            _ => (None, None, None, "read-only package objective condition"),
+            level_definition::ObjectiveCondition::NoLivingCreatures(_) => (
+                Some("creature_kind".to_owned()),
+                None,
+                None,
+                self.level_definition
+                    .as_ref()?
+                    .no_living_creatures_objective_kinds()
+                    .into_iter()
+                    .map(|kind| kind.as_str().to_owned())
+                    .collect(),
+                "new runtime generations evaluate the authored package-present creature absence in the ordinary objective pass",
+            ),
+            _ => (
+                None,
+                None,
+                None,
+                Vec::new(),
+                "read-only package objective condition",
+            ),
         };
         Some(SemanticDescriptor {
             id: id.clone(),
@@ -756,7 +778,7 @@ impl GameDefinition {
             default_value: SemanticValue::ObjectiveCondition(objective.default_condition()),
             minimum,
             maximum,
-            enum_values: Vec::new(),
+            enum_values,
             access: if writable {
                 Access::Writable
             } else {

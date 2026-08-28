@@ -188,6 +188,19 @@ pub fn load_mc2_campaign(
     {
         requirement_ids.push("engine.objective.castle_mana_percent");
     }
+    if descriptor
+        .level_definition()
+        .objectives()
+        .iter()
+        .any(|objective| {
+            matches!(
+                objective.condition(),
+                sim_definition::level_definition::ObjectiveCondition::NoLivingCreatures(_)
+            )
+        })
+    {
+        requirement_ids.push("engine.objective.no_living_creatures");
+    }
     let requirements = requirement_ids
         .into_iter()
         .map(|id| {
@@ -1345,7 +1358,8 @@ mod tests {
                     "objective.charge.first_castle",
                     "objective.clear.lethal_fireflies",
                 ],
-                [true, true, false, true, false],
+                [true, true, true, true, true],
+                &["archer", "firefly"][..],
             ),
             (
                 descriptor_fixture_path(),
@@ -1356,7 +1370,8 @@ mod tests {
                     "objective.reach.payahandra_ruins",
                     "objective.clear.payahandra_vaults",
                 ],
-                [true, false, false, true, false],
+                [true, false, true, true, false],
+                &["bee", "archer", "skeleton"][..],
             ),
             (
                 level_three_descriptor_fixture_path(),
@@ -1367,12 +1382,22 @@ mod tests {
                     "objective.reach.revealed_way",
                     "objective.clear.final_bees",
                 ],
-                [false, false, true, true, false],
+                [true, true, true, true, true],
+                &["dragon", "bee", "archer", "skeleton"][..],
             ),
         ];
         let mut writable = 0;
-        for (root, expected_ids, expected_writable) in cases {
+        for (root, expected_ids, expected_writable, expected_no_living_kinds) in cases {
             let definition = load_mc2_campaign(root, &catalog).unwrap();
+            assert!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == "engine.objective.no_living_creatures"
+                            && requirement.exact_version == 1
+                    })
+            );
             let objectives = definition.level_definition().unwrap().objectives();
             assert_eq!(objectives.len(), 5);
             assert_eq!(
@@ -1389,10 +1414,25 @@ mod tests {
                     objective.condition_access() == LevelObjectiveConditionAccess::SessionReset,
                     expected_writable
                 );
+                if matches!(
+                    objective.condition(),
+                    ObjectiveCondition::NoLivingCreatures(_)
+                ) {
+                    let target =
+                        SemanticId::parse(&format!("{}.condition", objective.id().as_str()))
+                            .unwrap();
+                    assert_eq!(
+                        definition
+                            .level_objective_condition_descriptor(&target)
+                            .unwrap()
+                            .enum_values,
+                        expected_no_living_kinds
+                    );
+                }
                 writable += usize::from(expected_writable);
             }
         }
-        assert_eq!(writable, 7);
+        assert_eq!(writable, 13);
     }
 
     fn guard(session: &GameSession<Mc2CampaignBackend>) -> SessionGuard {
@@ -2533,6 +2573,204 @@ mod tests {
         assert!(level_two.required_capabilities().iter().all(|requirement| {
             requirement.id.as_str() != "engine.objective.castle_mana_percent"
         }));
+    }
+
+    #[test]
+    fn campaign_backend_no_living_creature_retarget_drives_real_level_three_gate_after_reopen_and_reset()
+     {
+        const OBJECTIVE_ID: &str = "objective.clear.undead_horde";
+        const GATE_SLOT: u16 = 127;
+        const GROUP_ROWS: [u16; 2] = [141, 142];
+
+        // No-Claim: this focused consumer gate uses the real Level-3 reset
+        // census and package objective gate, but it does not prove organic
+        // creature deaths, all six absence-objective occurrences, later
+        // progression/completion, save/replay, Unity, or cross-family changes.
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        assert!(base.required_capabilities().iter().any(|requirement| {
+            requirement.id.as_str() == "engine.objective.no_living_creatures"
+                && requirement.exact_version == 1
+        }));
+        let workspace_root = temporary_workspace_path("campaign-no-living-objective");
+        let workspace = "campaign-no-living-objective";
+        let store = WorkspaceStore::create(&workspace_root, workspace, base.clone()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            91,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let published = publish_objective(
+            &store,
+            &catalog,
+            &base,
+            workspace,
+            OBJECTIVE_ID,
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Skeleton),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Dragon),
+        );
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[0],
+            1,
+            "the already-open package generation must retain its Skeleton objective"
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                ))
+        );
+
+        session
+            .reopen(guard(&session), Arc::new(published.clone()))
+            .unwrap();
+        let objective = sim_definition::adapter::stable_objective_id(OBJECTIVE_ID).unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .semantic_level_definition()
+                .unwrap()
+                .objective(&objective)
+                .unwrap()
+                .condition(),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Dragon)
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        for pass in 0..2 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            if pass == 0 {
+                assert_eq!(
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .runtime()
+                        .objectives[0]
+                        .stage_selectors[0],
+                    2
+                );
+                assert!(
+                    session
+                        .backend()
+                        .campaign
+                        .events()
+                        .iter()
+                        .all(|event| !matches!(
+                            event,
+                            Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                        ))
+                );
+            }
+        }
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: GATE_SLOT,
+                        group: 1,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == GROUP_ROWS
+                ))
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[1],
+            1,
+            "the objective-done pause must defer the next semantic predicate"
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .semantic_level_definition()
+                .unwrap()
+                .objective(&objective)
+                .unwrap()
+                .condition(),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Dragon)
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[0],
+            2
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                ))
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: GATE_SLOT,
+                        group: 1,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == GROUP_ROWS
+                ))
+        );
+        std::fs::remove_dir_all(workspace_root).unwrap();
     }
 
     #[test]

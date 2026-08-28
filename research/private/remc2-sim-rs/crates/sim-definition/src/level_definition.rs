@@ -42,6 +42,20 @@ impl CreatureKind {
     }
 }
 
+/// Whether the shared runtime has a complete production, damage, hide, and
+/// following-pass cleanup lifecycle suitable for an absence objective.
+#[must_use]
+pub const fn supports_no_living_creatures_objective(kind: CreatureKind) -> bool {
+    matches!(
+        kind,
+        CreatureKind::Bee
+            | CreatureKind::Dragon
+            | CreatureKind::Archer
+            | CreatureKind::Firefly
+            | CreatureKind::Skeleton
+    )
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpellKind {
@@ -567,6 +581,13 @@ impl LevelDefinition {
             }
         }
         let mut objective_ids = BTreeSet::new();
+        let package_creature_kinds = entities
+            .iter()
+            .filter_map(|entity| match entity.kind {
+                LevelEntityKind::Creature(kind) => Some(kind),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
         for objective in &objectives {
             if !objective_ids.insert(objective.id.clone()) {
                 return Err(format!(
@@ -583,10 +604,20 @@ impl LevelDefinition {
                     objective.id.as_str()
                 ));
             }
+            if let ObjectiveCondition::NoLivingCreatures(kind) = objective.condition
+                && (!supports_no_living_creatures_objective(kind)
+                    || !package_creature_kinds.contains(&kind))
+            {
+                return Err(format!(
+                    "semantic objective {} targets a creature without a package-present complete absence lifecycle",
+                    objective.id.as_str()
+                ));
+            }
             if objective.condition_access == LevelObjectiveConditionAccess::SessionReset {
                 match objective.condition {
                     ObjectiveCondition::ReachLocation(_) => {}
                     ObjectiveCondition::CastleManaPercent(percent) if percent <= 100 => {}
+                    ObjectiveCondition::NoLivingCreatures(_) => {}
                     _ => {
                         return Err(format!(
                             "semantic objective {} exposes an unsupported writable condition",
@@ -659,6 +690,7 @@ impl LevelDefinition {
         id: &LevelObjectiveId,
         condition: ObjectiveCondition,
     ) -> Result<Self, String> {
+        let allowed_no_living_kinds = self.no_living_creatures_objective_kinds();
         let mut candidate = self.clone();
         let objective = candidate
             .objectives
@@ -687,6 +719,17 @@ impl LevelDefinition {
                 if percent > 100 {
                     return Err(format!(
                         "semantic objective {} Castle-mana percentage is outside 0..=100",
+                        id.as_str()
+                    ));
+                }
+            }
+            (
+                ObjectiveCondition::NoLivingCreatures(_),
+                ObjectiveCondition::NoLivingCreatures(kind),
+            ) => {
+                if !allowed_no_living_kinds.contains(&kind) {
+                    return Err(format!(
+                        "semantic objective {} targets a creature outside this level's package-present complete absence lifecycles",
                         id.as_str()
                     ));
                 }
@@ -846,6 +889,9 @@ impl LevelDefinition {
                         ) | (
                             ObjectiveCondition::CastleManaPercent(_),
                             ObjectiveCondition::CastleManaPercent(_)
+                        ) | (
+                            ObjectiveCondition::NoLivingCreatures(_),
+                            ObjectiveCondition::NoLivingCreatures(_)
                         )
                     ))
             {
@@ -867,6 +913,14 @@ impl LevelDefinition {
             {
                 return Err(format!(
                     "semantic level variant gives objective {} a Castle-mana percentage outside 0..=100",
+                    original.id.as_str()
+                ));
+            }
+            if let ObjectiveCondition::NoLivingCreatures(kind) = candidate.condition
+                && !base.no_living_creatures_objective_kinds().contains(&kind)
+            {
+                return Err(format!(
+                    "semantic level variant gives objective {} a creature outside this level's package-present complete absence lifecycles",
                     original.id.as_str()
                 ));
             }
@@ -914,6 +968,13 @@ impl LevelDefinition {
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
+    }
+
+    #[must_use]
+    pub fn no_living_creatures_objective_kinds(&self) -> BTreeSet<CreatureKind> {
+        self.creature_kinds()
+            .filter(|kind| supports_no_living_creatures_objective(*kind))
+            .collect()
     }
 
     #[must_use]

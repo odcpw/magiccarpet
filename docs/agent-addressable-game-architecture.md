@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 6.0 milestone, this is a binding target with
+As of the semantic-contract 7.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -336,9 +336,11 @@ partial real implementation, not a completion claim:
 - all fifteen qualified Level 1, 2 and 3 objectives have stable semantic IDs;
   typed `PutObjective` authoring is published atomically and consumed on
   explicit reopen/reset for the five package-present `ReachLocation`
-  conditions and the Level 1/3 `CastleManaPercent` conditions. The ordinary
-  Castle objective evaluator and following-pass authored-group gates consume
-  those two thresholds; the other eight objectives remain read-only;
+  conditions, the Level 1/3 `CastleManaPercent` conditions, and all six
+  package-present `NoLivingCreatures` conditions. The ordinary Castle and
+  complete-lifecycle creature-absence evaluators plus their following-pass
+  authored-group gates consume those authored values; only the rival-wizard
+  and standing-buildings conditions remain read-only;
 - every package-present `AbsenceCountdown` in the first three levels has a
   stable instance ID and a typed `arming_ticks` descriptor; guarded
   `SetMechanicCountdown` publication is consumed by both dynamically authored

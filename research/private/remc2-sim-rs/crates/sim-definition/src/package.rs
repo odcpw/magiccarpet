@@ -123,6 +123,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
                 "Owned-Castle mana percentage objective evaluation.",
             ),
             (
+                "engine.objective.no_living_creatures",
+                "Package-bound complete-lifecycle creature absence objective evaluation.",
+            ),
+            (
                 "engine.presentation.indexed_asset",
                 "Typed indexed presentation-asset binding.",
             ),

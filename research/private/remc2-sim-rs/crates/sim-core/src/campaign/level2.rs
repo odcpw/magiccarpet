@@ -5066,14 +5066,7 @@ impl Level2ResetSession {
                             // that creature's complete production, damage,
                             // hide, and following-pass cleanup lifecycle is
                             // shared by the authoritative arena.
-                            && matches!(
-                                kind,
-                                CreatureKind::Bee
-                                    | CreatureKind::Dragon
-                                    | CreatureKind::Archer
-                                    | CreatureKind::Firefly
-                                    | CreatureKind::Skeleton
-                            )
+                            && sim_definition::level_definition::supports_no_living_creatures_objective(kind)
                             && self
                                 .session
                                 .definition

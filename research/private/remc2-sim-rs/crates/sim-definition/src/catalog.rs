@@ -342,6 +342,26 @@ impl SemanticDescriptor {
                     ));
                 }
             }
+            (
+                ValueType::ObjectiveCondition,
+                SemanticValue::ObjectiveCondition(ObjectiveCondition::NoLivingCreatures(kind)),
+            ) if matches!(
+                &self.default_value,
+                SemanticValue::ObjectiveCondition(ObjectiveCondition::NoLivingCreatures(_))
+            ) =>
+            {
+                if !self
+                    .enum_values
+                    .iter()
+                    .any(|candidate| candidate == kind.as_str())
+                {
+                    return Err(DefinitionError::new(
+                        DefinitionErrorCode::OutOfRange,
+                        path,
+                        "objective creature kind is outside this level's package-present complete absence lifecycles",
+                    ));
+                }
+            }
             (ValueType::ObjectiveCondition, SemanticValue::ObjectiveCondition(_)) => {
                 return Err(DefinitionError::new(
                     DefinitionErrorCode::TypeMismatch,
