@@ -2,8 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
 export const PROCESS_CONTRACT = "carpet-flight-process-json/v1";
-export const ENGINE_CONTRACT = "carpet-flight-game-session/v3";
-export const TRANSPORT_CONTRACT = "carpet-flight-native-json/v3";
+export const ENGINE_CONTRACT = "carpet-flight-game-session/v4";
+export const TRANSPORT_CONTRACT = "carpet-flight-native-json/v4";
 export const REQUIRED_CAPABILITIES = [
   "snapshot",
   "step",

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v3";
+pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v4";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -45,6 +45,18 @@ pub struct PlayerMotion {
     pub target_speed: i16,
     pub actual_speed: i16,
     pub strafe_speed: i16,
+}
+
+/// Authoritative local-player resource state for presentation and automation.
+///
+/// These values are observations of the live Rust-owned player carrier. They
+/// are not client-owned gauges or a second gameplay authority.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct PlayerVitals {
+    pub life: i32,
+    pub max_life: i32,
+    pub mana: i32,
+    pub max_mana: i32,
 }
 
 /// Package-neutral pose for one live presentation entity. Coordinates use
@@ -111,6 +123,7 @@ pub struct CampaignSnapshot {
     pub effect_journal_sha256: String,
     pub player_pose: PlayerPose,
     pub player_motion: PlayerMotion,
+    pub player_vitals: PlayerVitals,
     pub presentation_entities: Vec<PresentationEntity>,
 }
 

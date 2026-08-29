@@ -365,7 +365,7 @@ namespace MagicCarpet.Native.Tests
                 var campaignProfile = transport.NegotiatedContract.session_profiles
                     .Single(profile =>
                         profile.profile == EngineSessionTransport.CampaignProfile);
-                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v2"));
+                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v3"));
                 Assert.That(
                     campaignProfile.capabilities,
                     Is.EqualTo(new[]

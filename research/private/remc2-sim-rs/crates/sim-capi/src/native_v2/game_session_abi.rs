@@ -429,8 +429,8 @@ pub extern "C" fn mc_game_session_contract_json_v1(
     boundary(|| {
         let contract = serde_json::json!({
             "engine_contract": sim_session::GAME_SESSION_CONTRACT,
-            "transport_contract": "carpet-flight-native-json/v3",
-            "transport_version": 3,
+            "transport_contract": "carpet-flight-native-json/v4",
+            "transport_version": 4,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "u64_hash_encoding": "lowercase-hex-16",
@@ -443,7 +443,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 },
                 {
                     "profile": "mc2-campaign",
-                    "snapshot_value": "campaign_snapshot/v2",
+                    "snapshot_value": "campaign_snapshot/v3",
                     "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities"]
                 }
             ],
@@ -866,12 +866,12 @@ mod tests {
         let contract = read_json(|buffer, capacity, length| {
             mc_game_session_contract_json_v1(buffer, capacity, length)
         });
-        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v3");
+        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v4");
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-json/v3"
+            "carpet-flight-native-json/v4"
         );
-        assert_eq!(contract["transport_version"], 3);
+        assert_eq!(contract["transport_version"], 4);
         assert_eq!(contract["u64_counter_encoding"], "decimal-string");
         assert_eq!(contract["u64_hash_encoding"], "lowercase-hex-16");
         assert_eq!(contract["limits"]["maximum_command_json_bytes"], 4_096);
@@ -1230,7 +1230,7 @@ mod tests {
             ])
         );
         assert_eq!(profiles[1]["profile"], "mc2-campaign");
-        assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v2");
+        assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v3");
         assert_eq!(
             profiles[1]["capabilities"],
             serde_json::json!([
@@ -1598,6 +1598,15 @@ mod tests {
         let handle = open_campaign_path(&package);
         let initial = campaign_snapshot(handle);
         assert_eq!(
+            initial["value"]["player_vitals"],
+            serde_json::json!({
+                "life": 10_000,
+                "max_life": 10_000,
+                "mana": 1_000,
+                "max_mana": 1_000
+            })
+        );
+        assert_eq!(
             initial["value"]["presentation_entities"],
             serde_json::json!([])
         );
@@ -1627,17 +1636,38 @@ mod tests {
         assert!(entity["pose"]["y"].is_u64());
         assert!(entity["pose"]["z"].is_i64() || entity["pose"]["z"].is_u64());
 
-        assert_eq!(mc_game_session_reset_v1(handle, 1, 1), MC_STATUS_OK);
+        let no_command = br#"{}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(
+                handle,
+                1,
+                1,
+                no_command.as_ptr(),
+                no_command.len() as u32,
+            ),
+            MC_STATUS_OK
+        );
+        let charged = campaign_snapshot(handle);
+        assert_eq!(charged["value"]["player_vitals"]["mana"], 900);
+        assert_eq!(charged["value"]["player_vitals"]["life"], 10_000);
+
+        assert_eq!(mc_game_session_reset_v1(handle, 1, 2), MC_STATUS_OK);
         let reset = campaign_snapshot(handle);
         assert_eq!(reset["identity"]["generation"], "2");
+        assert_eq!(
+            reset["value"]["player_vitals"],
+            initial["value"]["player_vitals"]
+        );
         assert_eq!(
             reset["value"]["presentation_entities"],
             serde_json::json!([])
         );
         assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
         // No-Claim: this proves the real native campaign snapshot carries one
-        // live semantic Fireball and drops it on reset. It does not prove a
-        // Unity renderer, authored asset variants, animation, or L2/L3 data.
+        // live semantic Fireball, observes the following-pass authoritative
+        // mana charge, and restores frame-zero player vitals on reset. It does
+        // not prove a Unity renderer, authored asset variants, animation,
+        // player damage, or Level 2/3 data.
     }
 
     #[test]

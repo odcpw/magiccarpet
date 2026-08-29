@@ -11878,13 +11878,15 @@ namespace MagicCarpet.Native
             }
             var observation = gameRuntimeCampaignSnapshot;
             if (observation?.value?.player_pose == null ||
-                observation.value.player_motion == null)
+                observation.value.player_motion == null ||
+                observation.value.player_vitals == null)
             {
                 return "CARPET FLIGHT — RUST GAME RUNTIME\n" +
                     "waiting for authoritative campaign snapshot";
             }
             var pose = observation.value.player_pose;
             var motion = observation.value.player_motion;
+            var vitals = observation.value.player_vitals;
             var latestEvent = gameRuntimeRecentSemanticEvents.Count == 0
                 ? "none"
                 : FormatGameRuntimeSemanticEvent(gameRuntimeRecentSemanticEvents.Last());
@@ -11893,6 +11895,8 @@ namespace MagicCarpet.Native
                 $"speed {motion.actual_speed,4} / {motion.target_speed,4}  " +
                 $"strafe {motion.strafe_speed,4}  altitude {pose.z,6}  " +
                 $"tick {observation.identity.tick}\n" +
+                $"life {vitals.life,6} / {vitals.max_life,6}  " +
+                $"mana {vitals.mana,6} / {vitals.max_mana,6}\n" +
                 $"event {latestEvent}\n" +
                 "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
                 "C centre · Space fire · P pause · Escape close";

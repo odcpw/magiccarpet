@@ -121,6 +121,18 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 actual.value.player_motion.strafe_speed,
                 Is.EqualTo(expected.value.player_motion.strafe_speed));
+            Assert.That(
+                actual.value.player_vitals.life,
+                Is.EqualTo(expected.value.player_vitals.life));
+            Assert.That(
+                actual.value.player_vitals.max_life,
+                Is.EqualTo(expected.value.player_vitals.max_life));
+            Assert.That(
+                actual.value.player_vitals.mana,
+                Is.EqualTo(expected.value.player_vitals.mana));
+            Assert.That(
+                actual.value.player_vitals.max_mana,
+                Is.EqualTo(expected.value.player_vitals.max_mana));
         }
 
         private static int SignedAngle11(short value)
@@ -872,9 +884,13 @@ namespace MagicCarpet.Native.Tests
                         $"strafe {before.value.player_motion.strafe_speed,4}  " +
                         $"altitude {before.value.player_pose.z,6}  " +
                         $"tick {before.identity.tick}\n" +
+                        $"life {before.value.player_vitals.life,6} / " +
+                        $"{before.value.player_vitals.max_life,6}  " +
+                        $"mana {before.value.player_vitals.mana,6} / " +
+                        $"{before.value.player_vitals.max_mana,6}\n" +
                         "event none\n" +
                         "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
-                        "C centre · Space fire · P pause"));
+                        "C centre · Space fire · P pause · Escape close"));
 
                 runtime.QualificationApplyGameRuntimeProductionMovement(
                     true,
@@ -907,14 +923,97 @@ namespace MagicCarpet.Native.Tests
                         $"strafe {after.value.player_motion.strafe_speed,4}  " +
                         $"altitude {after.value.player_pose.z,6}  " +
                         $"tick {after.identity.tick}\n" +
+                        $"life {after.value.player_vitals.life,6} / " +
+                        $"{after.value.player_vitals.max_life,6}  " +
+                        $"mana {after.value.player_vitals.mana,6} / " +
+                        $"{after.value.player_vitals.max_mana,6}\n" +
                         $"event {latestEvent}\n" +
                         "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
-                        "C centre · Space fire · P pause"));
+                        "C centre · Space fire · P pause · Escape close"));
 
                 // No-Claim: this proves the production HUD text consumes the
                 // same-handle Rust motion, altitude, mode, and tick returned by
                 // the campaign snapshot. It does not prove source-art HUD assets,
-                // life/mana/spells/objectives, minimap/terrain/audio, or later levels.
+                // source-art life/mana gauges, spells/objectives, minimap/terrain/audio,
+                // or later levels.
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProductionGameRuntimeVitalsHudConsumesRustFireballManaAndResetOnSameHandle()
+        {
+            var root = new GameObject("resolver runtime vitals HUD");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                var beforeIdentity = runtime.GameRuntimeProductionIdentity;
+                var before = runtime.GameRuntimeProductionCampaignSnapshot;
+                var beforeVitals = before.value.player_vitals;
+                Assert.That(beforeVitals, Is.Not.Null);
+                Assert.That(beforeVitals.life, Is.Positive);
+                Assert.That(beforeVitals.max_life, Is.GreaterThanOrEqualTo(beforeVitals.life));
+                Assert.That(beforeVitals.mana, Is.Positive);
+                Assert.That(beforeVitals.max_mana, Is.GreaterThanOrEqualTo(beforeVitals.mana));
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Does.Contain(
+                        $"life {beforeVitals.life,6} / {beforeVitals.max_life,6}  " +
+                        $"mana {beforeVitals.mana,6} / {beforeVitals.max_mana,6}"));
+
+                runtime.QualificationRequestGameRuntimeFireball();
+                runtime.QualificationDriveGameRuntimeFrames(2);
+
+                var afterIdentity = runtime.GameRuntimeProductionIdentity;
+                var after = runtime.GameRuntimeProductionCampaignSnapshot;
+                var afterVitals = after.value.player_vitals;
+                Assert.That(afterIdentity.runtime_id, Is.EqualTo(beforeIdentity.runtime_id));
+                Assert.That(
+                    afterIdentity.session.session_id,
+                    Is.EqualTo(beforeIdentity.session.session_id));
+                Assert.That(after.identity.tick, Is.EqualTo("2"));
+                Assert.That(afterVitals.life, Is.EqualTo(beforeVitals.life));
+                Assert.That(afterVitals.max_life, Is.EqualTo(beforeVitals.max_life));
+                Assert.That(afterVitals.max_mana, Is.EqualTo(beforeVitals.max_mana));
+                Assert.That(afterVitals.mana, Is.EqualTo(beforeVitals.mana - 100));
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Does.Contain(
+                        $"life {afterVitals.life,6} / {afterVitals.max_life,6}  " +
+                        $"mana {afterVitals.mana,6} / {afterVitals.max_mana,6}"));
+
+                runtime.QualificationResetGameRuntimeProduction();
+                var resetIdentity = runtime.GameRuntimeProductionIdentity;
+                var reset = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(resetIdentity.runtime_id, Is.EqualTo(beforeIdentity.runtime_id));
+                Assert.That(
+                    resetIdentity.session.session_id,
+                    Is.EqualTo(beforeIdentity.session.session_id));
+                Assert.That(reset.identity.generation, Is.EqualTo("2"));
+                Assert.That(reset.identity.tick, Is.EqualTo("0"));
+                Assert.That(reset.value.player_vitals.life, Is.EqualTo(beforeVitals.life));
+                Assert.That(reset.value.player_vitals.max_life, Is.EqualTo(beforeVitals.max_life));
+                Assert.That(reset.value.player_vitals.mana, Is.EqualTo(beforeVitals.mana));
+                Assert.That(reset.value.player_vitals.max_mana, Is.EqualTo(beforeVitals.max_mana));
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Does.Contain(
+                        $"life {beforeVitals.life,6} / {beforeVitals.max_life,6}  " +
+                        $"mana {beforeVitals.mana,6} / {beforeVitals.max_mana,6}"));
+
+                // No-Claim: this proves generic numeric local-player life/mana
+                // projection, one real Fireball charge, reset, and same-handle
+                // Unity consumption. It does not prove source-art HUD, damage or
+                // death presentation, spell inventory, objectives, L2/L3, audio,
+                // or completion transitions.
             }
             finally
             {

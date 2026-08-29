@@ -46,8 +46,8 @@ use crate::{
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
         GameCommand, GameCompletion, GameCompletionStatus, GameEvent, GameSessionBackend,
-        LateralControl, LongitudinalControl, PlayerMotion, PlayerPose, PresentationEntity,
-        PresentationPose, RuntimeActorId, RuntimeParticipantId,
+        LateralControl, LongitudinalControl, PlayerMotion, PlayerPose, PlayerVitals,
+        PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId,
     },
     level1_mission::FIREBALL_LOGICAL_HEIGHT,
     native_world::{Level2DispatchEvent, Level2SharedSpellEvent},
@@ -1215,6 +1215,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
 
     fn snapshot(&self) -> Self::Snapshot {
         let flight = &self.campaign.level2.state;
+        let shared_spells = self.campaign.level2_compatibility().shared_spells();
+        let player_entity = shared_spells.player_entity();
         let presentation_entities = self
             .fireball_projectile_asset
             .as_ref()
@@ -1266,6 +1268,12 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 target_speed: flight.target_speed,
                 actual_speed: flight.actual_speed,
                 strafe_speed: flight.strafe_speed,
+            },
+            player_vitals: PlayerVitals {
+                life: player_entity.life,
+                max_life: player_entity.max_life,
+                mana: shared_spells.player_mana(),
+                max_mana: player_entity.max_mana,
             },
             presentation_entities,
         }
@@ -4457,6 +4465,60 @@ mod tests {
         // as one opaque semantic presentation entity whose asset follows the
         // immutable definition binding. It does not render Unity pixels,
         // animate frames, project impacts, or support Level 2/3 assets.
+    }
+
+    #[test]
+    fn campaign_snapshot_projects_authoritative_player_vitals_through_fireball_and_reset() {
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = load_mc2_campaign(&root, &catalog).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            66,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+
+        let initial = session.snapshot().value.player_vitals;
+        let shared = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells();
+        assert_eq!(
+            initial,
+            PlayerVitals {
+                life: shared.player_entity().life,
+                max_life: shared.player_entity().max_life,
+                mana: shared.player_mana(),
+                max_mana: shared.player_entity().max_mana,
+            }
+        );
+        assert!(initial.life > 0);
+        assert_eq!(initial.life, initial.max_life);
+        assert_eq!(initial.mana, initial.max_mana);
+
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    cast_left: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let charged = session.snapshot().value.player_vitals;
+        assert_eq!(charged.life, initial.life);
+        assert_eq!(charged.max_life, initial.max_life);
+        assert_eq!(charged.max_mana, initial.max_mana);
+        assert_eq!(charged.mana, initial.mana - 100);
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.snapshot().value.player_vitals, initial);
     }
 
     #[test]

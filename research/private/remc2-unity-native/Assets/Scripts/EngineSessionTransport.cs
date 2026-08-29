@@ -17,8 +17,8 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class EngineSessionTransport
     {
-        internal const string EngineContract = "carpet-flight-game-session/v3";
-        internal const string TransportContract = "carpet-flight-native-json/v3";
+        internal const string EngineContract = "carpet-flight-game-session/v4";
+        internal const string TransportContract = "carpet-flight-native-json/v4";
         internal const string OwnedProfile = "mc2-owned";
         internal const string CampaignProfile = "mc2-campaign";
         private const string CampaignDescriptorEnvelope = "campaign-definition.json";
@@ -97,6 +97,15 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class PlayerVitals
+        {
+            public int life;
+            public int max_life;
+            public int mana;
+            public int max_mana;
+        }
+
+        [Serializable]
         internal sealed class SnapshotValue
         {
             public string tick;
@@ -127,6 +136,7 @@ namespace MagicCarpet.Native
             public string effect_journal_sha256;
             public Pose player_pose;
             public Motion player_motion;
+            public PlayerVitals player_vitals;
             public PresentationEntity[] presentation_entities;
         }
 
@@ -751,7 +761,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.engine_contract != EngineContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 3 ||
+                contract.transport_version != 4 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.u64_hash_encoding != "lowercase-hex-16" ||
@@ -773,7 +783,7 @@ namespace MagicCarpet.Native
             ValidateProfile(
                 contract,
                 CampaignProfile,
-                "campaign_snapshot/v2",
+                "campaign_snapshot/v3",
                 RequiredCampaignCapabilities);
         }
 
@@ -844,10 +854,18 @@ namespace MagicCarpet.Native
         internal static void ValidateCampaignSnapshot(CampaignSnapshotValue value, Identity identity)
         {
             if (value == null || value.player_pose == null || value.player_motion == null ||
+                value.player_vitals == null ||
                 value.presentation_entities == null ||
                 value.tick != identity.tick)
             {
                 throw new InvalidOperationException("neutral campaign snapshot is incomplete");
+            }
+            if (value.player_vitals.max_life <= 0 || value.player_vitals.max_mana <= 0 ||
+                value.player_vitals.life > value.player_vitals.max_life ||
+                value.player_vitals.mana > value.player_vitals.max_mana)
+            {
+                throw new InvalidOperationException(
+                    "neutral campaign player vitals are invalid");
             }
             ParseCounter(value.effect_head, "effect_head");
             ParseHash(value.state_hash, "state_hash");
