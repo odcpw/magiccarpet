@@ -314,7 +314,9 @@ namespace MagicCarpet.Native.Tests
             Assert.That(campaignSessions, Is.Zero);
             var arguments = RuntimeArguments(
                 LevelThreePackage, LevelOnePackage, LevelTwoPackage);
-            byte[] replaySave = null;
+            var replayPath = Path.Combine(
+                Path.GetTempPath(),
+                $"magiccarpet-runtime-{Guid.NewGuid():N}.replay.json");
             GameRuntimeTransport.Identity sourceIdentity = null;
             EngineSessionTransport.CampaignSnapshotObservation sourceSnapshot = null;
 
@@ -328,8 +330,9 @@ namespace MagicCarpet.Native.Tests
                 sourceIdentity = source.GameRuntimeProductionIdentity;
                 sourceSnapshot = source.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(sourceIdentity.session.tick, Is.EqualTo("3"));
-                replaySave = source.QualificationSaveGameRuntimeProductionReplay();
-                Assert.That(replaySave, Is.Not.Empty);
+                source.QualificationSaveGameRuntimeProductionReplayToPath(replayPath);
+                Assert.That(File.Exists(replayPath), Is.True);
+                Assert.That(new FileInfo(replayPath).Length, Is.GreaterThan(0));
                 Assert.That(source.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("3"));
                 AssertSameCampaignState(
                     sourceSnapshot,
@@ -347,8 +350,8 @@ namespace MagicCarpet.Native.Tests
             var restored = restoredRoot.AddComponent<MagicCarpetRuntime>();
             try
             {
-                restored.QualificationInitializeGameRuntimeProductionFromReplay(
-                    replaySave,
+                restored.QualificationInitializeGameRuntimeProductionFromReplayPath(
+                    replayPath,
                     arguments);
                 Assert.That(restored.GameRuntimeProductionStartupReady, Is.True);
                 var restoredIdentity = restored.GameRuntimeProductionIdentity;
@@ -385,14 +388,15 @@ namespace MagicCarpet.Native.Tests
             {
                 restored.QualificationDisposeNativeOwners();
                 UnityEngine.Object.DestroyImmediate(restoredRoot);
+                if (File.Exists(replayPath)) File.Delete(replayPath);
             }
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));
 
-            // No-Claim: this proves the production runtime owner can emit and
-            // restore opaque real-L1 replay bytes into a fresh same-authority
-            // facade. It does not provide filesystem/menu storage, paused or
-            // cross-level saves, migration, cloud sync, or completion handling.
+            // No-Claim: this proves the production runtime owner atomically
+            // writes and restores one owner-local real-L1 replay file into a
+            // fresh same-authority facade. It does not provide menu UI, paused
+            // or cross-level saves, migration, cloud sync, or completion handling.
         }
 
         [Test]

@@ -8563,6 +8563,37 @@ namespace MagicCarpet.Native
             return session.GameRuntimeSaveReplay();
         }
 
+        internal void QualificationSaveGameRuntimeProductionReplayToPath(string savePath)
+        {
+            var fullPath = ValidateReplaySavePath(savePath);
+            var replaySave = QualificationSaveGameRuntimeProductionReplay();
+            var temporaryPath = $"{fullPath}.tmp.{Guid.NewGuid():N}";
+            try
+            {
+                using (var stream = new FileStream(
+                    temporaryPath,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None))
+                {
+                    stream.Write(replaySave, 0, replaySave.Length);
+                    stream.Flush(true);
+                }
+                if (File.Exists(fullPath))
+                {
+                    File.Replace(temporaryPath, fullPath, null);
+                }
+                else
+                {
+                    File.Move(temporaryPath, fullPath);
+                }
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            }
+        }
+
         internal void QualificationInitializeGameRuntimeProductionFromReplay(
             byte[] replaySave,
             params string[] arguments)
@@ -8592,6 +8623,40 @@ namespace MagicCarpet.Native
                 DisposeSession();
                 throw;
             }
+        }
+
+        internal void QualificationInitializeGameRuntimeProductionFromReplayPath(
+            string savePath,
+            params string[] arguments)
+        {
+            var fullPath = ValidateReplaySavePath(savePath);
+            var length = new FileInfo(fullPath).Length;
+            if (length <= 0 || length > GameRuntimeTransport.MaximumReplaySaveJsonBytes)
+            {
+                throw new InvalidDataException(
+                    $"game runtime replay save length {length} is outside 1.." +
+                    GameRuntimeTransport.MaximumReplaySaveJsonBytes);
+            }
+            QualificationInitializeGameRuntimeProductionFromReplay(
+                File.ReadAllBytes(fullPath),
+                arguments);
+        }
+
+        private static string ValidateReplaySavePath(string savePath)
+        {
+            if (string.IsNullOrWhiteSpace(savePath))
+            {
+                throw new InvalidDataException(
+                    "game runtime replay save path must be nonblank");
+            }
+            var fullPath = Path.GetFullPath(savePath);
+            var directory = Path.GetDirectoryName(fullPath);
+            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+            {
+                throw new DirectoryNotFoundException(
+                    $"game runtime replay save directory does not exist: {directory}");
+            }
+            return fullPath;
         }
 
         internal void QualificationRequestGameRuntimeFireball()

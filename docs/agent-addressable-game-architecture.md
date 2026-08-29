@@ -555,9 +555,11 @@ partial real implementation, not a completion claim:
   with a complete unordered package-resource set into one fresh resolver-owned
   handle. The production `NativeSession` and `MagicCarpetRuntime` owner now
   carry that same replay through disposal into one fresh same-authority owner
-  and resume ordinary fixed-step play. This is one Level 1 replay checkpoint,
-  not paused or cross-level persistence, filesystem/UI storage, migration or a
-  full campaign save;
+  and resume ordinary fixed-step play. Its owner-local filesystem seam writes
+  through a flushed sibling temporary file and atomic replacement, bounds the
+  file before reading, and still treats the contents as opaque Rust data. This
+  is one Level 1 replay checkpoint, not paused or cross-level persistence, menu
+  UI, migration or a full campaign save;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed
@@ -579,7 +581,7 @@ partial real implementation, not a completion claim:
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
   coverage remain open; the current Unity build enters one gameplay scene
   directly, neutral campaign saves/loads do not yet span Levels 1-3 or a
-  production filesystem/menu flow, and level completion has not yet been
+  production menu flow, and level completion has not yet been
   proved as one uninterrupted Rust-owned 1 -> 2 -> 3 -> Title playthrough or
   exposed through the production client.
 

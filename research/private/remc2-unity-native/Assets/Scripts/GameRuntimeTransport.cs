@@ -23,6 +23,7 @@ namespace MagicCarpet.Native
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
             "carpet-flight-mc2-campaign-replay-save/v1";
+        internal const int MaximumReplaySaveJsonBytes = 16 * 1024 * 1024;
         internal const string TitleMode = "title";
         internal const string LoadingMode = "loading";
         internal const string PlayingMode = "playing";
@@ -501,7 +502,7 @@ namespace MagicCarpet.Native
                 contract.limits.maximum_output_json_bytes != 16 * 1024 * 1024 ||
                 contract.limits.maximum_installed_package_set_json_bytes != 64 * 1024 ||
                 contract.limits.maximum_installed_package_count != 16 ||
-                contract.limits.maximum_replay_save_json_bytes != 16 * 1024 * 1024 ||
+                contract.limits.maximum_replay_save_json_bytes != MaximumReplaySaveJsonBytes ||
                 contract.limits.json_length_type != "u32" ||
                 contract.modes == null ||
                 !new[] { TitleMode, LoadingMode, PlayingMode, PausedMode }
