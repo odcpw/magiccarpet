@@ -329,6 +329,32 @@ impl VillagerFamily {
         &self.villagers
     }
 
+    /// Bind one reset-live semantic Villager before its first scheduler visit.
+    ///
+    /// The imported arena and this typed family are parallel projections of
+    /// the same source row. Refuse a split package baseline, then move the
+    /// typed owner to the authored position after the raw arena/map carrier
+    /// has been relocated.
+    pub(crate) fn bind_frame_zero_semantic_position(
+        &mut self,
+        entity_index: u16,
+        package_position: Position,
+        authored_position: Position,
+    ) -> Result<(), String> {
+        let villager = self
+            .villagers
+            .iter_mut()
+            .find(|villager| villager.entity_index == entity_index)
+            .ok_or_else(|| format!("Villager source slot {entity_index} is absent"))?;
+        if villager.position != package_position {
+            return Err(format!(
+                "Villager source slot {entity_index} diverges from its semantic package baseline"
+            ));
+        }
+        villager.position = authored_position;
+        Ok(())
+    }
+
     pub(crate) fn apply_house_construction_kill(
         &mut self,
         source_entity_index: u16,

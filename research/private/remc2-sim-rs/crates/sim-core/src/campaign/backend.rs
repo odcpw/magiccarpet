@@ -1894,7 +1894,7 @@ mod tests {
                 (CreatureKind::Villager, 28),
                 (CreatureKind::Firefly, 6),
             ],
-            &[(CreatureKind::Goat, 33)],
+            &[(CreatureKind::Goat, 33), (CreatureKind::Villager, 28)],
             &[
                 (SpellKind::Castle, TilePosition { x: 194, y: 213 }, Some(1)),
                 (SpellKind::Speed, TilePosition { x: 202, y: 212 }, Some(11)),
@@ -1991,7 +1991,12 @@ mod tests {
         assert_eq!(
             level_one_movable
                 .iter()
-                .filter(|entity| entity.kind() != LevelEntityKind::Creature(CreatureKind::Goat))
+                .filter(|entity| {
+                    !matches!(
+                        entity.kind(),
+                        LevelEntityKind::Creature(CreatureKind::Goat | CreatureKind::Villager)
+                    )
+                })
                 .map(|entity| entity.id().as_str())
                 .collect::<Vec<_>>(),
             vec![
@@ -2065,6 +2070,15 @@ mod tests {
                 "creature.worm.at_53_147",
             ]
         );
+        assert_eq!(
+            level_one_movable
+                .iter()
+                .filter(|entity| {
+                    entity.kind() == LevelEntityKind::Creature(CreatureKind::Villager)
+                })
+                .count(),
+            28
+        );
         let level_two = assert_package_content(
             &descriptor_fixture_path(),
             &[
@@ -2076,7 +2090,7 @@ mod tests {
                 (CreatureKind::Villager, 29),
                 (CreatureKind::Trader, 27),
             ],
-            &[(CreatureKind::Goat, 36)],
+            &[(CreatureKind::Goat, 36), (CreatureKind::Villager, 29)],
             &[
                 (SpellKind::Shield, TilePosition { x: 138, y: 219 }, Some(22)),
                 (
@@ -2131,7 +2145,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 155);
+        assert_eq!(level_two_movable.len(), 184);
         for (kind, expected) in [
             (CreatureKind::Goat, 36),
             (CreatureKind::Archer, 4),
@@ -2139,6 +2153,7 @@ mod tests {
             (CreatureKind::Worm, 6),
             (CreatureKind::Skeleton, 6),
             (CreatureKind::Trader, 27),
+            (CreatureKind::Villager, 29),
         ] {
             assert_eq!(
                 level_two_movable
@@ -5271,6 +5286,216 @@ mod tests {
         // not re-prove organic groups 1-3, Trader targeting/combat/death, the
         // other twenty-six placements, Villager placement, save/replay, or
         // Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_two_imported_villager_before_ordinary_visit_after_reopen()
+    {
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let villager =
+            sim_definition::adapter::stable_entity_id("creature.villager.at_121_180").unwrap();
+        let package_tile = TilePosition { x: 121, y: 180 };
+        let authored_tile = TilePosition { x: 130, y: 180 };
+        let package_entity = base.level_definition().unwrap().entity(&villager).unwrap();
+        assert_eq!(
+            package_entity.kind(),
+            LevelEntityKind::Creature(CreatureKind::Villager)
+        );
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-imported-villager-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-imported-villager-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            89,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let mut package_occurrences = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .ordinary()
+            .villagers()
+            .iter()
+            .filter(|state| {
+                (state.position.x >> 8, state.position.y >> 8) == (package_tile.x, package_tile.y)
+            })
+            .map(|state| state.entity_index)
+            .collect::<Vec<_>>();
+        package_occurrences.sort_unstable();
+        assert_eq!(package_occurrences.len(), 2);
+        let source_slot = package_occurrences[0];
+        let villager_bindings = base
+            .level_definition()
+            .unwrap()
+            .entities()
+            .iter()
+            .filter(|entity| entity.kind() == LevelEntityKind::Creature(CreatureKind::Villager))
+            .map(|entity| {
+                let crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource {
+                    initial_source_slot,
+                    kind,
+                    ..
+                } = session
+                    .backend()
+                    .campaign
+                    .definition()
+                    .movable_entity_binding(entity.id())
+                    .unwrap()
+                else {
+                    panic!("semantic Villager must bind one reset-live source slot");
+                };
+                assert_eq!(*kind, LevelEntityKind::Creature(CreatureKind::Villager));
+                *initial_source_slot
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(villager_bindings.len(), 29);
+        assert_eq!(
+            villager_bindings
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            29,
+            "duplicate semantic tiles must still bind distinct source occurrences"
+        );
+        assert!(matches!(
+            session
+                .backend()
+                .campaign
+                .definition()
+                .movable_entity_binding(&villager),
+            Some(crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource {
+                initial_source_slot,
+                kind: LevelEntityKind::Creature(CreatureKind::Villager),
+                ..
+            }) if *initial_source_slot == source_slot
+        ));
+        let villager_state = |session: &GameSession<Mc2CampaignBackend>| {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|state| state.entity_index == source_slot)
+                .cloned()
+                .unwrap()
+        };
+        let package_state = villager_state(&session);
+        assert_eq!(
+            (package_state.position.x >> 8, package_state.position.y >> 8),
+            (package_tile.x, package_tile.y)
+        );
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-imported-villager-placement",
+            &base,
+            "move-one-level-two-imported-villager",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(villager, package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(villager_state(&session), package_state);
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        let authored = villager_state(&session);
+        assert_eq!(
+            (authored.position.x >> 8, authored.position.y >> 8),
+            (authored_tile.x, authored_tile.y)
+        );
+        assert_eq!(authored.entity_index, source_slot);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility.entities()[usize::from(source_slot)].position,
+            authored.position
+        );
+        assert_eq!(
+            compatibility.economy().map_chains().tile_of(source_slot),
+            u16::from_le_bytes([
+                u8::try_from(authored_tile.x).unwrap(),
+                u8::try_from(authored_tile.y).unwrap(),
+            ])
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let visited = villager_state(&session);
+        assert_eq!(visited.phase, authored.phase.wrapping_add(1));
+        assert!(
+            (visited.position.x >> 8).abs_diff(authored_tile.x) <= 1,
+            "ordinary Villager movement must start from the authored tile: {visited:?}"
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Villager {
+                        source_slot: actual,
+                        ..
+                    } if *actual == source_slot
+                ))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = villager_state(&session);
+        assert_eq!(reset, authored);
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(source_slot)]
+                .position,
+            authored.position
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 2 Villager crosses
+        // guarded publication, old-session isolation, the exact private
+        // source-record binding, raw/typed/map synchronization, explicit
+        // reopen, one ordinary Villager visit, and reset. It does not prove
+        // the other fifty-six placements, organic targeting/building entry,
+        // combat/death, population changes, save/replay, or Unity presentation.
     }
 
     #[test]

@@ -862,7 +862,14 @@ fn bind_private_entity(
                 if feature.activation_group == 0
                     && supports_authorable_creature_placement(kind) =>
             {
-                Mc2MovableRuntimeHint::ResetKindAndPosition
+                if kind == CreatureKind::Villager {
+                    // Multiple qualified Level 2 Villagers share a package
+                    // tile. Their validated authored/source record is the
+                    // exact private carrier identity; position is not.
+                    Mc2MovableRuntimeHint::AuthoredRecord(feature.index)
+                } else {
+                    Mc2MovableRuntimeHint::ResetKindAndPosition
+                }
             }
             LevelEntityKind::Switch(_) if feature.activation_group != 0 => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)

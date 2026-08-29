@@ -1223,6 +1223,80 @@ impl CampaignDefinition {
                 );
                 continue;
             }
+            let villager_source_slot = if entity.kind()
+                == LevelEntityKind::Creature(CreatureKind::Villager)
+            {
+                let Mc2MovableRuntimeHint::AuthoredRecord(authored_record) = hint else {
+                    return fail(
+                        ValidationStage::TypedOperations,
+                        format!(
+                            "movable semantic Villager {} lacks authored occurrence identity",
+                            entity_id.as_str()
+                        ),
+                    );
+                };
+                let mut authored_occurrences = semantic_level
+                    .movable_runtime_hint_by_entity_id
+                    .iter()
+                    .filter_map(|(candidate_id, candidate_hint)| {
+                        let Mc2MovableRuntimeHint::AuthoredRecord(candidate_record) =
+                            candidate_hint
+                        else {
+                            return None;
+                        };
+                        semantic_level
+                            .semantic
+                            .entity(candidate_id)
+                            .filter(|candidate| {
+                                candidate.kind()
+                                    == LevelEntityKind::Creature(CreatureKind::Villager)
+                                    && candidate.position() == entity.position()
+                            })
+                            .map(|_| *candidate_record)
+                    })
+                    .collect::<Vec<_>>();
+                authored_occurrences.sort_unstable();
+                let Some(occurrence) = authored_occurrences
+                    .iter()
+                    .position(|candidate| candidate == authored_record)
+                else {
+                    return fail(
+                        ValidationStage::TypedOperations,
+                        format!(
+                            "movable semantic Villager {} lost its authored occurrence",
+                            entity_id.as_str()
+                        ),
+                    );
+                };
+                let mut source_occurrences = Vec::new();
+                for row in &expected_rows {
+                    let Some(source_slot) = row.initial_source_slot else {
+                        continue;
+                    };
+                    if Mc2LevelDefinition::creature_for_reset_selector(
+                        row.class, row.model, row.action,
+                    ) == Some(CreatureKind::Villager)
+                        && initial_entity_tile(entities, source_slot)? == entity.position()
+                    {
+                        source_occurrences.push(source_slot);
+                    }
+                }
+                source_occurrences.sort_unstable();
+                if source_occurrences.len() != authored_occurrences.len() {
+                    return fail(
+                        ValidationStage::TypedOperations,
+                        format!(
+                            "movable semantic Villager {} has {} authored and {} frame-zero occurrences at its package position",
+                            entity_id.as_str(),
+                            authored_occurrences.len(),
+                            source_occurrences.len()
+                        ),
+                    );
+                }
+                source_occurrences.get(occurrence).copied()
+            } else {
+                None
+            };
             let mut matching = Vec::new();
             for row in &expected_rows {
                 let Some(source_slot) = row.initial_source_slot else {
@@ -1255,9 +1329,10 @@ impl CampaignDefinition {
                     continue;
                 }
                 let identity_matches = match hint {
-                    Mc2MovableRuntimeHint::AuthoredRecord(authored_record) => {
-                        row.authored_record == *authored_record
-                    }
+                    Mc2MovableRuntimeHint::AuthoredRecord(authored_record) => villager_source_slot
+                        .map_or(row.authored_record == *authored_record, |slot| {
+                            source_slot == slot
+                        }),
                     Mc2MovableRuntimeHint::AuthoredFeature(_) => unreachable!(
                         "authored-feature bindings are validated before frame-zero matching"
                     ),

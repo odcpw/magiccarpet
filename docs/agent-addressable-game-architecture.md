@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 22.0 milestone, this is a binding target with
+As of the semantic-contract 23.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -454,8 +454,11 @@ partial real implementation, not a completion claim:
   authored-feature position before the real group-3 constructor allocates the
   ordinary action-113 carrier. One focused proof follows a constructed Trader
   through its ordinary numeric visit and map membership after reopen/reset.
-  Villager placements remain read-only until their reset-live typed-family
-  projection is kept coherent with the imported arena. All
+  All fifty-seven package-present Level 1 and 2 Villagers now relocate both
+  their imported arena row and reset-live typed-family carrier through an
+  exact private source-record binding. One focused Level 2 proof follows a
+  real free Villager through its ordinary movement and map membership after
+  reopen/reset. All
   thirty-nine package-present Experience Scroll placements across Levels 1-3
   bind to their immutable authored-feature rows before construction; the
   ordinary class-14 pickup callback consumes the authored location through XP

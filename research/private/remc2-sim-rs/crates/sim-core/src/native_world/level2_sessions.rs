@@ -3627,6 +3627,17 @@ impl Level2OrdinaryResetSession {
         self.villagers.villagers()
     }
 
+    pub(crate) fn bind_frame_zero_villager_position(
+        &mut self,
+        entity_index: u16,
+        package_position: Position,
+        authored_position: Position,
+    ) -> Result<()> {
+        self.villagers
+            .bind_frame_zero_semantic_position(entity_index, package_position, authored_position)
+            .map_err(NativeWorldError::new)
+    }
+
     #[must_use]
     pub fn dolmens(&self) -> &[Level2Dolmen] {
         &self.dolmens

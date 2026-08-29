@@ -63,7 +63,7 @@ pub const fn supports_authorable_creature_placement(kind: CreatureKind) -> bool 
     supports_complete_creature_lifecycle(kind)
         || matches!(
             kind,
-            CreatureKind::Goat | CreatureKind::Worm | CreatureKind::Trader
+            CreatureKind::Goat | CreatureKind::Worm | CreatureKind::Villager | CreatureKind::Trader
         )
 }
 

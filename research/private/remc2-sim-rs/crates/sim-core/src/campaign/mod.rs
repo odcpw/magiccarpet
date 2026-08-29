@@ -304,6 +304,25 @@ impl CampaignSession {
                             )
                             .map_err(NativeWorldError::new)?;
                     }
+                    if *kind
+                        == crate::level_definition::LevelEntityKind::Creature(
+                            crate::level_definition::CreatureKind::Villager,
+                        )
+                    {
+                        let authored_position = self.level2.session.state.live.economy.entities
+                            [usize::from(*initial_source_slot)]
+                        .position;
+                        self.level2
+                            .session
+                            .state
+                            .live
+                            .ordinary
+                            .bind_frame_zero_villager_position(
+                                *initial_source_slot,
+                                source.position,
+                                authored_position,
+                            )?;
+                    }
                 }
                 spec::Mc2EntityRuntimeBinding::InitialMultipartFamily {
                     root_source_slot,
