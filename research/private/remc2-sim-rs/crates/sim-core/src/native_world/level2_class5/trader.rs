@@ -93,6 +93,7 @@ pub(crate) fn trader_constructor_payload(
     authored_index: u16,
     source_byte_3e: u8,
     position: Position,
+    max_life: i32,
 ) -> TraderConstructorPayload {
     let entity_rng = level2_next_rng16(initial_rng);
     let angle = i16::try_from(entity_rng & 0x07ff).expect("Trader angle fits") - 1;
@@ -106,8 +107,8 @@ pub(crate) fn trader_constructor_payload(
         minimum_speed: TRADER_MINIMUM_SPEED,
         maximum_speed: TRADER_MAXIMUM_SPEED,
         actual_speed: TRADER_MAXIMUM_SPEED,
-        max_life: TRADER_MAX_LIFE,
-        life: TRADER_MAX_LIFE,
+        max_life,
+        life: max_life,
         mana: TRADER_MANA,
         max_mana: TRADER_MAX_MANA,
         subspell_index: TRADER_SUBSPELL_INDEX,
@@ -178,6 +179,32 @@ impl TraderConstructorPayload {
 }
 
 impl Level2EconomyState {
+    #[cfg(test)]
+    pub(crate) fn stage_trader_mailbox_damage_for_test(
+        &mut self,
+        source_slot: u16,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> bool {
+        let Some(source) = self.authored_class5.iter_mut().find(|source| {
+            source.source_entity_index == source_slot
+                && source.model == TRADER_MODEL
+                && source.action == TRADER_ACTION
+        }) else {
+            return false;
+        };
+        let Some(runtime) = self
+            .authored_class5_runtime
+            .iter_mut()
+            .find(|runtime| runtime.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.pending_word_0x62 = attacker_slot;
+        runtime.pending_damage = damage;
+        true
+    }
+
     /// Allocate one authored Trader using the real source free stack, event
     /// RNG, model-14 counter, terrain/map projection, and reset-owned source
     /// arena.  The caller owns the surrounding group transaction.
@@ -185,9 +212,10 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        max_life: i32,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
-        if !is_authored_trader_row(authored_index) {
+        if !is_authored_trader_row(authored_index) || max_life <= 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -203,6 +231,7 @@ impl Level2EconomyState {
             authored_index,
             source_byte_3e,
             position,
+            max_life,
         );
         if self
             .map_chains
@@ -567,7 +596,14 @@ mod tests {
         let initial_rng = 0x1357_u16;
         let entity_rng = initial_rng.wrapping_mul(9_377).wrapping_add(9_439);
         let angle = i16::try_from(entity_rng & 0x07ff).expect("angle fits") - 1;
-        let payload = trader_constructor_payload(slot, initial_rng, 125, 3, trader_position());
+        let payload = trader_constructor_payload(
+            slot,
+            initial_rng,
+            125,
+            3,
+            trader_position(),
+            TRADER_MAX_LIFE,
+        );
 
         assert_eq!(payload.entity_rng, entity_rng);
         assert_eq!(payload.initial_dword_0x10, 47);
@@ -612,7 +648,7 @@ mod tests {
             rows.push(
                 session
                     .economy_mut()
-                    .allocate_authored_trader(authored_index, trader_position())
+                    .allocate_authored_trader(authored_index, trader_position(), TRADER_MAX_LIFE)
                     .expect("every authored Trader row allocates"),
             );
         }
@@ -661,7 +697,7 @@ mod tests {
         assert!(
             session
                 .economy_mut()
-                .allocate_authored_trader(151, trader_position())
+                .allocate_authored_trader(151, trader_position(), TRADER_MAX_LIFE)
                 .is_none()
         );
         assert!(session.economy().authored_class5().len() >= 27);

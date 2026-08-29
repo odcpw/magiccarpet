@@ -1557,7 +1557,7 @@ mod tests {
         ChangeSetBuilder, DRAGON_MAX_LIFE_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
         GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage, IntegerParameter, OptionParameter,
         PresentationAssetSlot, PublicationFault, RequestedTiming, SKELETON_MAX_LIFE_CAPABILITY_ID,
-        SemanticValue, WorkspaceStore,
+        SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::goat::{GoatBehaviorConfig, GoatStepEvent};
@@ -2029,6 +2029,17 @@ mod tests {
                     LevelEntityParameterAccess::SessionReset
                 );
             }
+            if kind == CreatureKind::Trader {
+                let health = entity
+                    .creature_health()
+                    .expect("every package-present Trader has a health binding");
+                assert_eq!(health.default_max_life(), 1_000);
+                assert_eq!(health.max_life(), 1_000);
+                assert_eq!(
+                    health.max_life_access(),
+                    LevelEntityParameterAccess::SessionReset
+                );
+            }
         }
         if expected_creatures
             .iter()
@@ -2040,6 +2051,20 @@ mod tests {
                     .iter()
                     .any(|requirement| {
                         requirement.id.as_str() == GOAT_MAX_LIFE_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    })
+            );
+        }
+        if expected_creatures
+            .iter()
+            .any(|(kind, _)| *kind == CreatureKind::Trader)
+        {
+            assert!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == TRADER_MAX_LIFE_CAPABILITY_ID
                             && requirement.exact_version == 1
                     })
             );
@@ -5609,6 +5634,163 @@ mod tests {
         // not re-prove organic groups 1-3, Trader targeting/combat/death, the
         // other twenty-six placements, Villager placement, save/replay, or
         // Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_level_two_grouped_trader_max_life_before_action113_damage_after_reopen_and_reset()
+     {
+        const TRADER_RECORD: u16 = 125;
+        const PACKAGE_MAX_LIFE: u32 = 1_000;
+        const AUTHORED_MAX_LIFE: u32 = 2_000;
+        const DAMAGE: i32 = 1_500;
+
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let trader =
+            sim_definition::adapter::stable_entity_id("creature.trader.at_57_155").unwrap();
+        let package_entity = base.level_definition().unwrap().entity(&trader).unwrap();
+        assert_eq!(
+            package_entity.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-trader-max-life");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-trader-max-life", base.clone())
+                .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            84,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-trader-max-life",
+            &base,
+            "raise-one-level-two-trader-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(trader, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_three = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(3)
+                .unwrap();
+            compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == TRADER_RECORD)
+                .copied()
+                .unwrap()
+        };
+        let stage_damage = |session: &mut GameSession<Mc2CampaignBackend>, source_slot| {
+            assert!(
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .economy_mut()
+                    .stage_trader_mailbox_damage_for_test(source_slot, 1, DAMAGE)
+            );
+        };
+        let trader_after_step = |session: &GameSession<Mc2CampaignBackend>, source_slot| {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .copied()
+                .unwrap()
+        };
+
+        let package_trader = construct_group_three(&mut session);
+        assert_eq!(
+            (package_trader.max_life, package_trader.life),
+            (
+                PACKAGE_MAX_LIFE.cast_signed(),
+                PACKAGE_MAX_LIFE.cast_signed()
+            )
+        );
+        stage_damage(&mut session, package_trader.source_entity_index);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let package_after = trader_after_step(&session, package_trader.source_entity_index);
+        assert_eq!((package_after.life, package_after.action), (-500, 116));
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+        let authored_trader = construct_group_three(&mut session);
+        assert_eq!(
+            (authored_trader.max_life, authored_trader.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        stage_damage(&mut session, authored_trader.source_entity_index);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let authored_after = trader_after_step(&session, authored_trader.source_entity_index);
+        assert_eq!((authored_after.life, authored_after.action), (500, 118));
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset_trader = construct_group_three(&mut session);
+        assert_eq!(
+            (reset_trader.max_life, reset_trader.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the existing real Level 2 group-3 boundary
+        // and proves one Trader maximum-life edit crosses guarded publication,
+        // old-session isolation, explicit reopen/reset, the ordinary constructor
+        // and action-113 mailbox damage branch. It does not prove organic group
+        // progression, Trader targeting/death cleanup, other Traders, placement,
+        // save/replay, or Unity UI.
     }
 
     #[test]

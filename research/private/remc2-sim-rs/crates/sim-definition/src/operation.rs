@@ -11,7 +11,7 @@ use crate::{
     CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError,
     DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
     GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
-    SemanticValue, creature_max_life_capability_id,
+    SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -276,6 +276,10 @@ impl DefinitionOperation {
                         },
                         "skeleton": {
                             "id": SKELETON_MAX_LIFE_CAPABILITY_ID,
+                            "exact_version": 1,
+                        },
+                        "trader": {
+                            "id": TRADER_MAX_LIFE_CAPABILITY_ID,
                             "exact_version": 1,
                         },
                     },

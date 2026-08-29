@@ -19,6 +19,7 @@ pub(super) mod dragon;
 pub(crate) mod firefly;
 mod model9;
 pub(super) mod trader;
+pub(crate) use trader::TRADER_MAX_LIFE;
 
 #[cfg(test)]
 pub(crate) use archer::ARCHER_ACTION_HIT;
@@ -226,7 +227,9 @@ impl Level2EconomyState {
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
         if model == trader::TRADER_MODEL {
-            return self.allocate_authored_trader(authored_index, position, terrain);
+            return max_life_override.and_then(|max_life| {
+                self.allocate_authored_trader(authored_index, position, max_life, terrain)
+            });
         }
         if model == archer::ARCHER_MODEL {
             return self.allocate_authored_archer(authored_index, position, terrain);

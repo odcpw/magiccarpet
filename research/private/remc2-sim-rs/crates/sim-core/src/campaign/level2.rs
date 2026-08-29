@@ -7234,6 +7234,21 @@ impl Level2EconomyTestView<'_> {
             .submit_authored_bee_damage(source_slot, damage, attacker_slot)
     }
 
+    pub(crate) fn stage_trader_mailbox_damage_for_test(
+        &mut self,
+        source_slot: u16,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> bool {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .stage_trader_mailbox_damage_for_test(source_slot, attacker_slot, damage)
+    }
+
     pub(crate) fn stage_authored_worm_attack_for_test(
         &mut self,
         authored_index: u16,
@@ -7311,7 +7326,7 @@ impl Level2EconomyTestView<'_> {
     terrain_method!(allocate_authored_model45,
         (authored_index: u16, target_group: u16, parameter_1: u16, position: Position) -> Option<Level2AuthoredModel45Source>);
     terrain_method!(allocate_authored_trader,
-        (authored_index: u16, position: Position) -> Option<Level2AuthoredClass5Source>);
+        (authored_index: u16, position: Position, max_life: i32) -> Option<Level2AuthoredClass5Source>);
     terrain_method!(acquire_authored_bee_target,
         (source_slot: u16, candidates: &[(u16, Position, u32)]) -> Option<u16>);
     terrain_method!(build_castle,
@@ -8494,7 +8509,7 @@ impl Level2ResetSession {
             })?;
         }
         for feature in rows.iter().filter(|feature| {
-            feature.kind == 5 && matches!(feature.subtype, 0 | 1 | 2 | 4 | 9 | 19)
+            feature.kind == 5 && matches!(feature.subtype, 0 | 1 | 2 | 4 | 9 | 14 | 19)
         }) {
             if feature.subtype == 19 && self.authored_firefly_stage_route(*feature).is_none() {
                 return Err(format!(
@@ -8713,7 +8728,43 @@ impl Level2ResetSession {
                             .insert(feature.index);
                     }
                 }
-                (5, model @ (3 | 14)) => {
+                (5, 14) => {
+                    let position = feature.world_position(
+                        self.canonical_terrain()
+                            .ground_height(feature.world_position(0)),
+                    );
+                    let max_life = self
+                        .session
+                        .definition
+                        .authored_creature_max_life(feature.index)
+                        .map(u32::cast_signed)
+                        .ok_or_else(|| {
+                            format!(
+                                "authored Trader row {} lost its preflight maximum-life binding",
+                                feature.index
+                            )
+                        })?;
+                    if self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .allocate_authored_trader(
+                            feature.index,
+                            position,
+                            max_life,
+                            &self.session.state.live.terrain,
+                        )
+                        .is_some()
+                    {
+                        self.session
+                            .state
+                            .live
+                            .level2_class5_activated
+                            .insert(feature.index);
+                    }
+                }
+                (5, 3) => {
                     let position = feature.world_position(
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
@@ -8725,7 +8776,7 @@ impl Level2ResetSession {
                         .economy
                         .allocate_authored_class5(
                             feature.index,
-                            u8::try_from(model).expect("authored class-5 model fits u8"),
+                            3,
                             position,
                             &self.session.state.live.terrain,
                         )
@@ -9313,10 +9364,28 @@ impl Level2ResetSession {
         for feature in rows {
             let terrain = &self.session.state.live.terrain;
             let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
-            let Some(source) = self.session.state.live.economy.allocate_authored_class5(
+            let Some(max_life) = self
+                .session
+                .definition
+                .authored_creature_max_life(feature.index)
+                .map(u32::cast_signed)
+            else {
+                self.session.state.live.economy = economy_before;
+                self.session.state.live.level2_class5_activated = activated_before;
+                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: format!(
+                        "Level 2 authored Trader row {} has no maximum-life binding",
+                        feature.index
+                    ),
+                });
+                return;
+            };
+            let Some(source) = self.session.state.live.economy.allocate_authored_trader(
                 feature.index,
-                14,
                 position,
+                max_life,
                 terrain,
             ) else {
                 self.session.state.live.economy = economy_before;
@@ -10228,6 +10297,19 @@ impl Level2ResetSession {
                     max_life,
                     terrain,
                 )
+            } else if feature.subtype == 14 {
+                self.session
+                    .definition
+                    .authored_creature_max_life(feature.index)
+                    .map(u32::cast_signed)
+                    .and_then(|max_life| {
+                        self.session.state.live.economy.allocate_authored_trader(
+                            feature.index,
+                            position,
+                            max_life,
+                            terrain,
+                        )
+                    })
             } else {
                 self.session.state.live.economy.allocate_authored_class5(
                     feature.index,
