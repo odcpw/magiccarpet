@@ -16,13 +16,13 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v6";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v7";
         internal const string TransportContract =
             "carpet-flight-native-game-runtime-json/v5";
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
-            "carpet-flight-mc2-campaign-replay-save/v1";
+            "carpet-flight-mc2-campaign-replay-save/v2";
         internal const int MaximumReplaySaveJsonBytes = 16 * 1024 * 1024;
         internal const string TitleMode = "title";
         internal const string LoadingMode = "loading";
@@ -240,7 +240,7 @@ namespace MagicCarpet.Native
 
         internal byte[] SaveReplay()
         {
-            RequireSessionMode(allowPaused: false, "save replay");
+            RequireSessionMode(allowPaused: true, "save replay");
             var before = Current;
             var bytes = ReadBytes(
                 (IntPtr buffer, uint capacity, out uint length) =>
@@ -255,7 +255,7 @@ namespace MagicCarpet.Native
                 NegotiatedContract.limits.maximum_replay_save_json_bytes,
                 "save game replay");
             var after = IdentitySnapshot();
-            if (after.mode != PlayingMode || after.generation != before.generation ||
+            if (after.mode != before.mode || after.generation != before.generation ||
                 after.session.generation != before.session.generation ||
                 after.session.tick != before.session.tick ||
                 !PreservesSessionBinding(before.session, after.session) ||
@@ -294,7 +294,7 @@ namespace MagicCarpet.Native
                     checked((uint)saveJson.Length)),
                 "load game replay");
             var identity = IdentitySnapshot();
-            if (identity.mode != PlayingMode ||
+            if ((identity.mode != PlayingMode && identity.mode != PausedMode) ||
                 ParseCounter(identity.generation, "generation") !=
                     checked(beforeGeneration + 1) ||
                 HasDefinitionIdentityData(identity.pending_definition) ||
@@ -303,7 +303,7 @@ namespace MagicCarpet.Native
                 !HasRuntimeFlowData(identity.active_runtime_flow))
             {
                 throw new InvalidOperationException(
-                    "replay load did not enter a bound Playing session");
+                    "replay load did not enter a bound Playing or Paused session");
             }
             return identity;
         }

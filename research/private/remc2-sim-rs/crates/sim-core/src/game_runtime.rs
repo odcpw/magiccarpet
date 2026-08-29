@@ -14,7 +14,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v6";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v7";
 pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v1";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
@@ -515,6 +515,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         adapter: &A,
         session_id: u64,
         commands: I,
+        paused: bool,
         resolve_input: F,
         verify: V,
     ) -> Result<RuntimeIdentity, RestorePlayingError<A::Error>>
@@ -563,7 +564,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         verify(&candidate).map_err(RestorePlayingError::Transition)?;
         self.state = RuntimeState::Playing {
             session: candidate,
-            paused: false,
+            paused,
         };
         self.generation = next_generation;
         Ok(self.identity())
@@ -1259,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_replay_save_restores_real_level_one_playing_state_atomically() {
+    fn runtime_replay_save_restores_real_level_one_paused_state_atomically() {
         let resolver = Mc2RuntimePackageResolver::load([
             Mc2CampaignInputs::new(level_three_package()),
             Mc2CampaignInputs::new(level_one_package()),
@@ -1292,12 +1293,13 @@ mod tests {
             let guard = source.session().unwrap().identity().guard();
             source.session_mut().unwrap().step(guard, command).unwrap();
         }
-        let source_identity = source.identity();
+        let playing_identity = source.identity();
+        let source_identity = source.pause(playing_identity.guard()).unwrap();
         let source_session = source_identity.session.clone().unwrap();
         let source_snapshot = source.session().unwrap().snapshot();
         assert_eq!(source_session.tick, 3);
 
-        let save = resolver.save_playing(&source).unwrap();
+        let save = resolver.save_replay(&source).unwrap();
         assert_eq!(source.identity(), source_identity);
         assert_eq!(source.session().unwrap().snapshot(), source_snapshot);
         let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
@@ -1306,6 +1308,7 @@ mod tests {
             crate::campaign::backend::MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
         );
         assert_eq!(save_json["commands"].as_array().unwrap().len(), 3);
+        assert_eq!(save_json["paused"], true);
         assert_eq!(save_json["expected_tick"], 3);
         assert_eq!(
             save_json["definition"]["definition_hash"],
@@ -1318,7 +1321,7 @@ mod tests {
             generation: title.generation + 1,
             ..title.guard()
         };
-        let stale_result = resolver.load_playing_save(&mut restored, stale, 502, b"{not-json");
+        let stale_result = resolver.load_replay(&mut restored, stale, 502, b"{not-json");
         assert!(matches!(
             stale_result,
             Err(Mc2CampaignReplaySaveError::Runtime(
@@ -1329,8 +1332,7 @@ mod tests {
         assert!(restored.session().is_none());
 
         let corrupted = Mc2RuntimePackageResolver::corrupt_save_expected_state_for_test(&save);
-        let corrupted_result =
-            resolver.load_playing_save(&mut restored, title.guard(), 502, &corrupted);
+        let corrupted_result = resolver.load_replay(&mut restored, title.guard(), 502, &corrupted);
         assert!(matches!(
             corrupted_result,
             Err(Mc2CampaignReplaySaveError::Restore(
@@ -1341,9 +1343,9 @@ mod tests {
         assert!(restored.session().is_none());
 
         let restored_identity = resolver
-            .load_playing_save(&mut restored, title.guard(), 502, &save)
+            .load_replay(&mut restored, title.guard(), 502, &save)
             .unwrap();
-        assert_eq!(restored_identity.mode, RuntimeMode::Playing);
+        assert_eq!(restored_identity.mode, RuntimeMode::Paused);
         assert_eq!(restored_identity.runtime_id, 502);
         assert_eq!(restored_identity.generation, 2);
         assert!(restored_identity.pending_definition.is_none());
@@ -1371,6 +1373,15 @@ mod tests {
             restored.session().unwrap().snapshot().value,
             source_snapshot.value
         );
+        assert!(restored.session_mut().is_none());
+
+        let resumed = restored.resume(restored_identity.guard()).unwrap();
+        assert_eq!(resumed.mode, RuntimeMode::Playing);
+        assert_eq!(resumed.session.as_ref().unwrap().generation, 2);
+        assert_eq!(
+            restored.session().unwrap().snapshot().value,
+            source_snapshot.value
+        );
 
         let before_stale_source_guard = restored.session().unwrap().snapshot();
         let stale_source_guard = restored
@@ -1387,13 +1398,13 @@ mod tests {
             before_stale_source_guard
         );
 
-        // No-Claim: this proves one unpaused real Level 1 Playing checkpoint
+        // No-Claim: this proves one quiescent Paused real Level 1 checkpoint
         // rebuilt from its immutable definition and semantic command trace,
         // with guard-first parsing, candidate publication, exact state
-        // receipts, and a fresh runtime/session identity. It does not prove
-        // paused, Loading or Title checkpoints; Level 2/3 replay; native or
-        // Unity transport; save migration; hostile-input authenticity; or
-        // cross-build compatibility.
+        // receipts, frozen mutation, resume, and a fresh runtime/session
+        // identity. It does not prove paused-frame service, Loading or Title
+        // checkpoints; Level 2/3 replay; save migration; hostile-input
+        // authenticity; or cross-build compatibility.
     }
 
     #[test]

@@ -484,7 +484,7 @@ impl Mc2CampaignInputs {
     }
 }
 
-pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v1";
+pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v2";
 pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MC2_CAMPAIGN_REPLAY_COMMANDS: usize = 1_000_000;
 
@@ -492,6 +492,7 @@ pub const MAX_MC2_CAMPAIGN_REPLAY_COMMANDS: usize = 1_000_000;
 #[serde(deny_unknown_fields)]
 struct Mc2CampaignReplaySave {
     save_contract: String,
+    paused: bool,
     definition: GameDefinition,
     commands: Vec<GameCommand>,
     expected_tick: u64,
@@ -505,6 +506,7 @@ struct Mc2CampaignReplaySave {
 #[derive(Serialize)]
 struct Mc2CampaignReplaySavePayload<'a> {
     save_contract: &'a str,
+    paused: bool,
     definition: &'a GameDefinition,
     commands: &'a [GameCommand],
     expected_tick: u64,
@@ -516,12 +518,14 @@ struct Mc2CampaignReplaySavePayload<'a> {
 
 impl Mc2CampaignReplaySave {
     fn new(
+        paused: bool,
         definition: GameDefinition,
         commands: Vec<GameCommand>,
         snapshot: &CampaignSnapshot,
     ) -> Self {
         let mut save = Self {
             save_contract: MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT.to_owned(),
+            paused,
             definition,
             commands,
             expected_tick: snapshot.tick,
@@ -538,6 +542,7 @@ impl Mc2CampaignReplaySave {
     fn compute_receipt_sha256(&self) -> String {
         let payload = Mc2CampaignReplaySavePayload {
             save_contract: &self.save_contract,
+            paused: self.paused,
             definition: &self.definition,
             commands: &self.commands,
             expected_tick: self.expected_tick,
@@ -570,7 +575,7 @@ impl fmt::Display for Mc2CampaignReplaySaveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidMode => formatter.write_str(
-                "MC2 campaign replay saves currently require an unpaused Playing runtime",
+                "MC2 campaign replay saves require a Playing or quiescent Paused runtime",
             ),
             Self::InvalidSave { message } => {
                 write!(formatter, "invalid MC2 replay save: {message}")
@@ -795,13 +800,17 @@ impl Mc2RuntimePackageResolver {
         })
     }
 
-    /// Serialize one unpaused Playing runtime as a definition-bound semantic
-    /// command replay plus exact authoritative-state receipts.
-    pub fn save_playing(
+    /// Serialize one Playing or quiescent Paused runtime as a definition-bound
+    /// semantic command replay plus exact authoritative-state receipts.
+    pub fn save_replay(
         &self,
         runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
     ) -> Result<Vec<u8>, Mc2CampaignReplaySaveError> {
-        if runtime.identity().mode != crate::game_runtime::RuntimeMode::Playing {
+        let mode = runtime.identity().mode;
+        if !matches!(
+            mode,
+            crate::game_runtime::RuntimeMode::Playing | crate::game_runtime::RuntimeMode::Paused
+        ) {
             return Err(Mc2CampaignReplaySaveError::InvalidMode);
         }
         let session = runtime
@@ -835,6 +844,7 @@ impl Mc2RuntimePackageResolver {
             });
         }
         let save = Mc2CampaignReplaySave::new(
+            mode == crate::game_runtime::RuntimeMode::Paused,
             session.definition().as_ref().clone(),
             session.backend().replay_commands.clone(),
             &snapshot,
@@ -854,10 +864,10 @@ impl Mc2RuntimePackageResolver {
         Ok(bytes)
     }
 
-    /// Restore one replay save directly from Title into Playing. The save is
-    /// parsed and replayed only after guard/mode validation, and the candidate
-    /// is published only when every retained state receipt matches exactly.
-    pub fn load_playing_save(
+    /// Restore one replay save directly from Title into Playing or quiescent
+    /// Paused. The candidate is published only when every retained receipt
+    /// matches exactly.
+    pub fn load_replay(
         &self,
         runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
         guard: crate::game_runtime::RuntimeGuard,
@@ -920,6 +930,7 @@ impl Mc2RuntimePackageResolver {
         let expected_terrain_hash = save.expected_terrain_hash;
         let expected_effect_head = save.expected_effect_head;
         let expected_effect_journal_sha256 = save.expected_effect_journal_sha256;
+        let paused = save.paused;
         runtime
             .restore_playing_resolved(
                 guard,
@@ -927,6 +938,7 @@ impl Mc2RuntimePackageResolver {
                 &Mc2CampaignAdapter,
                 session_id,
                 commands,
+                paused,
                 |_| Ok(package.inputs.clone()),
                 move |candidate| {
                     let actual = candidate.backend().snapshot();

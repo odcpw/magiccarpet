@@ -275,8 +275,9 @@ namespace MagicCarpet.Native.Tests
                 source.CampaignStep(0, 0, 0, 0, 0);
                 source.CampaignStep(0, 3, 1, 0, 0);
                 source.CampaignStep(0, 0, 0, 64, unchecked((ushort)-32));
-                var sourceIdentity = source.IdentitySnapshot();
+                var sourceIdentity = source.Pause();
                 var sourceSnapshot = source.CampaignSnapshot();
+                Assert.That(sourceIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                 Assert.That(sourceIdentity.session.tick, Is.EqualTo("3"));
 
                 var save = source.SaveReplay();
@@ -289,7 +290,7 @@ namespace MagicCarpet.Native.Tests
                 using (var restored = new GameRuntimeTransport())
                 {
                     var playing = restored.LoadReplay(save, ResolverPackages());
-                    Assert.That(playing.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                    Assert.That(playing.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                     Assert.That(playing.generation, Is.EqualTo("2"));
                     Assert.That(playing.session.session_id, Is.EqualTo(restored.Handle.ToString()));
                     Assert.That(playing.session.generation, Is.EqualTo("1"));
@@ -307,13 +308,24 @@ namespace MagicCarpet.Native.Tests
                         playing.active_runtime_flow.bound_level_id,
                         Is.EqualTo(sourceIdentity.active_runtime_flow.bound_level_id));
                     AssertSameCampaignState(sourceSnapshot, restored.CampaignSnapshot());
+                    Assert.Throws<InvalidOperationException>(() =>
+                        restored.CampaignStep(0, 0, 0, 0, 0));
+                    Assert.That(
+                        restored.IdentitySnapshot().mode,
+                        Is.EqualTo(GameRuntimeTransport.PausedMode));
+                    var resumed = restored.Resume();
+                    Assert.That(resumed.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                    Assert.That(resumed.session.generation, Is.EqualTo("2"));
+                    Assert.That(
+                        restored.CampaignStep(0, 0, 0, 0, 0).identity.tick,
+                        Is.EqualTo("4"));
                 }
             }
 
-            // No-Claim: this proves opaque replay bytes pass through the
-            // managed transport into one fresh real-L1 Rust owner. It does not
-            // prove filesystem/UI persistence, paused or cross-level saves,
-            // migration, cloud saves, or production menu wiring.
+            // No-Claim: this proves opaque quiescent-Paused replay bytes pass
+            // through the managed transport, remain mutation-frozen, and
+            // resume on one fresh real-L1 Rust owner. It does not prove paused
+            // frame service, cross-level saves, migration, or menu wiring.
         }
 
         [Test]
@@ -338,8 +350,9 @@ namespace MagicCarpet.Native.Tests
             {
                 source.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
                 source.QualificationDriveGameRuntimeFrames(3);
-                sourceIdentity = source.GameRuntimeProductionIdentity;
+                sourceIdentity = source.QualificationPauseGameRuntimeProduction();
                 sourceSnapshot = source.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(sourceIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                 Assert.That(sourceIdentity.session.tick, Is.EqualTo("3"));
                 source.QualificationSaveGameRuntimeProductionReplayToPath(replayPath);
                 Assert.That(File.Exists(replayPath), Is.True);
@@ -369,7 +382,7 @@ namespace MagicCarpet.Native.Tests
                         LevelTwoPackage));
                 Assert.That(restored.GameRuntimeProductionStartupReady, Is.True);
                 var restoredIdentity = restored.GameRuntimeProductionIdentity;
-                Assert.That(restoredIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(restoredIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                 Assert.That(restoredIdentity.generation, Is.EqualTo("2"));
                 Assert.That(restoredIdentity.session.generation, Is.EqualTo("1"));
                 Assert.That(restoredIdentity.session.tick, Is.EqualTo("3"));
@@ -392,6 +405,13 @@ namespace MagicCarpet.Native.Tests
                 restored.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(
                     restored.GameRuntimeProductionIdentity.session.tick,
+                    Is.EqualTo("3"));
+                Assert.That(
+                    restored.QualificationResumeGameRuntimeProduction().mode,
+                    Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                restored.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(
+                    restored.GameRuntimeProductionIdentity.session.tick,
                     Is.EqualTo("4"));
                 Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions + 1));
                 Assert.That(
@@ -408,9 +428,10 @@ namespace MagicCarpet.Native.Tests
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));
 
             // No-Claim: this proves the production runtime owner atomically
-            // writes and restores one owner-local real-L1 replay file into a
-            // fresh same-authority facade. It does not provide menu UI, paused
-            // or cross-level saves, migration, cloud sync, or completion handling.
+            // writes and restores one owner-local quiescent-Paused real-L1
+            // replay file, remains frozen, and resumes in a fresh facade. It
+            // does not provide paused-frame service, menu UI, cross-level
+            // saves, migration, cloud sync, or completion handling.
         }
 
         [Test]

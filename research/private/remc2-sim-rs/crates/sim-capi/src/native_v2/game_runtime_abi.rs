@@ -150,7 +150,14 @@ impl RuntimeRecord {
         session_generation: u64,
         expected_tick: u64,
     ) -> AbiResult<Vec<u8>> {
-        self.validate_transition(handle, runtime_generation, RuntimeMode::Playing)?;
+        let mode = self.runtime.identity().mode;
+        if !matches!(mode, RuntimeMode::Playing | RuntimeMode::Paused) {
+            return Err(map_transition_error(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing,
+                actual: mode,
+            }));
+        }
+        self.validate_transition(handle, runtime_generation, mode)?;
         let session = self.runtime.session().ok_or_else(|| {
             AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
@@ -184,7 +191,7 @@ impl RuntimeRecord {
                     "MISSING_RUNTIME_RESOLVER: Playing runtime has no installed package set",
                 )
             })?
-            .save_playing(&self.runtime)
+            .save_replay(&self.runtime)
             .map_err(map_replay_save_error)
     }
 
@@ -211,7 +218,7 @@ impl RuntimeRecord {
             )
         })?;
         resolver
-            .load_playing_save(
+            .load_replay(
                 &mut self.runtime,
                 RuntimeGuard {
                     runtime_id: handle,
@@ -875,7 +882,7 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v6"
+            "carpet-flight-game-runtime/v7"
         );
         assert_eq!(
             contract["transport_contract"],
@@ -922,7 +929,7 @@ mod tests {
         assert_eq!(
             contract["replay_save"],
             serde_json::json!({
-                "save_contract": "carpet-flight-mc2-campaign-replay-save/v1",
+                "save_contract": "carpet-flight-mc2-campaign-replay-save/v2",
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
@@ -1129,13 +1136,15 @@ mod tests {
                 MC_STATUS_OK
             );
         }
+        assert_eq!(mc_game_runtime_pause_v1(source, 3), MC_STATUS_OK);
         let source_identity = identity(source);
         let source_snapshot = read_json(|buffer, capacity, length| {
             mc_game_session_snapshot_json_v1(source, buffer, capacity, length)
         });
+        assert_eq!(source_identity["mode"], "paused");
         assert_eq!(source_identity["session"]["tick"], "3");
         let save = read_bytes(|buffer, capacity, length| {
-            mc_game_runtime_save_replay_json_v1(source, 3, 1, 3, buffer, capacity, length)
+            mc_game_runtime_save_replay_json_v1(source, 4, 2, 3, buffer, capacity, length)
         });
         assert_eq!(identity(source), source_identity);
         assert_eq!(
@@ -1147,9 +1156,10 @@ mod tests {
         let save_json: Value = serde_json::from_slice(&save).unwrap();
         assert_eq!(
             save_json["save_contract"],
-            "carpet-flight-mc2-campaign-replay-save/v1"
+            "carpet-flight-mc2-campaign-replay-save/v2"
         );
         assert_eq!(save_json["commands"].as_array().unwrap().len(), 3);
+        assert_eq!(save_json["paused"], true);
 
         let mut restored = 0_u64;
         assert_eq!(mc_game_runtime_create_v1(&raw mut restored), MC_STATUS_OK);
@@ -1180,7 +1190,7 @@ mod tests {
             MC_STATUS_OK
         );
         let restored_identity = identity(restored);
-        assert_eq!(restored_identity["mode"], "playing");
+        assert_eq!(restored_identity["mode"], "paused");
         assert_eq!(restored_identity["generation"], "2");
         assert_eq!(
             restored_identity["session"]["session_id"],
@@ -1196,14 +1206,28 @@ mod tests {
             mc_game_session_snapshot_json_v1(restored, buffer, capacity, length)
         });
         assert_eq!(restored_snapshot["value"], source_snapshot["value"]);
+        let neutral = br#"{}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(restored, 1, 3, neutral.as_ptr(), neutral.len() as u32,),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(identity(restored), restored_identity);
+        assert_eq!(mc_game_runtime_resume_v1(restored, 2), MC_STATUS_OK);
+        assert_eq!(identity(restored)["mode"], "playing");
+        assert_eq!(identity(restored)["session"]["generation"], "2");
+        assert_eq!(
+            mc_game_session_step_json_v1(restored, 2, 3, neutral.as_ptr(), neutral.len() as u32,),
+            MC_STATUS_OK
+        );
+        assert_eq!(identity(restored)["session"]["tick"], "4");
 
         assert_eq!(mc_game_runtime_destroy_v1(source), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(restored), MC_STATUS_OK);
 
-        // No-Claim: this proves one opaque real-L1 replay save crosses the
-        // native ABI into a fresh resolver-owned handle. It does not prove
-        // paused or cross-level saves, filesystem persistence, migration,
-        // managed/Unity transport, or production save UI.
+        // No-Claim: this proves one opaque quiescent-Paused real-L1 replay
+        // save crosses the native ABI, remains mutation-frozen, and resumes
+        // on a fresh resolver-owned handle. It does not prove paused-frame
+        // service, cross-level saves, migration, or production save UI.
     }
 
     #[test]

@@ -545,13 +545,13 @@ partial real implementation, not a completion claim:
   through that same handle. Its first bounded presentation consumer renders the
   live Level 1 Fireball described above. Terrain, other entities, HUD, audio
   and effects presentation have not yet migrated to this owner. The resolver
-  can now serialize one unpaused real Level 1 Playing session as its immutable
+  can now serialize one real Level 1 Playing or quiescent Paused session as its immutable
   semantic definition, ordered neutral command trace and exact state/terrain/
   effect receipts, then guard-first replay it into a fresh runtime/session and
   publish only after every receipt matches. A self-consistent envelope with a
   false state receipt is rejected while Title remains unchanged. Additive
   native and managed transports treat those bytes as opaque, bind save to the
-  exact Playing runtime/session generation and tick, and atomically load them
+  exact Playing/Paused runtime/session generation and tick, and atomically load them
   with a complete unordered package-resource set into one fresh resolver-owned
   handle. The production `NativeSession` and `MagicCarpetRuntime` owner now
   carry that same replay through disposal into one fresh same-authority owner
@@ -560,8 +560,8 @@ partial real implementation, not a completion claim:
   file before reading, and still treats the contents as opaque Rust data. This
   same loader is selected by the production `-mc-runtime-replay-load` startup
   option rather than a qualification-only path. This is one Level 1 replay
-  checkpoint, not paused or cross-level persistence, menu UI, migration or a
-  full campaign save;
+  checkpoint, not paused-frame service, cross-level persistence, menu UI,
+  migration or a full campaign save;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed

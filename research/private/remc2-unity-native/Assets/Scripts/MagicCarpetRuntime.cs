@@ -2544,6 +2544,10 @@ namespace MagicCarpet.Native
             {
                 return;
             }
+            if (session.GameRuntimeIdentity().mode == GameRuntimeTransport.PausedMode)
+            {
+                return;
+            }
             var flags = ReadLiveMovementFlags();
             appliedRoll = Cursor.lockState == CursorLockMode.Locked
                 ? ClampToSByte(steeringRoll)
@@ -8561,6 +8565,22 @@ namespace MagicCarpet.Native
             return session.GameRuntimeSaveReplay();
         }
 
+        internal GameRuntimeTransport.Identity QualificationPauseGameRuntimeProduction()
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "game runtime pause requires a validated production owner");
+            return session.GameRuntimePause();
+        }
+
+        internal GameRuntimeTransport.Identity QualificationResumeGameRuntimeProduction()
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "game runtime resume requires a validated production owner");
+            return session.GameRuntimeResume();
+        }
+
         internal void QualificationSaveGameRuntimeProductionReplayToPath(string savePath)
         {
             var fullPath = ValidateReplaySavePath(savePath);
@@ -12042,7 +12062,8 @@ namespace MagicCarpet.Native
                 var fireballAsset = opened.GameRuntimePresentationAsset(
                     GameRuntimeFireballAssetSlot);
                 Require(
-                    identity.mode == GameRuntimeTransport.PlayingMode &&
+                    (identity.mode == GameRuntimeTransport.PlayingMode ||
+                     identity.mode == GameRuntimeTransport.PausedMode) &&
                     identity.active_runtime_flow != null &&
                     identity.active_runtime_flow.bound_level_id ==
                         identity.active_runtime_flow.entry_level_id,
