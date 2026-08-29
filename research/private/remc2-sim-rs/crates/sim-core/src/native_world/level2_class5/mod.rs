@@ -176,6 +176,26 @@ impl Level2EconomyState {
         self.allocate_authored_class5_with_max_life(authored_index, model, position, None, terrain)
     }
 
+    /// Allocate a semantic Goat through the ordinary model-1 constructor.
+    pub fn allocate_authored_goat(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+        max_life: i32,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredClass5Source> {
+        if max_life <= 0 {
+            return None;
+        }
+        self.allocate_authored_class5_with_max_life(
+            authored_index,
+            crate::goat::GOAT_MODEL,
+            position,
+            Some(max_life),
+            terrain,
+        )
+    }
+
     /// Allocate a semantic Skeleton through the ordinary model-9 constructor
     /// while preserving the package's source-width and lifecycle fields.
     pub fn allocate_authored_skeleton(
@@ -228,7 +248,7 @@ impl Level2EconomyState {
                 crate::goat::GOAT_CONSTRUCTOR_MINIMUM_SPEED,
                 crate::goat::GOAT_CONSTRUCTOR_MAXIMUM_SPEED,
                 crate::goat::GOAT_CONSTRUCTOR_MAXIMUM_SPEED,
-                crate::goat::GOAT_CONSTRUCTOR_LIFE,
+                max_life_override.unwrap_or(crate::goat::GOAT_CONSTRUCTOR_LIFE),
                 crate::goat::GOAT_CONSTRUCTOR_MANA,
                 0,
                 0,

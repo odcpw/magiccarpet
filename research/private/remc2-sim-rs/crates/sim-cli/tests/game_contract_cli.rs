@@ -100,7 +100,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "18.0");
+    assert_eq!(capabilities["contract_version"], "19.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v6"
@@ -157,6 +157,10 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             },
             "firefly": {
                 "id": "engine.creature.firefly.max_life",
+                "exact_version": 1
+            },
+            "goat": {
+                "id": "engine.creature.goat.max_life",
                 "exact_version": 1
             },
             "skeleton": {
@@ -234,7 +238,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        14
+        15
     );
     let archer_health_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
@@ -268,6 +272,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         .expect("Firefly maximum-life capability is discoverable");
     assert_eq!(firefly_health_capability["version"], 1);
     assert_eq!(firefly_health_capability["provider"], "engine_compiled");
+    let goat_health_capability = capabilities["data"]["compiled_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["id"] == "engine.creature.goat.max_life")
+        .expect("Goat maximum-life capability is discoverable");
+    assert_eq!(goat_health_capability["version"], 1);
+    assert_eq!(goat_health_capability["provider"], "engine_compiled");
     let skeleton_health_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
         .unwrap()
@@ -403,7 +415,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "18.0");
+    assert_eq!(entities["contract_version"], "19.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -418,11 +430,12 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
         "session_reset"
     );
     let public_entity = entities["data"]["entities"][0].as_object().unwrap();
-    assert_eq!(public_entity.len(), 4);
+    assert_eq!(public_entity.len(), 5);
     assert!(public_entity.contains_key("id"));
     assert!(public_entity.contains_key("kind"));
     assert!(public_entity.contains_key("position"));
     assert!(public_entity.contains_key("position_access"));
+    assert_eq!(public_entity["creature_health"], serde_json::Value::Null);
     assert!(!public_entity.contains_key("activation_group"));
     assert!(!public_entity.contains_key("source_slot"));
     let get = run(&[
@@ -436,6 +449,46 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(get.status.success(), "{:?}", get.stderr);
     let get: Value = serde_json::from_slice(&get.stdout).unwrap();
     assert_eq!(get["data"]["entity"], entities["data"]["entities"][0]);
+
+    let goat = run(&[
+        "game",
+        "entities",
+        "--campaign-package",
+        campaign,
+        "--id",
+        "creature.goat.at_110_38",
+    ]);
+    assert!(goat.status.success(), "{:?}", goat.stderr);
+    assert!(goat.stderr.is_empty());
+    let goat: Value = serde_json::from_slice(&goat.stdout).unwrap();
+    assert_eq!(
+        goat["data"]["entities"][0]["position_access"],
+        "session_reset"
+    );
+    assert_eq!(
+        goat["data"]["entities"][0]["creature_health"],
+        serde_json::json!({
+            "default_max_life": 600,
+            "max_life": 600,
+            "max_life_access": "session_reset"
+        })
+    );
+    let goat_life = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        campaign,
+        "--id",
+        "creature.goat.at_110_38.max_life",
+    ]);
+    assert!(goat_life.status.success(), "{:?}", goat_life.stderr);
+    assert!(goat_life.stderr.is_empty());
+    let goat_life: Value = serde_json::from_slice(&goat_life.stdout).unwrap();
+    assert_eq!(goat_life["data"]["descriptors"][0]["access"], "writable");
+    assert_eq!(
+        goat_life["data"]["descriptors"][0]["dependencies"][1],
+        "engine.creature.goat.max_life@1"
+    );
 
     let describe_position = run(&[
         "game",
@@ -690,7 +743,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "18.0");
+    assert_eq!(described["contract_version"], "19.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v7"
@@ -980,7 +1033,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "18.0");
+    assert_eq!(described["contract_version"], "19.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
     assert_eq!(descriptor["value_type"], "integer");
@@ -1454,7 +1507,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "18.0");
+    assert_eq!(described["contract_version"], "19.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v7"
@@ -1781,7 +1834,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "18.0");
+    assert_eq!(described["contract_version"], "19.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v7"
@@ -2063,7 +2116,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "18.0");
+    assert_eq!(described["contract_version"], "19.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v7"
@@ -2594,7 +2647,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "18.0");
+        assert_eq!(described["contract_version"], "19.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -2779,7 +2832,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "18.0");
+    assert_eq!(described["contract_version"], "19.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");

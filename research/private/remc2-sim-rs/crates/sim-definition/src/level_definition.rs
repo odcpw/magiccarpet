@@ -56,6 +56,13 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
     )
 }
 
+/// Whether a package-present creature placement can be rebound to the shared
+/// runtime carrier without claiming that family as an objective-absence target.
+#[must_use]
+pub const fn supports_authorable_creature_placement(kind: CreatureKind) -> bool {
+    supports_complete_creature_lifecycle(kind) || matches!(kind, CreatureKind::Goat)
+}
+
 /// Largest authored maximum-life value supported by the family's ordinary
 /// constructor and damage carrier.
 #[must_use]
@@ -65,6 +72,7 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
         CreatureKind::Archer
         | CreatureKind::Dragon
         | CreatureKind::Firefly
+        | CreatureKind::Goat
         | CreatureKind::Skeleton => Some(2_147_483_647),
         _ => None,
     }

@@ -17,7 +17,7 @@ use crate::{
         BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
         LevelObjectiveId, MechanicKind, ObjectiveCondition, RivalWizardId, SceneryKind, SpellKind,
-        SwitchKind, TilePosition, supports_complete_creature_lifecycle,
+        SwitchKind, TilePosition, supports_authorable_creature_placement,
     },
     level1_mission::parse_authored_features,
 };
@@ -252,6 +252,7 @@ impl Mc2LevelDefinition {
                 if matches!(
                     kind,
                     CreatureKind::Firefly
+                        | CreatureKind::Goat
                         | CreatureKind::Archer
                         | CreatureKind::Bee
                         | CreatureKind::Dragon
@@ -261,6 +262,7 @@ impl Mc2LevelDefinition {
                         CreatureKind::Firefly => {
                             crate::native_world::level2_class5::firefly::FIREFLY_LIFE
                         }
+                        CreatureKind::Goat => crate::goat::GOAT_CONSTRUCTOR_LIFE,
                         CreatureKind::Archer => crate::native_world::level2_class5::ARCHER_MAX_LIFE,
                         CreatureKind::Bee => {
                             i32::from(crate::native_world::level2_class5::BEE_MAX_LIFE)
@@ -852,12 +854,13 @@ fn bind_private_entity(
     if access == LevelEntityPositionAccess::SessionReset {
         let hint = match kind {
             LevelEntityKind::Creature(kind)
-                if feature.activation_group > 0 && supports_complete_creature_lifecycle(kind) =>
+                if feature.activation_group > 0 && supports_authorable_creature_placement(kind) =>
             {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
             LevelEntityKind::Creature(kind)
-                if feature.activation_group == 0 && supports_complete_creature_lifecycle(kind) =>
+                if feature.activation_group == 0
+                    && supports_authorable_creature_placement(kind) =>
             {
                 Mc2MovableRuntimeHint::ResetKindAndPosition
             }

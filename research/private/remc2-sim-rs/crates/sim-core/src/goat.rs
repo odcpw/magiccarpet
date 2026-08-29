@@ -522,7 +522,13 @@ impl GoatFamily {
         entity_rng: u16,
         phase: u8,
         position: Position,
+        max_life: i32,
     ) -> Result<(), String> {
+        if max_life <= 0 {
+            return Err(format!(
+                "Goat source slot {entity_index} has invalid maximum life {max_life}"
+            ));
+        }
         if self
             .goats
             .iter()
@@ -538,8 +544,8 @@ impl GoatFamily {
             source_id: entity_index,
             active: true,
             control_flags: 8,
-            max_life: GOAT_CONSTRUCTOR_LIFE,
-            life: GOAT_CONSTRUCTOR_LIFE,
+            max_life,
+            life: max_life,
             pending_damage: 0,
             pending_attacker: 0,
             kill_credit_entity: 0,
@@ -581,6 +587,66 @@ impl GoatFamily {
         child_links.insert(insert_at, None);
         self.goats = goats.into_boxed_slice();
         self.child_links = child_links.into_boxed_slice();
+        Ok(())
+    }
+
+    /// Bind one reset-live semantic Goat before the first scheduler visit.
+    ///
+    /// The imported arena and this typed family are parallel projections of
+    /// the same source row. Validate the package baseline in the typed owner,
+    /// then update both the live Goat and its source-order relation snapshot so
+    /// movement and action-11 child reads cannot observe split authority.
+    pub(crate) fn bind_frame_zero_semantic_variant(
+        &mut self,
+        entity_index: u16,
+        package_position: Position,
+        authored_position: Position,
+        package_max_life: i32,
+        authored_max_life: i32,
+    ) -> Result<(), String> {
+        if authored_max_life <= 0 {
+            return Err(format!(
+                "Goat source slot {entity_index} has invalid authored maximum life {authored_max_life}"
+            ));
+        }
+        let goat_index = self
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == entity_index)
+            .ok_or_else(|| format!("Goat source slot {entity_index} is absent"))?;
+        let goat = &self.goats[goat_index];
+        if goat.position != package_position
+            || goat.max_life != package_max_life
+            || goat.life != package_max_life
+        {
+            return Err(format!(
+                "Goat source slot {entity_index} diverges from its semantic package baseline"
+            ));
+        }
+        let source_index = self
+            .source_entities
+            .iter()
+            .position(|source| source.entity_index == entity_index)
+            .ok_or_else(|| format!("Goat source relation {entity_index} is absent"))?;
+        let source = &self.source_entities[source_index];
+        if source.position != package_position || source.life != package_max_life {
+            return Err(format!(
+                "Goat source relation {entity_index} diverges from its semantic package baseline"
+            ));
+        }
+
+        let (goats, source_entities) = (&mut self.goats, &mut self.source_entities);
+        let goat = goats
+            .get_mut(goat_index)
+            .ok_or_else(|| format!("validated Goat source slot {entity_index} disappeared"))?;
+        let source = source_entities
+            .get_mut(source_index)
+            .ok_or_else(|| format!("validated Goat source relation {entity_index} disappeared"))?;
+        goat.position = authored_position;
+        goat.max_life = authored_max_life;
+        goat.life = authored_max_life;
+        source.position = authored_position;
+        source.life = authored_max_life;
         Ok(())
     }
 

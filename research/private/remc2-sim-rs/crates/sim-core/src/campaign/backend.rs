@@ -1275,8 +1275,9 @@ mod tests {
     use crate::game_definition::{
         ARCHER_MAX_LIFE_CAPABILITY_ID, Access, ArtifactId, BEE_MAX_LIFE_CAPABILITY_ID,
         ChangeSetBuilder, DRAGON_MAX_LIFE_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
-        GamePackage, IntegerParameter, OptionParameter, PresentationAssetSlot, PublicationFault,
-        RequestedTiming, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticValue, WorkspaceStore,
+        GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage, IntegerParameter, OptionParameter,
+        PresentationAssetSlot, PublicationFault, RequestedTiming, SKELETON_MAX_LIFE_CAPABILITY_ID,
+        SemanticValue, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::goat::{GoatBehaviorConfig, GoatStepEvent};
@@ -1284,7 +1285,7 @@ mod tests {
         ActivationGroupId, BuildingKind, CreatureKind, ItemKind, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
         MechanicKind, ObjectiveCondition, SceneryKind, SpellKind, SwitchKind, TilePosition,
-        supports_complete_creature_lifecycle,
+        supports_authorable_creature_placement,
     };
     use crate::native_world::FireballProjectileOrigin;
     use sim_definition::adapter::{
@@ -1723,7 +1724,7 @@ mod tests {
                 && expected_reset_live_creatures
                     .iter()
                     .any(|(expected, _)| *expected == kind);
-            let expected_access = if supports_complete_creature_lifecycle(kind)
+            let expected_access = if supports_authorable_creature_placement(kind)
                 && (entity.activation_group().is_some() || reset_live)
             {
                 LevelEntityPositionAccess::SessionReset
@@ -1735,6 +1736,31 @@ mod tests {
                 expected_access,
                 "creature placement access diverged for {}",
                 entity.id().as_str()
+            );
+            if kind == CreatureKind::Goat {
+                let health = entity
+                    .creature_health()
+                    .expect("every package-present Goat has a health binding");
+                assert_eq!(health.default_max_life(), 600);
+                assert_eq!(health.max_life(), 600);
+                assert_eq!(
+                    health.max_life_access(),
+                    LevelEntityParameterAccess::SessionReset
+                );
+            }
+        }
+        if expected_creatures
+            .iter()
+            .any(|(kind, _)| *kind == CreatureKind::Goat)
+        {
+            assert!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == GOAT_MAX_LIFE_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    })
             );
         }
         assert_eq!(
@@ -1868,7 +1894,7 @@ mod tests {
                 (CreatureKind::Villager, 28),
                 (CreatureKind::Firefly, 6),
             ],
-            &[],
+            &[(CreatureKind::Goat, 33)],
             &[
                 (SpellKind::Castle, TilePosition { x: 194, y: 213 }, Some(1)),
                 (SpellKind::Speed, TilePosition { x: 202, y: 212 }, Some(11)),
@@ -1948,15 +1974,24 @@ mod tests {
                 ),
             ]
         );
+        let level_one_movable = definition
+            .level_definition()
+            .unwrap()
+            .entities()
+            .iter()
+            .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
+            .collect::<Vec<_>>();
         assert_eq!(
-            definition
-                .level_definition()
-                .unwrap()
-                .entities()
+            level_one_movable
                 .iter()
-                .filter(|entity| {
-                    entity.position_access() == LevelEntityPositionAccess::SessionReset
-                })
+                .filter(|entity| entity.kind() == LevelEntityKind::Creature(CreatureKind::Goat))
+                .count(),
+            33
+        );
+        assert_eq!(
+            level_one_movable
+                .iter()
+                .filter(|entity| entity.kind() != LevelEntityKind::Creature(CreatureKind::Goat))
                 .map(|entity| entity.id().as_str())
                 .collect::<Vec<_>>(),
             vec![
@@ -2037,7 +2072,7 @@ mod tests {
                 (CreatureKind::Villager, 29),
                 (CreatureKind::Trader, 27),
             ],
-            &[],
+            &[(CreatureKind::Goat, 36)],
             &[
                 (SpellKind::Shield, TilePosition { x: 138, y: 219 }, Some(22)),
                 (
@@ -2092,8 +2127,9 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 86);
+        assert_eq!(level_two_movable.len(), 122);
         for (kind, expected) in [
+            (CreatureKind::Goat, 36),
             (CreatureKind::Archer, 4),
             (CreatureKind::Bee, 12),
             (CreatureKind::Skeleton, 6),
@@ -2238,8 +2274,9 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 108);
+        assert_eq!(level_three_movable.len(), 119);
         for (kind, expected) in [
+            (CreatureKind::Goat, 11),
             (CreatureKind::Archer, 18),
             (CreatureKind::Bee, 6),
             (CreatureKind::Dragon, 5),
@@ -3167,6 +3204,436 @@ mod tests {
         // engagement decision through publication, reopen, and reset. It
         // does not author Goat placement/population, damage/death, movement
         // parameters, other creature families, or prove an organic campaign.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_reset_goat_max_life_before_ordinary_damage_after_reopen_and_reset()
+     {
+        const PACKAGE_MAX_LIFE: u32 = 600;
+        const AUTHORED_MAX_LIFE: u32 = 1_200;
+        const DAMAGE: i32 = 700;
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let goat = sim_definition::adapter::stable_entity_id("creature.goat.at_110_38").unwrap();
+        let target = base.level_definition().unwrap().entity(&goat).unwrap();
+        assert_eq!(
+            target.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+        assert!(base.required_capabilities().iter().any(|requirement| {
+            requirement.id.as_str() == GOAT_MAX_LIFE_CAPABILITY_ID && requirement.exact_version == 1
+        }));
+
+        let workspace_root = temporary_workspace_path("campaign-goat-max-life");
+        let store = WorkspaceStore::create(&workspace_root, "campaign-goat-max-life", base.clone())
+            .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            96,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let goat_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .goats()
+            .iter()
+            .find(|candidate| candidate.position.x >> 8 == 110 && candidate.position.y >> 8 == 38)
+            .map(|candidate| candidate.entity_index)
+            .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-goat-max-life",
+            &base,
+            "raise-one-level-one-goat-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(goat.clone(), PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let inspect = |session: &GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let typed = compatibility
+                .goats()
+                .iter()
+                .find(|candidate| candidate.entity_index == goat_slot)
+                .unwrap();
+            let raw = &compatibility.entities()[usize::from(goat_slot)];
+            (
+                typed.max_life,
+                typed.life,
+                typed.action,
+                raw.max_life,
+                raw.life,
+            )
+        };
+        let damage = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let attacker = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .submit_goat_damage(goat_slot, DAMAGE, attacker)
+                .unwrap();
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        };
+
+        assert_eq!(
+            inspect(&session),
+            (600, 600, 15, 600, 600),
+            "publication must not mutate the already-open Goat authority"
+        );
+        damage(&mut session);
+        let package_after_damage = inspect(&session);
+        assert_eq!(package_after_damage.1, -100);
+        assert_eq!(package_after_damage.2, 12);
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published.clone()))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        assert_eq!(inspect(&session), (1_200, 1_200, 15, 1_200, 1_200));
+        let authored_frame_zero = session.snapshot().value;
+        damage(&mut session);
+        let authored_after_damage = inspect(&session);
+        assert_eq!(authored_after_damage.1, 500);
+        assert_ne!(authored_after_damage.2, 12);
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.snapshot().value, authored_frame_zero);
+        assert_eq!(inspect(&session), (1_200, 1_200, 15, 1_200, 1_200));
+        damage(&mut session);
+        assert_eq!(inspect(&session).1, 500);
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 1 Goat's guarded
+        // maximum-life publication, old-session isolation, explicit
+        // reopen/reset materialization, and ordinary mailbox damage branch.
+        // It does not author other Goat parameters, prove an organic attacker,
+        // or cover Goat death outputs, objectives, save/replay, or Unity UI.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_reset_goat_before_ordinary_visit_after_reopen_and_reset() {
+        let package_tile = TilePosition { x: 110, y: 38 };
+        let authored_tile = TilePosition { x: 111, y: 38 };
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let goat = sim_definition::adapter::stable_entity_id("creature.goat.at_110_38").unwrap();
+        let target = base.level_definition().unwrap().entity(&goat).unwrap();
+        assert_eq!(target.position(), package_tile);
+        assert_eq!(
+            target.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-reset-goat-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-reset-goat-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            97,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let goat_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .goats()
+            .iter()
+            .find(|candidate| {
+                candidate.position.x >> 8 == package_tile.x
+                    && candidate.position.y >> 8 == package_tile.y
+            })
+            .map(|candidate| candidate.entity_index)
+            .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-reset-goat-placement",
+            &base,
+            "move-one-level-one-reset-goat",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(goat, package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let positions = |session: &GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let typed = compatibility
+                .goats()
+                .iter()
+                .find(|candidate| candidate.entity_index == goat_slot)
+                .unwrap();
+            let raw = &compatibility.entities()[usize::from(goat_slot)];
+            (typed.position, raw.position, typed.phase)
+        };
+        let package = positions(&session);
+        assert_eq!((package.0.x >> 8, package.0.y >> 8), (110, 38));
+        assert_eq!(package.0, package.1);
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        let authored = positions(&session);
+        assert_eq!((authored.0.x >> 8, authored.0.y >> 8), (111, 38));
+        assert_eq!(authored.0, authored.1);
+        let authored_frame_zero = session.snapshot().value;
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let visited = positions(&session);
+        assert_ne!(visited.0, authored.0);
+        assert_eq!(visited.2, authored.2.wrapping_add(1));
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Goat { source_slot, .. } if *source_slot == goat_slot
+                ))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.snapshot().value, authored_frame_zero);
+        let reset = positions(&session);
+        assert_eq!(reset.0, authored.0);
+        assert_eq!(reset.0, reset.1);
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 1 Goat placement crosses
+        // guarded publication, explicit reopen, the ordinary typed Goat visit,
+        // and reset. It does not prove the other 79 Goat
+        // placements, authored-group Goat construction, combat, save/replay,
+        // or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_authored_goat_variant_at_level_three_group_five_after_reopen_and_reset()
+     {
+        const GOAT_RECORD: u16 = 166;
+        const PACKAGE_MAX_LIFE: u32 = 600;
+        const AUTHORED_MAX_LIFE: u32 = 1_200;
+        const GROUP_FIVE_ROWS: &[u16] = &[
+            166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182,
+            183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194,
+        ];
+        let package_tile = TilePosition { x: 64, y: 69 };
+        let authored_tile = TilePosition { x: 65, y: 69 };
+
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let goat = sim_definition::adapter::stable_entity_id("creature.goat.at_64_69").unwrap();
+        let target = base.level_definition().unwrap().entity(&goat).unwrap();
+        assert_eq!(target.position(), package_tile);
+        assert_eq!(
+            target.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+        assert_eq!(
+            target.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-authored-goat-variant");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-authored-goat-variant",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            98,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-authored-goat-variant",
+            &base,
+            "move-and-strengthen-one-level-three-authored-goat",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(goat.clone(), package_tile, authored_tile)
+        .set_entity_max_life_from(goat, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(5)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 5,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == GROUP_FIVE_ROWS
+            )));
+            let source = compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == GOAT_RECORD)
+                .copied()
+                .unwrap();
+            let typed = compatibility
+                .goats()
+                .iter()
+                .find(|candidate| candidate.entity_index == source.source_entity_index)
+                .cloned()
+                .unwrap();
+            (source, typed)
+        };
+
+        let (package_source, package_goat) = construct(&mut session);
+        assert_eq!(
+            (
+                package_source.position.x >> 8,
+                package_source.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y)
+        );
+        assert_eq!((package_source.max_life, package_source.life), (600, 600));
+        assert_eq!((package_goat.max_life, package_goat.life), (600, 600));
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let authored_frame_zero = session.snapshot().value;
+        let (authored_source, authored_goat) = construct(&mut session);
+        assert_eq!(
+            (
+                authored_source.position.x >> 8,
+                authored_source.position.y >> 8
+            ),
+            (authored_tile.x, authored_tile.y)
+        );
+        assert_eq!(authored_source.position, authored_goat.position);
+        assert_eq!(
+            (authored_source.max_life, authored_source.life),
+            (1_200, 1_200)
+        );
+        assert_eq!((authored_goat.max_life, authored_goat.life), (1_200, 1_200));
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .map_chains()
+                .is_linked(authored_source.source_entity_index)
+        );
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let visited = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .goats()
+            .iter()
+            .find(|candidate| candidate.entity_index == authored_source.source_entity_index)
+            .unwrap();
+        assert_eq!(visited.max_life, 1_200);
+        assert_eq!(
+            visited.phase,
+            authored_goat.phase.wrapping_add(1),
+            "ordinary Goat dispatch must consume the authored carrier"
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.snapshot().value, authored_frame_zero);
+        let (reset_source, reset_goat) = construct(&mut session);
+        assert_eq!(reset_source.position, authored_source.position);
+        assert_eq!(reset_goat.max_life, 1_200);
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the already-qualified Level 3 group-5
+        // boundary and proves one authored Goat's position and maximum life
+        // reach its ordinary constructor, typed visit, map link, and reset.
+        // It does not prove the other group-5 creatures, organic prior
+        // progression, Goat combat/death, save/replay, or Unity presentation.
     }
 
     #[test]

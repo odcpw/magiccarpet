@@ -1529,7 +1529,7 @@ fn validate_against(
                     diagnostics.push(Diagnostic {
                         code: "INVALID_REQUEST".to_owned(),
                         path_or_id: id.as_str().to_owned(),
-                        message: "Firefly already has the requested maximum life".to_owned(),
+                        message: "creature already has the requested maximum life".to_owned(),
                     });
                     continue;
                 }

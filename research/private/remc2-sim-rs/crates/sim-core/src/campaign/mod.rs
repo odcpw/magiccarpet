@@ -264,6 +264,46 @@ impl CampaignSession {
                             [usize::from(*initial_source_slot)];
                         source.bind_frame_zero_max_life(authored_max_life);
                     }
+                    if *kind
+                        == crate::level_definition::LevelEntityKind::Creature(
+                            crate::level_definition::CreatureKind::Goat,
+                        )
+                    {
+                        let package_max_life = original
+                            .creature_health()
+                            .map(|health| health.max_life().cast_signed())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic Goat {} package carrier has no health binding",
+                                    entity.id().as_str()
+                                ))
+                            })?;
+                        let authored_max_life = entity
+                            .creature_health()
+                            .map(|health| health.max_life().cast_signed())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic Goat {} authored carrier has no health binding",
+                                    entity.id().as_str()
+                                ))
+                            })?;
+                        let authored_position = self.level2.session.state.live.economy.entities
+                            [usize::from(*initial_source_slot)]
+                        .position;
+                        self.level2
+                            .session
+                            .state
+                            .live
+                            .goats
+                            .bind_frame_zero_semantic_variant(
+                                *initial_source_slot,
+                                source.position,
+                                authored_position,
+                                package_max_life,
+                                authored_max_life,
+                            )
+                            .map_err(NativeWorldError::new)?;
+                    }
                 }
                 spec::Mc2EntityRuntimeBinding::AuthoredFeature {
                     authored_record,

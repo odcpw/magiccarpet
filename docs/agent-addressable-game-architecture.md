@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 18.0 milestone, this is a binding target with
+As of the semantic-contract 19.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -339,8 +339,20 @@ partial real implementation, not a completion claim:
   the selection to the shared ordinary Goat-family configuration, including
   Level 3 Goats which are package-present but not reset-live. The focused
   causal proof covers the Level 1 engagement decision; Goat population,
-  placement, movement parameters, damage/death and other creature families
-  remain outside this slice;
+  movement parameters other than placement, and other creature families
+  remain outside this policy slice;
+- all eighty package-present Goats in the qualified Level 1-3 definitions now
+  carry writable session-reset placement and per-instance `max_life`
+  descriptors backed by the exact compiled Goat lifecycle capability. The
+  reset-live binding synchronizes the private imported carrier with the typed
+  Goat family before ordinary visits, while grouped Level 3 Goats receive the
+  authored placement and life value in their real package constructor. Focused
+  causal proofs move and raise the life of one real Level 1 Goat before its
+  ordinary visit/mailbox-damage branch and bind one real Level 3 group-5 Goat
+  before construction, with old-session isolation and reset reproduction.
+  This does not author Goat population, policy parameters beyond the separately
+  bound policy slot, organic combat/death outputs, objective retargeting,
+  save/replay, or Unity UI;
 - each of the six package-present Level 1 Fireflies now carries a stable,
   per-instance `max_life` descriptor. Guarded `SetEntityMaxLife` publication
   leaves already-open sessions unchanged; explicit reopen/reset binds the
@@ -429,8 +441,8 @@ partial real implementation, not a completion claim:
   ordinary movement and map-chain visit after reopen/reset. The eleven
   reset-live Level 3 Skeletons now relocate their exact imported carriers;
   one focused causal proof reaches the ordinary model-9 movement and map-chain
-  consumer after reopen/reset. Goat, Worm, Villager and Trader placements
-  remain read-only until their distinct placement authority is closed. All
+  consumer after reopen/reset. Worm, Villager and Trader placements remain
+  read-only until their distinct placement authority is closed. All
   thirty-nine package-present Experience Scroll placements across Levels 1-3
   bind to their immutable authored-feature rows before construction; the
   ordinary class-14 pickup callback consumes the authored location through XP

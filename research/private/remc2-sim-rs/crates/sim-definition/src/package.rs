@@ -42,6 +42,10 @@ pub const DRAGON_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.dragon.max_life
 /// Skeleton constructor/import carrier's maximum-life parameter.
 pub const SKELETON_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.skeleton.max_life";
 
+/// Exact compiled capability required by packages which expose the ordinary
+/// Goat constructor/import carrier's maximum-life parameter.
+pub const GOAT_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.goat.max_life";
+
 /// Exact compiled maximum-life capability for a creature family whose
 /// package constructor and damage/death lifecycle consume the parameter.
 #[must_use]
@@ -51,6 +55,7 @@ pub const fn creature_max_life_capability_id(kind: CreatureKind) -> Option<&'sta
         CreatureKind::Bee => Some(BEE_MAX_LIFE_CAPABILITY_ID),
         CreatureKind::Dragon => Some(DRAGON_MAX_LIFE_CAPABILITY_ID),
         CreatureKind::Firefly => Some(FIREFLY_MAX_LIFE_CAPABILITY_ID),
+        CreatureKind::Goat => Some(GOAT_MAX_LIFE_CAPABILITY_ID),
         CreatureKind::Skeleton => Some(SKELETON_MAX_LIFE_CAPABILITY_ID),
         _ => None,
     }
@@ -176,6 +181,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 FIREFLY_MAX_LIFE_CAPABILITY_ID,
                 "Package-bound Firefly construction and complete damage/death lifecycle.",
+            ),
+            (
+                GOAT_MAX_LIFE_CAPABILITY_ID,
+                "Package-bound Goat construction/import and complete damage/death lifecycle.",
             ),
             (
                 "engine.flight.fixed_point",

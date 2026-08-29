@@ -10,8 +10,8 @@ use crate::{
     ARCHER_MAX_LIFE_CAPABILITY_ID, Access, BEE_MAX_LIFE_CAPABILITY_ID,
     CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError,
     DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
-    GameDefinition, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId, SemanticValue,
-    creature_max_life_capability_id,
+    GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
+    SemanticValue, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -268,6 +268,10 @@ impl DefinitionOperation {
                         },
                         "firefly": {
                             "id": FIREFLY_MAX_LIFE_CAPABILITY_ID,
+                            "exact_version": 1,
+                        },
+                        "goat": {
+                            "id": GOAT_MAX_LIFE_CAPABILITY_ID,
                             "exact_version": 1,
                         },
                         "skeleton": {
@@ -744,9 +748,13 @@ fn is_source_selector_segment(segment: &str) -> bool {
 mod tests {
     use super::*;
     use crate::adapter::{
-        build_level_definition, entity_definition, stable_entity_id, with_level_definition,
+        build_level_definition, creature_entity_definition, entity_definition, stable_entity_id,
+        with_level_definition,
     };
-    use crate::level_definition::{LevelEntityKind, SceneryKind, TilePosition};
+    use crate::level_definition::{
+        CreatureKind, LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
+        SceneryKind, TilePosition,
+    };
     use crate::{GamePackage, default_catalog, engine_capabilities};
     use std::path::PathBuf;
 
@@ -848,6 +856,52 @@ mod tests {
             parameter: OptionParameter::EnemyDefaultPolicy,
             option: "vigilant_goat_v1".to_owned(),
             expected_option: Some("classic_goat_v1".to_owned()),
+        };
+        let error = operation.resolve(&definition).unwrap_err();
+        assert_eq!(error.code, DefinitionErrorCode::DependencyFailed);
+    }
+
+    #[test]
+    fn goat_max_life_requires_the_exact_package_capability_not_only_a_writable_shape() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/custom-synthetic-v1");
+        let catalog = default_catalog().unwrap();
+        let definition = GameDefinition::from_package(
+            GamePackage::load(root).unwrap(),
+            &engine_capabilities().unwrap(),
+            &catalog,
+        )
+        .unwrap();
+        let goat = stable_entity_id("creature.goat.synthetic").unwrap();
+        let definition = with_level_definition(
+            definition,
+            build_level_definition(
+                vec![creature_entity_definition(
+                    goat.clone(),
+                    CreatureKind::Goat,
+                    TilePosition { x: 1, y: 1 },
+                    None,
+                    LevelEntityPositionAccess::SessionReset,
+                    600,
+                    LevelEntityParameterAccess::SessionReset,
+                )],
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let target = SemanticId::parse("creature.goat.synthetic.max_life").unwrap();
+        assert_eq!(
+            definition
+                .level_creature_max_life_descriptor(&target)
+                .unwrap()
+                .access,
+            Access::ReadOnly
+        );
+        let operation = DefinitionOperation::SetEntityMaxLife {
+            entity: goat,
+            max_life: 1_200,
+            expected_max_life: Some(600),
         };
         let error = operation.resolve(&definition).unwrap_err();
         assert_eq!(error.code, DefinitionErrorCode::DependencyFailed);

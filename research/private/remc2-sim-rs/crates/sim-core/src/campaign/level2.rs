@@ -8309,10 +8309,9 @@ impl Level2ResetSession {
                 )
             })?;
         }
-        for feature in rows
-            .iter()
-            .filter(|feature| feature.kind == 5 && matches!(feature.subtype, 0 | 2 | 4 | 9 | 19))
-        {
+        for feature in rows.iter().filter(|feature| {
+            feature.kind == 5 && matches!(feature.subtype, 0 | 1 | 2 | 4 | 9 | 19)
+        }) {
             if feature.subtype == 19 && self.authored_firefly_stage_route(*feature).is_none() {
                 return Err(format!(
                     "authored Firefly row {} has no valid StageVar-1 route",
@@ -8416,16 +8415,27 @@ impl Level2ResetSession {
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
                     );
+                    let max_life = self
+                        .session
+                        .definition
+                        .authored_creature_max_life(feature.index)
+                        .map(u32::cast_signed)
+                        .ok_or_else(|| {
+                            format!(
+                                "authored Goat row {} lost its preflight maximum-life binding",
+                                feature.index
+                            )
+                        })?;
                     let source = self
                         .session
                         .state
                         .live
                         .economy
                         .economy
-                        .allocate_authored_class5(
+                        .allocate_authored_goat(
                             feature.index,
-                            crate::goat::GOAT_MODEL,
                             position,
+                            max_life,
                             &self.session.state.live.terrain,
                         );
                     if let Some(source) = source {
@@ -8434,6 +8444,7 @@ impl Level2ResetSession {
                             source.entity_rng,
                             source.source_byte_3e,
                             source.position,
+                            max_life,
                         )?;
                         self.session
                             .state
