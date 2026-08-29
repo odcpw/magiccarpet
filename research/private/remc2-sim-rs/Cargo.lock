@@ -214,6 +214,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-combat-tmap"
+version = "0.1.0"
+dependencies = [
+ "sim-ss2-tmap",
+]
+
+[[package]]
 name = "sim-core"
 version = "0.1.0"
 dependencies = [
@@ -223,6 +230,7 @@ dependencies = [
  "sim-archer-tmap",
  "sim-classic-hd",
  "sim-collision",
+ "sim-combat-tmap",
  "sim-definition",
  "sim-goat-map-chain",
  "sim-goat-tmap",

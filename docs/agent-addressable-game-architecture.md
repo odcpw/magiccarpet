@@ -654,7 +654,10 @@ partial real implementation, not a completion claim:
   bank, immutable attack poses and latch clocks are now owned by the internal
   `sim-archer-tmap` crate, while owner-cache qualification, terrain draw
   admission and native session scheduling remain with their existing owners.
-  These are nine bounded physical
+  The qualified combat texture-map bank and its Fireball and Possession clocks
+  are now owned by the internal `sim-combat-tmap` crate, while owner-cache
+  qualification, terrain draw admission and native session scheduling remain
+  with their existing owners. These are ten bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain

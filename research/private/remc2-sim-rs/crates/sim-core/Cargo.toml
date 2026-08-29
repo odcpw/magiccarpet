@@ -17,6 +17,7 @@ sha2 = "=0.10.9"
 sim-archer-tmap = { path = "../sim-archer-tmap" }
 sim-classic-hd = { path = "../sim-classic-hd" }
 sim-collision = { path = "../sim-collision" }
+sim-combat-tmap = { path = "../sim-combat-tmap" }
 sim-definition = { path = "../sim-definition" }
 sim-goat-map-chain = { path = "../sim-goat-map-chain" }
 sim-goat-tmap = { path = "../sim-goat-tmap" }
