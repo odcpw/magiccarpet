@@ -1017,6 +1017,9 @@ namespace MagicCarpet.Native
         internal Vector2Int GameRuntimeProductionVitalsBarWidths =>
             ComputeGameRuntimeVitalsBarWidths();
 
+        internal int GameRuntimeProductionObjectiveBarWidth =>
+            ComputeGameRuntimeObjectiveBarWidth();
+
         internal string GameRuntimeProductionSemanticEventCursor =>
             gameRuntimeSemanticEventCursor;
 
@@ -11957,16 +11960,23 @@ namespace MagicCarpet.Native
             const float barX = 76f;
             const float barWidth = 240f;
             const float barHeight = 12f;
+            var objectiveWidth = ComputeGameRuntimeObjectiveBarWidth();
             var previousColor = GUI.color;
             GUI.Label(new Rect(24, 128, 48, 18), "LIFE", hudStyle);
             GUI.Label(new Rect(24, 148, 48, 18), "MANA", hudStyle);
+            GUI.Label(new Rect(24, 168, 48, 18), "GOAL", hudStyle);
             GUI.color = new Color(0f, 0f, 0f, 0.7f);
             GUI.DrawTexture(new Rect(barX, 131, barWidth, barHeight), Texture2D.whiteTexture);
             GUI.DrawTexture(new Rect(barX, 151, barWidth, barHeight), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(barX, 171, barWidth, barHeight), Texture2D.whiteTexture);
             GUI.color = new Color(0.86f, 0.18f, 0.14f, 1f);
             GUI.DrawTexture(new Rect(barX, 131, widths.x, barHeight), Texture2D.whiteTexture);
             GUI.color = new Color(0.16f, 0.42f, 0.92f, 1f);
             GUI.DrawTexture(new Rect(barX, 151, widths.y, barHeight), Texture2D.whiteTexture);
+            GUI.color = new Color(0.92f, 0.72f, 0.16f, 1f);
+            GUI.DrawTexture(
+                new Rect(barX, 171, objectiveWidth, barHeight),
+                Texture2D.whiteTexture);
             GUI.color = previousColor;
         }
 
@@ -12013,6 +12023,20 @@ namespace MagicCarpet.Native
                 0,
                 width);
             return new Vector2Int(lifeWidth, manaWidth);
+        }
+
+        private int ComputeGameRuntimeObjectiveBarWidth()
+        {
+            const int width = 240;
+            var progress = gameRuntimeCampaignSnapshot?.value?.objective_progress;
+            if (progress == null || progress.total_count == 0)
+            {
+                return 0;
+            }
+            return Mathf.Clamp(
+                (int)((long)progress.completed_count * width / progress.total_count),
+                0,
+                width);
         }
 
         private void OnGUI()

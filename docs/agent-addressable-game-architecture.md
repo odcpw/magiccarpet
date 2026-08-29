@@ -618,8 +618,9 @@ partial real implementation, not a completion claim:
   carries Rust-authored semantic objective progress: the current objective ID,
   completed and total counts, and the authoritative all-satisfied flag derived
   from the live local objective carrier plus its bound level definition. Unity
-  presents that projection in the same-handle telemetry strip and never
-  reconstructs objective state in C#.
+  presents that projection in the same-handle telemetry strip and derives a
+  generic progress-bar fill directly from the returned counts on every draw;
+  it never reconstructs or caches objective state in C#.
   After each fixed step the same owner now drains the ordered,
   opaque-actor semantic event pages through the nested session guard and shows
   the latest retained event in that strip without replaying it on another poll.

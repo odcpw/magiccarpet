@@ -989,12 +989,44 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(progress.completed_count, Is.Zero);
                 Assert.That(progress.total_count, Is.EqualTo(5));
                 Assert.That(progress.all_objectives_satisfied, Is.False);
+                Assert.That(runtime.GameRuntimeProductionObjectiveBarWidth, Is.Zero);
                 Assert.That(
                     runtime.GameRuntimeProductionFlightHudText,
                     Does.Contain(
                         "objective objective.reach.my_beacon · 0/5 complete"));
 
-                runtime.QualificationDriveGameRuntimeFrames(1);
+                runtime.QualificationApplyGameRuntimeProductionMovement(
+                    true,
+                    false,
+                    false,
+                    false);
+                var commandedRoll = 0f;
+                var commandedPitch = 0f;
+                for (var index = 0; index < 512; index++)
+                {
+                    var pose = runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose;
+                    var deltaX = unchecked((short)(39424 - pose.x));
+                    var deltaY = unchecked((short)(58624 - pose.y));
+                    var desired = Mathf.RoundToInt(
+                        512f + Mathf.Atan2(deltaY, deltaX) * (1024f / Mathf.PI));
+                    desired = (desired % 2048 + 2048) % 2048;
+                    var difference = desired - (pose.yaw & 0x07ff);
+                    if (difference > 1024) difference -= 2048;
+                    if (difference < -1024) difference += 2048;
+                    var nextRoll = Mathf.Clamp(difference, -24, 24);
+                    const float nextPitch = -127f;
+                    runtime.QualificationApplyGameRuntimeProductionSteering(
+                        (nextRoll - commandedRoll) / 4.5f,
+                        (commandedPitch - nextPitch) / 4.5f);
+                    commandedRoll = nextRoll;
+                    commandedPitch = nextPitch;
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    if (runtime.GameRuntimeProductionCampaignSnapshot.value
+                        .objective_progress.completed_count == 1)
+                    {
+                        break;
+                    }
+                }
                 var steppedIdentity = runtime.GameRuntimeProductionIdentity;
                 var stepped = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(
@@ -1006,14 +1038,16 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     stepped.identity.session_id,
                     Is.EqualTo(before.identity.session_id));
-                Assert.That(stepped.identity.tick, Is.EqualTo("1"));
                 Assert.That(
                     stepped.value.objective_progress.current_objective,
-                    Is.EqualTo(progress.current_objective));
+                    Is.EqualTo("objective.reach.foot_of_spire"));
+                Assert.That(stepped.value.objective_progress.completed_count, Is.EqualTo(1));
+                Assert.That(stepped.value.objective_progress.total_count, Is.EqualTo(5));
+                Assert.That(runtime.GameRuntimeProductionObjectiveBarWidth, Is.EqualTo(48));
                 Assert.That(
                     runtime.GameRuntimeProductionFlightHudText,
                     Does.Contain(
-                        "objective objective.reach.my_beacon · 0/5 complete"));
+                        "objective objective.reach.foot_of_spire · 1/5 complete"));
 
                 runtime.QualificationResetGameRuntimeProduction();
                 var reset = runtime.GameRuntimeProductionCampaignSnapshot;
@@ -1026,16 +1060,18 @@ namespace MagicCarpet.Native.Tests
                     Is.EqualTo("objective.reach.my_beacon"));
                 Assert.That(reset.value.objective_progress.completed_count, Is.Zero);
                 Assert.That(reset.value.objective_progress.total_count, Is.EqualTo(5));
+                Assert.That(runtime.GameRuntimeProductionObjectiveBarWidth, Is.Zero);
                 Assert.That(
                     runtime.GameRuntimeProductionFlightHudText,
                     Does.Contain(
                         "objective objective.reach.my_beacon · 0/5 complete"));
 
                 // No-Claim: this proves the real Level 1 Rust snapshot's
-                // semantic objective ID and counts are presented by Unity on
-                // one runtime/session handle through step and reset. It does
-                // not localize objective text, complete the objective in
-                // Unity, or prove later-level HUD presentation.
+                // semantic objective ID, counts, and directly derived generic
+                // bar width are presented by Unity on one runtime/session
+                // handle through ordinary commanded advancement and reset. It
+                // does not localize objective text, use source-art gauges, or
+                // prove later-level HUD presentation.
             }
             finally
             {
