@@ -211,6 +211,7 @@ dependencies = [
  "sim-goat-map-chain",
  "sim-ground-motion",
  "sim-input",
+ "sim-render-camera",
  "sim-session",
  "sim-terrain-raster",
  "sim-voxel",
@@ -235,6 +236,10 @@ version = "0.1.0"
 
 [[package]]
 name = "sim-input"
+version = "0.1.0"
+
+[[package]]
+name = "sim-render-camera"
 version = "0.1.0"
 
 [[package]]

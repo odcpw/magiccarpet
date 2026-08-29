@@ -518,7 +518,10 @@ partial real implementation, not a completion claim:
   their existing scheduler/RNG authority. The dependency-free Goat source-map
   chain is now owned by the internal `sim-goat-map-chain` crate, while the
   existing `sim_core::goat_map_chain` path remains a compatibility façade and
-  Goat scheduling stays in `sim-core`. These are two bounded physical
+  Goat scheduling stays in `sim-core`. The pure terrain-slope camera and
+  terrain/object projection gates are now owned by the internal
+  `sim-render-camera` crate, while terrain-grid, Classic HD and Goat draw
+  scheduling remain in `sim-core`. These are three bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain

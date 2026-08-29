@@ -5,6 +5,7 @@ members = [
     "crates/sim-definition",
     "crates/sim-goat-map-chain",
     "crates/sim-ground-motion",
+    "crates/sim-render-camera",
     "crates/sim-session",
     "crates/sim-input",
     "crates/sim-terrain-raster",

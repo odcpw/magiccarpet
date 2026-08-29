@@ -19,6 +19,7 @@ sim-definition = { path = "../sim-definition" }
 sim-goat-map-chain = { path = "../sim-goat-map-chain" }
 sim-ground-motion = { path = "../sim-ground-motion" }
 sim-input = { path = "../sim-input" }
+sim-render-camera = { path = "../sim-render-camera" }
 sim-session = { path = "../sim-session" }
 sim-terrain-raster = { path = "../sim-terrain-raster" }
 sim-voxel = { path = "../sim-voxel" }
