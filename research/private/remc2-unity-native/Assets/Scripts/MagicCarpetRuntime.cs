@@ -2938,6 +2938,11 @@ namespace MagicCarpet.Native
                     {
                         gameRuntimeMovementFlags = 0;
                         CenterSteering();
+                        if (Input.GetKeyDown(KeyCode.Return) ||
+                            Input.GetKeyDown(KeyCode.KeypadEnter))
+                        {
+                            RestartGameRuntimeProduction();
+                        }
                         return;
                     }
                     ApplyGameRuntimeProductionInput(
@@ -8816,6 +8821,51 @@ namespace MagicCarpet.Native
             ApplyGameRuntimeProductionInput(false, true, false);
         }
 
+        internal void QualificationRestartGameRuntimeProduction()
+        {
+            RestartGameRuntimeProduction();
+        }
+
+        private void RestartGameRuntimeProduction()
+        {
+            Require(
+                gameRuntimeMode && !gameRuntimeStartupReady && session != null &&
+                session.UsesGameRuntimeContract &&
+                session.GameRuntimeIdentity().mode == GameRuntimeTransport.TitleMode,
+                "game runtime restart requires the retained Rust Title owner");
+            var identity = session.GameRuntimeRestartNewGame();
+            var observation = session.GameRuntimeCampaignSnapshot();
+            var fireballAsset = session.GameRuntimePresentationAsset(
+                GameRuntimeFireballAssetSlot);
+            Require(
+                identity.mode == GameRuntimeTransport.PlayingMode &&
+                identity.active_runtime_flow != null &&
+                identity.active_runtime_flow.bound_level_id ==
+                    identity.active_runtime_flow.entry_level_id &&
+                identity.session != null &&
+                identity.session.session_id == session.Handle.ToString(),
+                "retained resolver restarted its declared semantic entry");
+            Require(
+                observation.identity.session_id == identity.session.session_id &&
+                observation.identity.generation == identity.session.generation &&
+                observation.identity.tick == identity.session.tick &&
+                fireballAsset.identity.session_id == identity.session.session_id &&
+                fireballAsset.identity.generation == identity.session.generation &&
+                fireballAsset.identity.tick == identity.session.tick &&
+                fireballAsset.value.slot_id == GameRuntimeFireballAssetSlot,
+                "restarted presentation is bound to the new nested session");
+            ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
+            gameRuntimeCampaignSnapshot = observation;
+            gameRuntimeSemanticEventCursor = observation.value.effect_head;
+            gameRuntimeRecentSemanticEvents.Clear();
+            gameRuntimeMovementFlags = 0;
+            fireRequested = false;
+            rightSpellRequested = false;
+            selectedSpellRequested = false;
+            CenterSteering();
+            gameRuntimeStartupReady = true;
+        }
+
         internal void QualificationApplyGameRuntimeProductionSteering(
             float mouseX,
             float mouseY)
@@ -11824,7 +11874,7 @@ namespace MagicCarpet.Native
             if (identity.mode == GameRuntimeTransport.TitleMode)
             {
                 return "CARPET FLIGHT — RUST GAME RUNTIME · TITLE\n" +
-                    "gameplay session closed; runtime handle retained";
+                    "gameplay session closed; runtime handle retained · Enter restart";
             }
             var observation = gameRuntimeCampaignSnapshot;
             if (observation?.value?.player_pose == null ||

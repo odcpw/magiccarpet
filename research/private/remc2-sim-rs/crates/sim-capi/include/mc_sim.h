@@ -1338,6 +1338,8 @@ int32_t mc_game_runtime_load_replay_json_v1(
     const uint8_t *save_json, uint32_t save_json_len);
 int32_t mc_game_runtime_open_level_v1(
     uint64_t handle, uint64_t generation);
+int32_t mc_game_runtime_restart_new_game_v1(
+    uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_pause_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_resume_v1(

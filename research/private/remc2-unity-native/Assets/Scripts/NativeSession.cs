@@ -240,6 +240,12 @@ namespace MagicCarpet.Native
                 "session does not own a game runtime");
         }
 
+        internal GameRuntimeTransport.Identity GameRuntimeRestartNewGame()
+        {
+            return gameRuntime?.RestartNewGame() ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
         internal EngineSessionTransport.PresentationAssetObservation
             GameRuntimePresentationAsset(string semanticId)
         {

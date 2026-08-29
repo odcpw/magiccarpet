@@ -19,7 +19,7 @@ use sim_core::{
 };
 use sim_session::{GameSession, OpenSessionError, SessionGuard};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v6";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v7";
 const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
 const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
 const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
@@ -140,6 +140,27 @@ impl RuntimeRecord {
         resolver
             .open_pending(&mut self.runtime, guard, handle)
             .map_err(map_open_level_error)?;
+        Ok(())
+    }
+
+    fn restart_new_game(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
+        self.validate_transition(handle, generation, RuntimeMode::Title)?;
+        self.resolver
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "MISSING_RUNTIME_RESOLVER: restart requires an installed package set",
+                )
+            })?
+            .new_game(
+                &mut self.runtime,
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation,
+                },
+            )
+            .map_err(map_transition_error)?;
         Ok(())
     }
 
@@ -571,11 +592,11 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 6,
+            "transport_version": 7,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "loading", "playing", "paused"],
-            "transitions": ["bootstrap_package_set", "open_level", "load_replay_save", "pause", "resume", "close"],
+            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "load_replay_save", "pause", "resume", "close"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
             "installed_package_set": {
@@ -752,6 +773,15 @@ pub extern "C" fn mc_game_runtime_load_replay_json_v1(
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_open_level_v1(handle: u64, generation: u64) -> i32 {
     boundary(|| with_runtime_mut(handle, |runtime| runtime.open_level(handle, generation)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_restart_new_game_v1(handle: u64, generation: u64) -> i32 {
+    boundary(|| {
+        with_runtime_mut(handle, |runtime| {
+            runtime.restart_new_game(handle, generation)
+        })
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -933,9 +963,9 @@ mod tests {
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v6"
+            "carpet-flight-native-game-runtime-json/v7"
         );
-        assert_eq!(contract["transport_version"], 6);
+        assert_eq!(contract["transport_version"], 7);
         assert_eq!(
             contract["modes"],
             serde_json::json!(["title", "loading", "playing", "paused"])
@@ -944,6 +974,7 @@ mod tests {
             contract["transitions"],
             serde_json::json!([
                 "bootstrap_package_set",
+                "restart_new_game",
                 "open_level",
                 "load_replay_save",
                 "pause",
@@ -1441,11 +1472,34 @@ mod tests {
             MC_STATUS_GENERATION_MISMATCH
         );
         assert_eq!(identity(handle), title);
+
+        assert_eq!(mc_game_runtime_restart_new_game_v1(handle, 4), MC_STATUS_OK);
+        let loading = identity(handle);
+        assert_eq!(loading["runtime_id"], handle.to_string());
+        assert_eq!(loading["generation"], "5");
+        assert_eq!(loading["mode"], "loading");
+        assert_eq!(
+            loading["pending_definition"]["runtime_flow"]["bound_level_id"],
+            "level.magic_carpet_2.night_spire"
+        );
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 5), MC_STATUS_OK);
+        let restarted = identity(handle);
+        assert_eq!(restarted["runtime_id"], handle.to_string());
+        assert_eq!(restarted["generation"], "6");
+        assert_eq!(restarted["mode"], "playing");
+        assert_eq!(restarted["session"]["session_id"], handle.to_string());
+        assert_eq!(restarted["session"]["generation"], "2");
+        assert_eq!(restarted["session"]["tick"], "0");
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 1, 0, b"{}".as_ptr(), 2),
+            MC_STATUS_GENERATION_MISMATCH
+        );
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
 
-        // No-Claim: close proves a guarded same-handle return to Rust Title.
-        // It does not select or open a new game, accept completion, present a
-        // Title menu, or persist the closed state.
+        // No-Claim: close/restart proves a guarded same-handle return to Rust
+        // Title and resolver-derived reopening of its immutable entry. It does
+        // not choose another package, accept completion, present a menu, or
+        // persist the closed state.
     }
 
     #[test]

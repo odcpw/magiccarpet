@@ -563,10 +563,12 @@ partial real implementation, not a completion claim:
   Paused session into Rust-owned Title on the same live handle. Production
   Escape consumes that transition, clears the gameplay presentation and shows
   the returned Title identity instead of inventing a client-side mode. Native/
-  Unity completion-transition exposure, production package discovery,
-  installation and shell wiring,
-  an uninterrupted Level 1-to-Title playthrough, restart from the retained
-  resolver, and full Title/results presentation remain open. The
+  managed Enter can now restart the immutable resolver-owned entry on that same
+  handle and open a fresh Level 1 session above the retained nested generation
+  floor. Native/Unity completion-transition exposure, production package
+  discovery, installation and shell wiring, an uninterrupted Level 1-to-Title
+  playthrough, quick-load after close, and full Title/results presentation
+  remain open. The
   quiescent boundary also does not yet implement `paused_frame`, so the MC2
   pre-gate RNG/objective/presentation work remains open. Its Unity transport
   now validates that flow identity and borrows snapshot, step, event and reset

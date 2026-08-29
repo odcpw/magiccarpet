@@ -677,7 +677,7 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
-        public void ProductionEscapeClosesSameRustRuntimeToTitleAndRejectsStaleGameplay()
+        public void ProductionCloseThenEnterRestartsResolverEntryOnSameHandleWithoutSessionAba()
         {
             var root = new GameObject("resolver runtime close input");
             root.SetActive(false);
@@ -692,6 +692,7 @@ namespace MagicCarpet.Native.Tests
                 var runtimeGeneration = ulong.Parse(playing.generation);
                 var sessionGeneration = ulong.Parse(playing.session.generation);
                 var tick = ulong.Parse(playing.session.tick);
+                var activeSessionCount = NativeSession.ActiveSessionCount;
                 Assert.That(playing.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
                 Assert.That(runtime.GameRuntimeProductionFireballTexture, Is.Not.Null);
 
@@ -735,10 +736,40 @@ namespace MagicCarpet.Native.Tests
                     runtime.GameRuntimeProductionIdentity.runtime_id,
                     Is.EqualTo(playing.runtime_id));
 
-                // No-Claim: Escape now closes the sole gameplay session into
-                // Rust-owned Title without destroying its runtime handle. It
-                // does not implement New Game from retained packages, accept
-                // completion, persist the closed state, or present a menu.
+                runtime.QualificationRestartGameRuntimeProduction();
+                var restarted = runtime.GameRuntimeProductionIdentity;
+                Assert.That(restarted.runtime_id, Is.EqualTo(playing.runtime_id));
+                Assert.That(ulong.Parse(restarted.generation), Is.EqualTo(runtimeGeneration + 3));
+                Assert.That(restarted.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(
+                    restarted.active_runtime_flow.bound_level_id,
+                    Is.EqualTo(restarted.active_runtime_flow.entry_level_id));
+                Assert.That(
+                    restarted.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.night_spire"));
+                Assert.That(restarted.session.session_id, Is.EqualTo(playing.runtime_id));
+                Assert.That(restarted.session.generation, Is.EqualTo("2"));
+                Assert.That(restarted.session.tick, Is.EqualTo("0"));
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
+                Assert.That(runtime.GameRuntimeProductionFireballTexture, Is.Not.Null);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeSessionCount));
+                Assert.That(
+                    NativeSim.mc_game_session_step_json_v1(
+                        handle,
+                        sessionGeneration,
+                        tick,
+                        command,
+                        checked((uint)command.Length)),
+                    Is.EqualTo(NativeSim.GenerationMismatch));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(
+                    runtime.GameRuntimeProductionCampaignSnapshot.identity.tick,
+                    Is.EqualTo("1"));
+
+                // No-Claim: Escape and Enter close and restart the retained
+                // resolver entry on one Rust runtime without session-guard ABA.
+                // They do not choose packages, accept completion, quick-load
+                // after close, persist the closed state, or present a menu.
             }
             finally
             {

@@ -18,7 +18,7 @@ namespace MagicCarpet.Native
     {
         internal const string RuntimeContract = "carpet-flight-game-runtime/v8";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v6";
+            "carpet-flight-native-game-runtime-json/v7";
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
@@ -328,6 +328,47 @@ namespace MagicCarpet.Native
             return identity;
         }
 
+        internal Identity RestartNewGame()
+        {
+            if (Current?.mode != TitleMode ||
+                HasDefinitionIdentityData(Current.pending_definition) ||
+                HasSessionIdentityData(Current.session) ||
+                HasRuntimeFlowData(Current.active_runtime_flow))
+            {
+                throw new InvalidOperationException(
+                    "restart new game requires an unbound Rust Title");
+            }
+            var beforeRuntimeGeneration = ParseCounter(Current.generation, "generation");
+            Check(
+                NativeSim.mc_game_runtime_restart_new_game_v1(
+                    RequireHandle(), beforeRuntimeGeneration),
+                "restart resolver-owned new game");
+            var loading = IdentitySnapshot();
+            if (loading.mode != LoadingMode ||
+                ParseCounter(loading.generation, "generation") !=
+                    checked(beforeRuntimeGeneration + 1) ||
+                !HasDefinitionIdentity(loading) ||
+                HasSessionIdentityData(loading.session) ||
+                HasRuntimeFlowData(loading.active_runtime_flow) ||
+                loading.pending_definition.runtime_flow.bound_level_id !=
+                    loading.pending_definition.runtime_flow.entry_level_id)
+            {
+                throw new InvalidOperationException(
+                    "restart did not enter the resolver-owned entry Loading state");
+            }
+            var playing = OpenLevel();
+            if (ParseCounter(playing.generation, "generation") !=
+                    checked(beforeRuntimeGeneration + 2) ||
+                !SameRuntimeFlow(
+                    loading.pending_definition.runtime_flow,
+                    playing.active_runtime_flow))
+            {
+                throw new InvalidOperationException(
+                    "restart did not open the resolver-owned entry session");
+            }
+            return playing;
+        }
+
         internal Identity Pause()
         {
             return SetPaused(
@@ -499,7 +540,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 6 ||
+                contract.transport_version != 7 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
@@ -540,8 +581,8 @@ namespace MagicCarpet.Native
                     .SequenceEqual(contract.modes) ||
                 contract.transitions == null ||
                 !new[] {
-                    "bootstrap_package_set", "open_level", "load_replay_save",
-                    "pause", "resume", "close"
+                    "bootstrap_package_set", "restart_new_game", "open_level",
+                    "load_replay_save", "pause", "resume", "close"
                 }
                     .SequenceEqual(contract.transitions))
             {
