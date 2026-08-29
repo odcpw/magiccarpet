@@ -30,10 +30,10 @@ pub use package::{
     DRAGON_MAX_LIFE_CAPABILITY_ID, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
     EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage,
-    HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, PackageProvenance, PackageProvenanceKind,
-    RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID, TRADER_MAX_LIFE_CAPABILITY_ID,
-    VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
-    engine_capabilities,
+    HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
+    PackageProvenance, PackageProvenanceKind, RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID,
+    TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID,
+    creature_max_life_capability_id, engine_capabilities,
 };
 pub use presentation_asset::{
     BoundPresentationAsset, CompatiblePresentationArtifact, INDEXED_SPRITE_SCHEMA,
@@ -60,7 +60,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v10";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "33.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "34.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -738,6 +738,39 @@ impl GameDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_house_construction_visits(
+        &self,
+        id: &level_definition::LevelEntityId,
+        construction_visits: u16,
+        revision: u64,
+    ) -> Result<Self> {
+        if revision < self.revision {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidRequest,
+                "definition.revision",
+                "candidate definition revision must not move backward",
+            ));
+        }
+        let level = self.level_definition.as_ref().ok_or_else(|| {
+            DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                id.as_str(),
+                "definition has no semantic grouped-House consumer",
+            )
+        })?;
+        let mut candidate = self.clone();
+        candidate.level_definition = Some(
+            level
+                .with_house_construction_visits(id, construction_visits)
+                .map_err(|message| {
+                    DefinitionError::new(DefinitionErrorCode::InvalidRequest, id.as_str(), message)
+                })?,
+        );
+        candidate.revision = revision;
+        candidate.definition_hash = candidate.compute_hash();
+        Ok(candidate)
+    }
+
     pub(crate) fn with_switch_overlap_extent_tiles(
         &self,
         id: &level_definition::LevelEntityId,
@@ -820,6 +853,15 @@ impl GameDefinition {
                 .entity(&entity_id)
                 .and_then(level_definition::LevelEntityDefinition::house_construction)
                 .map(|config| SemanticValue::Integer(i64::from(config.life_mana_scalar())));
+        }
+        if let Some(entity) = id.as_str().strip_suffix(".construction_visits") {
+            let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
+            return self
+                .level_definition
+                .as_ref()?
+                .entity(&entity_id)
+                .and_then(level_definition::LevelEntityDefinition::house_construction)
+                .map(|config| SemanticValue::Integer(i64::from(config.construction_visits())));
         }
         if let Some(entity) = id.as_str().strip_suffix(".overlap_extent_tiles") {
             let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
@@ -1266,6 +1308,94 @@ impl GameDefinition {
                 SemanticId::parse(&format!("{}.life_mana_scalar", entity.id().as_str()))
                     .ok()
                     .and_then(|id| self.level_house_life_mana_scalar_descriptor(&id))
+            })
+            .collect()
+    }
+
+    /// Describe one package-bound grouped House construction countdown.
+    #[must_use]
+    pub fn level_house_construction_visits_descriptor(
+        &self,
+        id: &SemanticId,
+    ) -> Option<SemanticDescriptor> {
+        let entity_id = id.as_str().strip_suffix(".construction_visits")?;
+        let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
+        let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
+        let config = entity.house_construction()?;
+        let writable = matches!(
+            config.construction_visits_access(),
+            level_definition::LevelEntityParameterAccess::SessionReset
+        ) && self.required_capabilities.iter().any(|requirement| {
+            requirement.id.as_str() == HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID
+                && requirement.exact_version == 1
+        });
+        let target_id = id.as_str().to_owned();
+        Some(SemanticDescriptor {
+            id: id.clone(),
+            descriptor_version: 1,
+            kind: DescriptorKind::EntityParameter,
+            value_type: ValueType::Integer,
+            unit: Some("entity_visits".to_owned()),
+            default_value: SemanticValue::Integer(i64::from(
+                config.default_construction_visits(),
+            )),
+            minimum: Some(1),
+            maximum: Some(i64::from(u16::MAX)),
+            enum_values: Vec::new(),
+            access: if writable {
+                Access::Writable
+            } else {
+                Access::ReadOnly
+            },
+            mutation_timing: MutationTiming::SessionReset,
+            determinism_role: "immutable grouped House construction countdown".to_owned(),
+            dependencies: vec![
+                entity.id().as_str().to_owned(),
+                format!("{HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID}@1"),
+                "package grouped House constructor and action-51 completion lifecycle".to_owned(),
+            ],
+            side_effects: if writable {
+                vec![
+                    "already-open sessions retain the package construction countdown".to_owned(),
+                    "explicit reopen/reset binds the authored countdown before construction"
+                        .to_owned(),
+                ]
+            } else {
+                Vec::new()
+            },
+            scope: format!("stable grouped House {}", entity.id().as_str()),
+            provenance_origin: "package semantic level definition".to_owned(),
+            provenance_content_hash: self.package_graph_hash.clone(),
+            temporal_contract: Some(TemporalContract {
+                dispatch_phase: "definition_publication".to_owned(),
+                dispatch_key: target_id.clone(),
+                ordinary_producer: "validated SetHouseConstructionVisits candidate".to_owned(),
+                handler: "guarded atomic definition compare-and-swap".to_owned(),
+                same_pass_epilogue:
+                    "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
+                following_pass_cleanup: "explicit reopen/reset binds the countdown into grouped House construction; action 51 completes after the authored number of visits and publishes the unchanged live House".to_owned(),
+                authoritative_reads: vec![target_id],
+                authoritative_writes: vec![
+                    "immutable LevelDefinition grouped House construction visits".to_owned(),
+                ],
+                rng_and_event_effects: "none during publication; construction and damage ordering remain scheduler-owned".to_owned(),
+            }),
+            summary: "Action-51 construction visits for one package-bound grouped House."
+                .to_owned(),
+        })
+    }
+
+    #[must_use]
+    pub fn level_house_construction_visits_descriptors(&self) -> Vec<SemanticDescriptor> {
+        self.level_definition
+            .as_ref()
+            .into_iter()
+            .flat_map(level_definition::LevelDefinition::entities)
+            .filter(|entity| entity.house_construction().is_some())
+            .filter_map(|entity| {
+                SemanticId::parse(&format!("{}.construction_visits", entity.id().as_str()))
+                    .ok()
+                    .and_then(|id| self.level_house_construction_visits_descriptor(&id))
             })
             .collect()
     }

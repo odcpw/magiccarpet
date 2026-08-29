@@ -208,6 +208,8 @@ pub const fn house_construction_entity_definition(
     activation_group: ActivationGroupId,
     life_mana_scalar: u16,
     life_mana_scalar_access: LevelEntityParameterAccess,
+    construction_visits: u16,
+    construction_visits_access: LevelEntityParameterAccess,
 ) -> LevelEntityDefinition {
     LevelEntityDefinition::new(
         id,
@@ -221,6 +223,8 @@ pub const fn house_construction_entity_definition(
         Some(HouseConstructionDefinition::new(
             life_mana_scalar,
             life_mana_scalar_access,
+            construction_visits,
+            construction_visits_access,
         )),
         None,
     )

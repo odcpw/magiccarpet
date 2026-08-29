@@ -100,7 +100,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "33.0");
+    assert_eq!(capabilities["contract_version"], "34.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v9"
@@ -273,7 +273,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        23
+        24
     );
     let archer_health_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
@@ -393,6 +393,28 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         })
     );
     assert_eq!(house_life_operation["mutation_timing"], "session_reset");
+    let house_construction_operation =
+        capabilities["data"]["authoring"]["operation_schema"]["variants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|variant| variant["operation"] == "set_house_construction_visits")
+            .expect("House construction-visits operation is discoverable");
+    assert_eq!(
+        house_construction_operation["target_id"],
+        "<entity-id>.construction_visits"
+    );
+    assert_eq!(
+        house_construction_operation["construction_visits"]["unit"],
+        "entity_visits"
+    );
+    assert_eq!(
+        house_construction_operation["required_capability"],
+        serde_json::json!({
+            "id": "engine.building.house.construction_visits",
+            "exact_version": 1
+        })
+    );
     let house_life_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
         .unwrap()
@@ -401,6 +423,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         .expect("House construction life/mana-scalar capability is discoverable");
     assert_eq!(house_life_capability["version"], 1);
     assert_eq!(house_life_capability["provider"], "engine_compiled");
+    let house_construction_capability = capabilities["data"]["compiled_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["id"] == "engine.building.house.construction_visits")
+        .expect("House construction-visits capability is discoverable");
+    assert_eq!(house_construction_capability["version"], 1);
+    assert_eq!(house_construction_capability["provider"], "engine_compiled");
     let area_entry_overlap_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
         .unwrap()
@@ -544,7 +574,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "33.0");
+    assert_eq!(entities["contract_version"], "34.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -881,7 +911,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "33.0");
+    assert_eq!(described["contract_version"], "34.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -1160,7 +1190,7 @@ fn campaign_workspace_authors_exit_sequence_overlap_through_the_typed_cli_lifecy
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
         let descriptor = &described["data"]["descriptors"][0];
-        assert_eq!(described["contract_version"], "33.0");
+        assert_eq!(described["contract_version"], "34.0");
         assert_eq!(
             described["identity"]["schema"],
             "carpet-flight-game-definition/v10"
@@ -1332,7 +1362,7 @@ fn campaign_workspace_authors_area_entry_overlap_through_the_typed_cli_lifecycle
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "33.0");
+    assert_eq!(described["contract_version"], "34.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -1502,7 +1532,7 @@ fn campaign_workspace_authors_area_exit_overlap_through_the_typed_cli_lifecycle(
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "33.0");
+    assert_eq!(described["contract_version"], "34.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["unit"], "tiles");
     assert_eq!(descriptor["access"], "writable");
@@ -1618,6 +1648,147 @@ fn campaign_workspace_authors_area_exit_overlap_through_the_typed_cli_lifecycle(
 }
 
 #[test]
+fn campaign_workspace_authors_grouped_house_construction_visits_through_the_typed_cli_lifecycle() {
+    const ENTITY: &str = "building.house.at_156_215";
+    const TARGET: &str = "building.house.at_156_215.construction_visits";
+
+    let campaign = level_one_campaign_fixture();
+    let campaign = campaign.to_str().expect("UTF-8 campaign path");
+    let described = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        campaign,
+        "--id",
+        TARGET,
+    ]);
+    assert!(described.status.success(), "{:?}", described.stderr);
+    assert!(described.stderr.is_empty());
+    let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+    let descriptor = &described["data"]["descriptors"][0];
+    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(descriptor["id"], TARGET);
+    assert_eq!(descriptor["unit"], "entity_visits");
+    assert_eq!(descriptor["access"], "writable");
+    assert_eq!(descriptor["mutation_timing"], "session_reset");
+    assert_eq!(descriptor["default_value"]["value"], 30);
+    assert_eq!(descriptor["effective_value"]["value"], 30);
+    assert!(
+        descriptor["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|dependency| dependency == "engine.building.house.construction_visits@1")
+    );
+
+    let temporary = TempWorkspace::new("semantic-house-construction-visits");
+    let workspace = temporary.0.to_str().unwrap();
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "semantic-house-construction-visits-workspace",
+        "--campaign-package",
+        campaign,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+    assert!(created.stderr.is_empty());
+
+    let changes_path = temporary.0.join("set-house-construction-visits.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "set_house_construction_visits",
+            "entity": ENTITY,
+            "construction_visits": 5,
+            "expected_construction_visits": 30
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "semantic-house-construction-visits-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    assert!(staged.stderr.is_empty());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(
+        staged["data"]["change_set"]["operations"][0]["operation"],
+        "set_house_construction_visits"
+    );
+    let change_set_path = temporary
+        .0
+        .join("house-construction-visits-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    assert!(validated.stderr.is_empty());
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        validated["data"]["validation"]["affected_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validated["data"]["validation"]["receipt_hash"]
+            .as_str()
+            .unwrap(),
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    assert!(applied.stderr.is_empty());
+
+    let authored = run(&["game", "get", "--workspace", workspace, "--id", TARGET]);
+    assert!(authored.status.success(), "{:?}", authored.stderr);
+    assert!(authored.stderr.is_empty());
+    let authored: Value = serde_json::from_slice(&authored.stdout).unwrap();
+    assert_eq!(authored["identity"]["revision"], 2);
+    assert_eq!(authored["data"]["descriptor"]["default_value"]["value"], 30);
+    assert_eq!(
+        authored["data"]["descriptor"]["effective_value"]["value"],
+        5
+    );
+    assert_eq!(
+        authored["data"]["value"],
+        serde_json::json!({"type": "integer", "value": 5})
+    );
+
+    // The backend owning gate proves old-session isolation and that only the
+    // ordinary construction duration changes before the same live House
+    // health, footprint, damage, and reset lifecycle.
+}
+
+#[test]
 fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecycle() {
     const ENTITY: &str = "creature.firefly.at_213_125";
     const TARGET: &str = "creature.firefly.at_213_125.max_life";
@@ -1659,7 +1830,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "33.0");
+    assert_eq!(described["contract_version"], "34.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
     assert_eq!(descriptor["value_type"], "integer");
@@ -2286,7 +2457,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "33.0");
+    assert_eq!(described["contract_version"], "34.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -2613,7 +2784,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "33.0");
+    assert_eq!(described["contract_version"], "34.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -2895,7 +3066,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "33.0");
+    assert_eq!(described["contract_version"], "34.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -3426,7 +3597,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "33.0");
+        assert_eq!(described["contract_version"], "34.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -3611,7 +3782,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "33.0");
+    assert_eq!(described["contract_version"], "34.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");

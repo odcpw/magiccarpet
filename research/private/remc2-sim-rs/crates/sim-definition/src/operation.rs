@@ -13,9 +13,9 @@ use crate::{
     DefinitionErrorCode, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
     EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition,
-    HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
-    SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID,
-    WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
+    HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
+    SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId, SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID,
+    VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -165,6 +165,12 @@ pub enum DefinitionOperation {
         life_mana_scalar: u16,
         #[serde(default)]
         expected_life_mana_scalar: Option<u16>,
+    },
+    SetHouseConstructionVisits {
+        entity: LevelEntityId,
+        construction_visits: u16,
+        #[serde(default)]
+        expected_construction_visits: Option<u16>,
     },
     SetSwitchOverlapExtent {
         entity: LevelEntityId,
@@ -351,6 +357,18 @@ impl DefinitionOperation {
                     "read_back": "game get --id <entity-id>.life_mana_scalar",
                 },
                 {
+                    "operation": "set_house_construction_visits",
+                    "required_fields": ["entity", "construction_visits"],
+                    "optional_fields": ["expected_construction_visits"],
+                    "target_id": "<entity-id>.construction_visits",
+                    "construction_visits": {"type": "integer", "unit": "entity_visits", "minimum": 1, "maximum": u16::MAX},
+                    "expected_construction_visits": "same type, unit, and bounds as construction_visits",
+                    "required_capability": {"id": HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID, "exact_version": 1},
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id <entity-id>.construction_visits",
+                    "read_back": "game get --id <entity-id>.construction_visits",
+                },
+                {
                     "operation": "set_switch_overlap_extent",
                     "required_fields": ["entity", "overlap_extent_tiles"],
                     "optional_fields": ["expected_overlap_extent_tiles"],
@@ -443,6 +461,10 @@ impl DefinitionOperation {
             Self::SetHouseLifeManaScalar { entity, .. } => {
                 SemanticId::parse(&format!("{}.life_mana_scalar", entity.as_str()))
                     .expect("validated entity ID plus life_mana_scalar is a semantic target")
+            }
+            Self::SetHouseConstructionVisits { entity, .. } => {
+                SemanticId::parse(&format!("{}.construction_visits", entity.as_str()))
+                    .expect("validated entity ID plus construction_visits is a semantic target")
             }
             Self::SetSwitchOverlapExtent { entity, .. } => {
                 SemanticId::parse(&format!("{}.overlap_extent_tiles", entity.as_str()))
@@ -538,6 +560,7 @@ impl DefinitionOperation {
                 | Self::SetEntityMaxLife { .. }
                 | Self::SetExperienceScrollAward { .. }
                 | Self::SetHouseLifeManaScalar { .. }
+                | Self::SetHouseConstructionVisits { .. }
                 | Self::SetSwitchOverlapExtent { .. }
                 | Self::PutObjective { .. }
                 | Self::SetMechanicCountdown { .. }
@@ -740,6 +763,46 @@ impl DefinitionOperation {
                 expected_life_mana_scalar: *expected_life_mana_scalar,
             });
         }
+        if let Self::SetHouseConstructionVisits {
+            entity,
+            construction_visits,
+            expected_construction_visits,
+        } = self
+        {
+            let id = self.target_id();
+            let descriptor = definition
+                .level_house_construction_visits_descriptor(&id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownSemanticId,
+                        entity.as_str(),
+                        "construction countdown update names no package-bound grouped House",
+                    )
+                })?;
+            if descriptor.access != Access::Writable {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    entity.as_str(),
+                    "grouped House construction countdown has no runtime consumer in this package",
+                ));
+            }
+            descriptor.validate_value(
+                &SemanticValue::Integer(i64::from(*construction_visits)),
+                id.as_str(),
+            )?;
+            if let Some(expected) = expected_construction_visits {
+                descriptor.validate_value(
+                    &SemanticValue::Integer(i64::from(*expected)),
+                    "expected_construction_visits",
+                )?;
+            }
+            return Ok(ResolvedOperation::HouseConstructionVisitsSet {
+                id,
+                entity: entity.clone(),
+                construction_visits: *construction_visits,
+                expected_construction_visits: *expected_construction_visits,
+            });
+        }
         if let Self::SetSwitchOverlapExtent {
             entity,
             overlap_extent_tiles,
@@ -902,6 +965,9 @@ impl DefinitionOperation {
             Self::SetHouseLifeManaScalar { .. } => {
                 unreachable!("grouped House scalar updates return above")
             }
+            Self::SetHouseConstructionVisits { .. } => {
+                unreachable!("grouped House construction countdown updates return above")
+            }
             Self::SetSwitchOverlapExtent { .. } => {
                 unreachable!("switch overlap updates return above")
             }
@@ -948,6 +1014,12 @@ pub(crate) enum ResolvedOperation {
         entity: LevelEntityId,
         life_mana_scalar: u16,
         expected_life_mana_scalar: Option<u16>,
+    },
+    HouseConstructionVisitsSet {
+        id: SemanticId,
+        entity: LevelEntityId,
+        construction_visits: u16,
+        expected_construction_visits: Option<u16>,
     },
     SwitchOverlapExtentSet {
         id: SemanticId,

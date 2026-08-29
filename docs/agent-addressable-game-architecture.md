@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 33.0 milestone, this is a binding target with
+As of the semantic-contract 34.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -521,9 +521,13 @@ partial real implementation, not a completion claim:
   life/mana scalar. Guarded publication leaves open sessions unchanged;
   explicit reopen/reset passes the authored scalar into the real action-51
   constructor, whose unchanged thirty visits produce scalar-times-1000 live
-  health before ordinary action-52 damage. This does not author construction
-  countdown, footprint, selector, ownership, residents, population, reset-live
-  or unbound Houses, Level 2/3 Houses, save/replay, or Unity UI. The three
+  health before ordinary action-52 damage. Those same thirty-four Houses now
+  expose their source-derived construction countdown, whose default is thirty
+  action-51 visits. One focused proof authors five visits while preserving the
+  same live health, footprint, ordinary action-52 damage, reopen and reset
+  lifecycle. This does not author footprint, selector, ownership, residents,
+  population, reset-live or unbound Houses, Level 2/3 Houses, save/replay, or
+  Unity UI. The three
   package-present Exit Portal placements use the same authored-feature binding; the real exit
   trigger captures the constructed portal and player action 12 consumes its
   authored position for transition heading and movement. Movement preserves

@@ -20,6 +20,7 @@ pub const HOUSE_LIVE_ACTION: u8 = 52;
 pub const HOUSE_REMOVE_ACTION: u8 = 53;
 
 pub(crate) const AUTHORED_HOUSE_BUILDING_INDEX: u8 = 37;
+pub(crate) const AUTHORED_HOUSE_CONSTRUCTION_VISITS: u16 = 30;
 pub(crate) const AUTHORED_HOUSE_FOOTPRINT_WIDTH: u8 = 5;
 pub(crate) const AUTHORED_HOUSE_FOOTPRINT_HEIGHT: u8 = 5;
 pub(crate) const AUTHORED_HOUSE_COLLISION_HALF_WIDTH: i16 = 1_280;
@@ -219,23 +220,25 @@ impl HouseState {
         let life_mana_scalar = HouseParameter::level_one(AUTHORED_HOUSE_BUILDING_INDEX)
             .expect("qualified Level 1 BLDGPRM row 37")
             .life_mana_scalar;
-        Self::authored_level_one_with_life_mana_scalar(
+        Self::authored_level_one_with_construction_parameters(
             source_entity_index,
             entity_rng,
             xtype,
             source_position,
             world,
             life_mana_scalar,
+            AUTHORED_HOUSE_CONSTRUCTION_VISITS,
         )
     }
 
-    pub(crate) fn authored_level_one_with_life_mana_scalar(
+    pub(crate) fn authored_level_one_with_construction_parameters(
         source_entity_index: u16,
         entity_rng: u16,
         xtype: u8,
         source_position: Position,
         world: Option<&dyn FlightWorld>,
         life_mana_scalar: u16,
+        construction_visits: u16,
     ) -> Self {
         let position = authored_level_one_house_position(source_position, world);
         let source_parameter = HouseParameter::level_one(AUTHORED_HOUSE_BUILDING_INDEX)
@@ -251,8 +254,8 @@ impl HouseState {
             active: true,
             // Constructor low byte 9 followed by AddEventToMap's bit 2.
             control_flags: 0x0000_000d,
-            max_life: 30,
-            life: 30,
+            max_life: i32::from(construction_visits),
+            life: i32::from(construction_visits),
             occupants: 2,
             rng: entity_rng,
             position,

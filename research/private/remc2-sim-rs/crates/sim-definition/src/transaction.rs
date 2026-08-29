@@ -468,6 +468,39 @@ impl ChangeSetBuilder {
     }
 
     #[must_use]
+    pub fn set_house_construction_visits(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        construction_visits: u16,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetHouseConstructionVisits {
+                entity,
+                construction_visits,
+                expected_construction_visits: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_house_construction_visits_from(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        expected_construction_visits: u16,
+        construction_visits: u16,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetHouseConstructionVisits {
+                entity,
+                construction_visits,
+                expected_construction_visits: Some(expected_construction_visits),
+            });
+        self
+    }
+
+    #[must_use]
     pub fn set_switch_overlap_extent(
         mut self,
         entity: crate::level_definition::LevelEntityId,
@@ -1748,6 +1781,62 @@ fn validate_against(
                     Err(error) => diagnostics.push(error.into()),
                 }
             }
+            ResolvedOperation::HouseConstructionVisitsSet {
+                id,
+                entity,
+                construction_visits,
+                expected_construction_visits,
+            } => {
+                required_timing = Some(required_timing.unwrap_or(RequestedTiming::SessionReset));
+                if !change_set
+                    .requested_timing
+                    .permits(MutationTiming::SessionReset)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "UNSAFE_TIMING".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "grouped House construction countdown authoring requires session_reset timing"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                let current = active
+                    .level_definition()
+                    .and_then(|level| level.entity(entity))
+                    .and_then(|candidate| candidate.house_construction())
+                    .map(|config| config.construction_visits());
+                if expected_construction_visits.is_some()
+                    && current != *expected_construction_visits
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "grouped House expected construction visits does not match the active definition"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                if current == Some(*construction_visits) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "grouped House already has the requested construction visits"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                match proposed.with_house_construction_visits(
+                    entity,
+                    *construction_visits,
+                    candidate_revision,
+                ) {
+                    Ok(updated) => {
+                        proposed = updated;
+                        preliminarily_valid.insert(id.clone());
+                    }
+                    Err(error) => diagnostics.push(error.into()),
+                }
+            }
             ResolvedOperation::SwitchOverlapExtentSet {
                 id,
                 entity,
@@ -1860,6 +1949,15 @@ fn validate_against(
                 } => candidate.with_house_life_mana_scalar(
                     entity,
                     *life_mana_scalar,
+                    candidate_revision,
+                ),
+                ResolvedOperation::HouseConstructionVisitsSet {
+                    entity,
+                    construction_visits,
+                    ..
+                } => candidate.with_house_construction_visits(
+                    entity,
+                    *construction_visits,
                     candidate_revision,
                 ),
                 ResolvedOperation::SwitchOverlapExtentSet {

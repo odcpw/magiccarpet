@@ -67,6 +67,10 @@ pub const EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID: &str =
 /// constructor consumes an authorable construction-to-live scalar.
 pub const HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID: &str = "engine.building.house.life_mana_scalar";
 
+/// Exact compiled capability required by grouped House construction countdowns.
+pub const HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID: &str =
+    "engine.building.house.construction_visits";
+
 /// Exact compiled capability required by package-bound Exit Sequence overlap triggers.
 pub const EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID: &str =
     "engine.switch.exit_sequence.overlap_extent";
@@ -239,6 +243,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
                 "Package-bound grouped House construction and live damage/destruction lifecycle.",
+            ),
+            (
+                HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID,
+                "Package-bound grouped House construction countdown, completion, footprint, and live damage lifecycle.",
             ),
             (
                 EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,

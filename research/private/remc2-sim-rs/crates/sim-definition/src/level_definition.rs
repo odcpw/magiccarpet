@@ -461,6 +461,10 @@ pub struct HouseConstructionDefinition {
     life_mana_scalar: u16,
     #[serde(default, skip_serializing_if = "is_read_only_entity_parameter")]
     life_mana_scalar_access: LevelEntityParameterAccess,
+    default_construction_visits: u16,
+    construction_visits: u16,
+    #[serde(default, skip_serializing_if = "is_read_only_entity_parameter")]
+    construction_visits_access: LevelEntityParameterAccess,
 }
 
 /// Immutable strict-overlap extent for one package-present Exit Sequence trigger.
@@ -504,11 +508,16 @@ impl HouseConstructionDefinition {
     pub(crate) const fn new(
         life_mana_scalar: u16,
         life_mana_scalar_access: LevelEntityParameterAccess,
+        construction_visits: u16,
+        construction_visits_access: LevelEntityParameterAccess,
     ) -> Self {
         Self {
             default_life_mana_scalar: life_mana_scalar,
             life_mana_scalar,
             life_mana_scalar_access,
+            default_construction_visits: construction_visits,
+            construction_visits,
+            construction_visits_access,
         }
     }
 
@@ -525,6 +534,21 @@ impl HouseConstructionDefinition {
     #[must_use]
     pub const fn life_mana_scalar_access(self) -> LevelEntityParameterAccess {
         self.life_mana_scalar_access
+    }
+
+    #[must_use]
+    pub const fn default_construction_visits(self) -> u16 {
+        self.default_construction_visits
+    }
+
+    #[must_use]
+    pub const fn construction_visits(self) -> u16 {
+        self.construction_visits
+    }
+
+    #[must_use]
+    pub const fn construction_visits_access(self) -> LevelEntityParameterAccess {
+        self.construction_visits_access
     }
 }
 
@@ -893,7 +917,10 @@ impl LevelDefinition {
             }
             match (entity.kind, entity.house_construction) {
                 (LevelEntityKind::Building(BuildingKind::House), Some(config))
-                    if config.default_life_mana_scalar > 0 && config.life_mana_scalar > 0 => {}
+                    if config.default_life_mana_scalar > 0
+                        && config.life_mana_scalar > 0
+                        && config.default_construction_visits > 0
+                        && config.construction_visits > 0 => {}
                 (LevelEntityKind::Building(BuildingKind::House), Some(_)) => {
                     return Err(format!(
                         "semantic House {} has an invalid life/mana scalar",
@@ -1293,6 +1320,46 @@ impl LevelDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_house_construction_visits(
+        &self,
+        id: &LevelEntityId,
+        construction_visits: u16,
+    ) -> Result<Self, String> {
+        if construction_visits == 0 {
+            return Err(format!(
+                "semantic House {} construction visits is outside 1..={}",
+                id.as_str(),
+                u16::MAX
+            ));
+        }
+        let mut candidate = self.clone();
+        let entity = candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == *id)
+            .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
+        let config = entity.house_construction.as_mut().ok_or_else(|| {
+            format!(
+                "semantic level entity {} is not a construction-bound House",
+                id.as_str()
+            )
+        })?;
+        if config.construction_visits_access != LevelEntityParameterAccess::SessionReset {
+            return Err(format!(
+                "semantic House {} construction visits has no runtime consumer",
+                id.as_str()
+            ));
+        }
+        if config.construction_visits == construction_visits {
+            return Err(format!(
+                "semantic House {} already has the requested construction visits",
+                id.as_str()
+            ));
+        }
+        config.construction_visits = construction_visits;
+        Ok(candidate)
+    }
+
     pub(crate) fn with_switch_overlap_extent_tiles(
         &self,
         id: &LevelEntityId,
@@ -1479,6 +1546,10 @@ impl LevelDefinition {
                         != original_config.default_life_mana_scalar
                         || candidate_config.life_mana_scalar_access
                             != original_config.life_mana_scalar_access
+                        || candidate_config.default_construction_visits
+                            != original_config.default_construction_visits
+                        || candidate_config.construction_visits_access
+                            != original_config.construction_visits_access
                     {
                         return Err(format!(
                             "semantic level variant changes House construction structure at {}",
@@ -1497,6 +1568,21 @@ impl LevelDefinition {
                     if candidate_config.life_mana_scalar == 0 {
                         return Err(format!(
                             "semantic level variant gives House {} an invalid life/mana scalar",
+                            original.id.as_str()
+                        ));
+                    }
+                    if candidate_config.construction_visits != original_config.construction_visits
+                        && original_config.construction_visits_access
+                            != LevelEntityParameterAccess::SessionReset
+                    {
+                        return Err(format!(
+                            "semantic level variant changes read-only House construction visits {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if candidate_config.construction_visits == 0 {
+                        return Err(format!(
+                            "semantic level variant gives House {} invalid construction visits",
                             original.id.as_str()
                         ));
                     }

@@ -383,6 +383,8 @@ impl Mc2LevelDefinition {
                         group,
                         life_mana_scalar,
                         LevelEntityParameterAccess::SessionReset,
+                        crate::house::AUTHORED_HOUSE_CONSTRUCTION_VISITS,
+                        LevelEntityParameterAccess::SessionReset,
                     ));
                 } else {
                     entities.push(entity_definition_with_position_access(

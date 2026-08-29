@@ -509,6 +509,15 @@ impl CampaignDefinition {
             .map(|config| config.life_mana_scalar())
     }
 
+    pub(crate) fn authored_house_construction_visits(&self, authored_record: u16) -> Option<u16> {
+        let entity_id = self.authored_building_entities.get(&authored_record)?;
+        self.semantic_level
+            .as_ref()?
+            .entity(entity_id)?
+            .house_construction()
+            .map(|config| config.construction_visits())
+    }
+
     pub(crate) fn building_for_initial_source_slot(
         &self,
         source_slot: u16,
