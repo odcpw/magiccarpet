@@ -536,6 +536,9 @@ namespace MagicCarpet.Native
         private bool gameRuntimeMode;
         private bool gameRuntimeStartupReady;
         private EngineSessionTransport.CampaignSnapshotObservation gameRuntimeCampaignSnapshot;
+        private string gameRuntimeSemanticEventCursor = "0";
+        private readonly Queue<EngineSessionTransport.GameEvent>
+            gameRuntimeRecentSemanticEvents = new();
         private EngineSessionTransport.PresentationAssetObservation gameRuntimeFireballAsset;
         private SemanticPresentationAssetCache gameRuntimePresentationAssetCache;
         private readonly Dictionary<ulong, GameRuntimePresentationMarker>
@@ -1006,6 +1009,12 @@ namespace MagicCarpet.Native
 
         internal string GameRuntimeProductionFlightHudText =>
             FormatGameRuntimeFlightHudText();
+
+        internal string GameRuntimeProductionSemanticEventCursor =>
+            gameRuntimeSemanticEventCursor;
+
+        internal EngineSessionTransport.GameEvent[] GameRuntimeProductionRecentSemanticEvents =>
+            gameRuntimeRecentSemanticEvents.ToArray();
 
         internal Texture2D GameRuntimeProductionFireballTexture =>
             gameRuntimeFireballAsset?.value == null
@@ -2601,7 +2610,62 @@ namespace MagicCarpet.Native
                 unchecked((sbyte)flags),
                 0,
                 0);
+            DrainGameRuntimeSemanticEvents();
             UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+        }
+
+        private void DrainGameRuntimeSemanticEvents()
+        {
+            const uint PageLimit = 128;
+            const int RecentEventLimit = 256;
+            var observation = gameRuntimeCampaignSnapshot;
+            Require(
+                session != null && observation?.identity != null && observation.value != null,
+                "semantic event polling requires an authoritative campaign snapshot");
+            var head = observation.value.effect_head;
+            var cursor = gameRuntimeSemanticEventCursor;
+            Require(
+                ulong.TryParse(cursor, out var expectedSequence) &&
+                ulong.TryParse(head, out var parsedHead) &&
+                expectedSequence <= parsedHead,
+                "semantic event cursor is within the authoritative retained head");
+            while (cursor != head)
+            {
+                var page = session.GameRuntimeCampaignEvents(cursor, PageLimit);
+                Require(
+                    page.identity.session_id == observation.identity.session_id &&
+                    page.identity.generation == observation.identity.generation &&
+                    page.identity.tick == observation.identity.tick &&
+                    page.value.event_head == head &&
+                    page.value.events.Length > 0,
+                    "semantic event page is bound to the current runtime snapshot");
+                foreach (var gameEvent in page.value.events)
+                {
+                    expectedSequence++;
+                    Require(
+                        gameEvent.sequence == expectedSequence.ToString() &&
+                        !string.IsNullOrWhiteSpace(gameEvent.event_id),
+                        "semantic events are contiguous and carry a typed identifier");
+                    gameRuntimeRecentSemanticEvents.Enqueue(gameEvent);
+                    while (gameRuntimeRecentSemanticEvents.Count > RecentEventLimit)
+                    {
+                        gameRuntimeRecentSemanticEvents.Dequeue();
+                    }
+                }
+                Require(
+                    page.value.next_cursor == expectedSequence.ToString() &&
+                    page.value.next_cursor != cursor,
+                    "semantic event page advances exactly through its returned rows");
+                cursor = page.value.next_cursor;
+                if (!page.value.has_more)
+                {
+                    break;
+                }
+            }
+            Require(
+                cursor == head,
+                "semantic event drain reaches the authoritative retained head");
+            gameRuntimeSemanticEventCursor = cursor;
         }
 
         private void PresentLevel2SpellEffects(
@@ -8755,7 +8819,17 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady,
                 "game runtime reset route requires a validated production owner");
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignReset();
+            gameRuntimeSemanticEventCursor = gameRuntimeCampaignSnapshot.value.effect_head;
+            gameRuntimeRecentSemanticEvents.Clear();
             UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+        }
+
+        internal void QualificationRefreshGameRuntimeProductionEvents()
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "semantic event refresh requires a validated production owner");
+            DrainGameRuntimeSemanticEvents();
         }
 
         internal byte[] QualificationSaveGameRuntimeProductionReplay()
@@ -11720,13 +11794,24 @@ namespace MagicCarpet.Native
             var identity = session.GameRuntimeIdentity();
             var pose = observation.value.player_pose;
             var motion = observation.value.player_motion;
+            var latestEvent = gameRuntimeRecentSemanticEvents.Count == 0
+                ? "none"
+                : FormatGameRuntimeSemanticEvent(gameRuntimeRecentSemanticEvents.Last());
             return $"CARPET FLIGHT — RUST GAME RUNTIME · " +
                 $"{identity.mode.ToUpperInvariant()}\n" +
                 $"speed {motion.actual_speed,4} / {motion.target_speed,4}  " +
                 $"strafe {motion.strafe_speed,4}  altitude {pose.z,6}  " +
                 $"tick {observation.identity.tick}\n" +
+                $"event {latestEvent}\n" +
                 "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
                 "C centre · Space fire · P pause";
+        }
+
+        private static string FormatGameRuntimeSemanticEvent(
+            EngineSessionTransport.GameEvent gameEvent)
+        {
+            var actor = string.IsNullOrEmpty(gameEvent.actor) ? "-" : gameEvent.actor;
+            return $"{gameEvent.sequence} {gameEvent.event_id} actor={actor}";
         }
 
         private void DrawGameRuntimeFlightHud()
@@ -12339,6 +12424,8 @@ namespace MagicCarpet.Native
                 ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
                 session = opened;
                 gameRuntimeCampaignSnapshot = observation;
+                gameRuntimeSemanticEventCursor = observation.value.effect_head;
+                gameRuntimeRecentSemanticEvents.Clear();
                 gameRuntimeMode = true;
                 gameRuntimeStartupReady = true;
                 Debug.Log(
@@ -13099,6 +13186,8 @@ namespace MagicCarpet.Native
             gameRuntimeMode = false;
             gameRuntimeStartupReady = false;
             gameRuntimeCampaignSnapshot = null;
+            gameRuntimeSemanticEventCursor = "0";
+            gameRuntimeRecentSemanticEvents.Clear();
             gameRuntimeMovementFlags = 0;
             CenterSteering();
             level2StartupReady = false;

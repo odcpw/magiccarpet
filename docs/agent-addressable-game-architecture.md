@@ -575,8 +575,11 @@ partial real implementation, not a completion claim:
   presentation consumer renders the live Level 1 Fireball described above.
   A generic flight telemetry strip now also renders actual and target speed,
   strafe speed, altitude, tick and runtime mode from that same returned Rust
-  snapshot; source-art HUD, life/mana/objective UI, terrain, other entities,
-  audio and effects presentation have not yet migrated to this owner. The resolver
+  snapshot. After each fixed step the same owner now drains the ordered,
+  opaque-actor semantic event pages through the nested session guard and shows
+  the latest retained event in that strip without replaying it on another poll.
+  Source-art HUD, life/mana/objective UI, terrain, world-space effects and audio
+  playback have not yet migrated to this owner. The resolver
   can now serialize one real Level 1 Playing or quiescent Paused session as its immutable
   semantic definition, ordered neutral command trace and exact state/terrain/
   effect receipts, then guard-first replay it into a fresh runtime/session and

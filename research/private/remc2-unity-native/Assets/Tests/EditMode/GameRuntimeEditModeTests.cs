@@ -769,6 +769,7 @@ namespace MagicCarpet.Native.Tests
                         $"strafe {before.value.player_motion.strafe_speed,4}  " +
                         $"altitude {before.value.player_pose.z,6}  " +
                         $"tick {before.identity.tick}\n" +
+                        "event none\n" +
                         "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
                         "C centre · Space fire · P pause"));
 
@@ -789,6 +790,11 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     after.value.player_motion.actual_speed,
                     Is.Not.EqualTo(before.value.player_motion.actual_speed));
+                var recentEvents = runtime.GameRuntimeProductionRecentSemanticEvents;
+                var latestEvent = recentEvents.Length == 0
+                    ? "none"
+                    : $"{recentEvents[^1].sequence} {recentEvents[^1].event_id} " +
+                      $"actor={(string.IsNullOrEmpty(recentEvents[^1].actor) ? "-" : recentEvents[^1].actor)}";
                 Assert.That(
                     runtime.GameRuntimeProductionFlightHudText,
                     Is.EqualTo(
@@ -798,6 +804,7 @@ namespace MagicCarpet.Native.Tests
                         $"strafe {after.value.player_motion.strafe_speed,4}  " +
                         $"altitude {after.value.player_pose.z,6}  " +
                         $"tick {after.identity.tick}\n" +
+                        $"event {latestEvent}\n" +
                         "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
                         "C centre · Space fire · P pause"));
 
@@ -805,6 +812,86 @@ namespace MagicCarpet.Native.Tests
                 // same-handle Rust motion, altitude, mode, and tick returned by
                 // the campaign snapshot. It does not prove source-art HUD assets,
                 // life/mana/spells/objectives, minimap/terrain/audio, or later levels.
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProductionGameRuntimeHudConsumesOrderedSemanticFireballEventsOnceOnSameHandle()
+        {
+            var root = new GameObject("resolver runtime semantic event HUD");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                var beforeIdentity = runtime.GameRuntimeProductionIdentity;
+                var before = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(
+                    runtime.GameRuntimeProductionSemanticEventCursor,
+                    Is.EqualTo(before.value.effect_head));
+                Assert.That(runtime.GameRuntimeProductionRecentSemanticEvents, Is.Empty);
+
+                runtime.QualificationApplyGameRuntimeProductionInput(false, true);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+
+                var afterIdentity = runtime.GameRuntimeProductionIdentity;
+                var after = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(afterIdentity.runtime_id, Is.EqualTo(beforeIdentity.runtime_id));
+                Assert.That(
+                    afterIdentity.session.session_id,
+                    Is.EqualTo(beforeIdentity.session.session_id));
+                Assert.That(after.identity.tick, Is.EqualTo("1"));
+                Assert.That(
+                    runtime.GameRuntimeProductionSemanticEventCursor,
+                    Is.EqualTo(after.value.effect_head));
+
+                var events = runtime.GameRuntimeProductionRecentSemanticEvents;
+                Assert.That(events, Is.Not.Empty);
+                var expectedSequence = ulong.Parse(before.value.effect_head);
+                EngineSessionTransport.GameEvent activation = null;
+                foreach (var gameEvent in events)
+                {
+                    expectedSequence++;
+                    Assert.That(gameEvent.sequence, Is.EqualTo(expectedSequence.ToString()));
+                    if (gameEvent.event_id == "spell.activation_requested")
+                    {
+                        activation = gameEvent;
+                    }
+                }
+                Assert.That(expectedSequence.ToString(), Is.EqualTo(after.value.effect_head));
+                Assert.That(activation, Is.Not.Null);
+                Assert.That(ulong.TryParse(activation.actor, out var actor), Is.True);
+                Assert.That(actor, Is.Not.Zero);
+                var latest = events[^1];
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Does.Contain(
+                        $"event {latest.sequence} {latest.event_id} " +
+                        $"actor={(string.IsNullOrEmpty(latest.actor) ? "-" : latest.actor)}"));
+
+                var cursor = runtime.GameRuntimeProductionSemanticEventCursor;
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                var repeated = runtime.GameRuntimeProductionRecentSemanticEvents;
+                Assert.That(runtime.GameRuntimeProductionSemanticEventCursor, Is.EqualTo(cursor));
+                Assert.That(repeated.Length, Is.EqualTo(events.Length));
+                for (var index = 0; index < events.Length; index++)
+                {
+                    Assert.That(repeated[index].sequence, Is.EqualTo(events[index].sequence));
+                    Assert.That(repeated[index].event_id, Is.EqualTo(events[index].event_id));
+                    Assert.That(repeated[index].actor, Is.EqualTo(events[index].actor));
+                }
+
+                // No-Claim: this proves the production HUD drains one ordered,
+                // same-session semantic Fireball event stream exactly once. It
+                // does not play audio, localize hints, place impact VFX, retain
+                // UI history across reset, or prove later-level presentation.
             }
             finally
             {
