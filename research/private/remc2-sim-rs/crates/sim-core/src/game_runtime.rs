@@ -1628,6 +1628,112 @@ mod tests {
     }
 
     #[test]
+    fn runtime_replay_save_restores_real_level_three_from_its_bound_package() {
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_two_package()),
+            Mc2CampaignInputs::new(level_three_package()),
+            Mc2CampaignInputs::new(level_one_package()),
+        ])
+        .unwrap();
+        let mut source = open_real_level_three_at_proven_incoming_boundary(&resolver, 521);
+        for command in [
+            GameCommand::default(),
+            GameCommand {
+                longitudinal: LongitudinalControl::Decelerate,
+                lateral: LateralControl::Positive,
+                look_yaw: -48,
+                ..GameCommand::default()
+            },
+        ] {
+            let guard = source.session().unwrap().identity().guard();
+            source.session_mut().unwrap().step(guard, command).unwrap();
+        }
+        let source_identity = source.identity();
+        let source_session = source_identity.session.as_ref().unwrap().clone();
+        let source_snapshot = source.session().unwrap().snapshot();
+        assert_eq!(source_session.generation, 3);
+        assert_eq!(source_session.tick, 2);
+        assert_eq!(
+            source_identity
+                .active_runtime_flow
+                .as_ref()
+                .unwrap()
+                .bound_level_id()
+                .as_str(),
+            "level.magic_carpet_2.revealed_way"
+        );
+
+        let save = resolver.save_replay(&source).unwrap();
+        let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
+        assert_eq!(
+            save_json["definition"]["runtime_flow"]["bound_level_id"],
+            "level.magic_carpet_2.revealed_way"
+        );
+        assert_eq!(save_json["expected_tick"], 2);
+
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(522).unwrap();
+        let title = restored.identity();
+        let restored_identity = resolver
+            .load_replay(&mut restored, title.guard(), 522, &save)
+            .unwrap();
+        assert_eq!(restored_identity.mode, RuntimeMode::Playing);
+        assert_eq!(
+            restored_identity.active_runtime_flow,
+            source_identity.active_runtime_flow
+        );
+        let restored_session = restored_identity.session.as_ref().unwrap();
+        assert_eq!(restored_session.session_id, 522);
+        assert_eq!(restored_session.generation, 1);
+        assert_eq!(restored_session.tick, 2);
+        assert_eq!(
+            restored_session.package_graph_hash,
+            source_session.package_graph_hash
+        );
+        assert_eq!(
+            restored_session.definition_hash,
+            source_session.definition_hash
+        );
+        assert_eq!(
+            restored_session.definition_revision,
+            source_session.definition_revision
+        );
+        assert_eq!(
+            restored.session().unwrap().snapshot().value,
+            source_snapshot.value
+        );
+
+        // A loader that silently restores either the entry package or the
+        // previous Level 2 package cannot satisfy the exact Level 3 identity
+        // above. The source runtime's nested guard also remains unusable.
+        let before_stale = restored.session().unwrap().snapshot();
+        let stale = restored
+            .session_mut()
+            .unwrap()
+            .step(source_session.guard(), GameCommand::default());
+        assert!(matches!(
+            stale,
+            Err(GameSessionError::Guard(error))
+                if error.code == SessionGuardErrorCode::SessionMismatch
+        ));
+        assert_eq!(restored.session().unwrap().snapshot(), before_stale);
+
+        let guard = restored.session().unwrap().identity().guard();
+        let after = restored
+            .session_mut()
+            .unwrap()
+            .step(guard, GameCommand::default())
+            .unwrap();
+        assert_eq!(after.identity.tick, 3);
+
+        // No-Claim: this stages only the separately proved incoming Level 3
+        // boundary and proves definition-bound Playing replay for that real
+        // installed package. Together with the focused Level 1 and Level 2
+        // gates, all three definitions now restore independently; this is not
+        // one cross-level checkpoint, uninterrupted route, migration promise,
+        // client menu, or terminal-Title save.
+    }
+
+    #[test]
     fn runtime_completed_real_level_one_accepts_only_level_two_into_loading_once() {
         let catalog = default_catalog().unwrap();
         let level_one = level_one_package();
