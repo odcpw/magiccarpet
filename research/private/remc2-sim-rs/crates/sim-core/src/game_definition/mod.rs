@@ -18,11 +18,11 @@ pub use sim_definition::runtime_flow::{
 };
 pub use sim_definition::{
     APPLY_RECEIPT_SCHEMA, ARCHER_MAX_LIFE_CAPABILITY_ID, AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID,
-    Access, ApplyBinding, ApplyReceipt, ApplyStatus, ArtifactId, ArtifactKind, ArtifactNode,
-    BEE_MAX_LIFE_CAPABILITY_ID, BoundPresentationAsset, CHANGE_SET_SCHEMA,
-    CREATURE_POLICY_CAPABILITY_ID, ChangeSet, ChangeSetBuilder, CompiledCapability,
-    CompiledCapabilityRegistry, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionDiff, DefinitionError,
-    DefinitionErrorCode, DefinitionOperation, DescriptorKind, Diagnostic,
+    AREA_EXIT_OVERLAP_EXTENT_CAPABILITY_ID, Access, ApplyBinding, ApplyReceipt, ApplyStatus,
+    ArtifactId, ArtifactKind, ArtifactNode, BEE_MAX_LIFE_CAPABILITY_ID, BoundPresentationAsset,
+    CHANGE_SET_SCHEMA, CREATURE_POLICY_CAPABILITY_ID, ChangeSet, ChangeSetBuilder,
+    CompiledCapability, CompiledCapabilityRegistry, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionDiff,
+    DefinitionError, DefinitionErrorCode, DefinitionOperation, DescriptorKind, Diagnostic,
     EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
     FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GAME_DEFINITION_SCHEMA,
     GAME_PACKAGE_SCHEMA, GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition, GamePackage,

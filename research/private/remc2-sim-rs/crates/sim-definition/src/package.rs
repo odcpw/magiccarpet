@@ -74,6 +74,9 @@ pub const EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID: &str =
 /// Exact compiled capability required by package-bound Area Entry overlap triggers.
 pub const AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID: &str = "engine.switch.area_entry.overlap_extent";
 
+/// Exact compiled capability required by package-bound Area Exit overlap triggers.
+pub const AREA_EXIT_OVERLAP_EXTENT_CAPABILITY_ID: &str = "engine.switch.area_exit.overlap_extent";
+
 /// Exact compiled maximum-life capability for a creature family whose
 /// package constructor and damage/death lifecycle consume the parameter.
 #[must_use]
@@ -244,6 +247,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID,
                 "Package-bound Area Entry construction/import, strict overlap, authored-group activation, and trigger consumption lifecycle.",
+            ),
+            (
+                AREA_EXIT_OVERLAP_EXTENT_CAPABILITY_ID,
+                "Package-bound Area Exit construction/import, strict non-overlap, authored-group activation, and trigger consumption lifecycle.",
             ),
             (
                 "engine.flight.fixed_point",

@@ -24,12 +24,13 @@ pub use operation::{
     ArtifactId, DefinitionOperation, IntegerParameter, OptionParameter, PresentationAssetSlot,
 };
 pub use package::{
-    ARCHER_MAX_LIFE_CAPABILITY_ID, AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID, ArtifactKind,
-    ArtifactNode, BEE_MAX_LIFE_CAPABILITY_ID, CREATURE_POLICY_CAPABILITY_ID, CompiledCapability,
-    CompiledCapabilityRegistry, DRAGON_MAX_LIFE_CAPABILITY_ID,
-    EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
-    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID,
-    GamePackage, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, PackageProvenance, PackageProvenanceKind,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID,
+    AREA_EXIT_OVERLAP_EXTENT_CAPABILITY_ID, ArtifactKind, ArtifactNode, BEE_MAX_LIFE_CAPABILITY_ID,
+    CREATURE_POLICY_CAPABILITY_ID, CompiledCapability, CompiledCapabilityRegistry,
+    DRAGON_MAX_LIFE_CAPABILITY_ID, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
+    EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
+    FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage,
+    HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, PackageProvenance, PackageProvenanceKind,
     RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID, TRADER_MAX_LIFE_CAPABILITY_ID,
     VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     engine_capabilities,
@@ -59,7 +60,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v10";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "32.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "33.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -754,7 +755,7 @@ impl GameDefinition {
             DefinitionError::new(
                 DefinitionErrorCode::DependencyFailed,
                 id.as_str(),
-                "definition has no semantic Exit Sequence overlap consumer",
+                "definition has no semantic switch overlap consumer",
             )
         })?;
         let mut candidate = self.clone();
@@ -1269,7 +1270,7 @@ impl GameDefinition {
             .collect()
     }
 
-    /// Describe one package-bound Exit Sequence strict-overlap extent.
+    /// Describe one package-bound supported switch strict-overlap extent.
     #[must_use]
     pub fn level_switch_overlap_extent_descriptor(
         &self,
@@ -1286,6 +1287,13 @@ impl GameDefinition {
                 AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID,
                 "Area Entry",
                 "package Area Entry constructor/import and authored-group overlap consumer",
+            ),
+            level_definition::LevelEntityKind::Switch(
+                level_definition::SwitchKind::AreaExitTrigger,
+            ) => (
+                AREA_EXIT_OVERLAP_EXTENT_CAPABILITY_ID,
+                "Area Exit",
+                "package Area Exit constructor/import and authored-group non-overlap consumer",
             ),
             level_definition::LevelEntityKind::Switch(
                 level_definition::SwitchKind::ExitSequenceTrigger,

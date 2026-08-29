@@ -911,14 +911,18 @@ impl LevelDefinition {
             match (entity.kind, entity.switch_overlap) {
                 (
                     LevelEntityKind::Switch(
-                        SwitchKind::AreaEntryTrigger | SwitchKind::ExitSequenceTrigger,
+                        SwitchKind::AreaEntryTrigger
+                        | SwitchKind::AreaExitTrigger
+                        | SwitchKind::ExitSequenceTrigger,
                     ),
                     Some(config),
                 ) if (1..=127).contains(&config.default_overlap_extent_tiles)
                     && (1..=127).contains(&config.overlap_extent_tiles) => {}
                 (
                     LevelEntityKind::Switch(
-                        SwitchKind::AreaEntryTrigger | SwitchKind::ExitSequenceTrigger,
+                        SwitchKind::AreaEntryTrigger
+                        | SwitchKind::AreaExitTrigger
+                        | SwitchKind::ExitSequenceTrigger,
                     ),
                     Some(_),
                 ) => {
@@ -934,6 +938,7 @@ impl LevelDefinition {
                     ));
                 }
                 (LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger), None) => {}
+                (LevelEntityKind::Switch(SwitchKind::AreaExitTrigger), None) => {}
                 (_, Some(_)) => {
                     return Err(format!(
                         "unsupported entity {} carries switch overlap configuration",
@@ -1535,7 +1540,7 @@ impl LevelDefinition {
                 (None, None) => {}
                 _ => {
                     return Err(format!(
-                        "semantic level variant adds or removes Exit Sequence overlap configuration at {}",
+                        "semantic level variant adds or removes switch overlap configuration at {}",
                         original.id.as_str()
                     ));
                 }

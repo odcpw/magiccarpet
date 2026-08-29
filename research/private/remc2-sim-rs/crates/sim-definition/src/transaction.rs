@@ -1762,7 +1762,7 @@ fn validate_against(
                     diagnostics.push(Diagnostic {
                         code: "UNSAFE_TIMING".to_owned(),
                         path_or_id: id.as_str().to_owned(),
-                        message: "Exit Sequence overlap authoring requires session_reset timing"
+                        message: "switch overlap authoring requires session_reset timing"
                             .to_owned(),
                     });
                     continue;
@@ -1778,8 +1778,9 @@ fn validate_against(
                     diagnostics.push(Diagnostic {
                         code: "CONFLICT".to_owned(),
                         path_or_id: id.as_str().to_owned(),
-                        message: "Exit Sequence expected overlap extent does not match the active definition"
-                            .to_owned(),
+                        message:
+                            "expected switch overlap extent does not match the active definition"
+                                .to_owned(),
                     });
                     continue;
                 }
@@ -1787,7 +1788,7 @@ fn validate_against(
                     diagnostics.push(Diagnostic {
                         code: "INVALID_REQUEST".to_owned(),
                         path_or_id: id.as_str().to_owned(),
-                        message: "Exit Sequence trigger already has the requested overlap extent"
+                        message: "switch trigger already has the requested overlap extent"
                             .to_owned(),
                     });
                     continue;

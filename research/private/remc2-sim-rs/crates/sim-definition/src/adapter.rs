@@ -279,6 +279,32 @@ pub const fn area_entry_trigger_entity_definition(
 }
 
 #[must_use]
+pub const fn area_exit_trigger_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    overlap_extent_tiles: u16,
+    overlap_extent_tiles_access: LevelEntityParameterAccess,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Switch(crate::level_definition::SwitchKind::AreaExitTrigger),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        Some(SwitchOverlapDefinition::new(
+            overlap_extent_tiles,
+            overlap_extent_tiles_access,
+        )),
+    )
+}
+
+#[must_use]
 pub fn objective_definition(
     id: LevelObjectiveId,
     condition: ObjectiveCondition,

@@ -7,9 +7,10 @@
 
 use crate::level_definition::{LevelEntityKind, LevelObjectiveId, ObjectiveCondition};
 use crate::{
-    ARCHER_MAX_LIFE_CAPABILITY_ID, AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID, Access,
-    BEE_MAX_LIFE_CAPABILITY_ID, CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID,
-    DefinitionError, DefinitionErrorCode, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID,
+    AREA_EXIT_OVERLAP_EXTENT_CAPABILITY_ID, Access, BEE_MAX_LIFE_CAPABILITY_ID,
+    CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError,
+    DefinitionErrorCode, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
     EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition,
     HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
@@ -358,6 +359,7 @@ impl DefinitionOperation {
                     "expected_overlap_extent_tiles": "same type, unit, and bounds as overlap_extent_tiles",
                     "required_capability_by_switch_kind": {
                         "area_entry_trigger": {"id": AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID, "exact_version": 1},
+                        "area_exit_trigger": {"id": AREA_EXIT_OVERLAP_EXTENT_CAPABILITY_ID, "exact_version": 1},
                         "exit_sequence_trigger": {"id": EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, "exact_version": 1}
                     },
                     "mutation_timing": "session_reset",
@@ -751,14 +753,14 @@ impl DefinitionOperation {
                     DefinitionError::new(
                         DefinitionErrorCode::UnknownSemanticId,
                         entity.as_str(),
-                        "overlap update names no package-bound Exit Sequence trigger",
+                        "overlap update names no package-bound supported switch trigger",
                     )
                 })?;
             if descriptor.access != Access::Writable {
                 return Err(DefinitionError::new(
                     DefinitionErrorCode::DependencyFailed,
                     entity.as_str(),
-                    "Exit Sequence overlap extent has no runtime consumer in this package",
+                    "switch overlap extent has no runtime consumer in this package",
                 ));
             }
             descriptor.validate_value(
@@ -901,7 +903,7 @@ impl DefinitionOperation {
                 unreachable!("grouped House scalar updates return above")
             }
             Self::SetSwitchOverlapExtent { .. } => {
-                unreachable!("Exit Sequence overlap updates return above")
+                unreachable!("switch overlap updates return above")
             }
             Self::PutObjective { .. } => unreachable!("objective puts return above"),
             Self::SetMechanicCountdown { .. } => {
