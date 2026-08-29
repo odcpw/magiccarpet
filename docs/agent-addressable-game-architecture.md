@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 15.0 milestone, this is a binding target with
+As of the semantic-contract 16.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -358,6 +358,14 @@ partial real implementation, not a completion claim:
   the authored authority and the same damage remains nonterminal. This does
   not author multiple Archers in one transaction, targeting/child production,
   organic combat, another creature family, save/replay, or Unity UI;
+- every package-present Dragon in the qualified Level 3 definition now
+  carries a per-instance `max_life` descriptor backed by the exact compiled
+  Dragon lifecycle capability. The focused causal proof changes one real
+  Dragon root and all sixteen source-copied body rows, then sends identical
+  damage through one body's ordinary mailbox after explicit reopen/reset.
+  This does not author multiple Dragons in one transaction, prove organic
+  combat or targeting, alter body count/motion/fireballs, support another
+  creature family, save/replay, or Unity UI;
 - the qualified Level 1 campaign package now retains two profile-pinned,
   canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its
   semantic projectile slot binds the base payload and discovers the fade

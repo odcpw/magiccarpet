@@ -162,8 +162,12 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         mut position: Position,
+        max_life: i32,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
+        if !(1..=i32::MAX).contains(&max_life) {
+            return None;
+        }
         let before = self.clone();
         position.z = terrain.ground_height(position);
         let source_entity_index = self.allocate_slot()?;
@@ -182,8 +186,8 @@ impl Level2EconomyState {
             minimum_speed: DRAGON_MINIMUM_SPEED,
             maximum_speed: DRAGON_MAXIMUM_SPEED,
             actual_speed: DRAGON_ACTUAL_SPEED,
-            max_life: DRAGON_LIFE,
-            life: DRAGON_LIFE,
+            max_life,
+            life: max_life,
             mana: DRAGON_INITIAL_MANA,
             max_mana: DRAGON_MAX_MANA,
             subspell_index: DRAGON_SUBSPELL_INDEX,
@@ -252,8 +256,8 @@ impl Level2EconomyState {
                 action: DRAGON_PART_ACTION,
                 source_byte_3e: u8::try_from(part_index).expect("Dragon part index fits u8"),
                 source_byte_39: source.source_byte_39,
-                max_life: DRAGON_LIFE,
-                life: DRAGON_LIFE,
+                max_life,
+                life: max_life,
                 // `sub_4B240` copies the root before replacing the root's
                 // mana with max-mana/32. The first segment therefore keeps
                 // the initial half-mana value; later segments copy 140.

@@ -249,11 +249,22 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Creature(kind),
                     position_access,
                 )?;
-                if matches!(kind, CreatureKind::Firefly | CreatureKind::Archer) {
-                    let max_life = if kind == CreatureKind::Firefly {
-                        crate::native_world::level2_class5::firefly::FIREFLY_LIFE
-                    } else {
-                        crate::native_world::level2_class5::ARCHER_MAX_LIFE
+                if matches!(
+                    kind,
+                    CreatureKind::Firefly | CreatureKind::Archer | CreatureKind::Dragon
+                ) {
+                    let max_life = match kind {
+                        CreatureKind::Firefly => {
+                            crate::native_world::level2_class5::firefly::FIREFLY_LIFE
+                        }
+                        CreatureKind::Archer => crate::native_world::level2_class5::ARCHER_MAX_LIFE,
+                        CreatureKind::Dragon => crate::native_world::level2_class5::DRAGON_LIFE,
+                        _ => {
+                            return Err(format!(
+                                "semantic creature {} has no maximum-life binding",
+                                kind.as_str()
+                            ));
+                        }
                     };
                     entities.push(creature_entity_definition(
                         id,

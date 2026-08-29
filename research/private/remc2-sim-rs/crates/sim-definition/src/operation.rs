@@ -7,9 +7,10 @@
 
 use crate::level_definition::{LevelEntityKind, LevelObjectiveId, ObjectiveCondition};
 use crate::{
-    ARCHER_MAX_LIFE_CAPABILITY_ID, Access, CREATURE_POLICY_CAPABILITY_ID, DefinitionError,
-    DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
-    GameDefinition, SemanticId, SemanticValue, creature_max_life_capability_id,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, Access, CREATURE_POLICY_CAPABILITY_ID,
+    DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError, DefinitionErrorCode,
+    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GameDefinition, SemanticId,
+    SemanticValue, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -254,6 +255,10 @@ impl DefinitionOperation {
                     "required_capability_by_creature_kind": {
                         "archer": {
                             "id": ARCHER_MAX_LIFE_CAPABILITY_ID,
+                            "exact_version": 1,
+                        },
+                        "dragon": {
+                            "id": DRAGON_MAX_LIFE_CAPABILITY_ID,
                             "exact_version": 1,
                         },
                         "firefly": {

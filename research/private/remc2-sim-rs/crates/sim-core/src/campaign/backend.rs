@@ -1274,8 +1274,9 @@ mod tests {
     use crate::campaign::state::{ResetReceipt, ResetState, encode_reset_v1};
     use crate::game_definition::{
         ARCHER_MAX_LIFE_CAPABILITY_ID, Access, ArtifactId, ChangeSetBuilder,
-        FIREFLY_MAX_LIFE_CAPABILITY_ID, GamePackage, IntegerParameter, OptionParameter,
-        PresentationAssetSlot, PublicationFault, RequestedTiming, SemanticValue, WorkspaceStore,
+        DRAGON_MAX_LIFE_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GamePackage,
+        IntegerParameter, OptionParameter, PresentationAssetSlot, PublicationFault,
+        RequestedTiming, SemanticValue, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::goat::{GoatBehaviorConfig, GoatStepEvent};
@@ -4918,6 +4919,249 @@ mod tests {
         // reopen/reset. The Level 1 causal gate owns ordinary mailbox damage;
         // this test does not duplicate it or claim organic group activation,
         // Archer targeting/children, death, save/replay, or clients.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_dragon_root_and_body_max_life_before_body_damage_after_reopen_and_reset()
+     {
+        const DRAGON_RECORD: u16 = 141;
+        const GROUP_ONE_ROWS: &[u16] = &[141, 142];
+        const PACKAGE_MAX_LIFE: u32 = 4_000;
+        const AUTHORED_MAX_LIFE: u32 = 8_000;
+        const DAMAGE: i32 = 4_500;
+
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let dragon =
+            sim_definition::adapter::stable_entity_id("creature.dragon.at_79_143").unwrap();
+        let target = base.level_definition().unwrap().entity(&dragon).unwrap();
+        assert_eq!(
+            target.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+        assert!(base.required_capabilities().iter().any(|requirement| {
+            requirement.id.as_str() == DRAGON_MAX_LIFE_CAPABILITY_ID
+                && requirement.exact_version == 1
+        }));
+
+        let workspace_root = temporary_workspace_path("campaign-dragon-max-life");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-dragon-max-life", base.clone())
+                .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            81,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-dragon-max-life",
+            &base,
+            "raise-one-level-three-dragon-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(dragon, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_one = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(1)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 1,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == GROUP_ONE_ROWS
+            )));
+            let root = compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == DRAGON_RECORD)
+                .copied()
+                .unwrap();
+            let parts = compatibility
+                .economy()
+                .authored_dragon_parts()
+                .iter()
+                .filter(|part| part.entity_id == root.source_entity_index)
+                .copied()
+                .collect::<Vec<_>>();
+            assert_eq!(parts.len(), 16);
+            (root, parts)
+        };
+        let apply_body_damage = |session: &mut GameSession<Mc2CampaignBackend>, body_slot| {
+            let attacker = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            assert!(
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .economy_mut()
+                    .stage_dragon_mailbox_damage_for_test(body_slot, attacker, DAMAGE)
+            );
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_dragon_parts()
+                .iter()
+                .find(|part| part.source_entity_index == body_slot)
+                .copied()
+                .unwrap()
+        };
+
+        let (package_dragon, package_parts) = construct_group_one(&mut session);
+        assert_eq!(
+            (package_dragon.max_life, package_dragon.life),
+            (
+                PACKAGE_MAX_LIFE.cast_signed(),
+                PACKAGE_MAX_LIFE.cast_signed()
+            )
+        );
+        assert!(package_parts.iter().all(|part| {
+            (part.max_life, part.life)
+                == (
+                    PACKAGE_MAX_LIFE.cast_signed(),
+                    PACKAGE_MAX_LIFE.cast_signed(),
+                )
+        }));
+        let package_after_damage =
+            apply_body_damage(&mut session, package_parts[0].source_entity_index);
+        assert_eq!(package_after_damage.life, -500);
+
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        let authored_frame_zero_hash = session.backend().campaign.state_hash();
+        let (authored_dragon, authored_parts) = construct_group_one(&mut session);
+        assert_eq!(
+            (authored_dragon.max_life, authored_dragon.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        assert!(authored_parts.iter().all(|part| {
+            (part.max_life, part.life)
+                == (
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                )
+        }));
+        let authored_after_damage =
+            apply_body_damage(&mut session, authored_parts[0].source_entity_index);
+        assert_eq!(authored_after_damage.life, 3_500);
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            authored_frame_zero_hash
+        );
+        let (reset_dragon, reset_parts) = construct_group_one(&mut session);
+        assert_eq!(
+            (reset_dragon.max_life, reset_dragon.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        assert!(reset_parts.iter().all(|part| {
+            (part.max_life, part.life)
+                == (
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                )
+        }));
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the already-proven real Level 3 group-1
+        // producer and one body mailbox hit. It proves guarded per-instance
+        // Dragon maximum-life publication, old-session isolation, all sixteen
+        // source-copied body carriers, explicit reopen/reset construction, and
+        // one ordinary body damage visit. It does not prove organic objective
+        // progression, Dragon targeting/combat/death, body motion/fireballs,
+        // other Dragon instances or creature families, save/replay, or clients.
+    }
+
+    #[test]
+    fn campaign_packages_bind_only_level_three_dragons_to_the_health_capability() {
+        let catalog = default_catalog().unwrap();
+        for (root, expected_dragons) in [
+            (level_one_descriptor_fixture_path(), 0_usize),
+            (descriptor_fixture_path(), 0),
+            (level_three_descriptor_fixture_path(), 5),
+        ] {
+            let definition = load_mc2_campaign(&root, &catalog).unwrap();
+            let dragons = definition
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.kind()
+                        == sim_definition::level_definition::LevelEntityKind::Creature(
+                            CreatureKind::Dragon,
+                        )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(dragons.len(), expected_dragons);
+            assert!(dragons.iter().all(|entity| {
+                entity.creature_health().is_some_and(|health| {
+                    health.default_max_life() == 4_000
+                        && health.max_life() == 4_000
+                        && health.max_life_access() == LevelEntityParameterAccess::SessionReset
+                })
+            }));
+            assert_eq!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == DRAGON_MAX_LIFE_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    }),
+                expected_dragons > 0
+            );
+        }
+
+        // No-Claim: this is only the closed first-three-package Dragon
+        // descriptor/capability census. The separate causal gate owns one
+        // real root/body construction and one ordinary body damage visit.
     }
 
     #[test]

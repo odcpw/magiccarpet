@@ -671,13 +671,16 @@ impl LevelDefinition {
             }
             match (entity.kind, entity.creature_health) {
                 (
-                    LevelEntityKind::Creature(CreatureKind::Firefly | CreatureKind::Archer),
+                    LevelEntityKind::Creature(
+                        CreatureKind::Firefly | CreatureKind::Archer | CreatureKind::Dragon,
+                    ),
                     Some(config),
                 ) if (1..=i32::MAX.cast_unsigned()).contains(&config.default_max_life)
                     && (1..=i32::MAX.cast_unsigned()).contains(&config.max_life) => {}
                 (
                     LevelEntityKind::Creature(
-                        kind @ (CreatureKind::Firefly | CreatureKind::Archer),
+                        kind
+                        @ (CreatureKind::Firefly | CreatureKind::Archer | CreatureKind::Dragon),
                     ),
                     Some(_),
                 ) => {

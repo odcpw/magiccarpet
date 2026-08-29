@@ -23,6 +23,7 @@ pub(super) mod trader;
 #[cfg(test)]
 pub(crate) use archer::ARCHER_ACTION_HIT;
 pub(crate) use archer::ARCHER_MAX_LIFE;
+pub(crate) use dragon::DRAGON_LIFE;
 
 #[cfg(test)]
 mod tests;
