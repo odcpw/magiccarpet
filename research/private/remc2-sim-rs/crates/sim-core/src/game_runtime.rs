@@ -8,13 +8,13 @@ use crate::game_definition::GameDefinition;
 use crate::game_definition::{RuntimeFlowDefinition, RuntimeFlowDestination, SemanticLevelId};
 use crate::game_session::{
     GameAdapter, GameCompletion, GameCompletionStatus, GameSession, GameSessionBackend,
-    OpenSessionError, SessionGuard, SessionGuardError, SessionIdentity,
+    GameSessionError, OpenSessionError, SessionGuard, SessionGuardError, SessionIdentity,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v5";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v6";
 pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v1";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
@@ -202,6 +202,9 @@ pub enum RuntimeTransitionError {
     InvalidNextDefinition {
         message: String,
     },
+    InvalidReplay {
+        message: String,
+    },
     CompletionNotReady,
     InvalidCompletion {
         message: String,
@@ -227,6 +230,9 @@ impl fmt::Display for RuntimeTransitionError {
             Self::InvalidNextDefinition { message } => {
                 write!(formatter, "INVALID_NEXT_DEFINITION: {message}")
             }
+            Self::InvalidReplay { message } => {
+                write!(formatter, "INVALID_REPLAY: {message}")
+            }
             Self::CompletionNotReady => formatter.write_str(
                 "COMPLETION_NOT_READY: gameplay has not reached its authoritative completion carrier",
             ),
@@ -247,6 +253,34 @@ pub enum OpenLevelError<E> {
     Transition(RuntimeTransitionError),
     Session(OpenSessionError<E>),
 }
+
+#[derive(Debug)]
+pub enum RestorePlayingError<E> {
+    Transition(RuntimeTransitionError),
+    Session(OpenSessionError<E>),
+    ReplayStep {
+        command_index: usize,
+        error: GameSessionError<E>,
+    },
+}
+
+impl<E: fmt::Display> fmt::Display for RestorePlayingError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transition(error) => error.fmt(formatter),
+            Self::Session(error) => error.fmt(formatter),
+            Self::ReplayStep {
+                command_index,
+                error,
+            } => write!(
+                formatter,
+                "save replay command {command_index} was rejected: {error}"
+            ),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for RestorePlayingError<E> {}
 
 impl<E: fmt::Display> fmt::Display for OpenLevelError<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -337,6 +371,25 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             active_runtime_flow,
             session,
         }
+    }
+
+    /// Validate the guard and Title mode before a resolver parses or loads a
+    /// replay-backed save. The mutating restore path repeats this check at its
+    /// commit boundary.
+    pub(crate) fn preflight_title_transition(
+        &self,
+        guard: RuntimeGuard,
+    ) -> Result<(), RuntimeTransitionError> {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        if !matches!(self.state, RuntimeState::Title { .. }) {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Title,
+                actual: self.identity().mode,
+            });
+        }
+        Ok(())
     }
 
     /// Enter the loading boundary with one immutable definition.
@@ -445,6 +498,71 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         .map_err(OpenLevelError::Session)?;
         self.state = RuntimeState::Playing {
             session,
+            paused: false,
+        };
+        self.generation = next_generation;
+        Ok(self.identity())
+    }
+
+    /// Restore one definition-bound playing session by replaying its retained
+    /// semantic commands into a locally constructed candidate. Guard, mode,
+    /// package resolution, every command, and the caller's exact receipt
+    /// verifier all succeed before the runtime publishes the candidate.
+    pub(crate) fn restore_playing_resolved<A, F, V, I>(
+        &mut self,
+        guard: RuntimeGuard,
+        definition: Arc<GameDefinition>,
+        adapter: &A,
+        session_id: u64,
+        commands: I,
+        resolve_input: F,
+        verify: V,
+    ) -> Result<RuntimeIdentity, RestorePlayingError<A::Error>>
+    where
+        A: GameAdapter<Backend = B, Error = B::Error>,
+        F: FnOnce(&GameDefinition) -> Result<A::OpenInput, RuntimeTransitionError>,
+        V: FnOnce(&GameSession<B>) -> Result<(), RuntimeTransitionError>,
+        I: IntoIterator<Item = B::Command>,
+    {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)
+            .map_err(RestorePlayingError::Transition)?;
+        let session_generation = match &self.state {
+            RuntimeState::Title { session_generation } => *session_generation,
+            _ => {
+                return Err(RestorePlayingError::Transition(
+                    RuntimeTransitionError::InvalidMode {
+                        expected: RuntimeMode::Title,
+                        actual: self.identity().mode,
+                    },
+                ));
+            }
+        };
+        let next_generation = self
+            .next_generation()
+            .map_err(RestorePlayingError::Transition)?;
+        let input = resolve_input(definition.as_ref()).map_err(RestorePlayingError::Transition)?;
+        let mut candidate = GameSession::open_with_generation(
+            adapter,
+            definition,
+            session_id,
+            session_generation,
+            input,
+        )
+        .map_err(RestorePlayingError::Session)?;
+        for (command_index, command) in commands.into_iter().enumerate() {
+            let guard = candidate.identity().guard();
+            candidate
+                .step(guard, command)
+                .map_err(|error| RestorePlayingError::ReplayStep {
+                    command_index,
+                    error,
+                })?;
+        }
+        verify(&candidate).map_err(RestorePlayingError::Transition)?;
+        self.state = RuntimeState::Playing {
+            session: candidate,
             paused: false,
         };
         self.generation = next_generation;
@@ -773,12 +891,15 @@ mod tests {
         campaign::{
             backend::{
                 CampaignBackendError, Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs,
-                Mc2RuntimePackageResolver, load_mc2_campaign,
+                Mc2CampaignReplaySaveError, Mc2RuntimePackageResolver, load_mc2_campaign,
             },
             spec::CampaignSelection,
         },
         game_definition::{DefinitionErrorCode, default_catalog},
-        game_session::{GameCommand, GameSessionError, SessionGuardErrorCode},
+        game_session::{
+            GameCommand, GameSessionError, LateralControl, LongitudinalControl,
+            SessionGuardErrorCode,
+        },
     };
     use std::path::PathBuf;
 
@@ -1135,6 +1256,144 @@ mod tests {
         // guard invalidation. There is no paused_frame operation here, so it
         // does not prove the L1 pre-gate RNG/objective/presentation/audio
         // prefix, replay-visible paused time, L2/L3 pause policy, or pause UI.
+    }
+
+    #[test]
+    fn runtime_replay_save_restores_real_level_one_playing_state_atomically() {
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_three_package()),
+            Mc2CampaignInputs::new(level_one_package()),
+            Mc2CampaignInputs::new(level_two_package()),
+        ])
+        .unwrap();
+
+        let mut source = GameRuntime::<Mc2CampaignBackend>::title(501).unwrap();
+        let source_title = source.identity();
+        let source_loading = resolver
+            .new_game(&mut source, source_title.guard())
+            .unwrap();
+        resolver
+            .open_pending(&mut source, source_loading.guard(), 501)
+            .unwrap();
+        for command in [
+            GameCommand::default(),
+            GameCommand {
+                longitudinal: LongitudinalControl::Accelerate,
+                lateral: LateralControl::Positive,
+                pitch_axis: 3,
+                ..GameCommand::default()
+            },
+            GameCommand {
+                look_yaw: 64,
+                look_pitch: -32,
+                ..GameCommand::default()
+            },
+        ] {
+            let guard = source.session().unwrap().identity().guard();
+            source.session_mut().unwrap().step(guard, command).unwrap();
+        }
+        let source_identity = source.identity();
+        let source_session = source_identity.session.clone().unwrap();
+        let source_snapshot = source.session().unwrap().snapshot();
+        assert_eq!(source_session.tick, 3);
+
+        let save = resolver.save_playing(&source).unwrap();
+        assert_eq!(source.identity(), source_identity);
+        assert_eq!(source.session().unwrap().snapshot(), source_snapshot);
+        let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
+        assert_eq!(
+            save_json["save_contract"],
+            crate::campaign::backend::MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+        );
+        assert_eq!(save_json["commands"].as_array().unwrap().len(), 3);
+        assert_eq!(save_json["expected_tick"], 3);
+        assert_eq!(
+            save_json["definition"]["definition_hash"],
+            source_session.definition_hash
+        );
+
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(502).unwrap();
+        let title = restored.identity();
+        let stale = RuntimeGuard {
+            generation: title.generation + 1,
+            ..title.guard()
+        };
+        let stale_result = resolver.load_playing_save(&mut restored, stale, 502, b"{not-json");
+        assert!(matches!(
+            stale_result,
+            Err(Mc2CampaignReplaySaveError::Runtime(
+                RuntimeTransitionError::Guard(_)
+            ))
+        ));
+        assert_eq!(restored.identity(), title);
+        assert!(restored.session().is_none());
+
+        let corrupted = Mc2RuntimePackageResolver::corrupt_save_expected_state_for_test(&save);
+        let corrupted_result =
+            resolver.load_playing_save(&mut restored, title.guard(), 502, &corrupted);
+        assert!(matches!(
+            corrupted_result,
+            Err(Mc2CampaignReplaySaveError::Restore(
+                RestorePlayingError::Transition(RuntimeTransitionError::InvalidReplay { .. })
+            ))
+        ));
+        assert_eq!(restored.identity(), title);
+        assert!(restored.session().is_none());
+
+        let restored_identity = resolver
+            .load_playing_save(&mut restored, title.guard(), 502, &save)
+            .unwrap();
+        assert_eq!(restored_identity.mode, RuntimeMode::Playing);
+        assert_eq!(restored_identity.runtime_id, 502);
+        assert_eq!(restored_identity.generation, 2);
+        assert!(restored_identity.pending_definition.is_none());
+        assert_eq!(
+            restored_identity.active_runtime_flow,
+            source_identity.active_runtime_flow
+        );
+        let restored_session = restored_identity.session.as_ref().unwrap();
+        assert_eq!(restored_session.session_id, 502);
+        assert_eq!(restored_session.generation, 1);
+        assert_eq!(restored_session.tick, 3);
+        assert_eq!(
+            restored_session.package_graph_hash,
+            source_session.package_graph_hash
+        );
+        assert_eq!(
+            restored_session.definition_hash,
+            source_session.definition_hash
+        );
+        assert_eq!(
+            restored_session.definition_revision,
+            source_session.definition_revision
+        );
+        assert_eq!(
+            restored.session().unwrap().snapshot().value,
+            source_snapshot.value
+        );
+
+        let before_stale_source_guard = restored.session().unwrap().snapshot();
+        let stale_source_guard = restored
+            .session_mut()
+            .unwrap()
+            .step(source_session.guard(), GameCommand::default());
+        assert!(matches!(
+            stale_source_guard,
+            Err(GameSessionError::Guard(error))
+                if error.code == SessionGuardErrorCode::SessionMismatch
+        ));
+        assert_eq!(
+            restored.session().unwrap().snapshot(),
+            before_stale_source_guard
+        );
+
+        // No-Claim: this proves one unpaused real Level 1 Playing checkpoint
+        // rebuilt from its immutable definition and semantic command trace,
+        // with guard-first parsing, candidate publication, exact state
+        // receipts, and a fresh runtime/session identity. It does not prove
+        // paused, Loading or Title checkpoints; Level 2/3 replay; native or
+        // Unity transport; save migration; hostile-input authenticity; or
+        // cross-build compatibility.
     }
 
     #[test]

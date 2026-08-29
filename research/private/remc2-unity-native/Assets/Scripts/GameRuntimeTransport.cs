@@ -16,7 +16,7 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v5";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v6";
         internal const string TransportContract =
             "carpet-flight-native-game-runtime-json/v4";
         internal const string InstalledPackageSetContract =
