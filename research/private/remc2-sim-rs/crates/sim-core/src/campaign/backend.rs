@@ -2131,13 +2131,14 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 128);
+        assert_eq!(level_two_movable.len(), 155);
         for (kind, expected) in [
             (CreatureKind::Goat, 36),
             (CreatureKind::Archer, 4),
             (CreatureKind::Bee, 12),
             (CreatureKind::Worm, 6),
             (CreatureKind::Skeleton, 6),
+            (CreatureKind::Trader, 27),
         ] {
             assert_eq!(
                 level_two_movable
@@ -5058,6 +5059,218 @@ mod tests {
         // visits, and reset. It does not prove the other four L3 Worm
         // placements, organic combat/death, authored population or health,
         // save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_two_grouped_trader_before_ordinary_action113_after_reopen()
+    {
+        const TRADER_RECORD: u16 = 125;
+
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let trader =
+            sim_definition::adapter::stable_entity_id("creature.trader.at_57_155").unwrap();
+        let package_tile = TilePosition { x: 57, y: 155 };
+        let authored_tile = TilePosition { x: 60, y: 156 };
+        let package_entity = base.level_definition().unwrap().entity(&trader).unwrap();
+        assert_eq!(
+            package_entity.kind(),
+            LevelEntityKind::Creature(CreatureKind::Trader)
+        );
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-grouped-trader-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-grouped-trader-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            83,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-grouped-trader-placement",
+            &base,
+            "move-one-level-two-grouped-trader",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(trader, package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_three = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(3)
+                .unwrap();
+            let expected_group = (43_u16..=64)
+                .chain(std::iter::once(108))
+                .chain(125..=151)
+                .chain(std::iter::once(439))
+                .collect::<Vec<_>>();
+            let events = compatibility.dispatch_events();
+            assert!(
+                events.iter().any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 3,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == expected_group.as_slice()
+                )),
+                "group-3 Trader activation events: {events:?}"
+            );
+            compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == TRADER_RECORD)
+                .copied()
+                .unwrap()
+        };
+
+        let package_trader = construct_group_three(&mut session);
+        assert_eq!(
+            (
+                package_trader.position.x >> 8,
+                package_trader.position.y >> 8
+            ),
+            (package_tile.x, package_tile.y),
+            "publication must not mutate the already-open package authority"
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == TRADER_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        let authored_trader = construct_group_three(&mut session);
+        assert_eq!(
+            (
+                authored_trader.position.x >> 8,
+                authored_trader.position.y >> 8
+            ),
+            (authored_tile.x, authored_tile.y)
+        );
+        let source_slot = authored_trader.source_entity_index;
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let visited = compatibility
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            visited.source_byte_3e,
+            authored_trader.source_byte_3e.wrapping_add(1)
+        );
+        assert_eq!((visited.model, visited.action), (14, 113));
+        assert!(visited.active && visited.drawing_enabled);
+        assert_eq!(
+            compatibility.economy().map_chains().tile_of(source_slot),
+            u16::from_le_bytes([
+                u8::try_from(visited.position.x >> 8).unwrap(),
+                u8::try_from(visited.position.y >> 8).unwrap(),
+            ])
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot: actual,
+                        kind: crate::native_world::Level2DynamicArenaKind::AuthoredClass5,
+                        ..
+                    } if *actual == source_slot
+                ))
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::Error {
+                        source_slot: actual,
+                        ..
+                    } if *actual == source_slot
+                ))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .is_empty()
+        );
+        let reset_trader = construct_group_three(&mut session);
+        assert_eq!(
+            (reset_trader.position.x >> 8, reset_trader.position.y >> 8),
+            (authored_tile.x, authored_tile.y)
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the already-proven Level 2 group-3 boundary
+        // and proves one grouped Trader placement crosses guarded publication,
+        // old-session isolation, explicit reopen, the real constructor,
+        // ordinary action-113 scheduling/map membership, and reset. It does
+        // not re-prove organic groups 1-3, Trader targeting/combat/death, the
+        // other twenty-six placements, Villager placement, save/replay, or
+        // Unity presentation.
     }
 
     #[test]

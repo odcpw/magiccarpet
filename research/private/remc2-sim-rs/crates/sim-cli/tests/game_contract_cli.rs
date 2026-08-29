@@ -100,7 +100,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "21.0");
+    assert_eq!(capabilities["contract_version"], "22.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v6"
@@ -415,7 +415,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "21.0");
+    assert_eq!(entities["contract_version"], "22.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -635,6 +635,7 @@ fn move_entity_targets_are_package_projected() {
             "creature.worm.at_43_154",
             "creature.archer.at_150_144",
             "creature.skeleton.at_140_220",
+            "creature.trader.at_57_155",
         ],
         "session_reset",
     );
@@ -749,7 +750,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "21.0");
+    assert_eq!(described["contract_version"], "22.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v7"
@@ -1039,7 +1040,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "21.0");
+    assert_eq!(described["contract_version"], "22.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
     assert_eq!(descriptor["value_type"], "integer");
@@ -1513,7 +1514,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "21.0");
+    assert_eq!(described["contract_version"], "22.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v7"
@@ -1840,7 +1841,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "21.0");
+    assert_eq!(described["contract_version"], "22.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v7"
@@ -2122,7 +2123,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "21.0");
+    assert_eq!(described["contract_version"], "22.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v7"
@@ -2653,7 +2654,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "21.0");
+        assert_eq!(described["contract_version"], "22.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -2838,7 +2839,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "21.0");
+    assert_eq!(described["contract_version"], "22.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");
