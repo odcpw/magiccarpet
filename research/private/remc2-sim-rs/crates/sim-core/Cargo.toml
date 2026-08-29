@@ -19,6 +19,7 @@ sim-classic-hd = { path = "../sim-classic-hd" }
 sim-collision = { path = "../sim-collision" }
 sim-combat-tmap = { path = "../sim-combat-tmap" }
 sim-definition = { path = "../sim-definition" }
+sim-economy-tmap = { path = "../sim-economy-tmap" }
 sim-firefly-tmap = { path = "../sim-firefly-tmap" }
 sim-frozen-actor-tmap = { path = "../sim-frozen-actor-tmap" }
 sim-goat-map-chain = { path = "../sim-goat-map-chain" }

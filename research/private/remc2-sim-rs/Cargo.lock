@@ -232,6 +232,7 @@ dependencies = [
  "sim-collision",
  "sim-combat-tmap",
  "sim-definition",
+ "sim-economy-tmap",
  "sim-firefly-tmap",
  "sim-frozen-actor-tmap",
  "sim-goat-map-chain",
@@ -255,6 +256,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "sim-economy-tmap"
+version = "0.1.0"
+dependencies = [
+ "sim-ss2-tmap",
 ]
 
 [[package]]
