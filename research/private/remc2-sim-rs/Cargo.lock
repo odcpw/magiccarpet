@@ -231,6 +231,7 @@ dependencies = [
  "sim-classic-hd",
  "sim-collision",
  "sim-combat-tmap",
+ "sim-countdown-switch",
  "sim-definition",
  "sim-economy-tmap",
  "sim-enhanced-presentation",
@@ -250,6 +251,10 @@ dependencies = [
  "sim-terrain-raster",
  "sim-voxel",
 ]
+
+[[package]]
+name = "sim-countdown-switch"
+version = "0.1.0"
 
 [[package]]
 name = "sim-definition"

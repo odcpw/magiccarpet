@@ -18,6 +18,7 @@ sim-archer-tmap = { path = "../sim-archer-tmap" }
 sim-classic-hd = { path = "../sim-classic-hd" }
 sim-collision = { path = "../sim-collision" }
 sim-combat-tmap = { path = "../sim-combat-tmap" }
+sim-countdown-switch = { path = "../sim-countdown-switch" }
 sim-definition = { path = "../sim-definition" }
 sim-economy-tmap = { path = "../sim-economy-tmap" }
 sim-enhanced-presentation = { path = "../sim-enhanced-presentation" }

@@ -5,6 +5,7 @@ members = [
     "crates/sim-classic-hd",
     "crates/sim-collision",
     "crates/sim-combat-tmap",
+    "crates/sim-countdown-switch",
     "crates/sim-definition",
     "crates/sim-economy-tmap",
     "crates/sim-enhanced-presentation",
