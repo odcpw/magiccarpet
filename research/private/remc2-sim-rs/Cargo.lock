@@ -209,6 +209,7 @@ dependencies = [
  "sim-collision",
  "sim-definition",
  "sim-goat-map-chain",
+ "sim-goat-tmap",
  "sim-ground-motion",
  "sim-input",
  "sim-music",
@@ -229,6 +230,10 @@ dependencies = [
 
 [[package]]
 name = "sim-goat-map-chain"
+version = "0.1.0"
+
+[[package]]
+name = "sim-goat-tmap"
 version = "0.1.0"
 
 [[package]]

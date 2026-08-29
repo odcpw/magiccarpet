@@ -602,7 +602,10 @@ partial real implementation, not a completion claim:
   scheduling remain in `sim-core`. The dependency-free dynamic-music control
   envelope is now owned by the internal `sim-music` crate, while campaign
   scheduling, event delivery and audio playback remain with their existing
-  owners. These are four bounded physical
+  owners. The exact selector-global Goat texture-map bank and latch clocks are
+  now owned by the internal `sim-goat-tmap` crate, while owner-cache decoding,
+  terrain draw admission and native selector-frame transport remain with their
+  existing owners. These are five bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain

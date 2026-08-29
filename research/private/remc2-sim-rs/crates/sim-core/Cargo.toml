@@ -17,6 +17,7 @@ sha2 = "=0.10.9"
 sim-collision = { path = "../sim-collision" }
 sim-definition = { path = "../sim-definition" }
 sim-goat-map-chain = { path = "../sim-goat-map-chain" }
+sim-goat-tmap = { path = "../sim-goat-tmap" }
 sim-ground-motion = { path = "../sim-ground-motion" }
 sim-input = { path = "../sim-input" }
 sim-music = { path = "../sim-music" }
