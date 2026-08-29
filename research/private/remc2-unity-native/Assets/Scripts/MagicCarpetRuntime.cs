@@ -2843,8 +2843,12 @@ namespace MagicCarpet.Native
         {
             if (gameRuntimeMode)
             {
-                if (!AutomatedInput && Input.GetMouseButtonDown(0))
-                    fireRequested = true;
+                if (!AutomatedInput)
+                {
+                    ApplyGameRuntimeProductionInput(
+                        Input.GetKeyDown(KeyCode.P),
+                        Input.GetMouseButtonDown(0));
+                }
                 return;
             }
             if (level2Mode)
@@ -8562,6 +8566,55 @@ namespace MagicCarpet.Native
                     string.IsNullOrEmpty(fatalError),
                     $"game runtime frame {index} completed without a runtime failure");
             }
+        }
+
+        private void ApplyGameRuntimeProductionInput(bool pausePressed, bool firePressed)
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "game runtime input requires a validated production owner");
+            var identity = session.GameRuntimeIdentity();
+            if (pausePressed)
+            {
+                fireRequested = false;
+                rightSpellRequested = false;
+                selectedSpellRequested = false;
+                if (identity.mode == GameRuntimeTransport.PlayingMode)
+                {
+                    session.GameRuntimePause();
+                    return;
+                }
+                if (identity.mode == GameRuntimeTransport.PausedMode)
+                {
+                    session.GameRuntimeResume();
+                    return;
+                }
+                throw new InvalidOperationException(
+                    $"game runtime pause input is unavailable in mode {identity.mode}");
+            }
+            if (identity.mode == GameRuntimeTransport.PausedMode)
+            {
+                fireRequested = false;
+                rightSpellRequested = false;
+                selectedSpellRequested = false;
+                return;
+            }
+            if (identity.mode != GameRuntimeTransport.PlayingMode)
+            {
+                throw new InvalidOperationException(
+                    $"game runtime gameplay input is unavailable in mode {identity.mode}");
+            }
+            if (firePressed)
+            {
+                fireRequested = true;
+            }
+        }
+
+        internal void QualificationApplyGameRuntimeProductionInput(
+            bool pausePressed,
+            bool firePressed)
+        {
+            ApplyGameRuntimeProductionInput(pausePressed, firePressed);
         }
 
         internal void QualificationResetGameRuntimeProduction()

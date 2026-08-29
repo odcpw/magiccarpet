@@ -542,9 +542,12 @@ partial real implementation, not a completion claim:
   facet without opening either legacy registry. `MagicCarpetRuntime` has an
   explicit headless production mode that admits an unordered owner-local
   package set, lets Rust select the semantic entry, and drives fixed-step/reset
-  through that same handle. Its first bounded presentation consumer renders the
-  live Level 1 Fireball described above. Terrain, other entities, HUD, audio
-  and effects presentation have not yet migrated to this owner. The resolver
+  through that same handle. Production P-key input now toggles the same
+  Rust-owned quiescent pause boundary and discards gameplay input received
+  while paused rather than queuing it for resume. Its first bounded
+  presentation consumer renders the live Level 1 Fireball described above.
+  Terrain, other entities, HUD, audio and effects presentation have not yet
+  migrated to this owner. The resolver
   can now serialize one real Level 1 Playing or quiescent Paused session as its immutable
   semantic definition, ordered neutral command trace and exact state/terrain/
   effect receipts, then guard-first replay it into a fresh runtime/session and
