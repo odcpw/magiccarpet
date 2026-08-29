@@ -804,6 +804,8 @@ namespace MagicCarpet.Native
         private bool autoplayQuit;
         private bool engineSessionRequested;
         private bool gameRuntimeRequested;
+        private string gameRuntimeReplaySavePath;
+        private bool gameRuntimeReplaySaveRequested;
         private bool level1Autoplay;
         private bool level1AutoplayQuit;
         private bool level1AutoplayFast;
@@ -2543,6 +2545,20 @@ namespace MagicCarpet.Native
                 !session.UsesGameRuntimeContract)
             {
                 return;
+            }
+            var saveRequested = gameRuntimeReplaySaveRequested ||
+                (!Application.isBatchMode && Input.GetKeyDown(KeyCode.F5));
+            if (saveRequested)
+            {
+                gameRuntimeReplaySaveRequested = false;
+                if (string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath))
+                {
+                    throw new InvalidOperationException(
+                        "F5 replay save requires -mc-runtime-replay-save <path>");
+                }
+                QualificationSaveGameRuntimeProductionReplayToPath(
+                    gameRuntimeReplaySavePath);
+                Debug.Log($"MC_GAME_RUNTIME_REPLAY_SAVED path={gameRuntimeReplaySavePath}");
             }
             if (session.GameRuntimeIdentity().mode == GameRuntimeTransport.PausedMode)
             {
@@ -8581,6 +8597,15 @@ namespace MagicCarpet.Native
             return session.GameRuntimeResume();
         }
 
+        internal void QualificationRequestGameRuntimeProductionReplaySave()
+        {
+            Require(
+                GameRuntimeProductionStartupReady &&
+                !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath),
+                "game runtime replay save request requires a validated owner and configured path");
+            gameRuntimeReplaySaveRequested = true;
+        }
+
         internal void QualificationSaveGameRuntimeProductionReplayToPath(string savePath)
         {
             var fullPath = ValidateReplaySavePath(savePath);
@@ -11827,6 +11852,9 @@ namespace MagicCarpet.Native
             engineSessionRequested =
                 HasArgument(arguments, "-mc-engine-session");
             gameRuntimeRequested = HasArgument(arguments, "-mc-game-runtime");
+            gameRuntimeReplaySavePath =
+                ArgumentValue(arguments, "-mc-runtime-replay-save");
+            gameRuntimeReplaySaveRequested = false;
             level1Autoplay = HasArgument(arguments, "-mc-level1-autoplay");
             level1AutoplayQuit =
                 HasArgument(arguments, "-mc-level1-autoplay-quit");
@@ -11869,7 +11897,8 @@ namespace MagicCarpet.Native
             if (level2Mode)
             {
                 if (gameRuntimeRequested ||
-                    HasArgument(arguments, "-mc-runtime-replay-load"))
+                    HasArgument(arguments, "-mc-runtime-replay-load") ||
+                    HasArgument(arguments, "-mc-runtime-replay-save"))
                 {
                     throw new InvalidDataException(
                         "-mc-level2 rejects game-runtime startup and replay options");
@@ -11906,13 +11935,20 @@ namespace MagicCarpet.Native
                     throw new InvalidDataException(
                         "-mc-runtime-replay-load requires a replay save path");
                 }
+                if (HasArgument(arguments, "-mc-runtime-replay-save") &&
+                    string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath))
+                {
+                    throw new InvalidDataException(
+                        "-mc-runtime-replay-save requires a replay save path");
+                }
                 qualifiedMode = false;
                 return;
             }
-            if (HasArgument(arguments, "-mc-runtime-replay-load"))
+            if (HasArgument(arguments, "-mc-runtime-replay-load") ||
+                HasArgument(arguments, "-mc-runtime-replay-save"))
             {
                 throw new InvalidDataException(
-                    "-mc-runtime-replay-load requires -mc-game-runtime");
+                    "game runtime replay options require -mc-game-runtime");
             }
             if (qualifiedRequested == debugMode)
             {

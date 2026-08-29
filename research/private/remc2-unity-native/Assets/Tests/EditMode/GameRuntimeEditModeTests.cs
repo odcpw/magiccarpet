@@ -69,6 +69,17 @@ namespace MagicCarpet.Native.Tests
             return arguments;
         }
 
+        private static string[] RuntimeReplaySaveArguments(
+            string replayPath,
+            params string[] packages)
+        {
+            var arguments = RuntimeArguments(packages);
+            Array.Resize(ref arguments, arguments.Length + 2);
+            arguments[arguments.Length - 2] = "-mc-runtime-replay-save";
+            arguments[arguments.Length - 1] = replayPath;
+            return arguments;
+        }
+
         private static byte[] PackageSetJson(
             params GameRuntimeTransport.InstalledPackageResource[] packages)
         {
@@ -335,8 +346,6 @@ namespace MagicCarpet.Native.Tests
             var nativeSessions = NativeSession.ActiveSessionCount;
             var campaignSessions = NativeCampaignSession.ActiveSessionCount;
             Assert.That(campaignSessions, Is.Zero);
-            var arguments = RuntimeArguments(
-                LevelThreePackage, LevelOnePackage, LevelTwoPackage);
             var replayPath = Path.Combine(
                 Path.GetTempPath(),
                 $"magiccarpet-runtime-{Guid.NewGuid():N}.replay.json");
@@ -348,13 +357,19 @@ namespace MagicCarpet.Native.Tests
             var source = sourceRoot.AddComponent<MagicCarpetRuntime>();
             try
             {
-                source.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                source.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeReplaySaveArguments(
+                        replayPath,
+                        LevelThreePackage,
+                        LevelOnePackage,
+                        LevelTwoPackage));
                 source.QualificationDriveGameRuntimeFrames(3);
                 sourceIdentity = source.QualificationPauseGameRuntimeProduction();
                 sourceSnapshot = source.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(sourceIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                 Assert.That(sourceIdentity.session.tick, Is.EqualTo("3"));
-                source.QualificationSaveGameRuntimeProductionReplayToPath(replayPath);
+                source.QualificationRequestGameRuntimeProductionReplaySave();
+                source.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(File.Exists(replayPath), Is.True);
                 Assert.That(new FileInfo(replayPath).Length, Is.GreaterThan(0));
                 Assert.That(source.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("3"));
