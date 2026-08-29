@@ -581,7 +581,10 @@ partial real implementation, not a completion claim:
   Goat scheduling stays in `sim-core`. The pure terrain-slope camera and
   terrain/object projection gates are now owned by the internal
   `sim-render-camera` crate, while terrain-grid, Classic HD and Goat draw
-  scheduling remain in `sim-core`. These are three bounded physical
+  scheduling remain in `sim-core`. The dependency-free dynamic-music control
+  envelope is now owned by the internal `sim-music` crate, while campaign
+  scheduling, event delivery and audio playback remain with their existing
+  owners. These are four bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
