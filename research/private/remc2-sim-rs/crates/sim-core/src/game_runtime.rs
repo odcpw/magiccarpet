@@ -1523,6 +1523,111 @@ mod tests {
     }
 
     #[test]
+    fn runtime_replay_save_restores_real_level_two_from_its_bound_package() {
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_three_package()),
+            Mc2CampaignInputs::new(level_one_package()),
+            Mc2CampaignInputs::new(level_two_package()),
+        ])
+        .unwrap();
+        let mut source = open_real_level_two_at_proven_incoming_boundary(&resolver, 511);
+        for command in [
+            GameCommand::default(),
+            GameCommand {
+                longitudinal: LongitudinalControl::Accelerate,
+                lateral: LateralControl::Negative,
+                pitch_axis: -2,
+                ..GameCommand::default()
+            },
+        ] {
+            let guard = source.session().unwrap().identity().guard();
+            source.session_mut().unwrap().step(guard, command).unwrap();
+        }
+        let source_identity = source.identity();
+        let source_session = source_identity.session.as_ref().unwrap().clone();
+        let source_snapshot = source.session().unwrap().snapshot();
+        assert_eq!(source_session.generation, 2);
+        assert_eq!(source_session.tick, 2);
+        assert_eq!(
+            source_identity
+                .active_runtime_flow
+                .as_ref()
+                .unwrap()
+                .bound_level_id()
+                .as_str(),
+            "level.magic_carpet_2.payahandra_ruins"
+        );
+
+        let save = resolver.save_replay(&source).unwrap();
+        let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
+        assert_eq!(
+            save_json["definition"]["runtime_flow"]["bound_level_id"],
+            "level.magic_carpet_2.payahandra_ruins"
+        );
+        assert_eq!(save_json["expected_tick"], 2);
+
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(512).unwrap();
+        let title = restored.identity();
+        let restored_identity = resolver
+            .load_replay(&mut restored, title.guard(), 512, &save)
+            .unwrap();
+        assert_eq!(restored_identity.mode, RuntimeMode::Playing);
+        assert_eq!(
+            restored_identity.active_runtime_flow,
+            source_identity.active_runtime_flow
+        );
+        let restored_session = restored_identity.session.as_ref().unwrap();
+        assert_eq!(restored_session.session_id, 512);
+        assert_eq!(restored_session.generation, 1);
+        assert_eq!(restored_session.tick, 2);
+        assert_eq!(
+            restored_session.package_graph_hash,
+            source_session.package_graph_hash
+        );
+        assert_eq!(
+            restored_session.definition_hash,
+            source_session.definition_hash
+        );
+        assert_eq!(
+            restored_session.definition_revision,
+            source_session.definition_revision
+        );
+        assert_eq!(
+            restored.session().unwrap().snapshot().value,
+            source_snapshot.value
+        );
+
+        // A loader that silently restores the resolver entry (Level 1) cannot
+        // satisfy the exact Level 2 flow/definition assertions above. The old
+        // Level 2 session guard is also unusable against the new runtime.
+        let before_stale = restored.session().unwrap().snapshot();
+        let stale = restored
+            .session_mut()
+            .unwrap()
+            .step(source_session.guard(), GameCommand::default());
+        assert!(matches!(
+            stale,
+            Err(GameSessionError::Guard(error))
+                if error.code == SessionGuardErrorCode::SessionMismatch
+        ));
+        assert_eq!(restored.session().unwrap().snapshot(), before_stale);
+
+        let guard = restored.session().unwrap().identity().guard();
+        let after = restored
+            .session_mut()
+            .unwrap()
+            .step(guard, GameCommand::default())
+            .unwrap();
+        assert_eq!(after.identity.tick, 3);
+
+        // No-Claim: this stages only the separately proved incoming Level 2
+        // boundary and proves definition-bound Playing replay for that real
+        // installed package. It does not prove organic L1->L2 progression,
+        // Level 2 completion, Level 3 replay, cross-level checkpoints,
+        // migration, client UI, or uninterrupted campaign persistence.
+    }
+
+    #[test]
     fn runtime_completed_real_level_one_accepts_only_level_two_into_loading_once() {
         let catalog = default_catalog().unwrap();
         let level_one = level_one_package();
