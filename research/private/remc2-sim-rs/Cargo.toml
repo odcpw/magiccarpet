@@ -6,6 +6,7 @@ members = [
     "crates/sim-collision",
     "crates/sim-combat-tmap",
     "crates/sim-definition",
+    "crates/sim-frozen-actor-tmap",
     "crates/sim-goat-map-chain",
     "crates/sim-goat-tmap",
     "crates/sim-ground-motion",

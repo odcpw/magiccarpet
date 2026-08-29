@@ -232,6 +232,7 @@ dependencies = [
  "sim-collision",
  "sim-combat-tmap",
  "sim-definition",
+ "sim-frozen-actor-tmap",
  "sim-goat-map-chain",
  "sim-goat-tmap",
  "sim-ground-motion",
@@ -252,6 +253,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "sim-frozen-actor-tmap"
+version = "0.1.0"
+dependencies = [
+ "sim-ss2-tmap",
 ]
 
 [[package]]
