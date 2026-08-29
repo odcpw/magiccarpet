@@ -4964,6 +4964,50 @@ impl Level2ResetSession {
         self.consume_authored_group(0, 0, target_group)
     }
 
+    /// Stage one already-arrived Fireball pulse at a real imported Skeleton.
+    /// The ordinary model-9 callback still owns mailbox consumption, damage
+    /// branching, epilogue, death outputs, and later reclaim.
+    #[cfg(test)]
+    pub(crate) fn stage_imported_skeleton_fireball_damage_for_test(
+        &mut self,
+        source_slot: u16,
+        owner_entity_index: u16,
+        damage: u16,
+    ) -> std::result::Result<(), String> {
+        let position = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(source_slot))
+            .filter(|source| {
+                source.active
+                    && source.index == source_slot
+                    && source.class == 5
+                    && source.model == 9
+            })
+            .map(|source| source.position)
+            .ok_or_else(|| format!("source slot {source_slot} is not a live imported Skeleton"))?;
+        self.apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
+            live: true,
+            first_impact: true,
+            damage_pulse: true,
+            owner_entity_index,
+            payload: damage,
+            position,
+        });
+        let source = &self.session.state.live.economy.entities[usize::from(source_slot)];
+        if source.source_upkeep_word_62() != owner_entity_index
+            || source.source_upkeep_payload() != i32::from(damage)
+        {
+            return Err(format!(
+                "Skeleton source slot {source_slot} did not receive the Fireball damage mailbox"
+            ));
+        }
+        Ok(())
+    }
+
     /// Stage only the qualified Level-2 objective boundary immediately before
     /// the final building-absence lifecycle. Production source callbacks still
     /// own group 8, model-45 hide/reclaim, cadence evaluation, group 31, the
@@ -8267,7 +8311,7 @@ impl Level2ResetSession {
         }
         for feature in rows
             .iter()
-            .filter(|feature| feature.kind == 5 && matches!(feature.subtype, 0 | 2 | 4 | 19))
+            .filter(|feature| feature.kind == 5 && matches!(feature.subtype, 0 | 2 | 4 | 9 | 19))
         {
             if feature.subtype == 19 && self.authored_firefly_stage_route(*feature).is_none() {
                 return Err(format!(
@@ -8280,6 +8324,7 @@ impl Level2ResetSession {
                 .definition
                 .authored_creature_max_life(feature.index)
                 .is_none()
+                && !(feature.subtype == 9 && self.session.definition.semantic_level().is_none())
             {
                 return Err(format!(
                     "authored class-5/model-{} row {} has no semantic maximum-life binding",
@@ -8339,14 +8384,12 @@ impl Level2ResetSession {
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
                     );
-                    let Some(max_life) = self
+                    let max_life = self
                         .session
                         .definition
                         .authored_creature_max_life(feature.index)
                         .map(u32::cast_signed)
-                    else {
-                        continue;
-                    };
+                        .unwrap_or(1_000);
                     if self
                         .session
                         .state
@@ -8442,7 +8485,40 @@ impl Level2ResetSession {
                             .insert(feature.index);
                     }
                 }
-                (5, model @ (3 | 9 | 14)) => {
+                (5, 9) => {
+                    let position = feature.world_position(
+                        self.canonical_terrain()
+                            .ground_height(feature.world_position(0)),
+                    );
+                    let Some(max_life) = self
+                        .session
+                        .definition
+                        .authored_creature_max_life(feature.index)
+                        .map(u32::cast_signed)
+                    else {
+                        continue;
+                    };
+                    if self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .allocate_authored_skeleton(
+                            feature.index,
+                            position,
+                            max_life,
+                            &self.session.state.live.terrain,
+                        )
+                        .is_some()
+                    {
+                        self.session
+                            .state
+                            .live
+                            .level2_class5_activated
+                            .insert(feature.index);
+                    }
+                }
+                (5, model @ (3 | 14)) => {
                     let position = feature.world_position(
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
@@ -9938,12 +10014,28 @@ impl Level2ResetSession {
         for feature in rows {
             let terrain = &self.session.state.live.terrain;
             let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
-            let Some(source) = self.session.state.live.economy.allocate_authored_class5(
-                feature.index,
-                u8::try_from(feature.subtype).unwrap_or(u8::MAX),
-                position,
-                terrain,
-            ) else {
+            let source = if feature.subtype == 9 {
+                let max_life = self
+                    .session
+                    .definition
+                    .authored_creature_max_life(feature.index)
+                    .map(u32::cast_signed)
+                    .unwrap_or(1_000);
+                self.session.state.live.economy.allocate_authored_skeleton(
+                    feature.index,
+                    position,
+                    max_life,
+                    terrain,
+                )
+            } else {
+                self.session.state.live.economy.allocate_authored_class5(
+                    feature.index,
+                    u8::try_from(feature.subtype).unwrap_or(u8::MAX),
+                    position,
+                    terrain,
+                )
+            };
+            let Some(source) = source else {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.level2_class5_activated = activated_before;
                 self.push_dispatch_effect(Level2DispatchEvent::Error {

@@ -173,6 +173,38 @@ impl Level2EconomyState {
         position: Position,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
+        self.allocate_authored_class5_with_max_life(authored_index, model, position, None, terrain)
+    }
+
+    /// Allocate a semantic Skeleton through the ordinary model-9 constructor
+    /// while preserving the package's source-width and lifecycle fields.
+    pub fn allocate_authored_skeleton(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+        max_life: i32,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredClass5Source> {
+        if max_life <= 0 {
+            return None;
+        }
+        self.allocate_authored_class5_with_max_life(
+            authored_index,
+            9,
+            position,
+            Some(max_life),
+            terrain,
+        )
+    }
+
+    fn allocate_authored_class5_with_max_life(
+        &mut self,
+        authored_index: u16,
+        model: u8,
+        position: Position,
+        max_life_override: Option<i32>,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredClass5Source> {
         if model == trader::TRADER_MODEL {
             return self.allocate_authored_trader(authored_index, position, terrain);
         }
@@ -204,7 +236,18 @@ impl Level2EconomyState {
                 crate::goat::GOAT_RENDER_PARAMETER_INDEX,
             ),
             3 => (25, 64, 16, 30, 9_000, 2_250, 4_500, 0, 0, 88),
-            9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
+            9 => (
+                72,
+                20,
+                0,
+                20,
+                max_life_override.unwrap_or(1_000),
+                500,
+                0,
+                500,
+                16,
+                220,
+            ),
             _ => return None,
         };
         // Retain a snapshot only for failure before the model-3 root itself

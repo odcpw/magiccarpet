@@ -162,10 +162,15 @@ impl CampaignSession {
                 .level_definition()
                 .entity(entity.id())
                 .expect("position variant preserves every package entity");
-            if entity.position() == original.position() {
+            let position_changed = entity.position() != original.position();
+            let health_changed = entity.creature_health().map(|health| health.max_life())
+                != original.creature_health().map(|health| health.max_life());
+            if !position_changed && !health_changed {
                 continue;
             }
-            if entity.position_access() != LevelEntityPositionAccess::SessionReset {
+            if position_changed
+                && entity.position_access() != LevelEntityPositionAccess::SessionReset
+            {
                 return Err(NativeWorldError::new(format!(
                     "semantic entity {} is not placement-writable",
                     entity.id().as_str()
@@ -217,15 +222,48 @@ impl CampaignSession {
                             entity.id().as_str()
                         )));
                     }
-                    let position = entity.position();
-                    self.level2.set_level2_entity_position(
-                        *initial_source_slot,
-                        Position {
-                            x: position.x.wrapping_shl(8) | (source.position.x & 0xff),
-                            y: position.y.wrapping_shl(8) | (source.position.y & 0xff),
-                            z: source.position.z,
-                        },
-                    )?;
+                    if position_changed {
+                        let position = entity.position();
+                        self.level2.set_level2_entity_position(
+                            *initial_source_slot,
+                            Position {
+                                x: position.x.wrapping_shl(8) | (source.position.x & 0xff),
+                                y: position.y.wrapping_shl(8) | (source.position.y & 0xff),
+                                z: source.position.z,
+                            },
+                        )?;
+                    }
+                    if health_changed {
+                        let package_max_life = original
+                            .creature_health()
+                            .map(|health| health.max_life())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic entity {} package carrier has no health binding",
+                                    entity.id().as_str()
+                                ))
+                            })?
+                            .cast_signed();
+                        let authored_max_life = entity
+                            .creature_health()
+                            .map(|health| health.max_life())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic entity {} authored carrier has no health binding",
+                                    entity.id().as_str()
+                                ))
+                            })?
+                            .cast_signed();
+                        if source.max_life != package_max_life || source.life != package_max_life {
+                            return Err(NativeWorldError::new(format!(
+                                "semantic entity {} frame-zero health diverges from its package definition",
+                                entity.id().as_str()
+                            )));
+                        }
+                        let source = &mut self.level2.session.state.live.economy.entities
+                            [usize::from(*initial_source_slot)];
+                        source.bind_frame_zero_max_life(authored_max_life);
+                    }
                 }
                 spec::Mc2EntityRuntimeBinding::AuthoredFeature {
                     authored_record,
@@ -237,14 +275,16 @@ impl CampaignSession {
                             entity.id().as_str()
                         )));
                     }
-                    let position = entity.position();
-                    self.level2
-                        .session
-                        .state
-                        .live
-                        .mission
-                        .set_authored_feature_tile(*authored_record, position.x, position.y)
-                        .map_err(|error| NativeWorldError::new(error.to_string()))?;
+                    if position_changed {
+                        let position = entity.position();
+                        self.level2
+                            .session
+                            .state
+                            .live
+                            .mission
+                            .set_authored_feature_tile(*authored_record, position.x, position.y)
+                            .map_err(|error| NativeWorldError::new(error.to_string()))?;
+                    }
                 }
             }
         }

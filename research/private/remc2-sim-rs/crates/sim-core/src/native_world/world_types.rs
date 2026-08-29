@@ -267,6 +267,19 @@ impl EntitySnapshot {
         i16::from_le_bytes([self.record[136], self.record[137]])
     }
 
+    /// Keep the source maximum-life field in lockstep with its typed cache.
+    pub(super) fn set_max_life(&mut self, max_life: i32) {
+        self.max_life = max_life;
+        self.record[8..12].copy_from_slice(&max_life.to_le_bytes());
+    }
+
+    /// Bind one immutable semantic frame-zero health value before the live
+    /// generation is exposed. Ordinary callbacks retain the narrower setters.
+    pub(crate) fn bind_frame_zero_max_life(&mut self, max_life: i32) {
+        self.set_max_life(max_life);
+        self.set_life(max_life);
+    }
+
     /// Keep the source life field in lockstep with a common AI upkeep write.
     pub(super) fn set_life(&mut self, life: i32) {
         self.life = life;

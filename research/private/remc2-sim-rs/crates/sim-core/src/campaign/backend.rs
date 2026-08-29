@@ -1276,7 +1276,7 @@ mod tests {
         ARCHER_MAX_LIFE_CAPABILITY_ID, Access, ArtifactId, BEE_MAX_LIFE_CAPABILITY_ID,
         ChangeSetBuilder, DRAGON_MAX_LIFE_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
         GamePackage, IntegerParameter, OptionParameter, PresentationAssetSlot, PublicationFault,
-        RequestedTiming, SemanticValue, WorkspaceStore,
+        RequestedTiming, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticValue, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::goat::{GoatBehaviorConfig, GoatStepEvent};
@@ -5454,6 +5454,342 @@ mod tests {
         // No-Claim: this is only the closed first-three-package Bee
         // descriptor/capability census. The separate causal gate owns one
         // real construction and ordinary damage visit.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_level_three_reset_skeleton_max_life_before_ordinary_damage_after_reopen_and_reset()
+     {
+        const SKELETON_SLOT: u16 = 93;
+        const PACKAGE_MAX_LIFE: u32 = 1_000;
+        const AUTHORED_MAX_LIFE: u32 = 2_000;
+        const DAMAGE: u16 = 1_500;
+
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let skeleton =
+            sim_definition::adapter::stable_entity_id("creature.skeleton.at_75_140").unwrap();
+        let target = base.level_definition().unwrap().entity(&skeleton).unwrap();
+        assert_eq!(
+            target.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+        assert!(base.required_capabilities().iter().any(|requirement| {
+            requirement.id.as_str() == SKELETON_MAX_LIFE_CAPABILITY_ID
+                && requirement.exact_version == 1
+        }));
+
+        let workspace_root = temporary_workspace_path("campaign-reset-skeleton-max-life");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-reset-skeleton-max-life",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            89,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-reset-skeleton-max-life",
+            &base,
+            "raise-one-level-three-reset-skeleton-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(skeleton, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let assert_health = |session: &GameSession<Mc2CampaignBackend>, expected: i32| {
+            let source = &session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .entities[usize::from(SKELETON_SLOT)];
+            assert_eq!((source.class, source.model), (5, 9));
+            assert_eq!((source.max_life, source.life), (expected, expected));
+            assert_eq!(
+                i32::from_le_bytes(source.record_bytes()[8..12].try_into().unwrap()),
+                expected
+            );
+            assert_eq!(
+                i32::from_le_bytes(source.record_bytes()[12..16].try_into().unwrap()),
+                expected
+            );
+        };
+        let drive_to_damage_visit = |session: &mut GameSession<Mc2CampaignBackend>| {
+            for _ in 0..24 {
+                let action = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .entities[usize::from(SKELETON_SLOT)]
+                .action;
+                if action == 79 {
+                    return;
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+            panic!("real reset Skeleton did not reach its damage-consuming action")
+        };
+        let apply_damage = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let attacker = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .stage_imported_skeleton_fireball_damage_for_test(SKELETON_SLOT, attacker, DAMAGE)
+                .unwrap();
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .economy
+                .entities[usize::from(SKELETON_SLOT)]
+            .clone()
+        };
+
+        assert_health(&session, PACKAGE_MAX_LIFE.cast_signed());
+        drive_to_damage_visit(&mut session);
+        let package_after_damage = apply_damage(&mut session);
+        assert_eq!(
+            (package_after_damage.life, package_after_damage.action),
+            (-500, 76)
+        );
+
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        let authored_frame_zero_hash = session.backend().campaign.state_hash();
+        assert_health(&session, AUTHORED_MAX_LIFE.cast_signed());
+        drive_to_damage_visit(&mut session);
+        let authored_after_damage = apply_damage(&mut session);
+        assert_eq!(
+            (authored_after_damage.life, authored_after_damage.action),
+            (500, 74)
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            authored_frame_zero_hash
+        );
+        assert_health(&session, AUTHORED_MAX_LIFE.cast_signed());
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages one already-arrived Fireball pulse at the
+        // separately proven real Level 3 reset Skeleton. It proves guarded
+        // per-instance maximum-life publication, old-session isolation,
+        // typed/raw frame-zero binding, explicit reopen/reset, and one
+        // ordinary model-9 damage visit. It does not prove organic projectile
+        // travel, later death outputs/reclaim/objective completion, other
+        // Skeleton instances, save/replay, or clients.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_level_two_authored_skeleton_max_life_at_group_twenty_two_after_reopen_and_reset()
+     {
+        const SKELETON_RECORD: u16 = 239;
+        const GROUP_TWENTY_TWO_ROWS: &[u16] = &[238, 239, 240, 241, 242, 243, 245];
+        const PACKAGE_MAX_LIFE: u32 = 1_000;
+        const AUTHORED_MAX_LIFE: u32 = 2_000;
+
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let skeleton =
+            sim_definition::adapter::stable_entity_id("creature.skeleton.at_140_220").unwrap();
+        let workspace_root = temporary_workspace_path("campaign-authored-skeleton-max-life");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-authored-skeleton-max-life",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            91,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-authored-skeleton-max-life",
+            &base,
+            "raise-one-level-two-authored-skeleton-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(skeleton, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_twenty_two = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(22)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated { group: 22, .. }
+            )));
+            assert_eq!(
+                compatibility
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .map(|source| source.authored_index)
+                    .collect::<Vec<_>>(),
+                GROUP_TWENTY_TWO_ROWS
+            );
+            compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == SKELETON_RECORD)
+                .copied()
+                .unwrap()
+        };
+
+        let package_skeleton = construct_group_twenty_two(&mut session);
+        assert_eq!(
+            (package_skeleton.max_life, package_skeleton.life),
+            (
+                PACKAGE_MAX_LIFE.cast_signed(),
+                PACKAGE_MAX_LIFE.cast_signed()
+            )
+        );
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        let authored_frame_zero_hash = session.backend().campaign.state_hash();
+        let authored_skeleton = construct_group_twenty_two(&mut session);
+        assert_eq!(
+            (authored_skeleton.max_life, authored_skeleton.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            authored_frame_zero_hash
+        );
+        let reset_skeleton = construct_group_twenty_two(&mut session);
+        assert_eq!(
+            (reset_skeleton.max_life, reset_skeleton.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the already-proven real Level 2 group-22
+        // producer and proves its authored Skeleton constructor consumes the
+        // same immutable health binding after reopen/reset. The Level 3 gate
+        // owns ordinary damage; this test does not duplicate combat/death,
+        // organic objective progression, save/replay, or clients.
+    }
+
+    #[test]
+    fn campaign_packages_bind_only_level_two_and_three_skeletons_to_the_health_capability() {
+        let catalog = default_catalog().unwrap();
+        for (root, expected_skeletons) in [
+            (level_one_descriptor_fixture_path(), 0_usize),
+            (descriptor_fixture_path(), 6),
+            (level_three_descriptor_fixture_path(), 11),
+        ] {
+            let definition = load_mc2_campaign(&root, &catalog).unwrap();
+            let skeletons = definition
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.kind()
+                        == sim_definition::level_definition::LevelEntityKind::Creature(
+                            CreatureKind::Skeleton,
+                        )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(skeletons.len(), expected_skeletons);
+            assert!(skeletons.iter().all(|entity| {
+                entity.creature_health().is_some_and(|health| {
+                    health.default_max_life() == 1_000
+                        && health.max_life() == 1_000
+                        && health.max_life_access() == LevelEntityParameterAccess::SessionReset
+                })
+            }));
+            assert_eq!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == SKELETON_MAX_LIFE_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    }),
+                expected_skeletons > 0
+            );
+        }
+
+        // No-Claim: this is only the closed first-three-package Skeleton
+        // descriptor/capability census. The two focused production gates own
+        // the distinct authored constructor and reset-live damage consumers.
     }
 
     #[test]

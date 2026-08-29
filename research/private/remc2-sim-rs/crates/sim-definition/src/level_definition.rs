@@ -62,7 +62,10 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
 pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
     match kind {
         CreatureKind::Bee => Some(32_767),
-        CreatureKind::Archer | CreatureKind::Dragon | CreatureKind::Firefly => Some(2_147_483_647),
+        CreatureKind::Archer
+        | CreatureKind::Dragon
+        | CreatureKind::Firefly
+        | CreatureKind::Skeleton => Some(2_147_483_647),
         _ => None,
     }
 }

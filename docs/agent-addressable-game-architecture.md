@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 17.0 milestone, this is a binding target with
+As of the semantic-contract 18.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -374,6 +374,14 @@ partial real implementation, not a completion claim:
   action-17 mailbox after explicit reopen/reset. This does not author Morph
   Bees, multiple Bees in one transaction, targeting/combat/death, another
   creature family, save/replay, or Unity UI;
+- every package-present Skeleton in the qualified Level 2 and 3 definitions
+  now carries a per-instance `max_life` descriptor backed by the exact
+  compiled Skeleton lifecycle capability. The Level 2 authored-group
+  constructor and Level 3 reset-live importer both consume it after explicit
+  reopen/reset. The focused causal proof changes one real Level 3 Skeleton
+  from 1000 to 2000 life and sends identical damage through its ordinary
+  model-9 mailbox. This does not prove organic projectile travel, later death
+  outputs/objective cleanup, other Skeleton instances, save/replay, or Unity UI;
 - the qualified Level 1 campaign package now retains two profile-pinned,
   canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its
   semantic projectile slot binds the base payload and discovers the fade
