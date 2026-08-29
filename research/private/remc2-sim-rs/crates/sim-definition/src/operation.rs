@@ -8,7 +8,8 @@
 use crate::level_definition::{LevelObjectiveId, ObjectiveCondition};
 use crate::{
     Access, CREATURE_POLICY_CAPABILITY_ID, DefinitionError, DefinitionErrorCode,
-    FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, SemanticId, SemanticValue,
+    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GameDefinition, SemanticId,
+    SemanticValue,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -141,6 +142,12 @@ pub enum DefinitionOperation {
         #[serde(default)]
         expected_position: Option<TilePosition>,
     },
+    SetEntityMaxLife {
+        entity: LevelEntityId,
+        max_life: u32,
+        #[serde(default)]
+        expected_max_life: Option<u32>,
+    },
     PutObjective {
         objective: LevelObjectiveId,
         condition: ObjectiveCondition,
@@ -232,6 +239,28 @@ impl DefinitionOperation {
                     "read_back": "game get --id <entity-id>.position",
                 },
                 {
+                    "operation": "set_entity_max_life",
+                    "required_fields": ["entity", "max_life"],
+                    "optional_fields": ["expected_max_life"],
+                    "entity_ids": "game entities -> data.entities[].id",
+                    "target_id": "<entity-id>.max_life",
+                    "max_life": {
+                        "type": "integer",
+                        "unit": "life_points",
+                        "minimum": 1,
+                        "maximum": i32::MAX,
+                    },
+                    "expected_max_life": "same type, unit, and bounds as max_life",
+                    "required_capability": {
+                        "id": FIREFLY_MAX_LIFE_CAPABILITY_ID,
+                        "exact_version": 1,
+                    },
+                    "writable_when": "entity carries a session-reset Firefly health configuration",
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id <entity-id>.max_life",
+                    "read_back": "game get --id <entity-id>.max_life",
+                },
+                {
                     "operation": "put_objective",
                     "required_fields": ["objective", "condition"],
                     "optional_fields": ["expected_condition"],
@@ -296,6 +325,10 @@ impl DefinitionOperation {
             Self::MoveEntity { entity, .. } => {
                 SemanticId::parse(&format!("{}.position", entity.as_str()))
                     .expect("validated entity ID plus position is a semantic target")
+            }
+            Self::SetEntityMaxLife { entity, .. } => {
+                SemanticId::parse(&format!("{}.max_life", entity.as_str()))
+                    .expect("validated entity ID plus max_life is a semantic target")
             }
             Self::PutObjective { objective, .. } => {
                 SemanticId::parse(&format!("{}.condition", objective.as_str()))
@@ -384,6 +417,7 @@ impl DefinitionOperation {
                 parameter: IntegerParameter::PlayerMaxForwardSpeed,
                 ..
             } | Self::MoveEntity { .. }
+                | Self::SetEntityMaxLife { .. }
                 | Self::PutObjective { .. }
                 | Self::SetMechanicCountdown { .. }
         ) || is_fireball_cost_operation
@@ -430,6 +464,58 @@ impl DefinitionOperation {
                 entity: entity.clone(),
                 position: *position,
                 expected_position: *expected_position,
+            });
+        }
+        if let Self::SetEntityMaxLife {
+            entity,
+            max_life,
+            expected_max_life,
+        } = self
+        {
+            let id = self.target_id();
+            let descriptor = definition
+                .level_creature_max_life_descriptor(&id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownSemanticId,
+                        entity.as_str(),
+                        "maximum-life update names no package-bound Firefly",
+                    )
+                })?;
+            if descriptor.access != Access::Writable {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    entity.as_str(),
+                    "Firefly maximum life has no runtime consumer in this package",
+                ));
+            }
+            let has_capability = definition
+                .required_capabilities()
+                .iter()
+                .any(|requirement| {
+                    requirement.id.as_str() == FIREFLY_MAX_LIFE_CAPABILITY_ID
+                        && requirement.exact_version == 1
+                });
+            if !has_capability {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    entity.as_str(),
+                    "definition lacks the exact Firefly maximum-life capability",
+                ));
+            }
+            descriptor
+                .validate_value(&SemanticValue::Integer(i64::from(*max_life)), id.as_str())?;
+            if let Some(expected_max_life) = expected_max_life {
+                descriptor.validate_value(
+                    &SemanticValue::Integer(i64::from(*expected_max_life)),
+                    "expected_max_life",
+                )?;
+            }
+            return Ok(ResolvedOperation::EntityMaxLifeSet {
+                id,
+                entity: entity.clone(),
+                max_life: *max_life,
+                expected_max_life: *expected_max_life,
             });
         }
         if let Self::PutObjective {
@@ -545,6 +631,9 @@ impl DefinitionOperation {
                     .map(SemanticValue::Reference),
             ),
             Self::MoveEntity { .. } => unreachable!("entity moves return above"),
+            Self::SetEntityMaxLife { .. } => {
+                unreachable!("entity maximum-life updates return above")
+            }
             Self::PutObjective { .. } => unreachable!("objective puts return above"),
             Self::SetMechanicCountdown { .. } => {
                 unreachable!("mechanic countdown updates return above")
@@ -570,6 +659,12 @@ pub(crate) enum ResolvedOperation {
         entity: LevelEntityId,
         position: TilePosition,
         expected_position: Option<TilePosition>,
+    },
+    EntityMaxLifeSet {
+        id: SemanticId,
+        entity: LevelEntityId,
+        max_life: u32,
+        expected_max_life: Option<u32>,
     },
     ObjectivePut {
         id: SemanticId,

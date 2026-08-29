@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
-    build_level_definition, entity_definition_with_position_access, objective_definition,
-    stable_entity_id, stable_objective_id, stable_rival_wizard_id,
+    build_level_definition, creature_entity_definition, entity_definition_with_position_access,
+    objective_definition, stable_entity_id, stable_objective_id, stable_rival_wizard_id,
 };
 
 use crate::{
@@ -249,13 +249,25 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Creature(kind),
                     position_access,
                 )?;
-                entities.push(entity_definition_with_position_access(
-                    id,
-                    LevelEntityKind::Creature(kind),
-                    position,
-                    activation_group,
-                    position_access,
-                ));
+                if kind == CreatureKind::Firefly {
+                    entities.push(creature_entity_definition(
+                        id,
+                        kind,
+                        position,
+                        activation_group,
+                        position_access,
+                        crate::native_world::level2_class5::firefly::FIREFLY_LIFE.cast_unsigned(),
+                        LevelEntityParameterAccess::SessionReset,
+                    ));
+                } else {
+                    entities.push(entity_definition_with_position_access(
+                        id,
+                        LevelEntityKind::Creature(kind),
+                        position,
+                        activation_group,
+                        position_access,
+                    ));
+                }
                 creature_by_authored_record.insert(feature.index, kind);
                 continue;
             }

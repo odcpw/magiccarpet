@@ -9,10 +9,11 @@ use crate::{
     ArtifactKind, ArtifactNode, DefinitionError, DefinitionErrorCode, GameDefinition, GamePackage,
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
     level_definition::{
-        AbsenceCountdownDefinition, ActivationGroupId, LevelDefinition, LevelEntityDefinition,
-        LevelEntityId, LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
-        LevelObjectiveConditionAccess, LevelObjectiveDefinition, LevelObjectiveId,
-        ObjectiveCondition, RivalWizardId, TilePosition,
+        AbsenceCountdownDefinition, ActivationGroupId, CreatureHealthDefinition, CreatureKind,
+        LevelDefinition, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
+        LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
+        LevelObjectiveDefinition, LevelObjectiveId, ObjectiveCondition, RivalWizardId,
+        TilePosition,
     },
     runtime_flow::RuntimeFlowDefinition,
 };
@@ -90,6 +91,7 @@ pub const fn entity_definition(
         activation_group,
         LevelEntityPositionAccess::ReadOnly,
         None,
+        None,
     )
 }
 
@@ -101,7 +103,36 @@ pub const fn entity_definition_with_position_access(
     activation_group: Option<ActivationGroupId>,
     position_access: LevelEntityPositionAccess,
 ) -> LevelEntityDefinition {
-    LevelEntityDefinition::new(id, kind, position, activation_group, position_access, None)
+    LevelEntityDefinition::new(
+        id,
+        kind,
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+    )
+}
+
+#[must_use]
+pub const fn creature_entity_definition(
+    id: LevelEntityId,
+    kind: CreatureKind,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    max_life: u32,
+    max_life_access: LevelEntityParameterAccess,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Creature(kind),
+        position,
+        activation_group,
+        position_access,
+        None,
+        Some(CreatureHealthDefinition::new(max_life, max_life_access)),
+    )
 }
 
 #[must_use]
@@ -128,6 +159,7 @@ pub const fn absence_countdown_entity_definition(
         activation_group,
         position_access,
         Some(countdown),
+        None,
     )
 }
 

@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 13.0 milestone, this is a binding target with
+As of the semantic-contract 14.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -341,6 +341,15 @@ partial real implementation, not a completion claim:
   causal proof covers the Level 1 engagement decision; Goat population,
   placement, movement parameters, damage/death and other creature families
   remain outside this slice;
+- each of the six package-present Level 1 Fireflies now carries a stable,
+  per-instance `max_life` descriptor. Guarded `SetEntityMaxLife` publication
+  leaves already-open sessions unchanged; explicit reopen/reset binds the
+  authored value before the real package group constructs that Firefly, and
+  the ordinary damage callback consumes it through its pre-kill branch. The
+  focused causal proof authors one instance from 600 to 1200 life and applies
+  identical damage to the old and reopened authorities. This does not author
+  another Firefly in the same transaction, other creature families or health
+  parameters, projectile travel/impact production, save/replay, or Unity UI;
 - the qualified Level 1 campaign package now retains two profile-pinned,
   canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its
   semantic projectile slot binds the base payload and discovers the fade

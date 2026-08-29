@@ -281,6 +281,9 @@ fn game_describe(arguments: &[String]) -> ExitCode {
             {
                 let effective = definition.semantic_target_value(&id);
                 vec![descriptor.to_json(effective.as_ref())]
+            } else if let Some(descriptor) = definition.level_creature_max_life_descriptor(&id) {
+                let effective = definition.semantic_target_value(&id);
+                vec![descriptor.to_json(effective.as_ref())]
             } else if let Some(descriptor) = definition.level_objective_condition_descriptor(&id) {
                 let effective = definition.semantic_target_value(&id);
                 vec![descriptor.to_json(effective.as_ref())]
@@ -312,6 +315,15 @@ fn game_describe(arguments: &[String]) -> ExitCode {
             descriptors.extend(
                 definition
                     .level_countdown_arming_ticks_descriptors()
+                    .into_iter()
+                    .map(|descriptor| {
+                        let effective = definition.semantic_target_value(&descriptor.id);
+                        descriptor.to_json(effective.as_ref())
+                    }),
+            );
+            descriptors.extend(
+                definition
+                    .level_creature_max_life_descriptors()
                     .into_iter()
                     .map(|descriptor| {
                         let effective = definition.semantic_target_value(&descriptor.id);
@@ -431,6 +443,20 @@ fn game_get(arguments: &[String]) -> ExitCode {
                 Some(&definition),
             );
         }
+        if let Some(descriptor) = definition.level_creature_max_life_descriptor(&id) {
+            let value = definition
+                .semantic_target_value(&id)
+                .expect("creature-health descriptor has semantic readback");
+            return game_success(
+                "get",
+                definition.definition_hash(),
+                serde_json::json!({
+                    "descriptor": descriptor.to_json(Some(&value)),
+                    "value": value.to_json(),
+                }),
+                Some(&definition),
+            );
+        }
         let entity = sim_core::level_definition::LevelEntityId::parse(id.as_str())
             .ok()
             .and_then(|entity_id| {
@@ -503,6 +529,7 @@ fn public_level_entity_json(
         "kind": entity.kind(),
         "position": entity.position(),
         "position_access": entity.position_access(),
+        "creature_health": entity.creature_health(),
     })
 }
 

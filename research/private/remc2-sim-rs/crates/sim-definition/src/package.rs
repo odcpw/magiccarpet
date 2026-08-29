@@ -21,6 +21,10 @@ pub const FIREBALL_MANA_COST_CAPABILITY_ID: &str = "engine.spell.fireball.mana_c
 /// creature perceive/decide/act policy.
 pub const CREATURE_POLICY_CAPABILITY_ID: &str = "engine.ai.creature_policy";
 
+/// Exact compiled capability required by packages which expose the ordinary
+/// Firefly constructor's maximum-life parameter.
+pub const FIREFLY_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.firefly.max_life";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledCapability {
     pub id: SemanticId,
@@ -121,6 +125,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 CREATURE_POLICY_CAPABILITY_ID,
                 "Bounded compiled creature perceive/decide/act lifecycle.",
+            ),
+            (
+                FIREFLY_MAX_LIFE_CAPABILITY_ID,
+                "Package-bound Firefly construction and complete damage/death lifecycle.",
             ),
             (
                 "engine.flight.fixed_point",

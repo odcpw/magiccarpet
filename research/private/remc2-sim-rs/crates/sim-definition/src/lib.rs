@@ -25,8 +25,8 @@ pub use operation::{
 };
 pub use package::{
     ArtifactKind, ArtifactNode, CREATURE_POLICY_CAPABILITY_ID, CompiledCapability,
-    CompiledCapabilityRegistry, FIREBALL_MANA_COST_CAPABILITY_ID, GamePackage, PackageProvenance,
-    PackageProvenanceKind, RequiredCapability, engine_capabilities,
+    CompiledCapabilityRegistry, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
+    GamePackage, PackageProvenance, PackageProvenanceKind, RequiredCapability, engine_capabilities,
 };
 pub use presentation_asset::{
     BoundPresentationAsset, CompatiblePresentationArtifact, INDEXED_SPRITE_SCHEMA,
@@ -52,8 +52,8 @@ use level_definition::{CreatureKind, LevelDefinition, LevelEntityKind};
 use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v6";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "13.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v7";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "14.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -634,6 +634,37 @@ impl GameDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_creature_max_life(
+        &self,
+        id: &level_definition::LevelEntityId,
+        max_life: u32,
+        revision: u64,
+    ) -> Result<Self> {
+        if revision < self.revision {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidRequest,
+                "definition.revision",
+                "candidate definition revision must not move backward",
+            ));
+        }
+        let level = self.level_definition.as_ref().ok_or_else(|| {
+            DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                id.as_str(),
+                "definition has no semantic creature-health consumer",
+            )
+        })?;
+        let mut candidate = self.clone();
+        candidate.level_definition = Some(level.with_creature_max_life(id, max_life).map_err(
+            |message| {
+                DefinitionError::new(DefinitionErrorCode::InvalidRequest, id.as_str(), message)
+            },
+        )?);
+        candidate.revision = revision;
+        candidate.definition_hash = candidate.compute_hash();
+        Ok(candidate)
+    }
+
     /// Read one semantic authoring target from the immutable definition.
     #[must_use]
     pub fn semantic_target_value(&self, id: &SemanticId) -> Option<SemanticValue> {
@@ -656,6 +687,15 @@ impl GameDefinition {
                 .entity(&entity_id)
                 .and_then(level_definition::LevelEntityDefinition::absence_countdown)
                 .map(|config| SemanticValue::Integer(i64::from(config.arming_ticks())));
+        }
+        if let Some(entity) = id.as_str().strip_suffix(".max_life") {
+            let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
+            return self
+                .level_definition
+                .as_ref()?
+                .entity(&entity_id)
+                .and_then(level_definition::LevelEntityDefinition::creature_health)
+                .map(|config| SemanticValue::Integer(i64::from(config.max_life())));
         }
         if let Some(objective) = id.as_str().strip_suffix(".condition") {
             let objective_id = level_definition::LevelObjectiveId::parse(objective).ok()?;
@@ -828,6 +868,92 @@ impl GameDefinition {
                 SemanticId::parse(&format!("{}.arming_ticks", entity.id().as_str()))
                     .ok()
                     .and_then(|id| self.level_countdown_arming_ticks_descriptor(&id))
+            })
+            .collect()
+    }
+
+    /// Describe one package-present Firefly maximum-life target.
+    #[must_use]
+    pub fn level_creature_max_life_descriptor(
+        &self,
+        id: &SemanticId,
+    ) -> Option<SemanticDescriptor> {
+        let entity_id = id.as_str().strip_suffix(".max_life")?;
+        let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
+        let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
+        let config = entity.creature_health()?;
+        let writable = matches!(
+            config.max_life_access(),
+            level_definition::LevelEntityParameterAccess::SessionReset
+        );
+        let target_id = id.as_str().to_owned();
+        Some(SemanticDescriptor {
+            id: id.clone(),
+            descriptor_version: 1,
+            kind: DescriptorKind::EntityParameter,
+            value_type: ValueType::Integer,
+            unit: Some("life_points".to_owned()),
+            default_value: SemanticValue::Integer(i64::from(config.default_max_life())),
+            minimum: Some(1),
+            maximum: Some(i64::from(i32::MAX)),
+            enum_values: Vec::new(),
+            access: if writable {
+                Access::Writable
+            } else {
+                Access::ReadOnly
+            },
+            mutation_timing: MutationTiming::SessionReset,
+            determinism_role: "immutable per-instance creature constructor parameter".to_owned(),
+            dependencies: vec![
+                entity.id().as_str().to_owned(),
+                "engine.creature.firefly.max_life@1".to_owned(),
+                "package Firefly constructor and complete damage/death lifecycle".to_owned(),
+            ],
+            side_effects: if writable {
+                vec![
+                    "already-open sessions retain their original Firefly health".to_owned(),
+                    "explicit reopen/reset initializes both life and maximum life from this value"
+                        .to_owned(),
+                ]
+            } else {
+                Vec::new()
+            },
+            scope: format!("stable Firefly instance {}", entity.id().as_str()),
+            provenance_origin: "package semantic level definition".to_owned(),
+            provenance_content_hash: self.package_graph_hash.clone(),
+            temporal_contract: Some(TemporalContract {
+                dispatch_phase: "definition_publication".to_owned(),
+                dispatch_key: target_id.clone(),
+                ordinary_producer: "validated SetEntityMaxLife candidate".to_owned(),
+                handler: "guarded atomic definition compare-and-swap".to_owned(),
+                same_pass_epilogue:
+                    "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
+                following_pass_cleanup: "explicit reopen/reset binds the authored value before the package group constructs this Firefly; ordinary damage, pre-kill, hide, and reclaim consume that carrier"
+                    .to_owned(),
+                authoritative_reads: vec![target_id],
+                authoritative_writes: vec![
+                    "immutable LevelDefinition Firefly max_life configuration".to_owned(),
+                ],
+                rng_and_event_effects:
+                    "none during publication or construction; damage and death event order remains scheduler-owned"
+                        .to_owned(),
+            }),
+            summary: "Initial and maximum life of one package-bound Firefly.".to_owned(),
+        })
+    }
+
+    /// Describe every package-bound creature maximum-life target in level order.
+    #[must_use]
+    pub fn level_creature_max_life_descriptors(&self) -> Vec<SemanticDescriptor> {
+        self.level_definition
+            .as_ref()
+            .into_iter()
+            .flat_map(level_definition::LevelDefinition::entities)
+            .filter(|entity| entity.creature_health().is_some())
+            .filter_map(|entity| {
+                SemanticId::parse(&format!("{}.max_life", entity.id().as_str()))
+                    .ok()
+                    .and_then(|id| self.level_creature_max_life_descriptor(&id))
             })
             .collect()
     }

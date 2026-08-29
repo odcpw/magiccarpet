@@ -6765,10 +6765,15 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
+        let max_life = self
+            .session
+            .definition
+            .authored_creature_max_life(feature.index)?;
         let source = self.session.state.live.economy.allocate_authored_firefly(
             feature.index,
             position,
             route,
+            max_life,
             &self.session.state.live.terrain,
         )?;
         assert!(
@@ -8216,6 +8221,17 @@ impl Level2ResetSession {
             if self.authored_firefly_stage_route(*feature).is_none() {
                 return Err(format!(
                     "authored Firefly row {} has no valid StageVar-1 route",
+                    feature.index
+                ));
+            }
+            if self
+                .session
+                .definition
+                .authored_creature_max_life(feature.index)
+                .is_none()
+            {
+                return Err(format!(
+                    "authored Firefly row {} has no semantic maximum-life binding",
                     feature.index
                 ));
             }

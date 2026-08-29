@@ -22,7 +22,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v5";
+pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v6";
 pub const WORKSPACE_SCHEMA: &str = "carpet-flight-definition-workspace/v1";
 pub const VALIDATION_RECEIPT_SCHEMA: &str = "carpet-flight-validation-receipt/v1";
 pub const APPLY_RECEIPT_SCHEMA: &str = "carpet-flight-apply-receipt/v1";
@@ -364,6 +364,39 @@ impl ChangeSetBuilder {
                 entity,
                 position,
                 expected_position: Some(expected_position),
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_entity_max_life(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        max_life: u32,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetEntityMaxLife {
+                entity,
+                max_life,
+                expected_max_life: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_entity_max_life_from(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        expected_max_life: u32,
+        max_life: u32,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetEntityMaxLife {
+                entity,
+                max_life,
+                expected_max_life: Some(expected_max_life),
             });
         self
     }
@@ -1458,6 +1491,56 @@ fn validate_against(
                     Err(error) => diagnostics.push(error.into()),
                 }
             }
+            ResolvedOperation::EntityMaxLifeSet {
+                id,
+                entity,
+                max_life,
+                expected_max_life,
+            } => {
+                required_timing = Some(required_timing.unwrap_or(RequestedTiming::SessionReset));
+                if !change_set
+                    .requested_timing
+                    .permits(MutationTiming::SessionReset)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "UNSAFE_TIMING".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "Firefly health authoring requires session_reset timing"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                let current = active
+                    .level_definition()
+                    .and_then(|level| level.entity(entity))
+                    .and_then(|candidate| candidate.creature_health())
+                    .map(|config| config.max_life());
+                if expected_max_life.is_some() && current != *expected_max_life {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message:
+                            "Firefly expected maximum life does not match the active definition"
+                                .to_owned(),
+                    });
+                    continue;
+                }
+                if current == Some(*max_life) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "Firefly already has the requested maximum life".to_owned(),
+                    });
+                    continue;
+                }
+                match proposed.with_creature_max_life(entity, *max_life, candidate_revision) {
+                    Ok(updated) => {
+                        proposed = updated;
+                        preliminarily_valid.insert(id.clone());
+                    }
+                    Err(error) => diagnostics.push(error.into()),
+                }
+            }
         }
     }
     for resolved in &resolved_operations {
@@ -1494,6 +1577,9 @@ fn validate_against(
                 } => {
                     candidate.with_countdown_arming_ticks(entity, *arming_ticks, candidate_revision)
                 }
+                ResolvedOperation::EntityMaxLifeSet {
+                    entity, max_life, ..
+                } => candidate.with_creature_max_life(entity, *max_life, candidate_revision),
             };
             match applied {
                 Ok(updated) => candidate = updated,

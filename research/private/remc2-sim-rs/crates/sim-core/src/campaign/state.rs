@@ -73,6 +73,7 @@ pub struct CampaignDefinition {
     pub identity_receipt: CanonicalDigest,
     semantic_level: Option<LevelDefinition>,
     authored_creature_kinds: BTreeMap<u16, CreatureKind>,
+    authored_creature_entities: BTreeMap<u16, LevelEntityId>,
     initial_source_creatures: BTreeMap<u16, CreatureKind>,
     creature_models: BTreeMap<CreatureKind, u8>,
     authored_spells: BTreeMap<u16, SpellKind>,
@@ -101,6 +102,7 @@ pub struct CampaignDefinition {
 pub(crate) struct SemanticLevelBindings {
     pub(crate) level: LevelDefinition,
     pub(crate) authored_creature_kinds: BTreeMap<u16, CreatureKind>,
+    pub(crate) authored_creature_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) initial_source_creatures: BTreeMap<u16, CreatureKind>,
     pub(crate) creature_models: BTreeMap<CreatureKind, u8>,
     pub(crate) authored_spells: BTreeMap<u16, SpellKind>,
@@ -367,6 +369,7 @@ impl CampaignDefinition {
             identity_receipt,
             semantic_level: None,
             authored_creature_kinds: BTreeMap::new(),
+            authored_creature_entities: BTreeMap::new(),
             initial_source_creatures: BTreeMap::new(),
             creature_models: BTreeMap::new(),
             authored_spells: BTreeMap::new(),
@@ -392,6 +395,7 @@ impl CampaignDefinition {
     pub(crate) fn bind_semantic_level(&mut self, bindings: SemanticLevelBindings) {
         self.semantic_level = Some(bindings.level);
         self.authored_creature_kinds = bindings.authored_creature_kinds;
+        self.authored_creature_entities = bindings.authored_creature_entities;
         self.initial_source_creatures = bindings.initial_source_creatures;
         self.creature_models = bindings.creature_models;
         self.authored_spells = bindings.authored_spells;
@@ -427,6 +431,15 @@ impl CampaignDefinition {
     #[must_use]
     pub fn semantic_level(&self) -> Option<&LevelDefinition> {
         self.semantic_level.as_ref()
+    }
+
+    pub(crate) fn authored_creature_max_life(&self, authored_record: u16) -> Option<u32> {
+        let entity_id = self.authored_creature_entities.get(&authored_record)?;
+        self.semantic_level
+            .as_ref()?
+            .entity(entity_id)?
+            .creature_health()
+            .map(|health| health.max_life())
     }
 
     pub(crate) fn standing_building_chain(&self, objective_id: &LevelObjectiveId) -> Option<&[u8]> {

@@ -38,8 +38,8 @@ use crate::{
     game_definition::{
         ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFireballBinding,
         DefinitionFlightBinding, DefinitionGoatPolicyBinding, ENEMY_DEFAULT_POLICY_ID,
-        FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, RequiredCapability, SemanticCatalog,
-        SemanticId, default_catalog, engine_capabilities,
+        FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GameDefinition,
+        RequiredCapability, SemanticCatalog, SemanticId, default_catalog, engine_capabilities,
     },
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
@@ -274,6 +274,14 @@ pub fn load_mc2_campaign(
     }
     if descriptor.local_player_fireball_mana_cost().is_some() {
         requirement_ids.push(FIREBALL_MANA_COST_CAPABILITY_ID);
+    }
+    if descriptor
+        .level_definition()
+        .entities()
+        .iter()
+        .any(|entity| entity.creature_health().is_some())
+    {
+        requirement_ids.push(FIREFLY_MAX_LIFE_CAPABILITY_ID);
     }
     if !descriptor.presentation_assets().is_empty() {
         requirement_ids.push("engine.presentation.indexed_asset");
@@ -4362,6 +4370,204 @@ mod tests {
         // each family's distinct callback, organic prior objectives, reset-live
         // Skeleton placement, unsupported creature families, save/replay, or
         // Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_firefly_max_life_before_damage_after_reopen_and_reset() {
+        const FIREFLY_RECORD: u16 = 134;
+        const GROUP_SIX_ROWS: &[u16] = &[108, 134, 135, 154, 189, 193];
+        const PACKAGE_MAX_LIFE: u32 = 600;
+        const AUTHORED_MAX_LIFE: u32 = 1_200;
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let firefly =
+            sim_definition::adapter::stable_entity_id("creature.firefly.at_213_125").unwrap();
+        let target = base.level_definition().unwrap().entity(&firefly).unwrap();
+        assert_eq!(
+            target.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+        assert_eq!(
+            base.level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| entity.creature_health().is_some())
+                .count(),
+            6,
+            "all package-present Fireflies share this bound constructor parameter"
+        );
+        assert!(base.required_capabilities().iter().any(|requirement| {
+            requirement.id.as_str() == FIREFLY_MAX_LIFE_CAPABILITY_ID
+                && requirement.exact_version == 1
+        }));
+
+        let workspace_root = temporary_workspace_path("campaign-firefly-max-life");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-firefly-max-life", base.clone())
+                .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            78,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-firefly-max-life",
+            &base,
+            "raise-one-level-one-firefly-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(firefly.clone(), PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(
+            published
+                .level_definition()
+                .unwrap()
+                .entity(&firefly)
+                .and_then(|entity| entity.creature_health())
+                .map(|health| (health.default_max_life(), health.max_life())),
+            Some((PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE))
+        );
+
+        let construct_group_six = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(6)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 6,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == GROUP_SIX_ROWS
+            )));
+            compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == FIREFLY_RECORD)
+                .copied()
+                .unwrap()
+        };
+        let apply_two_impacts = |session: &mut GameSession<Mc2CampaignBackend>, source_slot| {
+            let (position, attacker) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                let source = compatibility
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)
+                    .unwrap();
+                (source.position, compatibility.state.entity_index)
+            };
+            for _ in 0..2 {
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .apply_fireball_impact_to_firefly_for_test(position, attacker, 500);
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .copied()
+                .unwrap()
+        };
+
+        let package_firefly = construct_group_six(&mut session);
+        assert_eq!(
+            (package_firefly.max_life, package_firefly.life),
+            (
+                PACKAGE_MAX_LIFE.cast_signed(),
+                PACKAGE_MAX_LIFE.cast_signed()
+            ),
+            "publication must not mutate the already-open package authority"
+        );
+        let package_after_damage =
+            apply_two_impacts(&mut session, package_firefly.source_entity_index);
+        assert_eq!(package_after_damage.life, -400);
+        assert_eq!(package_after_damage.action, 156);
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        let authored_frame_zero_hash = session.backend().campaign.state_hash();
+        let authored_firefly = construct_group_six(&mut session);
+        assert_eq!(
+            (authored_firefly.max_life, authored_firefly.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed(),
+            )
+        );
+        let authored_after_damage =
+            apply_two_impacts(&mut session, authored_firefly.source_entity_index);
+        assert_eq!(authored_after_damage.life, 200);
+        assert!(authored_after_damage.active && authored_after_damage.drawing_enabled);
+        assert!(!matches!(authored_after_damage.action, 156 | 157));
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            authored_frame_zero_hash
+        );
+        let reset_firefly = construct_group_six(&mut session);
+        assert_eq!(
+            (reset_firefly.max_life, reset_firefly.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed(),
+            )
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the already-proven Level 1 group-6 producer
+        // and two source-sized Fireball impacts. It proves guarded per-instance
+        // Firefly maximum-life publication, old-session isolation, explicit
+        // reopen/reset construction, and the ordinary damage/pre-kill branch.
+        // It does not author the other five Fireflies in this transaction,
+        // other creature families or parameters, organic objective progression,
+        // projectile travel/impact production, save/replay, or Unity UI.
     }
 
     #[test]

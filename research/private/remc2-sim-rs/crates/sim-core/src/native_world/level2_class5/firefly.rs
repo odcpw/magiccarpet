@@ -93,8 +93,10 @@ impl Level2EconomyState {
         authored_index: u16,
         position: Position,
         route: FireflyStageRoute,
+        max_life: u32,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
+        let max_life = i32::try_from(max_life).ok().filter(|value| *value > 0)?;
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
         let entity_rng = level2_next_rng16(initial_rng);
@@ -131,8 +133,8 @@ impl Level2EconomyState {
             minimum_speed: FIREFLY_MINIMUM_SPEED,
             maximum_speed: FIREFLY_MAXIMUM_SPEED,
             actual_speed: FIREFLY_MINIMUM_SPEED,
-            max_life: FIREFLY_LIFE,
-            life: FIREFLY_LIFE,
+            max_life,
+            life: max_life,
             mana: FIREFLY_MANA,
             max_mana: 0,
             subspell_index: FIREFLY_SUBSPELL,

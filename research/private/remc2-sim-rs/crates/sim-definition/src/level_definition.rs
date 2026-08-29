@@ -405,6 +405,41 @@ pub struct AbsenceCountdownDefinition {
     arming_ticks_access: LevelEntityParameterAccess,
 }
 
+/// Immutable per-instance health configuration for one package-present
+/// creature whose constructor and complete damage/death lifecycle are bound.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CreatureHealthDefinition {
+    default_max_life: u32,
+    max_life: u32,
+    #[serde(default, skip_serializing_if = "is_read_only_entity_parameter")]
+    max_life_access: LevelEntityParameterAccess,
+}
+
+impl CreatureHealthDefinition {
+    pub(crate) const fn new(max_life: u32, max_life_access: LevelEntityParameterAccess) -> Self {
+        Self {
+            default_max_life: max_life,
+            max_life,
+            max_life_access,
+        }
+    }
+
+    #[must_use]
+    pub const fn default_max_life(self) -> u32 {
+        self.default_max_life
+    }
+
+    #[must_use]
+    pub const fn max_life(self) -> u32 {
+        self.max_life
+    }
+
+    #[must_use]
+    pub const fn max_life_access(self) -> LevelEntityParameterAccess {
+        self.max_life_access
+    }
+}
+
 impl AbsenceCountdownDefinition {
     pub(crate) const fn new(
         arming_ticks: u32,
@@ -515,6 +550,8 @@ pub struct LevelEntityDefinition {
     position_access: LevelEntityPositionAccess,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     absence_countdown: Option<AbsenceCountdownDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creature_health: Option<CreatureHealthDefinition>,
 }
 
 impl LevelEntityDefinition {
@@ -525,6 +562,7 @@ impl LevelEntityDefinition {
         activation_group: Option<ActivationGroupId>,
         position_access: LevelEntityPositionAccess,
         absence_countdown: Option<AbsenceCountdownDefinition>,
+        creature_health: Option<CreatureHealthDefinition>,
     ) -> Self {
         Self {
             id,
@@ -534,6 +572,7 @@ impl LevelEntityDefinition {
             activation_group,
             position_access,
             absence_countdown,
+            creature_health,
         }
     }
 
@@ -571,6 +610,11 @@ impl LevelEntityDefinition {
     #[must_use]
     pub const fn absence_countdown(&self) -> Option<AbsenceCountdownDefinition> {
         self.absence_countdown
+    }
+
+    #[must_use]
+    pub const fn creature_health(&self) -> Option<CreatureHealthDefinition> {
+        self.creature_health
     }
 }
 
@@ -620,6 +664,30 @@ impl LevelDefinition {
                 (_, Some(_)) => {
                     return Err(format!(
                         "non-countdown entity {} carries absence-countdown configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
+            match (entity.kind, entity.creature_health) {
+                (LevelEntityKind::Creature(CreatureKind::Firefly), Some(config))
+                    if (1..=i32::MAX.cast_unsigned()).contains(&config.default_max_life)
+                        && (1..=i32::MAX.cast_unsigned()).contains(&config.max_life) => {}
+                (LevelEntityKind::Creature(CreatureKind::Firefly), Some(_)) => {
+                    return Err(format!(
+                        "semantic Firefly {} has an invalid maximum life",
+                        entity.id.as_str()
+                    ));
+                }
+                (LevelEntityKind::Creature(_), Some(_)) => {
+                    return Err(format!(
+                        "semantic creature {} exposes a maximum-life parameter without a bound family consumer",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-creature entity {} carries creature-health configuration",
                         entity.id.as_str()
                     ));
                 }
@@ -837,6 +905,46 @@ impl LevelDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_creature_max_life(
+        &self,
+        id: &LevelEntityId,
+        max_life: u32,
+    ) -> Result<Self, String> {
+        if !(1..=i32::MAX.cast_unsigned()).contains(&max_life) {
+            return Err(format!(
+                "semantic creature {} maximum life is outside 1..={}",
+                id.as_str(),
+                i32::MAX
+            ));
+        }
+        let mut candidate = self.clone();
+        let entity = candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == *id)
+            .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
+        let config = entity.creature_health.as_mut().ok_or_else(|| {
+            format!(
+                "semantic level entity {} has no package-bound health consumer",
+                id.as_str()
+            )
+        })?;
+        if config.max_life_access != LevelEntityParameterAccess::SessionReset {
+            return Err(format!(
+                "semantic creature {} maximum life has no runtime consumer",
+                id.as_str()
+            ));
+        }
+        if config.max_life == max_life {
+            return Err(format!(
+                "semantic creature {} already has the requested maximum life",
+                id.as_str()
+            ));
+        }
+        config.max_life = max_life;
+        Ok(candidate)
+    }
+
     /// Verify that this definition differs from `base` only through semantic
     /// changes explicitly admitted at session reset.
     ///
@@ -894,6 +1002,40 @@ impl LevelDefinition {
                 _ => {
                     return Err(format!(
                         "semantic level variant adds or removes countdown configuration at {}",
+                        original.id.as_str()
+                    ));
+                }
+            }
+            match (candidate.creature_health, original.creature_health) {
+                (Some(candidate_config), Some(original_config)) => {
+                    if candidate_config.default_max_life != original_config.default_max_life
+                        || candidate_config.max_life_access != original_config.max_life_access
+                    {
+                        return Err(format!(
+                            "semantic level variant changes creature-health structure at {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if candidate_config.max_life != original_config.max_life
+                        && original_config.max_life_access
+                            != LevelEntityParameterAccess::SessionReset
+                    {
+                        return Err(format!(
+                            "semantic level variant changes read-only creature health {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if !(1..=i32::MAX.cast_unsigned()).contains(&candidate_config.max_life) {
+                        return Err(format!(
+                            "semantic level variant gives creature {} invalid maximum life",
+                            original.id.as_str()
+                        ));
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(format!(
+                        "semantic level variant adds or removes creature-health configuration at {}",
                         original.id.as_str()
                     ));
                 }

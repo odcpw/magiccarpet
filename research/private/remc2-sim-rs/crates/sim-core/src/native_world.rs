@@ -3085,7 +3085,7 @@ pub struct Level2EconomyState {
 }
 
 mod level2_authored_slots;
-mod level2_class5;
+pub(crate) mod level2_class5;
 mod level2_dynamic_economy;
 mod level2_sessions;
 #[cfg(test)]

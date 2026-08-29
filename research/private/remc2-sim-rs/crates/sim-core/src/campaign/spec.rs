@@ -1457,6 +1457,19 @@ impl CampaignDefinition {
         &self.creature_by_initial_source_slot
     }
 
+    pub(crate) fn authored_creature_entity_bindings(&self) -> BTreeMap<u16, LevelEntityId> {
+        self.movable_entity_bindings
+            .iter()
+            .filter_map(|(entity_id, binding)| match binding {
+                Mc2EntityRuntimeBinding::AuthoredFeature {
+                    authored_record,
+                    kind: LevelEntityKind::Creature(_),
+                } => Some((*authored_record, entity_id.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn creature_models(&self) -> &BTreeMap<CreatureKind, u8> {
         &self.creature_model_by_kind
     }

@@ -99,6 +99,7 @@ pub enum DescriptorKind {
     Rule,
     Behavior,
     Placement,
+    EntityParameter,
     Objective,
     Mechanic,
 }
@@ -112,6 +113,7 @@ impl DescriptorKind {
             Self::Rule => "rule",
             Self::Behavior => "behavior",
             Self::Placement => "placement",
+            Self::EntityParameter => "entity_parameter",
             Self::Objective => "objective",
             Self::Mechanic => "mechanic",
         }
