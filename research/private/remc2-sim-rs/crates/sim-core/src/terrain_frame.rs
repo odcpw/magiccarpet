@@ -83,9 +83,7 @@ use crate::{
     },
 };
 
-pub const LEVEL1_VIEW_WIDTH: usize = 320;
-pub const LEVEL1_VIEW_HEIGHT: usize = 200;
-pub const LEVEL1_VIEW_PIXELS: usize = LEVEL1_VIEW_WIDTH * LEVEL1_VIEW_HEIGHT;
+pub use sim_indexed_postprocess::{LEVEL1_VIEW_HEIGHT, LEVEL1_VIEW_PIXELS, LEVEL1_VIEW_WIDTH};
 pub const LEVEL1_TERRAIN_ATLAS_WIDTH: usize = 256;
 pub const LEVEL1_TERRAIN_TILE_SIZE: usize = 32;
 pub const LEVEL1_TERRAIN_TILE_COLUMNS: usize = 8;

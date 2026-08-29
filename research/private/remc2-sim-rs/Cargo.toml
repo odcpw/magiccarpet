@@ -12,6 +12,7 @@ members = [
     "crates/sim-goat-map-chain",
     "crates/sim-goat-tmap",
     "crates/sim-ground-motion",
+    "crates/sim-indexed-postprocess",
     "crates/sim-music",
     "crates/sim-render-camera",
     "crates/sim-renderable-map-chain",

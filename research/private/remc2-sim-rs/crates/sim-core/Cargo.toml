@@ -25,6 +25,7 @@ sim-frozen-actor-tmap = { path = "../sim-frozen-actor-tmap" }
 sim-goat-map-chain = { path = "../sim-goat-map-chain" }
 sim-goat-tmap = { path = "../sim-goat-tmap" }
 sim-ground-motion = { path = "../sim-ground-motion" }
+sim-indexed-postprocess = { path = "../sim-indexed-postprocess" }
 sim-input = { path = "../sim-input" }
 sim-music = { path = "../sim-music" }
 sim-render-camera = { path = "../sim-render-camera" }

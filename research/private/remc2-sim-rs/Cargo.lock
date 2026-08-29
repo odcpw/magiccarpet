@@ -238,6 +238,7 @@ dependencies = [
  "sim-goat-map-chain",
  "sim-goat-tmap",
  "sim-ground-motion",
+ "sim-indexed-postprocess",
  "sim-input",
  "sim-music",
  "sim-render-camera",
@@ -289,6 +290,10 @@ version = "0.1.0"
 
 [[package]]
 name = "sim-ground-motion"
+version = "0.1.0"
+
+[[package]]
+name = "sim-indexed-postprocess"
 version = "0.1.0"
 
 [[package]]
