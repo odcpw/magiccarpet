@@ -5172,6 +5172,72 @@ impl Level2ResetSession {
             .map_err(|error| error.to_string())
     }
 
+    /// Stage only the qualified Level-1 objective boundary immediately before
+    /// the final Firefly-absence predicate. Production creature callbacks,
+    /// objective evaluation, the reset-live level-end gate, and group 4 remain
+    /// owned by the ordinary scheduler.
+    #[cfg(test)]
+    pub(crate) fn stage_level_one_final_objective_prerequisite_for_test(
+        &mut self,
+    ) -> std::result::Result<(), String> {
+        const FINAL_STAGE: usize = 4;
+        let objective_id =
+            crate::level_definition::LevelObjectiveId::parse("objective.clear.lethal_fireflies")
+                .map_err(|error| error.to_string())?;
+        let semantic = self
+            .session
+            .definition
+            .semantic_level()
+            .and_then(|level| level.objectives().get(FINAL_STAGE))
+            .ok_or_else(|| "qualified Level-1 final objective is missing".to_owned())?;
+        if semantic.id() != &objective_id
+            || semantic.condition() != ObjectiveCondition::NoLivingCreatures(CreatureKind::Firefly)
+        {
+            return Err("qualified Level-1 final objective is not Firefly absence".to_owned());
+        }
+        let stage_count = self.session.state.live.core.runtime.objectives[0]
+            .stage_selectors
+            .len();
+        for stage_index in 0..stage_count {
+            let state = if stage_index < FINAL_STAGE { 2 } else { 0 };
+            self.session
+                .state
+                .live
+                .core
+                .runtime
+                .set_level2_objective_stage_selector_for(0, stage_index, state);
+        }
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .set_level2_objective_stage_selector_for(0, FINAL_STAGE, 1);
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .set_level2_objective_text_selector_for(0, FINAL_STAGE);
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .set_level2_objective_level_end_for(0, 0);
+        while self.session.state.live.core.runtime.objectives[0].done != 0 {
+            self.session
+                .state
+                .live
+                .core
+                .runtime
+                .consume_objective_done_pause_for(0);
+        }
+        self.session.state.live.level2_objective_pause = 0;
+        self.session.state.live.level2_objective_done = false;
+        Ok(())
+    }
+
     /// Stage only the qualified Level-3 objective boundary immediately before
     /// its final Bee group. Production source callbacks still own group 3,
     /// Bee reclaim, final-objective evaluation, group 6, the exit trigger,

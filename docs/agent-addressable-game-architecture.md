@@ -364,7 +364,14 @@ partial real implementation, not a completion claim:
   and Archer carriers; the scheduled class-10 impact writes their existing
   family mailboxes. One focused Level 1 proof follows three real 250-damage
   casts through Firefly hit, pre-kill, kill, hide and following-pass reclaim,
-  while rejecting a self-owner mailbox write. This does not author another
+  while rejecting a self-owner mailbox write. A second focused Level 1 chain
+  uses ordinary player casts to eliminate all five group-6 objective
+  Fireflies, observes every pre-kill/kill/hide/reclaim boundary, then lets the
+  semantic Firefly-absence objective and following reset-live level-end gate
+  materialize the exact package group-4 exit portal and trigger. The earlier
+  Archer/castle objective boundary and group-6 construction boundary are
+  staged from their separately proven production routes; the proof does not
+  enter the exit trigger or `LevelExitSequence`. This does not author another
   Firefly in the same transaction, other creature families or health
   parameters, enemy/team damage policy, save/replay, or Unity UI;
 - every package-present Archer in the qualified Level 1-3 definitions now

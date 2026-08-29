@@ -4664,6 +4664,436 @@ mod tests {
     }
 
     #[test]
+    fn campaign_backend_real_player_fireballs_complete_level_one_firefly_objective_and_materialize_exit_group()
+     {
+        const GROUP_SIX_ROWS: &[u16] = &[108, 134, 135, 154, 189, 193];
+        const FIREFLY_ROWS: &[u16] = &[108, 134, 135, 189, 193];
+        const GROUP_FOUR_ROWS: &[u16] =
+            &[21, 132, 137, 138, 139, 140, 141, 233, 304, 305, 307, 308];
+
+        fn firefly(
+            session: &GameSession<Mc2CampaignBackend>,
+            source_slot: u16,
+        ) -> Option<crate::native_world::Level2AuthoredClass5Source> {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .copied()
+        }
+
+        fn aim_player_at_firefly(session: &mut GameSession<Mc2CampaignBackend>, source_slot: u16) {
+            let (target, player_slot, player_fov) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                (
+                    compatibility
+                        .economy()
+                        .authored_class5()
+                        .iter()
+                        .find(|source| source.source_entity_index == source_slot)
+                        .copied()
+                        .expect("real package Firefly remains live before the cast"),
+                    compatibility.state.entity_index,
+                    compatibility.state.entity_fov,
+                )
+            };
+            let mut predicted_target = target.position;
+            crate::move_entity(
+                &mut predicted_target,
+                target.yaw,
+                target.pitch,
+                target.actual_speed,
+            );
+            let mut player_position = target.position;
+            crate::move_entity(
+                &mut player_position,
+                target.yaw.wrapping_add(1_024) & 0x07ff,
+                0,
+                384_i16.saturating_sub(target.actual_speed.max(0)),
+            );
+            player_position.z = crate::FlightWorld::ground_height(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .canonical_terrain(),
+                player_position,
+            )
+            .wrapping_add(256);
+            let mut launch_position = player_position;
+            launch_position.z = launch_position.z.wrapping_add(player_fov);
+            let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+                launch_position,
+                predicted_target,
+            );
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .set_level2_entity_position(player_slot, player_position)
+                .expect("position the real player at the proven incoming-combat boundary");
+            compatibility.set_level2_player_aim_for_test(yaw, pitch);
+        }
+
+        fn observe_lifecycle(
+            session: &GameSession<Mc2CampaignBackend>,
+            targets: &[(u16, u16)],
+            saw_pre_kill: &mut BTreeSet<u16>,
+            saw_kill: &mut BTreeSet<u16>,
+            saw_hidden: &mut BTreeSet<u16>,
+            saw_reclaimed: &mut BTreeSet<u16>,
+        ) {
+            for (row, source_slot) in targets {
+                match firefly(session, *source_slot) {
+                    Some(source) => {
+                        if source.action
+                            == crate::native_world::level2_class5::firefly::FIREFLY_PRE_KILL_ACTION
+                        {
+                            saw_pre_kill.insert(*row);
+                        }
+                        if source.action
+                            == crate::native_world::level2_class5::firefly::FIREFLY_KILL_ACTION
+                        {
+                            saw_kill.insert(*row);
+                        }
+                        if !source.active && !source.drawing_enabled {
+                            saw_hidden.insert(*row);
+                        }
+                    }
+                    None if saw_pre_kill.contains(row)
+                        && !session
+                            .backend()
+                            .campaign
+                            .level2_compatibility()
+                            .economy()
+                            .map_chains()
+                            .is_linked(*source_slot) =>
+                    {
+                        saw_reclaimed.insert(*row);
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        fn cast_once(
+            session: &mut GameSession<Mc2CampaignBackend>,
+            target_slot: u16,
+            safe_position: crate::Position,
+            targets: &[(u16, u16)],
+            saw_pre_kill: &mut BTreeSet<u16>,
+            saw_kill: &mut BTreeSet<u16>,
+            saw_hidden: &mut BTreeSet<u16>,
+            saw_reclaimed: &mut BTreeSet<u16>,
+        ) -> Option<(u16, i32, i32)> {
+            let before = targets
+                .iter()
+                .filter_map(|(_, source_slot)| {
+                    firefly(session, *source_slot)
+                        .filter(|source| source.life >= 0)
+                        .map(|source| (*source_slot, source.life))
+                })
+                .collect::<Vec<_>>();
+            aim_player_at_firefly(session, target_slot);
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        cast_left: true,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+            observe_lifecycle(
+                session,
+                targets,
+                saw_pre_kill,
+                saw_kill,
+                saw_hidden,
+                saw_reclaimed,
+            );
+            for _ in 0..12 {
+                let changed = before
+                    .iter()
+                    .filter_map(|(source_slot, life)| {
+                        firefly(session, *source_slot)
+                            .filter(|source| source.life != *life)
+                            .map(|source| (*source_slot, *life, source.life))
+                    })
+                    .collect::<Vec<_>>();
+                if !changed.is_empty() {
+                    assert_eq!(changed.len(), 1, "one Fireball has one collision target");
+                    let player_slot = session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .state
+                        .entity_index;
+                    session
+                        .backend_mut()
+                        .campaign
+                        .level2_compatibility_mut()
+                        .set_level2_entity_position(player_slot, safe_position)
+                        .expect("retreat the real player to the Level-1 start between casts");
+                    return changed.into_iter().next();
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+                observe_lifecycle(
+                    session,
+                    targets,
+                    saw_pre_kill,
+                    saw_kill,
+                    saw_hidden,
+                    saw_reclaimed,
+                );
+            }
+            let player_slot = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player_slot, safe_position)
+                .expect("retreat the real player after a missed cast");
+            None
+        }
+
+        let root = level_one_descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            91,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let reset_hash = session.backend().campaign.state_hash();
+        let safe_position = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .position;
+
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(6)
+            .expect("the separately proved row-190 boundary constructs package group 6");
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 6,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == GROUP_SIX_ROWS
+        )));
+        let targets = compatibility
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| FIREFLY_ROWS.contains(&source.authored_index))
+            .map(|source| (source.authored_index, source.source_entity_index))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            targets.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
+            FIREFLY_ROWS
+        );
+
+        let mut saw_pre_kill = BTreeSet::new();
+        let mut saw_kill = BTreeSet::new();
+        let mut saw_hidden = BTreeSet::new();
+        let mut saw_reclaimed = BTreeSet::new();
+        let mut exact_impacts = 0;
+        for attempt in 0..64 {
+            let Some(target_slot) = targets.iter().find_map(|(_, source_slot)| {
+                firefly(&session, *source_slot)
+                    .filter(|source| source.life >= 0)
+                    .map(|_| *source_slot)
+            }) else {
+                break;
+            };
+            if let Some((damaged_slot, before, after)) = cast_once(
+                &mut session,
+                target_slot,
+                safe_position,
+                &targets,
+                &mut saw_pre_kill,
+                &mut saw_kill,
+                &mut saw_hidden,
+                &mut saw_reclaimed,
+            ) {
+                assert_eq!(
+                    after,
+                    before - 250,
+                    "attempt {attempt}: actual map-order collision target {damaged_slot} receives the exact authoritative payload"
+                );
+                exact_impacts += 1;
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+                observe_lifecycle(
+                    &session,
+                    &targets,
+                    &mut saw_pre_kill,
+                    &mut saw_kill,
+                    &mut saw_hidden,
+                    &mut saw_reclaimed,
+                );
+            }
+        }
+        assert_eq!(exact_impacts, 15);
+        assert!(targets.iter().all(|(_, source_slot)| {
+            firefly(&session, *source_slot).is_none_or(|source| source.life < 0)
+        }));
+        for _ in 0..32 {
+            if saw_reclaimed.len() == FIREFLY_ROWS.len() {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            observe_lifecycle(
+                &session,
+                &targets,
+                &mut saw_pre_kill,
+                &mut saw_kill,
+                &mut saw_hidden,
+                &mut saw_reclaimed,
+            );
+        }
+        assert_eq!(
+            saw_pre_kill.iter().copied().collect::<Vec<_>>(),
+            FIREFLY_ROWS
+        );
+        assert_eq!(saw_kill.iter().copied().collect::<Vec<_>>(), FIREFLY_ROWS);
+        assert_eq!(saw_hidden.iter().copied().collect::<Vec<_>>(), FIREFLY_ROWS);
+        assert_eq!(
+            saw_reclaimed.iter().copied().collect::<Vec<_>>(),
+            FIREFLY_ROWS
+        );
+        let player_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        assert!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(player_slot)]
+                .life
+                >= 0,
+            "the position-only combat harness must leave the objective owner alive"
+        );
+
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        compatibility
+            .stage_level_one_final_objective_prerequisite_for_test()
+            .expect("stage only the separately proved earlier objective boundary");
+        let exit_gate = compatibility
+            .entities()
+            .iter()
+            .find(|source| {
+                source.active
+                    && source.class == 11
+                    && source.model == 4
+                    && source.action == 4
+                    && source.source_id == 4
+            })
+            .map(|source| source.index)
+            .expect("Level 1 reset retains its production level-end gate");
+        assert_eq!(compatibility.runtime().objectives[0].stage_selectors[4], 1);
+        assert_eq!(compatibility.runtime().objectives[0].is_level_end, 0);
+        assert!(
+            compatibility
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
+                ))
+        );
+
+        let mut completion_pass = None;
+        for pass in 1..=4 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            let compatibility = session.backend().campaign.level2_compatibility();
+            assert!(
+                compatibility
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
+                    ))
+            );
+            if compatibility.runtime().objectives[0].stage_selectors[4] == 2 {
+                completion_pass = Some(pass);
+                break;
+            }
+            assert_eq!(compatibility.runtime().objectives[0].is_level_end, 0);
+        }
+        assert!(
+            completion_pass.is_some(),
+            "the ordinary objective service must consume the complete Firefly-absence lifecycle"
+        );
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(compatibility.runtime().objectives[0].is_level_end, 1);
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 4,
+                authored_indices,
+                ..
+            } if *source_slot == exit_gate && authored_indices.as_ref() == GROUP_FOUR_ROWS
+        )));
+        let portal = compatibility
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == 132)
+            .expect("group 4 constructs the exact package exit portal");
+        assert_eq!((portal.model, portal.action), (3, 8));
+        let trigger = compatibility
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 137)
+            .expect("group 4 constructs the exact package exit-sequence trigger");
+        assert_eq!((trigger.model, trigger.action), (12, 12));
+        assert!(
+            compatibility
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), reset_hash);
+        // The Archer objective is staged as separately proved prerequisite
+        // evidence. This chain owns all five real Firefly combat/death/reclaim
+        // lifecycles, semantic absence evaluation, and the ordinary group-4
+        // gate; it does not enter the exit trigger or LevelExitSequence.
+    }
+
+    #[test]
     fn campaign_backend_reopens_real_level_one_with_package_retained_fireball_presentation_asset() {
         const SLOT: &str = "presentation.spell.fireball.projectile_asset";
         const BASE: &str = "presentation.fireball.projectile.base";
