@@ -22,7 +22,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v8";
+pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v9";
 pub const WORKSPACE_SCHEMA: &str = "carpet-flight-definition-workspace/v1";
 pub const VALIDATION_RECEIPT_SCHEMA: &str = "carpet-flight-validation-receipt/v1";
 pub const APPLY_RECEIPT_SCHEMA: &str = "carpet-flight-apply-receipt/v1";
@@ -463,6 +463,39 @@ impl ChangeSetBuilder {
                 entity,
                 life_mana_scalar,
                 expected_life_mana_scalar: Some(expected_life_mana_scalar),
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_switch_overlap_extent(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        overlap_extent_tiles: u16,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetSwitchOverlapExtent {
+                entity,
+                overlap_extent_tiles,
+                expected_overlap_extent_tiles: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_switch_overlap_extent_from(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        expected_overlap_extent_tiles: u16,
+        overlap_extent_tiles: u16,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetSwitchOverlapExtent {
+                entity,
+                overlap_extent_tiles,
+                expected_overlap_extent_tiles: Some(expected_overlap_extent_tiles),
             });
         self
     }
@@ -1715,6 +1748,62 @@ fn validate_against(
                     Err(error) => diagnostics.push(error.into()),
                 }
             }
+            ResolvedOperation::SwitchOverlapExtentSet {
+                id,
+                entity,
+                overlap_extent_tiles,
+                expected_overlap_extent_tiles,
+            } => {
+                required_timing = Some(required_timing.unwrap_or(RequestedTiming::SessionReset));
+                if !change_set
+                    .requested_timing
+                    .permits(MutationTiming::SessionReset)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "UNSAFE_TIMING".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "Exit Sequence overlap authoring requires session_reset timing"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                let current = active
+                    .level_definition()
+                    .and_then(|level| level.entity(entity))
+                    .and_then(|candidate| candidate.switch_overlap())
+                    .map(|config| config.overlap_extent_tiles());
+                if expected_overlap_extent_tiles.is_some()
+                    && current != *expected_overlap_extent_tiles
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "Exit Sequence expected overlap extent does not match the active definition"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                if current == Some(*overlap_extent_tiles) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "Exit Sequence trigger already has the requested overlap extent"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                match proposed.with_switch_overlap_extent_tiles(
+                    entity,
+                    *overlap_extent_tiles,
+                    candidate_revision,
+                ) {
+                    Ok(updated) => {
+                        proposed = updated;
+                        preliminarily_valid.insert(id.clone());
+                    }
+                    Err(error) => diagnostics.push(error.into()),
+                }
+            }
         }
     }
     for resolved in &resolved_operations {
@@ -1770,6 +1859,15 @@ fn validate_against(
                 } => candidate.with_house_life_mana_scalar(
                     entity,
                     *life_mana_scalar,
+                    candidate_revision,
+                ),
+                ResolvedOperation::SwitchOverlapExtentSet {
+                    entity,
+                    overlap_extent_tiles,
+                    ..
+                } => candidate.with_switch_overlap_extent_tiles(
+                    entity,
+                    *overlap_extent_tiles,
                     candidate_revision,
                 ),
             };

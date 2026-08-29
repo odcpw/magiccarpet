@@ -3752,6 +3752,7 @@ impl NativeWorldInspection {
             authored_items: definition.item_bindings().clone(),
             authored_item_entities: definition.item_entity_bindings(),
             authored_switches: definition.switch_bindings().clone(),
+            authored_switch_entities: definition.authored_switch_entity_bindings(),
             initial_source_switches: definition.initial_switch_bindings().clone(),
             authored_mechanics: definition.mechanic_bindings().clone(),
             initial_source_mechanics: definition.initial_mechanic_bindings().clone(),

@@ -422,6 +422,7 @@ fn inspect(arguments: &[String]) -> ExitCode {
             .into_iter()
             .chain(definition.level_countdown_arming_ticks_descriptors())
             .chain(definition.level_creature_max_life_descriptors())
+            .chain(definition.level_switch_overlap_extent_descriptors())
             .chain(definition.level_experience_scroll_award_descriptors())
             .chain(definition.level_objective_condition_descriptors())
             .filter(|descriptor| descriptor.access.as_str() == "writable")

@@ -26,9 +26,10 @@ pub use operation::{
 pub use package::{
     ARCHER_MAX_LIFE_CAPABILITY_ID, ArtifactKind, ArtifactNode, BEE_MAX_LIFE_CAPABILITY_ID,
     CREATURE_POLICY_CAPABILITY_ID, CompiledCapability, CompiledCapabilityRegistry,
-    DRAGON_MAX_LIFE_CAPABILITY_ID, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
-    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID,
-    GamePackage, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, PackageProvenance, PackageProvenanceKind,
+    DRAGON_MAX_LIFE_CAPABILITY_ID, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
+    EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
+    FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage,
+    HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, PackageProvenance, PackageProvenanceKind,
     RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID, TRADER_MAX_LIFE_CAPABILITY_ID,
     VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     engine_capabilities,
@@ -57,8 +58,8 @@ use level_definition::{CreatureKind, LevelDefinition, LevelEntityKind};
 use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v9";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "30.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v10";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "31.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -736,6 +737,39 @@ impl GameDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_switch_overlap_extent_tiles(
+        &self,
+        id: &level_definition::LevelEntityId,
+        overlap_extent_tiles: u16,
+        revision: u64,
+    ) -> Result<Self> {
+        if revision < self.revision {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidRequest,
+                "definition.revision",
+                "candidate definition revision must not move backward",
+            ));
+        }
+        let level = self.level_definition.as_ref().ok_or_else(|| {
+            DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                id.as_str(),
+                "definition has no semantic Exit Sequence overlap consumer",
+            )
+        })?;
+        let mut candidate = self.clone();
+        candidate.level_definition = Some(
+            level
+                .with_switch_overlap_extent_tiles(id, overlap_extent_tiles)
+                .map_err(|message| {
+                    DefinitionError::new(DefinitionErrorCode::InvalidRequest, id.as_str(), message)
+                })?,
+        );
+        candidate.revision = revision;
+        candidate.definition_hash = candidate.compute_hash();
+        Ok(candidate)
+    }
+
     /// Read one semantic authoring target from the immutable definition.
     #[must_use]
     pub fn semantic_target_value(&self, id: &SemanticId) -> Option<SemanticValue> {
@@ -785,6 +819,15 @@ impl GameDefinition {
                 .entity(&entity_id)
                 .and_then(level_definition::LevelEntityDefinition::house_construction)
                 .map(|config| SemanticValue::Integer(i64::from(config.life_mana_scalar())));
+        }
+        if let Some(entity) = id.as_str().strip_suffix(".overlap_extent_tiles") {
+            let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
+            return self
+                .level_definition
+                .as_ref()?
+                .entity(&entity_id)
+                .and_then(level_definition::LevelEntityDefinition::switch_overlap)
+                .map(|config| SemanticValue::Integer(i64::from(config.overlap_extent_tiles())));
         }
         if let Some(objective) = id.as_str().strip_suffix(".condition") {
             let objective_id = level_definition::LevelObjectiveId::parse(objective).ok()?;
@@ -1222,6 +1265,96 @@ impl GameDefinition {
                 SemanticId::parse(&format!("{}.life_mana_scalar", entity.id().as_str()))
                     .ok()
                     .and_then(|id| self.level_house_life_mana_scalar_descriptor(&id))
+            })
+            .collect()
+    }
+
+    /// Describe one package-bound Exit Sequence strict-overlap extent.
+    #[must_use]
+    pub fn level_switch_overlap_extent_descriptor(
+        &self,
+        id: &SemanticId,
+    ) -> Option<SemanticDescriptor> {
+        let entity_id = id.as_str().strip_suffix(".overlap_extent_tiles")?;
+        let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
+        let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
+        let config = entity.switch_overlap()?;
+        let writable = matches!(
+            config.overlap_extent_tiles_access(),
+            level_definition::LevelEntityParameterAccess::SessionReset
+        ) && self.required_capabilities.iter().any(|requirement| {
+            requirement.id.as_str() == EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID
+                && requirement.exact_version == 1
+        });
+        let target_id = id.as_str().to_owned();
+        Some(SemanticDescriptor {
+            id: id.clone(),
+            descriptor_version: 1,
+            kind: DescriptorKind::EntityParameter,
+            value_type: ValueType::Integer,
+            unit: Some("tiles".to_owned()),
+            default_value: SemanticValue::Integer(i64::from(
+                config.default_overlap_extent_tiles(),
+            )),
+            minimum: Some(1),
+            maximum: Some(127),
+            enum_values: Vec::new(),
+            access: if writable {
+                Access::Writable
+            } else {
+                Access::ReadOnly
+            },
+            mutation_timing: MutationTiming::SessionReset,
+            determinism_role: "immutable Exit Sequence strict-overlap extent".to_owned(),
+            dependencies: vec![
+                entity.id().as_str().to_owned(),
+                format!("{EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID}@1"),
+                "package Exit Sequence constructor and overlap consumer".to_owned(),
+            ],
+            side_effects: if writable {
+                vec![
+                    "already-open sessions retain the package overlap extent".to_owned(),
+                    "explicit reopen/reset binds the authored extent before grouped construction"
+                        .to_owned(),
+                ]
+            } else {
+                Vec::new()
+            },
+            scope: format!("stable Exit Sequence trigger {}", entity.id().as_str()),
+            provenance_origin: "package semantic level definition".to_owned(),
+            provenance_content_hash: self.package_graph_hash.clone(),
+            temporal_contract: Some(TemporalContract {
+                dispatch_phase: "definition_publication".to_owned(),
+                dispatch_key: target_id.clone(),
+                ordinary_producer: "validated SetSwitchOverlapExtent candidate".to_owned(),
+                handler: "guarded atomic definition compare-and-swap".to_owned(),
+                same_pass_epilogue:
+                    "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
+                following_pass_cleanup: "explicit reopen/reset binds the extent into grouped construction; strict overlap starts LevelExitSequence and consumes the trigger".to_owned(),
+                authoritative_reads: vec![target_id],
+                authoritative_writes: vec![
+                    "immutable LevelDefinition Exit Sequence overlap extent".to_owned(),
+                ],
+                rng_and_event_effects:
+                    "none during publication; overlap cadence and transition events remain scheduler-owned"
+                        .to_owned(),
+            }),
+            summary: "Strict XY overlap extent for one package-bound Exit Sequence trigger."
+                .to_owned(),
+        })
+    }
+
+    #[must_use]
+    pub fn level_switch_overlap_extent_descriptors(&self) -> Vec<SemanticDescriptor> {
+        self.level_definition
+            .as_ref()
+            .into_iter()
+            .flat_map(level_definition::LevelDefinition::entities)
+            .filter(|entity| entity.switch_overlap().is_some())
+            .filter_map(|entity| {
+                SemanticId::parse(&format!("{}.overlap_extent_tiles", entity.id().as_str()))
+                    .ok()
+                    .and_then(|id| self.level_switch_overlap_extent_descriptor(&id))
             })
             .collect()
     }

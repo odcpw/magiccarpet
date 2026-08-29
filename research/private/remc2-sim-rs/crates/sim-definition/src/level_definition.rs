@@ -463,6 +463,43 @@ pub struct HouseConstructionDefinition {
     life_mana_scalar_access: LevelEntityParameterAccess,
 }
 
+/// Immutable strict-overlap extent for one package-present Exit Sequence trigger.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SwitchOverlapDefinition {
+    default_overlap_extent_tiles: u16,
+    overlap_extent_tiles: u16,
+    #[serde(default, skip_serializing_if = "is_read_only_entity_parameter")]
+    overlap_extent_tiles_access: LevelEntityParameterAccess,
+}
+
+impl SwitchOverlapDefinition {
+    pub(crate) const fn new(
+        overlap_extent_tiles: u16,
+        overlap_extent_tiles_access: LevelEntityParameterAccess,
+    ) -> Self {
+        Self {
+            default_overlap_extent_tiles: overlap_extent_tiles,
+            overlap_extent_tiles,
+            overlap_extent_tiles_access,
+        }
+    }
+
+    #[must_use]
+    pub const fn default_overlap_extent_tiles(self) -> u16 {
+        self.default_overlap_extent_tiles
+    }
+
+    #[must_use]
+    pub const fn overlap_extent_tiles(self) -> u16 {
+        self.overlap_extent_tiles
+    }
+
+    #[must_use]
+    pub const fn overlap_extent_tiles_access(self) -> LevelEntityParameterAccess {
+        self.overlap_extent_tiles_access
+    }
+}
+
 impl HouseConstructionDefinition {
     pub(crate) const fn new(
         life_mana_scalar: u16,
@@ -660,6 +697,8 @@ pub struct LevelEntityDefinition {
     experience_scroll: Option<ExperienceScrollDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     house_construction: Option<HouseConstructionDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    switch_overlap: Option<SwitchOverlapDefinition>,
 }
 
 impl LevelEntityDefinition {
@@ -673,6 +712,7 @@ impl LevelEntityDefinition {
         creature_health: Option<CreatureHealthDefinition>,
         experience_scroll: Option<ExperienceScrollDefinition>,
         house_construction: Option<HouseConstructionDefinition>,
+        switch_overlap: Option<SwitchOverlapDefinition>,
     ) -> Self {
         Self {
             id,
@@ -685,6 +725,7 @@ impl LevelEntityDefinition {
             creature_health,
             experience_scroll,
             house_construction,
+            switch_overlap,
         }
     }
 
@@ -737,6 +778,11 @@ impl LevelEntityDefinition {
     #[must_use]
     pub const fn house_construction(&self) -> Option<HouseConstructionDefinition> {
         self.house_construction
+    }
+
+    #[must_use]
+    pub const fn switch_overlap(&self) -> Option<SwitchOverlapDefinition> {
+        self.switch_overlap
     }
 }
 
@@ -857,6 +903,30 @@ impl LevelDefinition {
                 (_, Some(_)) => {
                     return Err(format!(
                         "non-House entity {} carries House construction configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
+            match (entity.kind, entity.switch_overlap) {
+                (LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger), Some(config))
+                    if (1..=127).contains(&config.default_overlap_extent_tiles)
+                        && (1..=127).contains(&config.overlap_extent_tiles) => {}
+                (LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger), Some(_)) => {
+                    return Err(format!(
+                        "semantic Exit Sequence trigger {} has an invalid overlap extent",
+                        entity.id.as_str()
+                    ));
+                }
+                (LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger), None) => {
+                    return Err(format!(
+                        "semantic Exit Sequence trigger {} has no overlap configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-Exit-Sequence entity {} carries switch overlap configuration",
                         entity.id.as_str()
                     ));
                 }
@@ -1208,6 +1278,45 @@ impl LevelDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_switch_overlap_extent_tiles(
+        &self,
+        id: &LevelEntityId,
+        overlap_extent_tiles: u16,
+    ) -> Result<Self, String> {
+        if !(1..=127).contains(&overlap_extent_tiles) {
+            return Err(format!(
+                "semantic Exit Sequence trigger {} overlap extent is outside 1..=127",
+                id.as_str()
+            ));
+        }
+        let mut candidate = self.clone();
+        let entity = candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == *id)
+            .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
+        let config = entity.switch_overlap.as_mut().ok_or_else(|| {
+            format!(
+                "semantic level entity {} is not an Exit Sequence trigger",
+                id.as_str()
+            )
+        })?;
+        if config.overlap_extent_tiles_access != LevelEntityParameterAccess::SessionReset {
+            return Err(format!(
+                "semantic Exit Sequence trigger {} overlap extent has no runtime consumer",
+                id.as_str()
+            ));
+        }
+        if config.overlap_extent_tiles == overlap_extent_tiles {
+            return Err(format!(
+                "semantic Exit Sequence trigger {} already has the requested overlap extent",
+                id.as_str()
+            ));
+        }
+        config.overlap_extent_tiles = overlap_extent_tiles;
+        Ok(candidate)
+    }
+
     /// Verify that this definition differs from `base` only through semantic
     /// changes explicitly admitted at session reset.
     ///
@@ -1381,6 +1490,42 @@ impl LevelDefinition {
                 _ => {
                     return Err(format!(
                         "semantic level variant adds or removes House construction configuration at {}",
+                        original.id.as_str()
+                    ));
+                }
+            }
+            match (candidate.switch_overlap, original.switch_overlap) {
+                (Some(candidate_config), Some(original_config)) => {
+                    if candidate_config.default_overlap_extent_tiles
+                        != original_config.default_overlap_extent_tiles
+                        || candidate_config.overlap_extent_tiles_access
+                            != original_config.overlap_extent_tiles_access
+                    {
+                        return Err(format!(
+                            "semantic level variant changes Exit Sequence overlap structure at {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if candidate_config.overlap_extent_tiles != original_config.overlap_extent_tiles
+                        && original_config.overlap_extent_tiles_access
+                            != LevelEntityParameterAccess::SessionReset
+                    {
+                        return Err(format!(
+                            "semantic level variant changes read-only Exit Sequence overlap extent {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if !(1..=127).contains(&candidate_config.overlap_extent_tiles) {
+                        return Err(format!(
+                            "semantic level variant gives Exit Sequence trigger {} an invalid overlap extent",
+                            original.id.as_str()
+                        ));
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(format!(
+                        "semantic level variant adds or removes Exit Sequence overlap configuration at {}",
                         original.id.as_str()
                     ));
                 }

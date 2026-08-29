@@ -67,6 +67,10 @@ pub const EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID: &str =
 /// constructor consumes an authorable construction-to-live scalar.
 pub const HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID: &str = "engine.building.house.life_mana_scalar";
 
+/// Exact compiled capability required by package-bound Exit Sequence overlap triggers.
+pub const EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID: &str =
+    "engine.switch.exit_sequence.overlap_extent";
+
 /// Exact compiled maximum-life capability for a creature family whose
 /// package constructor and damage/death lifecycle consume the parameter.
 #[must_use]
@@ -229,6 +233,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
                 "Package-bound grouped House construction and live damage/destruction lifecycle.",
+            ),
+            (
+                EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
+                "Package-bound Exit Sequence construction, strict overlap, transition start, and trigger consumption lifecycle.",
             ),
             (
                 "engine.flight.fixed_point",

@@ -284,6 +284,10 @@ fn game_describe(arguments: &[String]) -> ExitCode {
             } else if let Some(descriptor) = definition.level_creature_max_life_descriptor(&id) {
                 let effective = definition.semantic_target_value(&id);
                 vec![descriptor.to_json(effective.as_ref())]
+            } else if let Some(descriptor) = definition.level_switch_overlap_extent_descriptor(&id)
+            {
+                let effective = definition.semantic_target_value(&id);
+                vec![descriptor.to_json(effective.as_ref())]
             } else if let Some(descriptor) =
                 definition.level_experience_scroll_award_descriptor(&id)
             {
@@ -329,6 +333,15 @@ fn game_describe(arguments: &[String]) -> ExitCode {
             descriptors.extend(
                 definition
                     .level_creature_max_life_descriptors()
+                    .into_iter()
+                    .map(|descriptor| {
+                        let effective = definition.semantic_target_value(&descriptor.id);
+                        descriptor.to_json(effective.as_ref())
+                    }),
+            );
+            descriptors.extend(
+                definition
+                    .level_switch_overlap_extent_descriptors()
                     .into_iter()
                     .map(|descriptor| {
                         let effective = definition.semantic_target_value(&descriptor.id);
@@ -471,6 +484,20 @@ fn game_get(arguments: &[String]) -> ExitCode {
                 Some(&definition),
             );
         }
+        if let Some(descriptor) = definition.level_switch_overlap_extent_descriptor(&id) {
+            let value = definition
+                .semantic_target_value(&id)
+                .expect("switch-overlap descriptor has semantic readback");
+            return game_success(
+                "get",
+                definition.definition_hash(),
+                serde_json::json!({
+                    "descriptor": descriptor.to_json(Some(&value)),
+                    "value": value.to_json(),
+                }),
+                Some(&definition),
+            );
+        }
         if let Some(descriptor) = definition.level_experience_scroll_award_descriptor(&id) {
             let value = definition
                 .semantic_target_value(&id)
@@ -557,6 +584,7 @@ fn public_level_entity_json(
         "kind": entity.kind(),
         "position": entity.position(),
         "position_access": entity.position_access(),
+        "switch_overlap": entity.switch_overlap(),
         "creature_health": entity.creature_health(),
         "experience_scroll": entity.experience_scroll(),
     })

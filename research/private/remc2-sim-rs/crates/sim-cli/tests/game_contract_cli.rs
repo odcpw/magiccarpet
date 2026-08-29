@@ -100,14 +100,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "30.0");
+    assert_eq!(capabilities["contract_version"], "31.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
-        "carpet-flight-change-set/v8"
+        "carpet-flight-change-set/v9"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["game_definition_schema"],
-        "carpet-flight-game-definition/v9"
+        "carpet-flight-game-definition/v10"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["operation"],
@@ -505,7 +505,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "30.0");
+    assert_eq!(entities["contract_version"], "31.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -842,10 +842,10 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "30.0");
+    assert_eq!(described["contract_version"], "31.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v9"
+        "carpet-flight-game-definition/v10"
     );
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "mechanic");
@@ -950,7 +950,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v8"
+        "carpet-flight-change-set/v9"
     );
     assert_eq!(
         staged["data"]["change_set"]["operations"][0]["operation"],
@@ -1091,6 +1091,190 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
 }
 
 #[test]
+fn campaign_workspace_authors_exit_sequence_overlap_through_the_typed_cli_lifecycle() {
+    const ENTITY: &str = "switch.exit_sequence_trigger.at_75_218";
+    const TARGET: &str = "switch.exit_sequence_trigger.at_75_218.overlap_extent_tiles";
+
+    let package_triggers = [
+        (level_one_campaign_fixture(), TARGET, 2),
+        (
+            level_two_campaign_fixture(),
+            "switch.exit_sequence_trigger.at_121_155.overlap_extent_tiles",
+            4,
+        ),
+        (
+            level_three_campaign_fixture(),
+            "switch.exit_sequence_trigger.at_213_220.overlap_extent_tiles",
+            5,
+        ),
+    ];
+    for (campaign, target, package_default) in &package_triggers {
+        let described = run(&[
+            "game",
+            "describe",
+            "--campaign-package",
+            campaign.to_str().expect("UTF-8 campaign path"),
+            "--id",
+            target,
+        ]);
+        assert!(described.status.success(), "{:?}", described.stderr);
+        assert!(described.stderr.is_empty());
+        let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+        let descriptor = &described["data"]["descriptors"][0];
+        assert_eq!(described["contract_version"], "31.0");
+        assert_eq!(
+            described["identity"]["schema"],
+            "carpet-flight-game-definition/v10"
+        );
+        assert_eq!(descriptor["id"], *target);
+        assert_eq!(descriptor["kind"], "entity_parameter");
+        assert_eq!(descriptor["value_type"], "integer");
+        assert_eq!(descriptor["unit"], "tiles");
+        assert_eq!(descriptor["access"], "writable");
+        assert_eq!(descriptor["mutation_timing"], "session_reset");
+        assert_eq!(descriptor["bounds_or_enum"]["minimum"], 1);
+        assert_eq!(descriptor["bounds_or_enum"]["maximum"], 127);
+        assert_eq!(descriptor["default_value"]["value"], *package_default);
+        assert_eq!(descriptor["effective_value"]["value"], *package_default);
+    }
+
+    let temporary = TempWorkspace::new("semantic-exit-sequence-overlap");
+    let workspace = temporary.0.to_str().unwrap();
+    let campaign = package_triggers[0].0.to_str().expect("UTF-8 campaign path");
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "semantic-exit-sequence-overlap-workspace",
+        "--campaign-package",
+        campaign,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+    assert!(created.stderr.is_empty());
+
+    let changes_path = temporary.0.join("set-exit-sequence-overlap.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "set_switch_overlap_extent",
+            "entity": ENTITY,
+            "overlap_extent_tiles": 4,
+            "expected_overlap_extent_tiles": 2
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "semantic-exit-sequence-overlap-apply",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    assert!(staged.stderr.is_empty());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(
+        staged["data"]["change_set"]["schema_version"],
+        "carpet-flight-change-set/v9"
+    );
+    assert_eq!(
+        staged["data"]["change_set"]["operations"][0]["operation"],
+        "set_switch_overlap_extent"
+    );
+    let change_set_path = temporary.0.join("exit-sequence-overlap-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    assert!(validated.stderr.is_empty());
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        validated["data"]["validation"]["affected_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let diff = run(&[
+        "game",
+        "diff",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(diff.status.success(), "{:?}", diff.stderr);
+    assert!(diff.stderr.is_empty());
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(
+        diff["data"]["diff"],
+        serde_json::json!([{
+            "id": TARGET,
+            "before": {"type": "integer", "value": 2},
+            "after": {"type": "integer", "value": 4}
+        }])
+    );
+
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validated["data"]["validation"]["receipt_hash"]
+            .as_str()
+            .unwrap(),
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    assert!(applied.stderr.is_empty());
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(
+        applied["data"]["receipt"]["applied_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let authored = run(&["game", "get", "--workspace", workspace, "--id", TARGET]);
+    assert!(authored.status.success(), "{:?}", authored.stderr);
+    assert!(authored.stderr.is_empty());
+    let authored: Value = serde_json::from_slice(&authored.stdout).unwrap();
+    assert_eq!(authored["identity"]["revision"], 2);
+    assert_eq!(authored["data"]["descriptor"]["default_value"]["value"], 2);
+    assert_eq!(
+        authored["data"]["descriptor"]["effective_value"]["value"],
+        4
+    );
+    assert_eq!(
+        authored["data"]["value"],
+        serde_json::json!({"type": "integer", "value": 4})
+    );
+
+    // No-Claim: this public gate proves direct discovery for the three package
+    // Exit Sequence overlap extents and the complete Level 1 guarded CLI
+    // publication/readback lifecycle. The backend gate separately owns live
+    // grouped construction, strict overlap, sequence start, and reset binding.
+}
+
+#[test]
 fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecycle() {
     const ENTITY: &str = "creature.firefly.at_213_125";
     const TARGET: &str = "creature.firefly.at_213_125.max_life";
@@ -1132,7 +1316,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "30.0");
+    assert_eq!(described["contract_version"], "31.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
     assert_eq!(descriptor["value_type"], "integer");
@@ -1187,7 +1371,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert_eq!(staged["data"]["published"], false);
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v8"
+        "carpet-flight-change-set/v9"
     );
     let change_set_path = temporary.0.join("firefly-max-life-change-set.json");
     fs::write(
@@ -1759,10 +1943,10 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "30.0");
+    assert_eq!(described["contract_version"], "31.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v9"
+        "carpet-flight-game-definition/v10"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -1817,7 +2001,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert_eq!(staged["data"]["published"], false);
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v8"
+        "carpet-flight-change-set/v9"
     );
     let change_set_path = temporary.0.join("fireball-cost-change-set.json");
     fs::write(
@@ -2086,10 +2270,10 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "30.0");
+    assert_eq!(described["contract_version"], "31.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v9"
+        "carpet-flight-game-definition/v10"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -2149,7 +2333,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v8"
+        "carpet-flight-change-set/v9"
     );
     assert_eq!(
         staged["data"]["change_set"]["operations"][0]["operation"],
@@ -2368,10 +2552,10 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "30.0");
+    assert_eq!(described["contract_version"], "31.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v9"
+        "carpet-flight-game-definition/v10"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -2433,7 +2617,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v8"
+        "carpet-flight-change-set/v9"
     );
     let change_set_path = temporary.0.join("creature-absence-change-set.json");
     fs::write(
@@ -2899,7 +3083,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "30.0");
+        assert_eq!(described["contract_version"], "31.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -3084,7 +3268,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "30.0");
+    assert_eq!(described["contract_version"], "31.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");
@@ -3424,7 +3608,7 @@ fn authoring_cli_rejects_session_generation_and_duplicate_workspace_creation() {
     fs::write(
         &invalid_path,
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": "carpet-flight-change-set/v8",
+            "schema_version": "carpet-flight-change-set/v9",
             "target_workspace": "schema-workspace",
             "expected_definition_hash": definition_hash,
             "expected_definition_revision": 1,

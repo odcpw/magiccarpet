@@ -9,7 +9,8 @@ use crate::level_definition::{LevelEntityKind, LevelObjectiveId, ObjectiveCondit
 use crate::{
     ARCHER_MAX_LIFE_CAPABILITY_ID, Access, BEE_MAX_LIFE_CAPABILITY_ID,
     CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError,
-    DefinitionErrorCode, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
+    DefinitionErrorCode, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
+    EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition,
     HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
     SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID,
@@ -163,6 +164,12 @@ pub enum DefinitionOperation {
         life_mana_scalar: u16,
         #[serde(default)]
         expected_life_mana_scalar: Option<u16>,
+    },
+    SetSwitchOverlapExtent {
+        entity: LevelEntityId,
+        overlap_extent_tiles: u16,
+        #[serde(default)]
+        expected_overlap_extent_tiles: Option<u16>,
     },
     PutObjective {
         objective: LevelObjectiveId,
@@ -343,6 +350,18 @@ impl DefinitionOperation {
                     "read_back": "game get --id <entity-id>.life_mana_scalar",
                 },
                 {
+                    "operation": "set_switch_overlap_extent",
+                    "required_fields": ["entity", "overlap_extent_tiles"],
+                    "optional_fields": ["expected_overlap_extent_tiles"],
+                    "target_id": "<entity-id>.overlap_extent_tiles",
+                    "overlap_extent_tiles": {"type": "integer", "unit": "tiles", "minimum": 1, "maximum": 127},
+                    "expected_overlap_extent_tiles": "same type, unit, and bounds as overlap_extent_tiles",
+                    "required_capability": {"id": EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, "exact_version": 1},
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id <entity-id>.overlap_extent_tiles",
+                    "read_back": "game get --id <entity-id>.overlap_extent_tiles",
+                },
+                {
                     "operation": "put_objective",
                     "required_fields": ["objective", "condition"],
                     "optional_fields": ["expected_condition"],
@@ -419,6 +438,10 @@ impl DefinitionOperation {
             Self::SetHouseLifeManaScalar { entity, .. } => {
                 SemanticId::parse(&format!("{}.life_mana_scalar", entity.as_str()))
                     .expect("validated entity ID plus life_mana_scalar is a semantic target")
+            }
+            Self::SetSwitchOverlapExtent { entity, .. } => {
+                SemanticId::parse(&format!("{}.overlap_extent_tiles", entity.as_str()))
+                    .expect("validated entity ID plus overlap_extent_tiles is a semantic target")
             }
             Self::PutObjective { objective, .. } => {
                 SemanticId::parse(&format!("{}.condition", objective.as_str()))
@@ -510,6 +533,7 @@ impl DefinitionOperation {
                 | Self::SetEntityMaxLife { .. }
                 | Self::SetExperienceScrollAward { .. }
                 | Self::SetHouseLifeManaScalar { .. }
+                | Self::SetSwitchOverlapExtent { .. }
                 | Self::PutObjective { .. }
                 | Self::SetMechanicCountdown { .. }
         ) || is_fireball_cost_operation
@@ -711,6 +735,46 @@ impl DefinitionOperation {
                 expected_life_mana_scalar: *expected_life_mana_scalar,
             });
         }
+        if let Self::SetSwitchOverlapExtent {
+            entity,
+            overlap_extent_tiles,
+            expected_overlap_extent_tiles,
+        } = self
+        {
+            let id = self.target_id();
+            let descriptor = definition
+                .level_switch_overlap_extent_descriptor(&id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownSemanticId,
+                        entity.as_str(),
+                        "overlap update names no package-bound Exit Sequence trigger",
+                    )
+                })?;
+            if descriptor.access != Access::Writable {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    entity.as_str(),
+                    "Exit Sequence overlap extent has no runtime consumer in this package",
+                ));
+            }
+            descriptor.validate_value(
+                &SemanticValue::Integer(i64::from(*overlap_extent_tiles)),
+                id.as_str(),
+            )?;
+            if let Some(expected) = expected_overlap_extent_tiles {
+                descriptor.validate_value(
+                    &SemanticValue::Integer(i64::from(*expected)),
+                    "expected_overlap_extent_tiles",
+                )?;
+            }
+            return Ok(ResolvedOperation::SwitchOverlapExtentSet {
+                id,
+                entity: entity.clone(),
+                overlap_extent_tiles: *overlap_extent_tiles,
+                expected_overlap_extent_tiles: *expected_overlap_extent_tiles,
+            });
+        }
         if let Self::PutObjective {
             objective,
             condition,
@@ -833,6 +897,9 @@ impl DefinitionOperation {
             Self::SetHouseLifeManaScalar { .. } => {
                 unreachable!("grouped House scalar updates return above")
             }
+            Self::SetSwitchOverlapExtent { .. } => {
+                unreachable!("Exit Sequence overlap updates return above")
+            }
             Self::PutObjective { .. } => unreachable!("objective puts return above"),
             Self::SetMechanicCountdown { .. } => {
                 unreachable!("mechanic countdown updates return above")
@@ -876,6 +943,12 @@ pub(crate) enum ResolvedOperation {
         entity: LevelEntityId,
         life_mana_scalar: u16,
         expected_life_mana_scalar: Option<u16>,
+    },
+    SwitchOverlapExtentSet {
+        id: SemanticId,
+        entity: LevelEntityId,
+        overlap_extent_tiles: u16,
+        expected_overlap_extent_tiles: Option<u16>,
     },
     ObjectivePut {
         id: SemanticId,

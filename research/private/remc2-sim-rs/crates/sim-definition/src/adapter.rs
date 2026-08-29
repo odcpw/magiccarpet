@@ -13,7 +13,7 @@ use crate::{
         ExperienceScrollDefinition, HouseConstructionDefinition, LevelDefinition,
         LevelEntityDefinition, LevelEntityId, LevelEntityKind, LevelEntityParameterAccess,
         LevelEntityPositionAccess, LevelObjectiveConditionAccess, LevelObjectiveDefinition,
-        LevelObjectiveId, ObjectiveCondition, RivalWizardId, TilePosition,
+        LevelObjectiveId, ObjectiveCondition, RivalWizardId, SwitchOverlapDefinition, TilePosition,
     },
     runtime_flow::RuntimeFlowDefinition,
 };
@@ -94,6 +94,7 @@ pub const fn entity_definition(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -111,6 +112,7 @@ pub const fn entity_definition_with_position_access(
         position,
         activation_group,
         position_access,
+        None,
         None,
         None,
         None,
@@ -136,6 +138,7 @@ pub const fn creature_entity_definition(
         position_access,
         None,
         Some(CreatureHealthDefinition::new(max_life, max_life_access)),
+        None,
         None,
         None,
     )
@@ -168,6 +171,7 @@ pub const fn absence_countdown_entity_definition(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -193,6 +197,7 @@ pub const fn experience_scroll_entity_definition(
             experience_award_access,
         )),
         None,
+        None,
     )
 }
 
@@ -216,6 +221,33 @@ pub const fn house_construction_entity_definition(
         Some(HouseConstructionDefinition::new(
             life_mana_scalar,
             life_mana_scalar_access,
+        )),
+        None,
+    )
+}
+
+#[must_use]
+pub const fn exit_sequence_trigger_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: ActivationGroupId,
+    position_access: LevelEntityPositionAccess,
+    overlap_extent_tiles: u16,
+    overlap_extent_tiles_access: LevelEntityParameterAccess,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Switch(crate::level_definition::SwitchKind::ExitSequenceTrigger),
+        position,
+        Some(activation_group),
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        Some(SwitchOverlapDefinition::new(
+            overlap_extent_tiles,
+            overlap_extent_tiles_access,
         )),
     )
 }

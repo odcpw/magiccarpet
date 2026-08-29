@@ -1645,6 +1645,19 @@ impl CampaignDefinition {
         &self.switch_by_authored_record
     }
 
+    pub(crate) fn authored_switch_entity_bindings(&self) -> BTreeMap<u16, LevelEntityId> {
+        self.movable_entity_bindings
+            .iter()
+            .filter_map(|(entity_id, binding)| match binding {
+                Mc2EntityRuntimeBinding::AuthoredFeature {
+                    authored_record,
+                    kind: LevelEntityKind::Switch(_),
+                } => Some((*authored_record, entity_id.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn initial_switch_bindings(&self) -> &BTreeMap<u16, SwitchKind> {
         &self.switch_by_initial_source_slot
     }

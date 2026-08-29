@@ -86,6 +86,7 @@ pub struct CampaignDefinition {
     authored_items: BTreeMap<u16, ItemKind>,
     authored_item_entities: BTreeMap<u16, LevelEntityId>,
     authored_switches: BTreeMap<u16, SwitchKind>,
+    authored_switch_entities: BTreeMap<u16, LevelEntityId>,
     initial_source_switches: BTreeMap<u16, SwitchKind>,
     authored_mechanics: BTreeMap<u16, MechanicKind>,
     initial_source_mechanics: BTreeMap<u16, MechanicKind>,
@@ -117,6 +118,7 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) authored_items: BTreeMap<u16, ItemKind>,
     pub(crate) authored_item_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) authored_switches: BTreeMap<u16, SwitchKind>,
+    pub(crate) authored_switch_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) initial_source_switches: BTreeMap<u16, SwitchKind>,
     pub(crate) authored_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) initial_source_mechanics: BTreeMap<u16, MechanicKind>,
@@ -386,6 +388,7 @@ impl CampaignDefinition {
             authored_items: BTreeMap::new(),
             authored_item_entities: BTreeMap::new(),
             authored_switches: BTreeMap::new(),
+            authored_switch_entities: BTreeMap::new(),
             initial_source_switches: BTreeMap::new(),
             authored_mechanics: BTreeMap::new(),
             initial_source_mechanics: BTreeMap::new(),
@@ -414,6 +417,7 @@ impl CampaignDefinition {
         self.authored_items = bindings.authored_items;
         self.authored_item_entities = bindings.authored_item_entities;
         self.authored_switches = bindings.authored_switches;
+        self.authored_switch_entities = bindings.authored_switch_entities;
         self.initial_source_switches = bindings.initial_source_switches;
         self.authored_mechanics = bindings.authored_mechanics;
         self.initial_source_mechanics = bindings.initial_source_mechanics;
@@ -535,6 +539,18 @@ impl CampaignDefinition {
 
     pub(crate) fn switch_for_authored_record(&self, authored_record: u16) -> Option<SwitchKind> {
         self.authored_switches.get(&authored_record).copied()
+    }
+
+    pub(crate) fn authored_exit_sequence_overlap_extent(
+        &self,
+        authored_record: u16,
+    ) -> Option<u16> {
+        let entity_id = self.authored_switch_entities.get(&authored_record)?;
+        self.semantic_level
+            .as_ref()?
+            .entity(entity_id)?
+            .switch_overlap()
+            .map(|config| config.overlap_extent_tiles())
     }
 
     pub(crate) fn switch_for_initial_source_slot(&self, source_slot: u16) -> Option<SwitchKind> {

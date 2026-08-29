@@ -8196,6 +8196,20 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(model12_row.world_position(0)),
         );
+        let Some(model12_overlap_extent) = self
+            .session
+            .definition
+            .authored_exit_sequence_overlap_extent(model12_row.index)
+            .and_then(|extent| i16::try_from(extent).ok())
+        else {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: "Level 2 authored model-12 row 209 has no semantic overlap extent"
+                    .to_string(),
+            });
+            return;
+        };
         let Some(model12_source) = self
             .session
             .state
@@ -8205,7 +8219,7 @@ impl Level2ResetSession {
                 model12_row.index,
                 12,
                 u16::try_from(model12_row.stage_tag).unwrap_or_default(),
-                i16::try_from(model12_row.word_10).unwrap_or(i16::MAX),
+                model12_overlap_extent,
                 model12_position,
                 &self.session.state.live.terrain,
             )
@@ -9029,6 +9043,25 @@ impl Level2ResetSession {
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
                     );
+                    let word_10 = if model == 12 {
+                        self.session
+                            .definition
+                            .authored_exit_sequence_overlap_extent(feature.index)
+                            .and_then(|extent| i16::try_from(extent).ok())
+                    } else {
+                        i16::try_from(feature.word_10).ok()
+                    };
+                    let Some(word_10) = word_10 else {
+                        self.push_dispatch_effect(Level2DispatchEvent::Error {
+                            pass,
+                            source_slot: producer_slot,
+                            message: format!(
+                                "authored switch row {} has no valid semantic overlap extent",
+                                feature.index
+                            ),
+                        });
+                        continue;
+                    };
                     if self
                         .session
                         .state
@@ -9038,7 +9071,7 @@ impl Level2ResetSession {
                             feature.index,
                             u8::try_from(model).expect("authored switch model fits u8"),
                             u16::try_from(feature.stage_tag).unwrap_or_default(),
-                            i16::try_from(feature.word_10).unwrap_or(i16::MAX),
+                            word_10,
                             position,
                             &self.session.state.live.terrain,
                         )

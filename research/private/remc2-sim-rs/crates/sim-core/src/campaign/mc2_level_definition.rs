@@ -8,8 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
     build_level_definition, creature_entity_definition, entity_definition_with_position_access,
-    experience_scroll_entity_definition, house_construction_entity_definition,
-    objective_definition, stable_entity_id, stable_objective_id, stable_rival_wizard_id,
+    exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
+    house_construction_entity_definition, objective_definition, stable_entity_id,
+    stable_objective_id, stable_rival_wizard_id,
 };
 
 use crate::{
@@ -458,13 +459,36 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Switch(kind),
                     position_access,
                 )?;
-                entities.push(entity_definition_with_position_access(
-                    id,
-                    LevelEntityKind::Switch(kind),
-                    position,
-                    activation_group,
-                    position_access,
-                ));
+                if kind == SwitchKind::ExitSequenceTrigger {
+                    let group = activation_group.ok_or_else(|| {
+                        format!(
+                            "authored Exit Sequence trigger {} has no activation group",
+                            feature.index
+                        )
+                    })?;
+                    if !(1..=127).contains(&feature.word_10) {
+                        return Err(format!(
+                            "authored Exit Sequence trigger {} overlap extent is outside 1..=127",
+                            feature.index
+                        ));
+                    }
+                    entities.push(exit_sequence_trigger_entity_definition(
+                        id,
+                        position,
+                        group,
+                        position_access,
+                        feature.word_10,
+                        LevelEntityParameterAccess::SessionReset,
+                    ));
+                } else {
+                    entities.push(entity_definition_with_position_access(
+                        id,
+                        LevelEntityKind::Switch(kind),
+                        position,
+                        activation_group,
+                        position_access,
+                    ));
+                }
                 switch_by_authored_record.insert(feature.index, kind);
                 continue;
             }
