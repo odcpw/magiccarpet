@@ -485,8 +485,8 @@ impl Mc2CampaignInputs {
 }
 
 pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v1";
-const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_MC2_CAMPAIGN_REPLAY_COMMANDS: usize = 1_000_000;
+pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_MC2_CAMPAIGN_REPLAY_COMMANDS: usize = 1_000_000;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

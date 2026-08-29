@@ -549,9 +549,12 @@ partial real implementation, not a completion claim:
   semantic definition, ordered neutral command trace and exact state/terrain/
   effect receipts, then guard-first replay it into a fresh runtime/session and
   publish only after every receipt matches. A self-consistent envelope with a
-  false state receipt is rejected while Title remains unchanged. This is a
-  Rust-only Level 1 replay checkpoint, not paused or cross-level persistence,
-  save migration, native/Unity save transport or a full campaign save;
+  false state receipt is rejected while Title remains unchanged. Additive
+  native and managed transports treat those bytes as opaque, bind save to the
+  exact Playing runtime/session generation and tick, and atomically load them
+  with a complete unordered package-resource set into one fresh resolver-owned
+  handle. This is one Level 1 replay checkpoint, not paused or cross-level
+  persistence, filesystem/UI storage, migration or a full campaign save;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed
@@ -572,10 +575,10 @@ partial real implementation, not a completion claim:
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
   coverage remain open; the current Unity build enters one gameplay scene
-  directly, neutral campaign saves/loads do not yet span Levels 1-3 or the
-  native/Unity boundary, and level completion has not yet been proved as one
-  uninterrupted Rust-owned 1 -> 2 -> 3 -> Title playthrough or exposed through
-  the production client.
+  directly, neutral campaign saves/loads do not yet span Levels 1-3 or a
+  production filesystem/menu flow, and level completion has not yet been
+  proved as one uninterrupted Rust-owned 1 -> 2 -> 3 -> Title playthrough or
+  exposed through the production client.
 
 The next foundation seam extends the same stable definition-to-runtime binding
 to the next package-present semantic domain without adding another arena,

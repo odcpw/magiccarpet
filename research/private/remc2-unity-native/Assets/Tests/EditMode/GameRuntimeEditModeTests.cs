@@ -245,12 +245,64 @@ namespace MagicCarpet.Native.Tests
                 // resolver-derived entry open only. It does not expose
                 // completion acceptance, materialize later L2/L3 sessions,
                 // discover/install packages, migrate production presentation,
-                // or implement save/load, replay, results, or shell wiring.
+                // or prove replay persistence, results, or shell wiring.
             }
             finally
             {
                 runtime.Dispose();
             }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void RuntimeReplaySaveRestoresRealLevelOneIntoFreshManagedOwner()
+        {
+            using (var source = new GameRuntimeTransport())
+            {
+                source.BootstrapPackageSet(ResolverPackages());
+                source.OpenLevel();
+                source.CampaignStep(0, 0, 0, 0, 0);
+                source.CampaignStep(0, 3, 1, 0, 0);
+                source.CampaignStep(0, 0, 0, 64, unchecked((ushort)-32));
+                var sourceIdentity = source.IdentitySnapshot();
+                var sourceSnapshot = source.CampaignSnapshot();
+                Assert.That(sourceIdentity.session.tick, Is.EqualTo("3"));
+
+                var save = source.SaveReplay();
+                Assert.That(save, Is.Not.Empty);
+                Assert.That(save.Length, Is.LessThanOrEqualTo(
+                    source.NegotiatedContract.limits.maximum_replay_save_json_bytes));
+                Assert.That(source.IdentitySnapshot().session.tick, Is.EqualTo("3"));
+                AssertSameCampaignState(sourceSnapshot, source.CampaignSnapshot());
+
+                using (var restored = new GameRuntimeTransport())
+                {
+                    var playing = restored.LoadReplay(save, ResolverPackages());
+                    Assert.That(playing.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                    Assert.That(playing.generation, Is.EqualTo("2"));
+                    Assert.That(playing.session.session_id, Is.EqualTo(restored.Handle.ToString()));
+                    Assert.That(playing.session.generation, Is.EqualTo("1"));
+                    Assert.That(playing.session.tick, Is.EqualTo("3"));
+                    Assert.That(
+                        playing.session.package_graph_hash,
+                        Is.EqualTo(sourceIdentity.session.package_graph_hash));
+                    Assert.That(
+                        playing.session.definition_hash,
+                        Is.EqualTo(sourceIdentity.session.definition_hash));
+                    Assert.That(
+                        playing.session.definition_revision,
+                        Is.EqualTo(sourceIdentity.session.definition_revision));
+                    Assert.That(
+                        playing.active_runtime_flow.bound_level_id,
+                        Is.EqualTo(sourceIdentity.active_runtime_flow.bound_level_id));
+                    AssertSameCampaignState(sourceSnapshot, restored.CampaignSnapshot());
+                }
+            }
+
+            // No-Claim: this proves opaque replay bytes pass through the
+            // managed transport into one fresh real-L1 Rust owner. It does not
+            // prove filesystem/UI persistence, paused or cross-level saves,
+            // migration, cloud saves, or production menu wiring.
         }
 
         [Test]

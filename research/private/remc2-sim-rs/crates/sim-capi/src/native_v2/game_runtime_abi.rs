@@ -8,7 +8,10 @@
 use super::*;
 use serde::Deserialize;
 use sim_core::{
-    campaign::backend::{Mc2CampaignBackend, Mc2CampaignInputs, Mc2RuntimePackageResolver},
+    campaign::backend::{
+        MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES, MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT, Mc2CampaignBackend,
+        Mc2CampaignInputs, Mc2CampaignReplaySaveError, Mc2RuntimePackageResolver,
+    },
     game_runtime::{
         GameRuntime, OpenLevelError, RuntimeGuard, RuntimeGuardError, RuntimeGuardErrorCode,
         RuntimeMode, RuntimeTransitionError,
@@ -16,7 +19,7 @@ use sim_core::{
 };
 use sim_session::{GameSession, OpenSessionError};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v4";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v5";
 const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
 const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
 const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
@@ -137,6 +140,88 @@ impl RuntimeRecord {
         resolver
             .open_pending(&mut self.runtime, guard, handle)
             .map_err(map_open_level_error)?;
+        Ok(())
+    }
+
+    fn save_replay(
+        &self,
+        handle: u64,
+        runtime_generation: u64,
+        session_generation: u64,
+        expected_tick: u64,
+    ) -> AbiResult<Vec<u8>> {
+        self.validate_transition(handle, runtime_generation, RuntimeMode::Playing)?;
+        let session = self.runtime.session().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "INVALID_RUNTIME_MODE: Playing runtime has no gameplay session",
+            )
+        })?;
+        let identity = session.identity();
+        if identity.generation != session_generation {
+            return Err(AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                format!(
+                    "GENERATION_MISMATCH: expected session generation {}, got {session_generation}",
+                    identity.generation
+                ),
+            ));
+        }
+        if identity.tick != expected_tick {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!(
+                    "TICK_MISMATCH: expected session tick {}, got {expected_tick}",
+                    identity.tick
+                ),
+            ));
+        }
+        self.resolver
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "MISSING_RUNTIME_RESOLVER: Playing runtime has no installed package set",
+                )
+            })?
+            .save_playing(&self.runtime)
+            .map_err(map_replay_save_error)
+    }
+
+    fn load_replay(
+        &mut self,
+        handle: u64,
+        generation: u64,
+        package_set_json: String,
+        package_set_json_len: u32,
+        save_json: &[u8],
+    ) -> AbiResult<()> {
+        self.validate_transition(handle, generation, RuntimeMode::Title)?;
+        if self.resolver.is_some() {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "PACKAGE_SET_ALREADY_INSTALLED: replay load requires a fresh runtime",
+            ));
+        }
+        let inputs = installed_package_set_inputs(package_set_json, package_set_json_len)?;
+        let resolver = Mc2RuntimePackageResolver::load(inputs).map_err(|error| {
+            AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                format!("cannot load replay package set: {error}"),
+            )
+        })?;
+        resolver
+            .load_playing_save(
+                &mut self.runtime,
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation,
+                },
+                handle,
+                save_json,
+            )
+            .map_err(map_replay_save_error)?;
+        self.resolver = Some(resolver);
         Ok(())
     }
 
@@ -278,6 +363,47 @@ fn map_transition_error(error: RuntimeTransitionError) -> AbiError {
     AbiError::new(status, error.to_string())
 }
 
+fn map_replay_save_error(error: Mc2CampaignReplaySaveError) -> AbiError {
+    match error {
+        Mc2CampaignReplaySaveError::InvalidMode => AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "replay save requires Playing mode",
+        ),
+        Mc2CampaignReplaySaveError::InvalidSave { message } => AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            format!("INVALID_REPLAY_SAVE: {message}"),
+        ),
+        Mc2CampaignReplaySaveError::Definition(error) => AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            format!("INVALID_REPLAY_DEFINITION: {error}"),
+        ),
+        Mc2CampaignReplaySaveError::Runtime(error) => map_transition_error(error),
+        Mc2CampaignReplaySaveError::Restore(
+            sim_core::game_runtime::RestorePlayingError::Transition(error),
+        ) => map_transition_error(error),
+        Mc2CampaignReplaySaveError::Restore(
+            sim_core::game_runtime::RestorePlayingError::Session(
+                OpenSessionError::InvalidSessionId,
+            ),
+        ) => AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "INVALID_SESSION_ID: replay target session ID is zero",
+        ),
+        Mc2CampaignReplaySaveError::Restore(
+            sim_core::game_runtime::RestorePlayingError::Session(OpenSessionError::Adapter(error)),
+        ) => super::game_session_abi::map_campaign_error(error),
+        Mc2CampaignReplaySaveError::Restore(
+            sim_core::game_runtime::RestorePlayingError::ReplayStep {
+                command_index,
+                error,
+            },
+        ) => AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            format!("REPLAY_STEP_REJECTED at command {command_index}: {error}"),
+        ),
+    }
+}
+
 fn map_open_level_error(
     error: OpenLevelError<sim_core::campaign::backend::CampaignBackendError>,
 ) -> AbiError {
@@ -372,6 +498,34 @@ fn installed_package_set_inputs(
         .collect()
 }
 
+fn write_replay_save(
+    bytes: &[u8],
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> AbiResult<()> {
+    require_output(out_length, "replay save out_length")?;
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "replay save exceeds u32"))?;
+    write_output(out_length, length);
+    if capacity < length {
+        return Err(AbiError::new(
+            MC_STATUS_BOUNDS,
+            format!("replay save requires {length} bytes, capacity is {capacity}"),
+        ));
+    }
+    if length > 0 && buffer.is_null() {
+        return Err(AbiError::new(
+            MC_STATUS_NULL_POINTER,
+            "replay save output buffer is null",
+        ));
+    }
+    // SAFETY: the caller supplied a writable byte buffer with at least
+    // `length` bytes, validated above.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len()) };
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_contract_json_v1(
     buffer: *mut u8,
@@ -382,11 +536,11 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 4,
+            "transport_version": 5,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "loading", "playing", "paused"],
-            "transitions": ["bootstrap_package_set", "open_level", "pause", "resume"],
+            "transitions": ["bootstrap_package_set", "open_level", "load_replay_save", "pause", "resume"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
             "installed_package_set": {
@@ -395,6 +549,13 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "selection_authority": "rust_owned_semantic_flow",
                 "input_order": "unordered_resource_locations",
                 "lifetime": "immutable_until_destroy"
+            },
+            "replay_save": {
+                "save_contract": MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT,
+                "save_transport": "mc_game_runtime_save_replay_json_v1",
+                "load_transport": "mc_game_runtime_load_replay_json_v1",
+                "load_package_authority": "complete_unordered_resource_set",
+                "client_semantics": "opaque_utf8_json"
             },
             "runtime_flow": {
                 "title": "absent",
@@ -405,6 +566,7 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "maximum_output_json_bytes": super::game_session_abi::MAX_OUTPUT_JSON_BYTES,
                 "maximum_installed_package_set_json_bytes": MAX_INSTALLED_PACKAGE_SET_JSON_BYTES,
                 "maximum_installed_package_count": MAX_INSTALLED_PACKAGE_COUNT,
+                "maximum_replay_save_json_bytes": MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES,
                 "json_length_type": "u32"
             }
         });
@@ -472,6 +634,82 @@ pub extern "C" fn mc_game_runtime_bootstrap_package_set_json_v1(
             utf8_input(request_json, request_json_len, "installed package-set JSON")?;
         with_runtime_mut(handle, |runtime| {
             runtime.bootstrap_package_set(handle, generation, request_json, request_json_len)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_save_replay_json_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        with_runtime(handle, |runtime| {
+            let bytes = runtime.save_replay(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+            )?;
+            write_replay_save(&bytes, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_load_replay_json_v1(
+    handle: u64,
+    generation: u64,
+    package_set_json: *const u8,
+    package_set_json_len: u32,
+    save_json: *const u8,
+    save_json_len: u32,
+) -> i32 {
+    boundary(|| {
+        if package_set_json.is_null() && package_set_json_len != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_NULL_POINTER,
+                "replay package-set JSON pointer is null",
+            ));
+        }
+        if save_json.is_null() && save_json_len != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_NULL_POINTER,
+                "replay save JSON pointer is null",
+            ));
+        }
+        if package_set_json_len > MAX_INSTALLED_PACKAGE_SET_JSON_BYTES {
+            return Err(AbiError::new(
+                MC_STATUS_BOUNDS,
+                "replay package-set JSON exceeds the negotiated bound",
+            ));
+        }
+        if usize::try_from(save_json_len).unwrap_or(usize::MAX) > MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES
+        {
+            return Err(AbiError::new(
+                MC_STATUS_BOUNDS,
+                "replay save JSON exceeds the negotiated bound",
+            ));
+        }
+        let package_set_json = utf8_input(
+            package_set_json,
+            package_set_json_len,
+            "replay package-set JSON",
+        )?;
+        let save_json = utf8_input(save_json, save_json_len, "replay save JSON")?;
+        with_runtime_mut(handle, |runtime| {
+            runtime.load_replay(
+                handle,
+                generation,
+                package_set_json,
+                package_set_json_len,
+                save_json.as_bytes(),
+            )
         })
     })
 }
@@ -610,6 +848,20 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    fn read_bytes(read: impl Fn(*mut u8, u32, *mut u32) -> i32) -> Vec<u8> {
+        let mut length = 0_u32;
+        assert_eq!(
+            read(std::ptr::null_mut(), 0, &raw mut length),
+            MC_STATUS_BOUNDS
+        );
+        let mut bytes = vec![0_u8; usize::try_from(length).unwrap()];
+        assert_eq!(
+            read(bytes.as_mut_ptr(), length, &raw mut length),
+            MC_STATUS_OK
+        );
+        bytes
+    }
+
     fn identity(handle: u64) -> Value {
         read_json(|buffer, capacity, length| {
             mc_game_runtime_identity_json_v1(handle, buffer, capacity, length)
@@ -627,16 +879,22 @@ mod tests {
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v4"
+            "carpet-flight-native-game-runtime-json/v5"
         );
-        assert_eq!(contract["transport_version"], 4);
+        assert_eq!(contract["transport_version"], 5);
         assert_eq!(
             contract["modes"],
             serde_json::json!(["title", "loading", "playing", "paused"])
         );
         assert_eq!(
             contract["transitions"],
-            serde_json::json!(["bootstrap_package_set", "open_level", "pause", "resume"])
+            serde_json::json!([
+                "bootstrap_package_set",
+                "open_level",
+                "load_replay_save",
+                "pause",
+                "resume"
+            ])
         );
         assert_eq!(
             contract["playing_session_transport"],
@@ -657,6 +915,20 @@ mod tests {
             64 * 1024
         );
         assert_eq!(contract["limits"]["maximum_installed_package_count"], 16);
+        assert_eq!(
+            contract["limits"]["maximum_replay_save_json_bytes"],
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            contract["replay_save"],
+            serde_json::json!({
+                "save_contract": "carpet-flight-mc2-campaign-replay-save/v1",
+                "save_transport": "mc_game_runtime_save_replay_json_v1",
+                "load_transport": "mc_game_runtime_load_replay_json_v1",
+                "load_package_authority": "complete_unordered_resource_set",
+                "client_semantics": "opaque_utf8_json"
+            })
+        );
         assert_eq!(
             contract["runtime_flow"],
             serde_json::json!({
@@ -815,6 +1087,123 @@ mod tests {
         // entry opening. It does not expose completion acceptance, prove later
         // L2/L3 materialization, discover/install packages, migrate production
         // presentation, or implement paused frames, save/load, replay, or UI.
+    }
+
+    #[test]
+    fn runtime_replay_save_round_trips_real_level_one_across_fresh_handle() {
+        let package_paths = [
+            level_three_package(),
+            level_one_package(),
+            level_two_package(),
+        ];
+        let package_set = installed_package_set_json(&package_paths);
+
+        let mut source = 0_u64;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut source), MC_STATUS_OK);
+        assert_eq!(
+            mc_game_runtime_bootstrap_package_set_json_v1(
+                source,
+                1,
+                package_set.as_ptr(),
+                package_set.len() as u32,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(mc_game_runtime_open_level_v1(source, 2), MC_STATUS_OK);
+        for (tick, command) in [
+            br#"{}"#.as_slice(),
+            br#"{"longitudinal":"accelerate","lateral":"positive","pitch_axis":3}"#.as_slice(),
+            br#"{"look_yaw":64,"look_pitch":-32}"#.as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                mc_game_session_step_json_v1(
+                    source,
+                    1,
+                    tick as u64,
+                    command.as_ptr(),
+                    command.len() as u32,
+                ),
+                MC_STATUS_OK
+            );
+        }
+        let source_identity = identity(source);
+        let source_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(source, buffer, capacity, length)
+        });
+        assert_eq!(source_identity["session"]["tick"], "3");
+        let save = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(source, 3, 1, 3, buffer, capacity, length)
+        });
+        assert_eq!(identity(source), source_identity);
+        assert_eq!(
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(source, buffer, capacity, length)
+            }),
+            source_snapshot
+        );
+        let save_json: Value = serde_json::from_slice(&save).unwrap();
+        assert_eq!(
+            save_json["save_contract"],
+            "carpet-flight-mc2-campaign-replay-save/v1"
+        );
+        assert_eq!(save_json["commands"].as_array().unwrap().len(), 3);
+
+        let mut restored = 0_u64;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut restored), MC_STATUS_OK);
+        let restored_title = identity(restored);
+        let incomplete = installed_package_set_json(&[level_one_package(), level_two_package()]);
+        assert_eq!(
+            mc_game_runtime_load_replay_json_v1(
+                restored,
+                1,
+                incomplete.as_ptr(),
+                incomplete.len() as u32,
+                save.as_ptr(),
+                save.len() as u32,
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(identity(restored), restored_title);
+
+        assert_eq!(
+            mc_game_runtime_load_replay_json_v1(
+                restored,
+                1,
+                package_set.as_ptr(),
+                package_set.len() as u32,
+                save.as_ptr(),
+                save.len() as u32,
+            ),
+            MC_STATUS_OK
+        );
+        let restored_identity = identity(restored);
+        assert_eq!(restored_identity["mode"], "playing");
+        assert_eq!(restored_identity["generation"], "2");
+        assert_eq!(
+            restored_identity["session"]["session_id"],
+            restored.to_string()
+        );
+        assert_eq!(restored_identity["session"]["generation"], "1");
+        assert_eq!(restored_identity["session"]["tick"], "3");
+        assert_eq!(
+            restored_identity["active_runtime_flow"],
+            source_identity["active_runtime_flow"]
+        );
+        let restored_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(restored, buffer, capacity, length)
+        });
+        assert_eq!(restored_snapshot["value"], source_snapshot["value"]);
+
+        assert_eq!(mc_game_runtime_destroy_v1(source), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(restored), MC_STATUS_OK);
+
+        // No-Claim: this proves one opaque real-L1 replay save crosses the
+        // native ABI into a fresh resolver-owned handle. It does not prove
+        // paused or cross-level saves, filesystem persistence, migration,
+        // managed/Unity transport, or production save UI.
     }
 
     #[test]

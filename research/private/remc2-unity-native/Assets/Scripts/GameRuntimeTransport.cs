@@ -18,9 +18,11 @@ namespace MagicCarpet.Native
     {
         internal const string RuntimeContract = "carpet-flight-game-runtime/v6";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v4";
+            "carpet-flight-native-game-runtime-json/v5";
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
+        internal const string ReplaySaveContract =
+            "carpet-flight-mc2-campaign-replay-save/v1";
         internal const string TitleMode = "title";
         internal const string LoadingMode = "loading";
         internal const string PlayingMode = "playing";
@@ -41,6 +43,7 @@ namespace MagicCarpet.Native
             public string playing_session_transport;
             public string package_profile;
             public InstalledPackageSetTransport installed_package_set;
+            public ReplaySaveTransport replay_save;
             public RuntimeFlowContract runtime_flow;
             public Limits limits;
         }
@@ -53,6 +56,16 @@ namespace MagicCarpet.Native
             public string selection_authority;
             public string input_order;
             public string lifetime;
+        }
+
+        [Serializable]
+        internal sealed class ReplaySaveTransport
+        {
+            public string save_contract;
+            public string save_transport;
+            public string load_transport;
+            public string load_package_authority;
+            public string client_semantics;
         }
 
         [Serializable]
@@ -83,6 +96,7 @@ namespace MagicCarpet.Native
             public uint maximum_output_json_bytes;
             public uint maximum_installed_package_set_json_bytes;
             public uint maximum_installed_package_count;
+            public uint maximum_replay_save_json_bytes;
             public string json_length_type;
         }
 
@@ -205,38 +219,7 @@ namespace MagicCarpet.Native
 
         internal Identity BootstrapPackageSet(params InstalledPackageResource[] packages)
         {
-            if (packages == null || packages.Length == 0 ||
-                (uint)packages.Length >
-                    NegotiatedContract.limits.maximum_installed_package_count)
-            {
-                throw new ArgumentException(
-                    "installed package resources must be nonempty and bounded",
-                    nameof(packages));
-            }
-            foreach (var resource in packages)
-            {
-                if (resource == null || string.IsNullOrWhiteSpace(resource.package_dir) ||
-                    (resource.owner_cache_path != null &&
-                     string.IsNullOrWhiteSpace(resource.owner_cache_path)))
-                {
-                    throw new ArgumentException(
-                        "each installed package resource needs a package path and optional nonblank cache path",
-                        nameof(packages));
-                }
-            }
-            var request = Encoding.UTF8.GetBytes(JsonUtility.ToJson(
-                new InstalledPackageSetRequest
-                {
-                    request_contract = InstalledPackageSetContract,
-                    packages = packages
-                }));
-            if ((uint)request.Length >
-                NegotiatedContract.limits.maximum_installed_package_set_json_bytes)
-            {
-                throw new ArgumentException(
-                    "installed package-set request exceeds the negotiated bound",
-                    nameof(packages));
-            }
+            var request = EncodePackageSet(packages);
             Check(
                 NativeSim.mc_game_runtime_bootstrap_package_set_json_v1(
                     RequireHandle(),
@@ -250,6 +233,76 @@ namespace MagicCarpet.Native
                 HasRuntimeFlowData(identity.active_runtime_flow))
             {
                 throw new InvalidOperationException("new game did not enter semantic Loading");
+            }
+            return identity;
+        }
+
+        internal byte[] SaveReplay()
+        {
+            RequireSessionMode(allowPaused: false, "save replay");
+            var before = Current;
+            var bytes = ReadBytes(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    NativeSim.mc_game_runtime_save_replay_json_v1(
+                        RequireHandle(),
+                        ParseCounter(before.generation, "generation"),
+                        ParseCounter(before.session.generation, "session_generation"),
+                        ParseCounter(before.session.tick, "tick"),
+                        buffer,
+                        capacity,
+                        out length),
+                NegotiatedContract.limits.maximum_replay_save_json_bytes,
+                "save game replay");
+            var after = IdentitySnapshot();
+            if (after.mode != PlayingMode || after.generation != before.generation ||
+                after.session.generation != before.session.generation ||
+                after.session.tick != before.session.tick ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                !SameRuntimeFlow(before.active_runtime_flow, after.active_runtime_flow))
+            {
+                throw new InvalidOperationException("saving replay mutated the game runtime");
+            }
+            return bytes;
+        }
+
+        internal Identity LoadReplay(
+            byte[] saveJson,
+            params InstalledPackageResource[] packages)
+        {
+            if (saveJson == null || saveJson.Length == 0 ||
+                (uint)saveJson.Length >
+                    NegotiatedContract.limits.maximum_replay_save_json_bytes)
+            {
+                throw new ArgumentException(
+                    "replay save must be nonempty and within the negotiated bound",
+                    nameof(saveJson));
+            }
+            if (Current?.mode != TitleMode)
+            {
+                throw new InvalidOperationException("replay load requires Title mode");
+            }
+            var packageSet = EncodePackageSet(packages);
+            var beforeGeneration = ParseCounter(Current.generation, "generation");
+            Check(
+                NativeSim.mc_game_runtime_load_replay_json_v1(
+                    RequireHandle(),
+                    beforeGeneration,
+                    packageSet,
+                    checked((uint)packageSet.Length),
+                    saveJson,
+                    checked((uint)saveJson.Length)),
+                "load game replay");
+            var identity = IdentitySnapshot();
+            if (identity.mode != PlayingMode ||
+                ParseCounter(identity.generation, "generation") !=
+                    checked(beforeGeneration + 1) ||
+                HasDefinitionIdentityData(identity.pending_definition) ||
+                !HasSessionIdentity(identity) ||
+                ParseCounter(identity.session.session_id, "session_id") != Handle ||
+                !HasRuntimeFlowData(identity.active_runtime_flow))
+            {
+                throw new InvalidOperationException(
+                    "replay load did not enter a bound Playing session");
             }
             return identity;
         }
@@ -414,7 +467,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 4 ||
+                contract.transport_version != 5 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
@@ -431,6 +484,15 @@ namespace MagicCarpet.Native
                     "unordered_resource_locations" ||
                 contract.installed_package_set.lifetime !=
                     "immutable_until_destroy" ||
+                contract.replay_save == null ||
+                contract.replay_save.save_contract != ReplaySaveContract ||
+                contract.replay_save.save_transport !=
+                    "mc_game_runtime_save_replay_json_v1" ||
+                contract.replay_save.load_transport !=
+                    "mc_game_runtime_load_replay_json_v1" ||
+                contract.replay_save.load_package_authority !=
+                    "complete_unordered_resource_set" ||
+                contract.replay_save.client_semantics != "opaque_utf8_json" ||
                 contract.runtime_flow == null ||
                 contract.runtime_flow.title != "absent" ||
                 contract.runtime_flow.loading != "pending_definition.runtime_flow" ||
@@ -439,12 +501,16 @@ namespace MagicCarpet.Native
                 contract.limits.maximum_output_json_bytes != 16 * 1024 * 1024 ||
                 contract.limits.maximum_installed_package_set_json_bytes != 64 * 1024 ||
                 contract.limits.maximum_installed_package_count != 16 ||
+                contract.limits.maximum_replay_save_json_bytes != 16 * 1024 * 1024 ||
                 contract.limits.json_length_type != "u32" ||
                 contract.modes == null ||
                 !new[] { TitleMode, LoadingMode, PlayingMode, PausedMode }
                     .SequenceEqual(contract.modes) ||
                 contract.transitions == null ||
-                !new[] { "bootstrap_package_set", "open_level", "pause", "resume" }
+                !new[] {
+                    "bootstrap_package_set", "open_level", "load_replay_save",
+                    "pause", "resume"
+                }
                     .SequenceEqual(contract.transitions))
             {
                 throw new InvalidOperationException("native game runtime contract is unsupported");
@@ -757,6 +823,43 @@ namespace MagicCarpet.Native
             return true;
         }
 
+        private byte[] EncodePackageSet(InstalledPackageResource[] packages)
+        {
+            if (packages == null || packages.Length == 0 ||
+                (uint)packages.Length >
+                    NegotiatedContract.limits.maximum_installed_package_count)
+            {
+                throw new ArgumentException(
+                    "installed package resources must be nonempty and bounded",
+                    nameof(packages));
+            }
+            foreach (var resource in packages)
+            {
+                if (resource == null || string.IsNullOrWhiteSpace(resource.package_dir) ||
+                    (resource.owner_cache_path != null &&
+                     string.IsNullOrWhiteSpace(resource.owner_cache_path)))
+                {
+                    throw new ArgumentException(
+                        "each installed package resource needs a package path and optional nonblank cache path",
+                        nameof(packages));
+                }
+            }
+            var request = Encoding.UTF8.GetBytes(JsonUtility.ToJson(
+                new InstalledPackageSetRequest
+                {
+                    request_contract = InstalledPackageSetContract,
+                    packages = packages
+                }));
+            if ((uint)request.Length >
+                NegotiatedContract.limits.maximum_installed_package_set_json_bytes)
+            {
+                throw new ArgumentException(
+                    "installed package-set request exceeds the negotiated bound",
+                    nameof(packages));
+            }
+            return request;
+        }
+
         private ulong RequireHandle()
         {
             var handle = Handle;
@@ -786,6 +889,34 @@ namespace MagicCarpet.Native
                 Marshal.Copy(buffer, bytes, 0, checked((int)written));
                 var value = JsonUtility.FromJson<T>(Encoding.UTF8.GetString(bytes));
                 return value ?? throw new InvalidOperationException(operation + " returned null JSON");
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        private static byte[] ReadBytes(
+            JsonRead read,
+            uint maximumLength,
+            string operation)
+        {
+            Check(read(IntPtr.Zero, 0, out var required), operation + " size", NativeSim.Bounds);
+            if (required == 0 || required > maximumLength)
+            {
+                throw new InvalidOperationException(operation + " returned an invalid byte length");
+            }
+            var buffer = Marshal.AllocHGlobal(checked((int)required));
+            try
+            {
+                Check(read(buffer, required, out var written), operation);
+                if (written != required)
+                {
+                    throw new InvalidOperationException(operation + " changed length during copy");
+                }
+                var bytes = new byte[checked((int)written)];
+                Marshal.Copy(buffer, bytes, 0, checked((int)written));
+                return bytes;
             }
             finally
             {

@@ -1328,6 +1328,14 @@ int32_t mc_game_runtime_identity_json_v1(
 int32_t mc_game_runtime_bootstrap_package_set_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request_json, uint32_t request_json_len);
+int32_t mc_game_runtime_save_replay_json_v1(
+    uint64_t handle, uint64_t runtime_generation,
+    uint64_t session_generation, uint64_t expected_tick,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
+int32_t mc_game_runtime_load_replay_json_v1(
+    uint64_t handle, uint64_t generation,
+    const uint8_t *package_set_json, uint32_t package_set_json_len,
+    const uint8_t *save_json, uint32_t save_json_len);
 int32_t mc_game_runtime_open_level_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_pause_v1(
