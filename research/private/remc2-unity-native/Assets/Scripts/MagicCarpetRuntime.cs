@@ -2216,8 +2216,7 @@ namespace MagicCarpet.Native
                 }
                 if (gameRuntimeRequested)
                 {
-                    OpenAndValidateGameRuntimeProductionSession(
-                        GameRuntimePackagesFromArguments(arguments));
+                    OpenGameRuntimeFromStartupArguments(arguments);
                     Application.targetFrameRate = 120;
                     Time.fixedDeltaTime = 1f / AuthoritativeSimulationHz;
                     if (!Application.isBatchMode) CaptureMouse();
@@ -8521,8 +8520,7 @@ namespace MagicCarpet.Native
                 Require(
                     gameRuntimeRequested,
                     "game runtime production qualification requires -mc-game-runtime");
-                OpenAndValidateGameRuntimeProductionSession(
-                    GameRuntimePackagesFromArguments(arguments));
+                OpenGameRuntimeFromStartupArguments(arguments);
             }
             catch (Exception exception)
             {
@@ -8594,40 +8592,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal void QualificationInitializeGameRuntimeProductionFromReplay(
-            byte[] replaySave,
-            params string[] arguments)
-        {
-            Require(
-                !gameObject.activeInHierarchy &&
-                session == null &&
-                campaignSession == null,
-                "game runtime replay route starts before Awake with no owner handle");
-            disposed = false;
-            fatalError = null;
-            gameRuntimeMode = false;
-            gameRuntimeStartupReady = false;
-            try
-            {
-                ConfigureStartupArguments(arguments);
-                Require(
-                    gameRuntimeRequested,
-                    "game runtime replay qualification requires -mc-game-runtime");
-                OpenAndValidateGameRuntimeProductionReplaySession(
-                    replaySave,
-                    GameRuntimePackagesFromArguments(arguments));
-            }
-            catch (Exception exception)
-            {
-                fatalError = exception.ToString();
-                DisposeSession();
-                throw;
-            }
-        }
-
-        internal void QualificationInitializeGameRuntimeProductionFromReplayPath(
-            string savePath,
-            params string[] arguments)
+        private static byte[] ReadReplaySaveFromPath(string savePath)
         {
             var fullPath = ValidateReplaySavePath(savePath);
             var length = new FileInfo(fullPath).Length;
@@ -8637,9 +8602,7 @@ namespace MagicCarpet.Native
                     $"game runtime replay save length {length} is outside 1.." +
                     GameRuntimeTransport.MaximumReplaySaveJsonBytes);
             }
-            QualificationInitializeGameRuntimeProductionFromReplay(
-                File.ReadAllBytes(fullPath),
-                arguments);
+            return File.ReadAllBytes(fullPath);
         }
 
         private static string ValidateReplaySavePath(string savePath)
@@ -11885,10 +11848,11 @@ namespace MagicCarpet.Native
             entityGallery = HasArgument(arguments, "-mc-entity-gallery");
             if (level2Mode)
             {
-                if (gameRuntimeRequested)
+                if (gameRuntimeRequested ||
+                    HasArgument(arguments, "-mc-runtime-replay-load"))
                 {
                     throw new InvalidDataException(
-                        "-mc-level2 and -mc-game-runtime are mutually exclusive");
+                        "-mc-level2 rejects game-runtime startup and replay options");
                 }
                 if (qualifiedRequested || debugMode || debugEntities || entityGallery)
                 {
@@ -11915,8 +11879,20 @@ namespace MagicCarpet.Native
                         "-mc-game-runtime is a distinct headless production owner and " +
                         "rejects legacy presentation, autoplay, and audio modes");
                 }
+                if (HasArgument(arguments, "-mc-runtime-replay-load") &&
+                    string.IsNullOrWhiteSpace(
+                        ArgumentValue(arguments, "-mc-runtime-replay-load")))
+                {
+                    throw new InvalidDataException(
+                        "-mc-runtime-replay-load requires a replay save path");
+                }
                 qualifiedMode = false;
                 return;
+            }
+            if (HasArgument(arguments, "-mc-runtime-replay-load"))
+            {
+                throw new InvalidDataException(
+                    "-mc-runtime-replay-load requires -mc-game-runtime");
             }
             if (qualifiedRequested == debugMode)
             {
@@ -12016,6 +11992,20 @@ namespace MagicCarpet.Native
                     "-mc-runtime-package paths");
             }
             return packages.ToArray();
+        }
+
+        private void OpenGameRuntimeFromStartupArguments(string[] arguments)
+        {
+            var packages = GameRuntimePackagesFromArguments(arguments);
+            var replayPath = ArgumentValue(arguments, "-mc-runtime-replay-load");
+            if (string.IsNullOrWhiteSpace(replayPath))
+            {
+                OpenAndValidateGameRuntimeProductionSession(packages);
+                return;
+            }
+            OpenAndValidateGameRuntimeProductionReplaySession(
+                ReadReplaySaveFromPath(replayPath),
+                packages);
         }
 
         private void OpenAndValidateGameRuntimeProductionSession(

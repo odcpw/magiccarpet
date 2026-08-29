@@ -58,6 +58,17 @@ namespace MagicCarpet.Native.Tests
             return arguments;
         }
 
+        private static string[] RuntimeReplayArguments(
+            string replayPath,
+            params string[] packages)
+        {
+            var arguments = RuntimeArguments(packages);
+            Array.Resize(ref arguments, arguments.Length + 2);
+            arguments[arguments.Length - 2] = "-mc-runtime-replay-load";
+            arguments[arguments.Length - 1] = replayPath;
+            return arguments;
+        }
+
         private static byte[] PackageSetJson(
             params GameRuntimeTransport.InstalledPackageResource[] packages)
         {
@@ -350,9 +361,12 @@ namespace MagicCarpet.Native.Tests
             var restored = restoredRoot.AddComponent<MagicCarpetRuntime>();
             try
             {
-                restored.QualificationInitializeGameRuntimeProductionFromReplayPath(
-                    replayPath,
-                    arguments);
+                restored.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeReplayArguments(
+                        replayPath,
+                        LevelThreePackage,
+                        LevelOnePackage,
+                        LevelTwoPackage));
                 Assert.That(restored.GameRuntimeProductionStartupReady, Is.True);
                 var restoredIdentity = restored.GameRuntimeProductionIdentity;
                 Assert.That(restoredIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));

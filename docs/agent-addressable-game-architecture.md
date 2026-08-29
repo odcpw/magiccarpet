@@ -558,8 +558,10 @@ partial real implementation, not a completion claim:
   and resume ordinary fixed-step play. Its owner-local filesystem seam writes
   through a flushed sibling temporary file and atomic replacement, bounds the
   file before reading, and still treats the contents as opaque Rust data. This
-  is one Level 1 replay checkpoint, not paused or cross-level persistence, menu
-  UI, migration or a full campaign save;
+  same loader is selected by the production `-mc-runtime-replay-load` startup
+  option rather than a qualification-only path. This is one Level 1 replay
+  checkpoint, not paused or cross-level persistence, menu UI, migration or a
+  full campaign save;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed
