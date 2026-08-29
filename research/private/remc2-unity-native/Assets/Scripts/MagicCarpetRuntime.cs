@@ -788,6 +788,7 @@ namespace MagicCarpet.Native
         private string movementResolution = "accepted";
         private GUIStyle hudStyle;
         private GUIStyle titleStyle;
+        private GUIStyle gameRuntimePauseStyle;
         private float steeringRoll;
         private float steeringPitch;
         private sbyte appliedRoll;
@@ -1009,6 +1010,9 @@ namespace MagicCarpet.Native
 
         internal string GameRuntimeProductionFlightHudText =>
             FormatGameRuntimeFlightHudText();
+
+        internal string GameRuntimeProductionPauseOverlayText =>
+            FormatGameRuntimePauseOverlayText();
 
         internal Vector2Int GameRuntimeProductionVitalsBarWidths =>
             ComputeGameRuntimeVitalsBarWidths();
@@ -11912,12 +11916,24 @@ namespace MagicCarpet.Native
             return $"{gameEvent.sequence} {gameEvent.event_id} actor={actor}";
         }
 
+        private string FormatGameRuntimePauseOverlayText()
+        {
+            if (session == null || !session.UsesGameRuntimeContract)
+            {
+                return null;
+            }
+            return session.GameRuntimeIdentity().mode == GameRuntimeTransport.PausedMode
+                ? "PAUSED\nP resume \u00b7 Escape close"
+                : null;
+        }
+
         private void DrawGameRuntimeFlightHud()
         {
             GUI.Label(
                 new Rect(24, 18, Mathf.Min(900, Screen.width - 48), 110),
                 FormatGameRuntimeFlightHudText(),
                 hudStyle);
+            DrawGameRuntimePauseOverlay();
             var widths = ComputeGameRuntimeVitalsBarWidths();
             if (widths == Vector2Int.zero)
             {
@@ -11936,6 +11952,32 @@ namespace MagicCarpet.Native
             GUI.DrawTexture(new Rect(barX, 131, widths.x, barHeight), Texture2D.whiteTexture);
             GUI.color = new Color(0.16f, 0.42f, 0.92f, 1f);
             GUI.DrawTexture(new Rect(barX, 151, widths.y, barHeight), Texture2D.whiteTexture);
+            GUI.color = previousColor;
+        }
+
+        private void DrawGameRuntimePauseOverlay()
+        {
+            var text = FormatGameRuntimePauseOverlayText();
+            if (text == null)
+            {
+                return;
+            }
+            gameRuntimePauseStyle ??= new GUIStyle(titleStyle)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                normal = { textColor = Color.white }
+            };
+            var width = Mathf.Min(420f, Screen.width - 48f);
+            var rect = new Rect(
+                (Screen.width - width) * 0.5f,
+                (Screen.height - 96f) * 0.5f,
+                width,
+                96f);
+            var previousColor = GUI.color;
+            GUI.color = new Color(0f, 0f, 0f, 0.78f);
+            GUI.DrawTexture(rect, Texture2D.whiteTexture);
+            GUI.color = Color.white;
+            GUI.Label(rect, text, gameRuntimePauseStyle);
             GUI.color = previousColor;
         }
 

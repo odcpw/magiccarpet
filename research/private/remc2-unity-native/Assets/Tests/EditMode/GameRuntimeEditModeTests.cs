@@ -648,6 +648,7 @@ namespace MagicCarpet.Native.Tests
                 var playing = runtime.GameRuntimeProductionIdentity;
                 var beforePause = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(playing.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionPauseOverlayText, Is.Null);
                 Assert.That(beforePause.identity.tick, Is.EqualTo("1"));
                 Assert.That(beforePause.value.presentation_entities, Is.Empty);
 
@@ -655,6 +656,9 @@ namespace MagicCarpet.Native.Tests
                 var paused = runtime.GameRuntimeProductionIdentity;
                 Assert.That(paused.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                 Assert.That(paused.session.session_id, Is.EqualTo(playing.session.session_id));
+                Assert.That(
+                    runtime.GameRuntimeProductionPauseOverlayText,
+                    Is.EqualTo("PAUSED\nP resume \u00b7 Escape close"));
                 runtime.QualificationDriveGameRuntimeFrames(2);
                 var frozen = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(frozen.identity.tick, Is.EqualTo(beforePause.identity.tick));
@@ -670,15 +674,17 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     runtime.GameRuntimeProductionIdentity.mode,
                     Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionPauseOverlayText, Is.Null);
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 var resumed = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(resumed.identity.tick, Is.EqualTo("2"));
                 Assert.That(resumed.value.presentation_entities, Is.Empty);
 
                 // No-Claim: this proves production P-key ownership for the
-                // existing quiescent Rust pause boundary and discards a Fireball
-                // click received while paused. It does not provide paused-frame
-                // service, pause menus/audio, or completion transitions.
+                // existing quiescent Rust pause boundary, presents that native
+                // mode visibly, and discards a Fireball click received while
+                // paused. It does not provide paused-frame service, pause-menu
+                // commands/audio, or completion transitions.
             }
             finally
             {
