@@ -17,8 +17,8 @@ pub use sim_definition::runtime_flow::{
     SemanticGameId, SemanticLevelId,
 };
 pub use sim_definition::{
-    APPLY_RECEIPT_SCHEMA, Access, ApplyBinding, ApplyReceipt, ApplyStatus, ArtifactId,
-    ArtifactKind, ArtifactNode, BoundPresentationAsset, CHANGE_SET_SCHEMA,
+    APPLY_RECEIPT_SCHEMA, ARCHER_MAX_LIFE_CAPABILITY_ID, Access, ApplyBinding, ApplyReceipt,
+    ApplyStatus, ArtifactId, ArtifactKind, ArtifactNode, BoundPresentationAsset, CHANGE_SET_SCHEMA,
     CREATURE_POLICY_CAPABILITY_ID, ChangeSet, ChangeSetBuilder, CompiledCapability,
     CompiledCapabilityRegistry, DefinitionDiff, DefinitionError, DefinitionErrorCode,
     DefinitionOperation, DescriptorKind, Diagnostic, FIREBALL_MANA_COST_CAPABILITY_ID,
@@ -29,5 +29,6 @@ pub use sim_definition::{
     RequiredCapability, Result, SEMANTIC_CONTRACT_VERSION, SemanticBinding, SemanticCatalog,
     SemanticDescriptor, SemanticId, SemanticValue, TemporalContract, TransactionError,
     TransactionErrorCode, VALIDATION_RECEIPT_SCHEMA, ValidateBinding, ValidationReceipt, ValueType,
-    WORKSPACE_SCHEMA, WorkspaceInspection, WorkspaceStore, default_catalog, engine_capabilities,
+    WORKSPACE_SCHEMA, WorkspaceInspection, WorkspaceStore, creature_max_life_capability_id,
+    default_catalog, engine_capabilities,
 };

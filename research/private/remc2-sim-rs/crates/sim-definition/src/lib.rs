@@ -24,9 +24,10 @@ pub use operation::{
     ArtifactId, DefinitionOperation, IntegerParameter, OptionParameter, PresentationAssetSlot,
 };
 pub use package::{
-    ArtifactKind, ArtifactNode, CREATURE_POLICY_CAPABILITY_ID, CompiledCapability,
-    CompiledCapabilityRegistry, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
-    GamePackage, PackageProvenance, PackageProvenanceKind, RequiredCapability, engine_capabilities,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, ArtifactKind, ArtifactNode, CREATURE_POLICY_CAPABILITY_ID,
+    CompiledCapability, CompiledCapabilityRegistry, FIREBALL_MANA_COST_CAPABILITY_ID,
+    FIREFLY_MAX_LIFE_CAPABILITY_ID, GamePackage, PackageProvenance, PackageProvenanceKind,
+    RequiredCapability, creature_max_life_capability_id, engine_capabilities,
 };
 pub use presentation_asset::{
     BoundPresentationAsset, CompatiblePresentationArtifact, INDEXED_SPRITE_SCHEMA,
@@ -53,7 +54,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v7";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "14.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "15.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -872,7 +873,7 @@ impl GameDefinition {
             .collect()
     }
 
-    /// Describe one package-present Firefly maximum-life target.
+    /// Describe one package-present creature maximum-life target.
     #[must_use]
     pub fn level_creature_max_life_descriptor(
         &self,
@@ -882,6 +883,11 @@ impl GameDefinition {
         let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
         let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
         let config = entity.creature_health()?;
+        let creature = match entity.kind() {
+            level_definition::LevelEntityKind::Creature(kind) => kind,
+            _ => return None,
+        };
+        let capability_id = creature_max_life_capability_id(creature)?;
         let writable = matches!(
             config.max_life_access(),
             level_definition::LevelEntityParameterAccess::SessionReset
@@ -906,19 +912,25 @@ impl GameDefinition {
             determinism_role: "immutable per-instance creature constructor parameter".to_owned(),
             dependencies: vec![
                 entity.id().as_str().to_owned(),
-                "engine.creature.firefly.max_life@1".to_owned(),
-                "package Firefly constructor and complete damage/death lifecycle".to_owned(),
+                format!("{capability_id}@1"),
+                format!(
+                    "package {} constructor and complete damage/death lifecycle",
+                    creature.as_str()
+                ),
             ],
             side_effects: if writable {
                 vec![
-                    "already-open sessions retain their original Firefly health".to_owned(),
+                    format!(
+                        "already-open sessions retain their original {} health",
+                        creature.as_str()
+                    ),
                     "explicit reopen/reset initializes both life and maximum life from this value"
                         .to_owned(),
                 ]
             } else {
                 Vec::new()
             },
-            scope: format!("stable Firefly instance {}", entity.id().as_str()),
+            scope: format!("stable {} instance {}", creature.as_str(), entity.id().as_str()),
             provenance_origin: "package semantic level definition".to_owned(),
             provenance_content_hash: self.package_graph_hash.clone(),
             temporal_contract: Some(TemporalContract {
@@ -928,17 +940,25 @@ impl GameDefinition {
                 handler: "guarded atomic definition compare-and-swap".to_owned(),
                 same_pass_epilogue:
                     "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
-                following_pass_cleanup: "explicit reopen/reset binds the authored value before the package group constructs this Firefly; ordinary damage, pre-kill, hide, and reclaim consume that carrier"
-                    .to_owned(),
+                following_pass_cleanup: format!(
+                    "explicit reopen/reset binds the authored value before the package group constructs this {}; ordinary damage, pre-kill, hide, and reclaim consume that carrier",
+                    creature.as_str()
+                ),
                 authoritative_reads: vec![target_id],
                 authoritative_writes: vec![
-                    "immutable LevelDefinition Firefly max_life configuration".to_owned(),
+                    format!(
+                        "immutable LevelDefinition {} max_life configuration",
+                        creature.as_str()
+                    ),
                 ],
                 rng_and_event_effects:
                     "none during publication or construction; damage and death event order remains scheduler-owned"
                         .to_owned(),
             }),
-            summary: "Initial and maximum life of one package-bound Firefly.".to_owned(),
+            summary: format!(
+                "Initial and maximum life of one package-bound {}.",
+                creature.as_str()
+            ),
         })
     }
 

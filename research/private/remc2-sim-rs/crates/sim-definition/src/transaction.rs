@@ -1505,7 +1505,7 @@ fn validate_against(
                     diagnostics.push(Diagnostic {
                         code: "UNSAFE_TIMING".to_owned(),
                         path_or_id: id.as_str().to_owned(),
-                        message: "Firefly health authoring requires session_reset timing"
+                        message: "creature health authoring requires session_reset timing"
                             .to_owned(),
                     });
                     continue;
@@ -1520,7 +1520,7 @@ fn validate_against(
                         code: "CONFLICT".to_owned(),
                         path_or_id: id.as_str().to_owned(),
                         message:
-                            "Firefly expected maximum life does not match the active definition"
+                            "creature expected maximum life does not match the active definition"
                                 .to_owned(),
                     });
                     continue;

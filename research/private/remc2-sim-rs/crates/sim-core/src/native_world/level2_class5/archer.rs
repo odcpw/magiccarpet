@@ -104,6 +104,7 @@ pub(crate) fn archer_constructor_payload(
     authored_index: u16,
     source_byte_3e: u8,
     position: Position,
+    max_life: i32,
 ) -> ArcherConstructorPayload {
     let entity_rng = level2_next_rng16(initial_rng);
     let source_byte_39 = ARCHER_DESCRIPTOR_CADENCE
@@ -119,8 +120,8 @@ pub(crate) fn archer_constructor_payload(
         minimum_speed: ARCHER_MINIMUM_SPEED,
         maximum_speed: ARCHER_MAXIMUM_SPEED,
         actual_speed: ARCHER_MINIMUM_SPEED,
-        max_life: ARCHER_MAX_LIFE,
-        life: ARCHER_MAX_LIFE,
+        max_life,
+        life: max_life,
         mana: ARCHER_MANA,
         max_mana: ARCHER_MAX_MANA,
         subspell_index: ARCHER_SUBSPELL_INDEX,
@@ -304,7 +305,7 @@ impl Level2EconomyState {
         if !is_authored_archer_row(authored_index) {
             return None;
         }
-        self.allocate_campaign_archer(authored_index, position, terrain)
+        self.allocate_campaign_archer(authored_index, position, ARCHER_MAX_LIFE, terrain)
     }
 
     /// Allocate a package-admitted class-5/model-4 row through the shared
@@ -315,8 +316,12 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        max_life: i32,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
+        if !(1..=i32::MAX).contains(&max_life) {
+            return None;
+        }
         let state_before = self.clone();
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
@@ -331,6 +336,7 @@ impl Level2EconomyState {
             authored_index,
             source_byte_3e,
             position,
+            max_life,
         );
         if self
             .map_chains
@@ -375,6 +381,35 @@ impl Level2EconomyState {
                 last_child_root_phase: 0,
             });
         Some(source)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_archer_mailbox_damage_for_test(
+        &mut self,
+        source_slot: u16,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> bool {
+        if damage <= 0 {
+            return false;
+        }
+        let Some(source) = self.authored_class5.iter_mut().find(|source| {
+            source.active
+                && source.source_entity_index == source_slot
+                && source.model == ARCHER_MODEL
+        }) else {
+            return false;
+        };
+        let Some(runtime) = self
+            .authored_class5_archer
+            .iter_mut()
+            .find(|runtime| runtime.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.pending_word_0x62 = attacker_slot;
+        runtime.pending_damage = damage;
+        true
     }
 }
 
@@ -1329,7 +1364,14 @@ mod tests {
         let slot = 147_u16;
         let initial_rng = 0x1357_u16;
         let entity_rng = initial_rng.wrapping_mul(9_377).wrapping_add(9_439);
-        let payload = archer_constructor_payload(slot, initial_rng, 232, 3, archer_position());
+        let payload = archer_constructor_payload(
+            slot,
+            initial_rng,
+            232,
+            3,
+            archer_position(),
+            ARCHER_MAX_LIFE,
+        );
         assert_eq!(payload.entity_rng, entity_rng);
         assert_eq!(payload.initial_dword_0x10, 47);
         assert_eq!(payload.dword_0x10, 47);

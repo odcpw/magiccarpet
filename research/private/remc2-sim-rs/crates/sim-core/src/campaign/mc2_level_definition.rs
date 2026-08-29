@@ -249,14 +249,19 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Creature(kind),
                     position_access,
                 )?;
-                if kind == CreatureKind::Firefly {
+                if matches!(kind, CreatureKind::Firefly | CreatureKind::Archer) {
+                    let max_life = if kind == CreatureKind::Firefly {
+                        crate::native_world::level2_class5::firefly::FIREFLY_LIFE
+                    } else {
+                        crate::native_world::level2_class5::ARCHER_MAX_LIFE
+                    };
                     entities.push(creature_entity_definition(
                         id,
                         kind,
                         position,
                         activation_group,
                         position_access,
-                        crate::native_world::level2_class5::firefly::FIREFLY_LIFE.cast_unsigned(),
+                        max_life.cast_unsigned(),
                         LevelEntityParameterAccess::SessionReset,
                     ));
                 } else {

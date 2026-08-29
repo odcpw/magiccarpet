@@ -670,12 +670,20 @@ impl LevelDefinition {
                 (_, None) => {}
             }
             match (entity.kind, entity.creature_health) {
-                (LevelEntityKind::Creature(CreatureKind::Firefly), Some(config))
-                    if (1..=i32::MAX.cast_unsigned()).contains(&config.default_max_life)
-                        && (1..=i32::MAX.cast_unsigned()).contains(&config.max_life) => {}
-                (LevelEntityKind::Creature(CreatureKind::Firefly), Some(_)) => {
+                (
+                    LevelEntityKind::Creature(CreatureKind::Firefly | CreatureKind::Archer),
+                    Some(config),
+                ) if (1..=i32::MAX.cast_unsigned()).contains(&config.default_max_life)
+                    && (1..=i32::MAX.cast_unsigned()).contains(&config.max_life) => {}
+                (
+                    LevelEntityKind::Creature(
+                        kind @ (CreatureKind::Firefly | CreatureKind::Archer),
+                    ),
+                    Some(_),
+                ) => {
                     return Err(format!(
-                        "semantic Firefly {} has an invalid maximum life",
+                        "semantic {} {} has an invalid maximum life",
+                        kind.as_str(),
                         entity.id.as_str()
                     ));
                 }

@@ -38,8 +38,8 @@ use crate::{
     game_definition::{
         ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFireballBinding,
         DefinitionFlightBinding, DefinitionGoatPolicyBinding, ENEMY_DEFAULT_POLICY_ID,
-        FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GameDefinition,
-        RequiredCapability, SemanticCatalog, SemanticId, default_catalog, engine_capabilities,
+        FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, RequiredCapability, SemanticCatalog,
+        SemanticId, creature_max_life_capability_id, default_catalog, engine_capabilities,
     },
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
@@ -275,13 +275,21 @@ pub fn load_mc2_campaign(
     if descriptor.local_player_fireball_mana_cost().is_some() {
         requirement_ids.push(FIREBALL_MANA_COST_CAPABILITY_ID);
     }
-    if descriptor
+    for entity in descriptor
         .level_definition()
         .entities()
         .iter()
-        .any(|entity| entity.creature_health().is_some())
+        .filter(|entity| entity.creature_health().is_some())
     {
-        requirement_ids.push(FIREFLY_MAX_LIFE_CAPABILITY_ID);
+        let sim_definition::level_definition::LevelEntityKind::Creature(kind) = entity.kind()
+        else {
+            continue;
+        };
+        if let Some(capability_id) = creature_max_life_capability_id(kind)
+            && !requirement_ids.contains(&capability_id)
+        {
+            requirement_ids.push(capability_id);
+        }
     }
     if !descriptor.presentation_assets().is_empty() {
         requirement_ids.push("engine.presentation.indexed_asset");
@@ -1265,7 +1273,8 @@ mod tests {
     use super::*;
     use crate::campaign::state::{ResetReceipt, ResetState, encode_reset_v1};
     use crate::game_definition::{
-        Access, ArtifactId, ChangeSetBuilder, GamePackage, IntegerParameter, OptionParameter,
+        ARCHER_MAX_LIFE_CAPABILITY_ID, Access, ArtifactId, ChangeSetBuilder,
+        FIREFLY_MAX_LIFE_CAPABILITY_ID, GamePackage, IntegerParameter, OptionParameter,
         PresentationAssetSlot, PublicationFault, RequestedTiming, SemanticValue, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
@@ -4402,7 +4411,13 @@ mod tests {
                 .unwrap()
                 .entities()
                 .iter()
-                .filter(|entity| entity.creature_health().is_some())
+                .filter(|entity| {
+                    entity.creature_health().is_some()
+                        && entity.kind()
+                            == sim_definition::level_definition::LevelEntityKind::Creature(
+                                CreatureKind::Firefly,
+                            )
+                })
                 .count(),
             6,
             "all package-present Fireflies share this bound constructor parameter"
@@ -4568,6 +4583,341 @@ mod tests {
         // It does not author the other five Fireflies in this transaction,
         // other creature families or parameters, organic objective progression,
         // projectile travel/impact production, save/replay, or Unity UI.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_archer_max_life_before_mailbox_damage_after_reopen_and_reset() {
+        const ARCHER_RECORD: u16 = 101;
+        const GROUP_THREE_ROWS: &[u16] = &[101, 102, 103, 106, 109, 153];
+        const PACKAGE_MAX_LIFE: u32 = 1_000;
+        const AUTHORED_MAX_LIFE: u32 = 2_000;
+        const DAMAGE: i32 = 1_100;
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let archer =
+            sim_definition::adapter::stable_entity_id("creature.archer.at_202_209").unwrap();
+        let target = base.level_definition().unwrap().entity(&archer).unwrap();
+        assert_eq!(
+            target.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+        assert!(base.required_capabilities().iter().any(|requirement| {
+            requirement.id.as_str() == ARCHER_MAX_LIFE_CAPABILITY_ID
+                && requirement.exact_version == 1
+        }));
+
+        let workspace_root = temporary_workspace_path("campaign-archer-max-life");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-archer-max-life", base.clone())
+                .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            79,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-archer-max-life",
+            &base,
+            "raise-one-level-one-archer-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(archer.clone(), PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_three = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(3)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 3,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == GROUP_THREE_ROWS
+            )));
+            compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == ARCHER_RECORD)
+                .copied()
+                .unwrap()
+        };
+        let apply_mailbox_damage = |session: &mut GameSession<Mc2CampaignBackend>, source_slot| {
+            let attacker = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            assert!(
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .economy_mut()
+                    .stage_archer_mailbox_damage_for_test(source_slot, attacker, DAMAGE)
+            );
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .copied()
+                .unwrap()
+        };
+
+        let package_archer = construct_group_three(&mut session);
+        assert_eq!(
+            (package_archer.max_life, package_archer.life),
+            (
+                PACKAGE_MAX_LIFE.cast_signed(),
+                PACKAGE_MAX_LIFE.cast_signed()
+            ),
+            "publication must not mutate the already-open package authority"
+        );
+        let package_after_damage =
+            apply_mailbox_damage(&mut session, package_archer.source_entity_index);
+        assert_eq!(package_after_damage.life, -100);
+        assert_eq!(
+            package_after_damage.action,
+            crate::native_world::level2_class5::ARCHER_ACTION_HIT
+        );
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        let authored_frame_zero_hash = session.backend().campaign.state_hash();
+        let authored_archer = construct_group_three(&mut session);
+        assert_eq!(
+            (authored_archer.max_life, authored_archer.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        let authored_after_damage =
+            apply_mailbox_damage(&mut session, authored_archer.source_entity_index);
+        assert_eq!(authored_after_damage.life, 900);
+        assert!(authored_after_damage.active && authored_after_damage.drawing_enabled);
+        assert_ne!(
+            authored_after_damage.action,
+            crate::native_world::level2_class5::ARCHER_ACTION_HIT
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            authored_frame_zero_hash
+        );
+        let reset_archer = construct_group_three(&mut session);
+        assert_eq!(
+            (reset_archer.max_life, reset_archer.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the already-proven Level 1 group-3 producer
+        // and one source mailbox hit. It proves guarded per-instance Archer
+        // maximum-life publication, old-session isolation, explicit
+        // reopen/reset construction, and the ordinary damage/hit branch. It
+        // does not author the other package Archers in this transaction,
+        // Archer targeting/children or organic combat, other creature
+        // families or parameters, save/replay, or Unity UI.
+    }
+
+    #[test]
+    fn campaign_packages_bind_every_first_three_level_archer_health_descriptor() {
+        let catalog = default_catalog().unwrap();
+        for (root, expected_archers) in [
+            (level_one_descriptor_fixture_path(), 4_usize),
+            (descriptor_fixture_path(), 4),
+            (level_three_descriptor_fixture_path(), 18),
+        ] {
+            let definition = load_mc2_campaign(&root, &catalog).unwrap();
+            let archers = definition
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.kind()
+                        == sim_definition::level_definition::LevelEntityKind::Creature(
+                            CreatureKind::Archer,
+                        )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(archers.len(), expected_archers);
+            assert!(archers.iter().all(|entity| {
+                entity.creature_health().is_some_and(|health| {
+                    health.default_max_life() == 1_000
+                        && health.max_life() == 1_000
+                        && health.max_life_access() == LevelEntityParameterAccess::SessionReset
+                })
+            }));
+            assert!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == ARCHER_MAX_LIFE_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    })
+            );
+        }
+
+        // No-Claim: this is the closed first-three-package Archer descriptor
+        // census. The separate causal gate owns one real constructor and
+        // damage visit; this census does not claim all Archer instances were
+        // constructed, damaged, killed, or observed through a client.
+    }
+
+    #[test]
+    fn campaign_level_two_group_twenty_constructs_authored_archer_health_after_reopen_and_reset() {
+        const ARCHER_RECORD: u16 = 232;
+        const PACKAGE_MAX_LIFE: u32 = 1_000;
+        const AUTHORED_MAX_LIFE: u32 = 2_000;
+
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let archer =
+            sim_definition::adapter::stable_entity_id("creature.archer.at_150_144").unwrap();
+        let workspace_root = temporary_workspace_path("campaign-level-two-archer-max-life");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-level-two-archer-max-life",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            80,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-level-two-archer-max-life",
+            &base,
+            "raise-one-level-two-archer-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(archer, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_twenty = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(20)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated { group: 20, .. }
+            )));
+            compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == ARCHER_RECORD)
+                .copied()
+                .unwrap()
+        };
+
+        let package_archer = construct_group_twenty(&mut session);
+        assert_eq!(
+            (package_archer.max_life, package_archer.life),
+            (
+                PACKAGE_MAX_LIFE.cast_signed(),
+                PACKAGE_MAX_LIFE.cast_signed()
+            )
+        );
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        let authored_frame_zero_hash = session.backend().campaign.state_hash();
+        let authored_archer = construct_group_twenty(&mut session);
+        assert_eq!(
+            (authored_archer.max_life, authored_archer.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            authored_frame_zero_hash
+        );
+        let reset_archer = construct_group_twenty(&mut session);
+        assert_eq!(
+            (reset_archer.max_life, reset_archer.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves only the distinct real Level 2 group-20
+        // producer consumes the same immutable Archer health binding after
+        // reopen/reset. The Level 1 causal gate owns ordinary mailbox damage;
+        // this test does not duplicate it or claim organic group activation,
+        // Archer targeting/children, death, save/replay, or clients.
     }
 
     #[test]

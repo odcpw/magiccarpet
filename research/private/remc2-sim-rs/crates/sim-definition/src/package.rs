@@ -4,6 +4,7 @@ use super::{
     DefinitionError, DefinitionErrorCode, GAME_PACKAGE_SCHEMA, Result, SemanticId, SemanticValue,
     exact_object, lower_content_hash, lower_sha256, required_string,
 };
+use crate::level_definition::CreatureKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -24,6 +25,21 @@ pub const CREATURE_POLICY_CAPABILITY_ID: &str = "engine.ai.creature_policy";
 /// Exact compiled capability required by packages which expose the ordinary
 /// Firefly constructor's maximum-life parameter.
 pub const FIREFLY_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.firefly.max_life";
+
+/// Exact compiled capability required by packages which expose the ordinary
+/// Archer constructor's maximum-life parameter.
+pub const ARCHER_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.archer.max_life";
+
+/// Exact compiled maximum-life capability for a creature family whose
+/// package constructor and damage/death lifecycle consume the parameter.
+#[must_use]
+pub const fn creature_max_life_capability_id(kind: CreatureKind) -> Option<&'static str> {
+    match kind {
+        CreatureKind::Archer => Some(ARCHER_MAX_LIFE_CAPABILITY_ID),
+        CreatureKind::Firefly => Some(FIREFLY_MAX_LIFE_CAPABILITY_ID),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledCapability {
@@ -122,6 +138,10 @@ impl CompiledCapabilityRegistry {
 pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
     CompiledCapabilityRegistry::new(
         [
+            (
+                ARCHER_MAX_LIFE_CAPABILITY_ID,
+                "Package-bound Archer construction and complete damage/death lifecycle.",
+            ),
             (
                 CREATURE_POLICY_CAPABILITY_ID,
                 "Bounded compiled creature perceive/decide/act lifecycle.",

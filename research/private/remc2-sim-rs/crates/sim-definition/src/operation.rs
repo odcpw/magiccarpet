@@ -5,11 +5,11 @@
 //! representable here. More structural operations join this enum only with a
 //! stable author identity and a real runtime consumer.
 
-use crate::level_definition::{LevelObjectiveId, ObjectiveCondition};
+use crate::level_definition::{LevelEntityKind, LevelObjectiveId, ObjectiveCondition};
 use crate::{
-    Access, CREATURE_POLICY_CAPABILITY_ID, DefinitionError, DefinitionErrorCode,
-    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GameDefinition, SemanticId,
-    SemanticValue,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, Access, CREATURE_POLICY_CAPABILITY_ID, DefinitionError,
+    DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
+    GameDefinition, SemanticId, SemanticValue, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -251,11 +251,17 @@ impl DefinitionOperation {
                         "maximum": i32::MAX,
                     },
                     "expected_max_life": "same type, unit, and bounds as max_life",
-                    "required_capability": {
-                        "id": FIREFLY_MAX_LIFE_CAPABILITY_ID,
-                        "exact_version": 1,
+                    "required_capability_by_creature_kind": {
+                        "archer": {
+                            "id": ARCHER_MAX_LIFE_CAPABILITY_ID,
+                            "exact_version": 1,
+                        },
+                        "firefly": {
+                            "id": FIREFLY_MAX_LIFE_CAPABILITY_ID,
+                            "exact_version": 1,
+                        },
                     },
-                    "writable_when": "entity carries a session-reset Firefly health configuration",
+                    "writable_when": "entity carries a session-reset health configuration and its creature family has the exact compiled maximum-life capability",
                     "mutation_timing": "session_reset",
                     "describe": "game describe --id <entity-id>.max_life",
                     "read_back": "game get --id <entity-id>.max_life",
@@ -479,28 +485,49 @@ impl DefinitionOperation {
                     DefinitionError::new(
                         DefinitionErrorCode::UnknownSemanticId,
                         entity.as_str(),
-                        "maximum-life update names no package-bound Firefly",
+                        "maximum-life update names no package-bound creature health target",
                     )
                 })?;
             if descriptor.access != Access::Writable {
                 return Err(DefinitionError::new(
                     DefinitionErrorCode::DependencyFailed,
                     entity.as_str(),
-                    "Firefly maximum life has no runtime consumer in this package",
+                    "creature maximum life has no runtime consumer in this package",
                 ));
             }
+            let creature_kind = definition
+                .level_definition()
+                .and_then(|level| level.entity(entity))
+                .and_then(|candidate| match candidate.kind() {
+                    LevelEntityKind::Creature(kind) => Some(kind),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::DependencyFailed,
+                        entity.as_str(),
+                        "maximum-life target is not a package-bound creature",
+                    )
+                })?;
+            let required_capability =
+                creature_max_life_capability_id(creature_kind).ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::DependencyFailed,
+                        entity.as_str(),
+                        "creature family has no compiled maximum-life consumer",
+                    )
+                })?;
             let has_capability = definition
                 .required_capabilities()
                 .iter()
                 .any(|requirement| {
-                    requirement.id.as_str() == FIREFLY_MAX_LIFE_CAPABILITY_ID
-                        && requirement.exact_version == 1
+                    requirement.id.as_str() == required_capability && requirement.exact_version == 1
                 });
             if !has_capability {
                 return Err(DefinitionError::new(
                     DefinitionErrorCode::DependencyFailed,
                     entity.as_str(),
-                    "definition lacks the exact Firefly maximum-life capability",
+                    "definition lacks the exact creature-family maximum-life capability",
                 ));
             }
             descriptor

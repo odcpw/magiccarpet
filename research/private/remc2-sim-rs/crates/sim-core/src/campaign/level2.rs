@@ -6955,6 +6955,21 @@ impl Level2EconomyTestView<'_> {
             )
     }
 
+    pub(crate) fn stage_archer_mailbox_damage_for_test(
+        &mut self,
+        source_slot: u16,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> bool {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .stage_archer_mailbox_damage_for_test(source_slot, attacker_slot, damage)
+    }
+
     pub(crate) fn stage_authored_worm_attack_for_test(
         &mut self,
         authored_index: u16,
@@ -8216,9 +8231,9 @@ impl Level2ResetSession {
         }
         for feature in rows
             .iter()
-            .filter(|feature| (feature.kind, feature.subtype) == (5, 19))
+            .filter(|feature| feature.kind == 5 && matches!(feature.subtype, 4 | 19))
         {
-            if self.authored_firefly_stage_route(*feature).is_none() {
+            if feature.subtype == 19 && self.authored_firefly_stage_route(*feature).is_none() {
                 return Err(format!(
                     "authored Firefly row {} has no valid StageVar-1 route",
                     feature.index
@@ -8231,8 +8246,8 @@ impl Level2ResetSession {
                 .is_none()
             {
                 return Err(format!(
-                    "authored Firefly row {} has no semantic maximum-life binding",
-                    feature.index
+                    "authored class-5/model-{} row {} has no semantic maximum-life binding",
+                    feature.subtype, feature.index
                 ));
             }
         }
@@ -8344,6 +8359,14 @@ impl Level2ResetSession {
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
                     );
+                    let Some(max_life) = self
+                        .session
+                        .definition
+                        .authored_creature_max_life(feature.index)
+                        .map(u32::cast_signed)
+                    else {
+                        continue;
+                    };
                     if self
                         .session
                         .state
@@ -8353,6 +8376,7 @@ impl Level2ResetSession {
                         .allocate_campaign_archer(
                             feature.index,
                             position,
+                            max_life,
                             &self.session.state.live.terrain,
                         )
                         .is_some()
@@ -9136,12 +9160,30 @@ impl Level2ResetSession {
                 let terrain = &self.session.state.live.terrain;
                 let position =
                     feature.world_position(terrain.ground_height(feature.world_position(0)));
-                let Some(source) = self.session.state.live.economy.allocate_authored_class5(
-                    feature.index,
-                    4,
-                    position,
-                    terrain,
-                ) else {
+                let Some(max_life) = self
+                    .session
+                    .definition
+                    .authored_creature_max_life(feature.index)
+                    .map(u32::cast_signed)
+                else {
+                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored Archer group {target_group} row {} has no semantic maximum-life binding",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                let Some(source) = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .allocate_campaign_archer(feature.index, position, max_life, terrain)
+                else {
                     self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,

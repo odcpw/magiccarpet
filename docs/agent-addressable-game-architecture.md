@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 14.0 milestone, this is a binding target with
+As of the semantic-contract 15.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -350,6 +350,14 @@ partial real implementation, not a completion claim:
   identical damage to the old and reopened authorities. This does not author
   another Firefly in the same transaction, other creature families or health
   parameters, projectile travel/impact production, save/replay, or Unity UI;
+- every package-present Archer in the qualified Level 1-3 definitions now
+  carries the same per-instance `max_life` descriptor, backed by the exact
+  compiled Archer lifecycle capability. The focused causal proof authors one
+  Level 1 Archer from 1000 to 2000 life: the old session enters its hit branch
+  after a source-mailbox damage visit, while explicit reopen/reset constructs
+  the authored authority and the same damage remains nonterminal. This does
+  not author multiple Archers in one transaction, targeting/child production,
+  organic combat, another creature family, save/replay, or Unity UI;
 - the qualified Level 1 campaign package now retains two profile-pinned,
   canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its
   semantic projectile slot binds the base payload and discovers the fade

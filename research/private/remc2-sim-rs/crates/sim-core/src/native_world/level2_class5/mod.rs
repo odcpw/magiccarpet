@@ -21,6 +21,10 @@ mod model9;
 pub(super) mod trader;
 
 #[cfg(test)]
+pub(crate) use archer::ARCHER_ACTION_HIT;
+pub(crate) use archer::ARCHER_MAX_LIFE;
+
+#[cfg(test)]
 mod tests;
 
 /// Consume the one source-shaped damage mailbox visit for a Day Bee.
