@@ -886,6 +886,23 @@ impl Level2EconomyState {
                         })
                 }));
             }
+            if matches!(
+                model,
+                level2_class5::archer::ARCHER_MODEL | level2_class5::firefly::FIREFLY_MODEL
+            ) {
+                bucket.extend(self.authored_class5.iter().filter_map(|source| {
+                    (source.active
+                        && source.drawing_enabled
+                        && source.life >= 0
+                        && source.model == model
+                        && source.source_byte_39 != 0)
+                        .then_some(Level2FireballGuidanceTarget {
+                            source_slot: source.source_entity_index,
+                            source_id: source.source_entity_index,
+                            top_position: source.position,
+                        })
+                }));
+            }
             bucket.sort_unstable_by_key(|target| target.source_slot);
             targets.extend(bucket);
         }
@@ -935,6 +952,24 @@ impl Level2EconomyState {
                 half_width: LEVEL2_BEE_COLLISION_HALF_EXTENT,
                 vertical_offset: 0,
                 half_height: LEVEL2_BEE_COLLISION_HALF_EXTENT,
+            })
+        }));
+        targets.extend(self.authored_class5.iter().filter_map(|source| {
+            (source.active
+                && source.drawing_enabled
+                && source.life >= 0
+                && matches!(
+                    source.model,
+                    level2_class5::archer::ARCHER_MODEL | level2_class5::firefly::FIREFLY_MODEL
+                )
+                && self.map_chains.is_linked(source.source_entity_index))
+            .then_some(Level2FireballCollisionTarget {
+                source_slot: source.source_entity_index,
+                source_id: source.source_entity_index,
+                position: source.position,
+                half_width: source.shift_rot_x,
+                vertical_offset: 0,
+                half_height: source.shift_rot_y,
             })
         }));
         if let Some(castle) = self.castle.filter(|castle| {

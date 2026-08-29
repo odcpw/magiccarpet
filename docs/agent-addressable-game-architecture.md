@@ -359,17 +359,22 @@ partial real implementation, not a completion claim:
   authored value before the real package group constructs that Firefly, and
   the ordinary damage callback consumes it through its pre-kill branch. The
   focused causal proof authors one instance from 600 to 1200 life and applies
-  identical damage to the old and reopened authorities. This does not author
-  another Firefly in the same transaction, other creature families or health
-  parameters, projectile travel/impact production, save/replay, or Unity UI;
+  identical damage to the old and reopened authorities. Ordinary player-owned
+  Fireballs now acquire and collide with the real map-linked Level 1 Firefly
+  and Archer carriers; the scheduled class-10 impact writes their existing
+  family mailboxes. One focused Level 1 proof follows three real 250-damage
+  casts through Firefly hit, pre-kill, kill, hide and following-pass reclaim,
+  while rejecting a self-owner mailbox write. This does not author another
+  Firefly in the same transaction, other creature families or health
+  parameters, enemy/team damage policy, save/replay, or Unity UI;
 - every package-present Archer in the qualified Level 1-3 definitions now
   carries the same per-instance `max_life` descriptor, backed by the exact
   compiled Archer lifecycle capability. The focused causal proof authors one
   Level 1 Archer from 1000 to 2000 life: the old session enters its hit branch
   after a source-mailbox damage visit, while explicit reopen/reset constructs
   the authored authority and the same damage remains nonterminal. This does
-  not author multiple Archers in one transaction, targeting/child production,
-  organic combat, another creature family, save/replay, or Unity UI;
+  not author multiple Archers in one transaction, child production, other
+  combat sources, another creature family, save/replay, or Unity UI;
 - every package-present Dragon in the qualified Level 3 definition now
   carries a per-instance `max_life` descriptor backed by the exact compiled
   Dragon lifecycle capability. The focused causal proof changes one real

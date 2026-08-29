@@ -4351,6 +4351,319 @@ mod tests {
     }
 
     #[test]
+    fn campaign_backend_player_fireball_hits_and_reclaims_real_level_one_objective_firefly() {
+        const FIREFLY_RECORD: u16 = 108;
+
+        fn firefly(
+            session: &GameSession<Mc2CampaignBackend>,
+            source_slot: u16,
+        ) -> Option<crate::native_world::Level2AuthoredClass5Source> {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .copied()
+        }
+
+        fn aim_player_at_firefly(session: &mut GameSession<Mc2CampaignBackend>, source_slot: u16) {
+            let (target, player_slot, player_fov) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                (
+                    compatibility
+                        .economy()
+                        .authored_class5()
+                        .iter()
+                        .find(|source| source.source_entity_index == source_slot)
+                        .copied()
+                        .expect("real package Firefly remains live before the cast"),
+                    compatibility.state.entity_index,
+                    compatibility.state.entity_fov,
+                )
+            };
+            let mut predicted_target = target.position;
+            crate::move_entity(
+                &mut predicted_target,
+                target.yaw,
+                target.pitch,
+                target.actual_speed,
+            );
+            let mut player_position = target.position;
+            crate::move_entity(
+                &mut player_position,
+                target.yaw.wrapping_add(1_024) & 0x07ff,
+                0,
+                384_i16.saturating_sub(target.actual_speed.max(0)),
+            );
+            player_position.z = crate::FlightWorld::ground_height(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .canonical_terrain(),
+                player_position,
+            )
+            .wrapping_add(256);
+            let mut launch_position = player_position;
+            launch_position.z = launch_position.z.wrapping_add(player_fov);
+            let target_top = predicted_target;
+            let (yaw, pitch) =
+                crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .set_level2_entity_position(player_slot, player_position)
+                .expect("position the real player at the proven incoming-combat boundary");
+            compatibility.set_level2_player_aim_for_test(yaw, pitch);
+        }
+
+        fn cast_until_damage(
+            session: &mut GameSession<Mc2CampaignBackend>,
+            target_slot: u16,
+            expected_life: i32,
+        ) -> (u16, u16) {
+            let before_slots = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .map(|projectile| projectile.source_entity_index)
+                .collect::<BTreeSet<_>>();
+            let event_start = session.backend().campaign.events().len();
+            aim_player_at_firefly(session, target_slot);
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        cast_left: true,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+            let projectile_slot = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .find(|projectile| {
+                    projectile.origin == FireballProjectileOrigin::PlayerSpell
+                        && !before_slots.contains(&projectile.source_entity_index)
+                })
+                .map(|projectile| projectile.source_entity_index)
+                .expect("ordinary player cast constructs a new class-9 Fireball");
+
+            let mut impact_slot = None;
+            for _ in 0..12 {
+                if let Some(current) = firefly(session, target_slot)
+                    && current.life == expected_life
+                {
+                    break;
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+                impact_slot = impact_slot.or_else(|| {
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .model17_spawned_children()
+                        .iter()
+                        .find(|impact| impact.parent_entity_index == projectile_slot)
+                        .map(|impact| impact.source_entity_index)
+                });
+                impact_slot = impact_slot.or_else(|| {
+                    session.backend().campaign.events()[event_start..]
+                        .iter()
+                        .find_map(|event| match event {
+                            Level2DispatchEvent::DynamicArena {
+                                source_slot,
+                                kind:
+                                    crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
+                                ..
+                            } => Some(*source_slot),
+                            _ => None,
+                        })
+                });
+            }
+            let current = firefly(session, target_slot).expect("damaged Firefly is retained");
+            assert_eq!(
+                current.life,
+                expected_life,
+                "projectile={:?} impacts={:?} target={current:?}",
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .find(|projectile| projectile.source_entity_index == projectile_slot),
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .model17_spawned_children()
+            );
+            let player_slot = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .events()
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        crate::native_world::Level2EconomyEvent::DamageApplied {
+                            target_entity_index,
+                            attacker_entity_index,
+                            damage: 250,
+                            ..
+                        } if *target_entity_index == target_slot
+                            && *attacker_entity_index == player_slot
+                    )),
+                "the class-10 pulse writes the exact holder subspell payload"
+            );
+            (
+                projectile_slot,
+                impact_slot.expect("class-9 contact constructs a scheduled class-10 impact"),
+            )
+        }
+
+        let root = level_one_descriptor_fixture_path();
+        let base = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base),
+            91,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(6)
+            .unwrap();
+        let target = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == FIREFLY_RECORD)
+            .copied()
+            .expect("real Level 1 objective Firefly record 108 is constructed");
+        let target_slot = target.source_entity_index;
+        assert_eq!((target.max_life, target.life), (600, 600));
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .map_chains()
+                .is_linked(target_slot)
+        );
+
+        assert!(
+            !session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .submit_authored_firefly_damage(target_slot, 500, target_slot),
+            "the source/self owner is rejected before the mailbox is changed"
+        );
+        assert_eq!(firefly(&session, target_slot).unwrap().life, 600);
+
+        let player_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let (_first_projectile, _first_impact) = cast_until_damage(&mut session, target_slot, 350);
+        let after_hit = firefly(&session, target_slot).unwrap();
+        assert_eq!(after_hit.word_0x26, player_slot);
+        assert_eq!(
+            after_hit.action,
+            crate::native_world::level2_class5::firefly::FIREFLY_ATTACK_ACTION
+        );
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let (_second_projectile, _second_impact) =
+            cast_until_damage(&mut session, target_slot, 100);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let (_third_projectile, _third_impact) = cast_until_damage(&mut session, target_slot, -150);
+        let pre_kill = firefly(&session, target_slot).unwrap();
+        assert_eq!(pre_kill.word_0x24, player_slot);
+        assert_eq!(
+            pre_kill.action,
+            crate::native_world::level2_class5::firefly::FIREFLY_PRE_KILL_ACTION
+        );
+
+        let mut saw_kill = false;
+        let mut saw_hidden = false;
+        for _ in 0..16 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            match firefly(&session, target_slot) {
+                Some(source) => {
+                    saw_kill |= source.action
+                        == crate::native_world::level2_class5::firefly::FIREFLY_KILL_ACTION;
+                    saw_hidden |= !source.active && !source.drawing_enabled;
+                }
+                None => break,
+            }
+        }
+        assert!(
+            saw_kill,
+            "the ordinary Firefly pre-kill callback reaches action 157"
+        );
+        assert!(
+            saw_hidden,
+            "the cadence-gated death callback hides the Firefly"
+        );
+        assert!(firefly(&session, target_slot).is_none());
+        assert!(
+            !session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .map_chains()
+                .is_linked(target_slot),
+            "the following source boundary unlinks and reclaims the dead Firefly"
+        );
+
+        // The only staged state is the already-proven group-6 incoming combat
+        // boundary plus real player position/aim. Both projectiles are created
+        // by ordinary casts and travel through the production scheduler.
+    }
+
+    #[test]
     fn campaign_backend_reopens_real_level_one_with_package_retained_fireball_presentation_asset() {
         const SLOT: &str = "presentation.spell.fireball.projectile_asset";
         const BASE: &str = "presentation.fireball.projectile.base";

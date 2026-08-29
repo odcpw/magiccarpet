@@ -383,14 +383,18 @@ impl Level2EconomyState {
         Some(source)
     }
 
-    #[cfg(test)]
-    pub(crate) fn stage_archer_mailbox_damage_for_test(
+    /// Submit one `sub_10C80(a2 = 0)` mailbox write to a live Archer root.
+    pub(crate) fn submit_authored_archer_damage(
         &mut self,
         source_slot: u16,
         attacker_slot: u16,
         damage: i32,
     ) -> bool {
-        if damage <= 0 {
+        if damage <= 0
+            || attacker_slot == 0
+            || attacker_slot == source_slot
+            || !self.map_chains.is_linked(source_slot)
+        {
             return false;
         }
         let Some(source) = self.authored_class5.iter_mut().find(|source| {
@@ -410,6 +414,16 @@ impl Level2EconomyState {
         source.pending_word_0x62 = attacker_slot;
         runtime.pending_damage = damage;
         true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_archer_mailbox_damage_for_test(
+        &mut self,
+        source_slot: u16,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> bool {
+        self.submit_authored_archer_damage(source_slot, attacker_slot, damage)
     }
 }
 

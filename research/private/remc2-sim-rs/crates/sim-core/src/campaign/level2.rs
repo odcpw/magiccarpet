@@ -5746,6 +5746,11 @@ impl Level2ResetSession {
             .map_err(NativeWorldError::new)?;
         if entity_index == self.session.state.live.core.state.entity_index {
             self.session.state.live.core.state.position = position;
+            self.session
+                .state
+                .live
+                .shared_spells
+                .sync_player_entity_from_authority(&canonical_entity);
         }
         if let Some(root) = self
             .session
@@ -5773,6 +5778,38 @@ impl Level2ResetSession {
                 .sync_pickup_from_authority(&canonical_entity);
         }
         Ok(())
+    }
+
+    /// Keep the already-proven incoming-combat player carrier coherent while
+    /// a focused campaign test positions and aims a real cast. Gameplay still
+    /// constructs and schedules the spell, flyer, impact, and damage normally.
+    #[cfg(test)]
+    pub(crate) fn set_level2_player_aim_for_test(&mut self, yaw: i16, pitch: i16) {
+        let auxiliary = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .beyond_sight_auxiliary();
+        let player_yaw = yaw.wrapping_sub(auxiliary.next_entity) & 0x07ff;
+        let player_pitch = pitch.wrapping_sub(auxiliary.entity_index2) & 0x07ff;
+        let player_slot = self.session.state.live.core.state.entity_index;
+        let player = &mut self.session.state.live.economy.entities[usize::from(player_slot)];
+        player.set_yaw(player_yaw);
+        player.set_pitch(player_pitch);
+        let snapshot = player.clone();
+        let state = &mut self.session.state.live.core.state;
+        state.yaw = player_yaw;
+        state.display_pitch = player_pitch;
+        state.effective_pitch = player_pitch;
+        state.pitch_accumulator = player_pitch;
+        state.roll_accumulator = 0;
+        state.skip_flight_once = true;
+        self.session
+            .state
+            .live
+            .shared_spells
+            .sync_player_entity_from_authority(&snapshot);
     }
 
     /// Bind one package-imported class-5/model-3 root and its exact sixteen-row
@@ -16123,6 +16160,45 @@ impl Level2ResetSession {
                     target_slot,
                     i32::from(step.payload),
                     step.owner_entity_index,
+                );
+        }
+
+        let archer_slots = self
+            .session
+            .state
+            .live
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|target| {
+                target.active
+                    && target.drawing_enabled
+                    && target.life >= 0
+                    && target.model == level2_class5::archer::ARCHER_MODEL
+                    && target.source_entity_index != step.owner_entity_index
+                    && crate::level1_mission::source_entities_overlap(
+                        step.position,
+                        LEVEL2_FIREBALL_COLLISION_HALF_WIDTH,
+                        LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET,
+                        LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT,
+                        target.position,
+                        target.shift_rot_x,
+                        0,
+                        target.shift_rot_y,
+                    )
+            })
+            .map(|target| target.source_entity_index)
+            .collect::<Vec<_>>();
+        for target_slot in archer_slots {
+            let _ = self
+                .session
+                .state
+                .live
+                .economy
+                .submit_authored_archer_damage(
+                    target_slot,
+                    step.owner_entity_index,
+                    i32::from(step.payload),
                 );
         }
 
