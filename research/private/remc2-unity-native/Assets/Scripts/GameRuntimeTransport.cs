@@ -16,9 +16,9 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v7";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v8";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v5";
+            "carpet-flight-native-game-runtime-json/v6";
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
@@ -346,6 +346,37 @@ namespace MagicCarpet.Native
                 "resume game runtime");
         }
 
+        internal Identity Close()
+        {
+            if ((Current?.mode != PlayingMode && Current?.mode != PausedMode) ||
+                !HasSessionIdentity(Current))
+            {
+                throw new InvalidOperationException(
+                    "close game runtime requires a bound Playing or Paused session");
+            }
+            var before = Current;
+            var beforeRuntimeGeneration = ParseCounter(before.generation, "generation");
+            Check(
+                NativeSim.mc_game_runtime_close_v1(
+                    RequireHandle(),
+                    beforeRuntimeGeneration,
+                    ParseCounter(before.session.generation, "session_generation"),
+                    ParseCounter(before.session.tick, "tick")),
+                "close game runtime");
+            var identity = IdentitySnapshot();
+            if (identity.mode != TitleMode ||
+                ParseCounter(identity.generation, "generation") !=
+                    checked(beforeRuntimeGeneration + 1) ||
+                HasDefinitionIdentityData(identity.pending_definition) ||
+                HasSessionIdentityData(identity.session) ||
+                HasRuntimeFlowData(identity.active_runtime_flow))
+            {
+                throw new InvalidOperationException(
+                    "close game runtime did not enter an unbound Rust Title");
+            }
+            return identity;
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignSnapshot()
         {
             RequireSessionMode(allowPaused: true, "campaign snapshot");
@@ -468,7 +499,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 5 ||
+                contract.transport_version != 6 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
@@ -510,7 +541,7 @@ namespace MagicCarpet.Native
                 contract.transitions == null ||
                 !new[] {
                     "bootstrap_package_set", "open_level", "load_replay_save",
-                    "pause", "resume"
+                    "pause", "resume", "close"
                 }
                     .SequenceEqual(contract.transitions))
             {

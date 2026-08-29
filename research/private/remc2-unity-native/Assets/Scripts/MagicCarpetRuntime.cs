@@ -2579,7 +2579,7 @@ namespace MagicCarpet.Native
                     gameRuntimeReplaySavePath);
                 Debug.Log($"MC_GAME_RUNTIME_REPLAY_SAVED path={gameRuntimeReplaySavePath}");
             }
-            if (session.GameRuntimeIdentity().mode == GameRuntimeTransport.PausedMode)
+            if (session.GameRuntimeIdentity().mode != GameRuntimeTransport.PlayingMode)
             {
                 return;
             }
@@ -2933,8 +2933,16 @@ namespace MagicCarpet.Native
             {
                 if (!AutomatedInput)
                 {
+                    var runtimeIdentity = session.GameRuntimeIdentity();
+                    if (runtimeIdentity.mode == GameRuntimeTransport.TitleMode)
+                    {
+                        gameRuntimeMovementFlags = 0;
+                        CenterSteering();
+                        return;
+                    }
                     ApplyGameRuntimeProductionInput(
                         Input.GetKeyDown(KeyCode.P),
+                        Input.GetKeyDown(KeyCode.Escape),
                         Input.GetMouseButtonDown(0));
                     if (session.GameRuntimeIdentity().mode ==
                             GameRuntimeTransport.PlayingMode &&
@@ -8670,12 +8678,30 @@ namespace MagicCarpet.Native
             }
         }
 
-        private void ApplyGameRuntimeProductionInput(bool pausePressed, bool firePressed)
+        private void ApplyGameRuntimeProductionInput(
+            bool pausePressed,
+            bool closePressed,
+            bool firePressed)
         {
             Require(
                 GameRuntimeProductionStartupReady,
                 "game runtime input requires a validated production owner");
             var identity = session.GameRuntimeIdentity();
+            if (closePressed)
+            {
+                CenterSteering();
+                gameRuntimeMovementFlags = 0;
+                fireRequested = false;
+                rightSpellRequested = false;
+                selectedSpellRequested = false;
+                session.GameRuntimeClose();
+                DestroyGameRuntimeFireballPresentation();
+                gameRuntimeCampaignSnapshot = null;
+                gameRuntimeSemanticEventCursor = "0";
+                gameRuntimeRecentSemanticEvents.Clear();
+                gameRuntimeStartupReady = false;
+                return;
+            }
             if (pausePressed)
             {
                 CenterSteering();
@@ -8782,7 +8808,12 @@ namespace MagicCarpet.Native
             bool pausePressed,
             bool firePressed)
         {
-            ApplyGameRuntimeProductionInput(pausePressed, firePressed);
+            ApplyGameRuntimeProductionInput(pausePressed, false, firePressed);
+        }
+
+        internal void QualificationCloseGameRuntimeProduction()
+        {
+            ApplyGameRuntimeProductionInput(false, true, false);
         }
 
         internal void QualificationApplyGameRuntimeProductionSteering(
@@ -11784,14 +11815,24 @@ namespace MagicCarpet.Native
 
         private string FormatGameRuntimeFlightHudText()
         {
+            if (session == null)
+            {
+                return "CARPET FLIGHT — RUST GAME RUNTIME\n" +
+                    "waiting for authoritative runtime identity";
+            }
+            var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.TitleMode)
+            {
+                return "CARPET FLIGHT — RUST GAME RUNTIME · TITLE\n" +
+                    "gameplay session closed; runtime handle retained";
+            }
             var observation = gameRuntimeCampaignSnapshot;
-            if (session == null || observation?.value?.player_pose == null ||
+            if (observation?.value?.player_pose == null ||
                 observation.value.player_motion == null)
             {
                 return "CARPET FLIGHT — RUST GAME RUNTIME\n" +
                     "waiting for authoritative campaign snapshot";
             }
-            var identity = session.GameRuntimeIdentity();
             var pose = observation.value.player_pose;
             var motion = observation.value.player_motion;
             var latestEvent = gameRuntimeRecentSemanticEvents.Count == 0
@@ -11804,7 +11845,7 @@ namespace MagicCarpet.Native
                 $"tick {observation.identity.tick}\n" +
                 $"event {latestEvent}\n" +
                 "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
-                "C centre · Space fire · P pause";
+                "C centre · Space fire · P pause · Escape close";
         }
 
         private static string FormatGameRuntimeSemanticEvent(

@@ -677,6 +677,78 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void ProductionEscapeClosesSameRustRuntimeToTitleAndRejectsStaleGameplay()
+        {
+            var root = new GameObject("resolver runtime close input");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var playing = runtime.GameRuntimeProductionIdentity;
+                var handle = ulong.Parse(playing.runtime_id);
+                var runtimeGeneration = ulong.Parse(playing.generation);
+                var sessionGeneration = ulong.Parse(playing.session.generation);
+                var tick = ulong.Parse(playing.session.tick);
+                Assert.That(playing.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionFireballTexture, Is.Not.Null);
+
+                runtime.QualificationCloseGameRuntimeProduction();
+                var title = runtime.GameRuntimeProductionIdentity;
+                Assert.That(title.runtime_id, Is.EqualTo(playing.runtime_id));
+                Assert.That(ulong.Parse(title.generation), Is.EqualTo(runtimeGeneration + 1));
+                Assert.That(title.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                Assert.That(title.session.session_id, Is.Null.Or.Empty);
+                Assert.That(title.pending_definition.definition_hash, Is.Null.Or.Empty);
+                Assert.That(title.active_runtime_flow?.game_id, Is.Null.Or.Empty);
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.False);
+                Assert.That(runtime.GameRuntimeProductionFireballTexture, Is.Null);
+                Assert.That(runtime.GameRuntimeProductionFireballMarkerCount, Is.Zero);
+                StringAssert.Contains("TITLE", runtime.GameRuntimeProductionFlightHudText);
+
+                Assert.That(
+                    NativeSim.mc_game_runtime_close_v1(
+                        handle,
+                        runtimeGeneration,
+                        sessionGeneration,
+                        tick),
+                    Is.EqualTo(NativeSim.GenerationMismatch));
+                Assert.That(
+                    NativeSim.mc_game_session_snapshot_json_v1(
+                        handle,
+                        IntPtr.Zero,
+                        0,
+                        out _),
+                    Is.EqualTo(NativeSim.InvalidArgument));
+                var command = Encoding.UTF8.GetBytes("{}");
+                Assert.That(
+                    NativeSim.mc_game_session_step_json_v1(
+                        handle,
+                        sessionGeneration,
+                        tick,
+                        command,
+                        checked((uint)command.Length)),
+                    Is.EqualTo(NativeSim.InvalidArgument));
+                Assert.That(
+                    runtime.GameRuntimeProductionIdentity.runtime_id,
+                    Is.EqualTo(playing.runtime_id));
+
+                // No-Claim: Escape now closes the sole gameplay session into
+                // Rust-owned Title without destroying its runtime handle. It
+                // does not implement New Game from retained packages, accept
+                // completion, persist the closed state, or present a menu.
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void ProductionGameRuntimeSteeringChangesRustPoseAndSemanticCameraOnSameHandle()
         {
             var root = new GameObject("resolver runtime steering input");

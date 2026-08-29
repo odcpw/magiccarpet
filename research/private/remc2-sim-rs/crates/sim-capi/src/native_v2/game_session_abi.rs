@@ -228,7 +228,7 @@ fn map_open_error(error: OpenSessionError<AbiError>) -> AbiError {
     }
 }
 
-fn map_guard_error(error: SessionGuardError) -> AbiError {
+pub(super) fn map_guard_error(error: SessionGuardError) -> AbiError {
     let status = match error.code {
         SessionGuardErrorCode::GenerationMismatch | SessionGuardErrorCode::GenerationExhausted => {
             MC_STATUS_GENERATION_MISMATCH

@@ -17,9 +17,9 @@ use sim_core::{
         RuntimeMode, RuntimeTransitionError,
     },
 };
-use sim_session::{GameSession, OpenSessionError};
+use sim_session::{GameSession, OpenSessionError, SessionGuard};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v5";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v6";
 const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
 const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
 const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
@@ -254,6 +254,29 @@ impl RuntimeRecord {
         Ok(())
     }
 
+    fn close(
+        &mut self,
+        handle: u64,
+        runtime_generation: u64,
+        session_generation: u64,
+        expected_tick: u64,
+    ) -> AbiResult<()> {
+        self.runtime
+            .close(
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation: runtime_generation,
+                },
+                SessionGuard {
+                    session_id: handle,
+                    generation: session_generation,
+                    expected_tick,
+                },
+            )
+            .map_err(map_transition_error)?;
+        Ok(())
+    }
+
     fn validate_transition(
         &self,
         handle: u64,
@@ -349,6 +372,9 @@ fn with_runtime_mut<T>(
 }
 
 fn map_transition_error(error: RuntimeTransitionError) -> AbiError {
+    if let RuntimeTransitionError::SessionGuard(error) = error {
+        return super::game_session_abi::map_guard_error(*error);
+    }
     let status = match &error {
         RuntimeTransitionError::Guard(error)
             if matches!(error.code, RuntimeGuardErrorCode::GenerationMismatch) =>
@@ -358,7 +384,9 @@ fn map_transition_error(error: RuntimeTransitionError) -> AbiError {
         RuntimeTransitionError::InvalidRuntimeId | RuntimeTransitionError::Guard(_) => {
             MC_STATUS_UNKNOWN_HANDLE
         }
-        RuntimeTransitionError::SessionGuard(_) => MC_STATUS_GENERATION_MISMATCH,
+        RuntimeTransitionError::SessionGuard(_) => {
+            unreachable!("session guard errors return before status matching")
+        }
         RuntimeTransitionError::InvalidMode { .. } => MC_STATUS_INVALID_ARGUMENT,
         RuntimeTransitionError::InvalidRuntimeFlow { .. }
         | RuntimeTransitionError::InvalidNextDefinition { .. }
@@ -543,11 +571,11 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 5,
+            "transport_version": 6,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "loading", "playing", "paused"],
-            "transitions": ["bootstrap_package_set", "open_level", "load_replay_save", "pause", "resume"],
+            "transitions": ["bootstrap_package_set", "open_level", "load_replay_save", "pause", "resume", "close"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
             "installed_package_set": {
@@ -737,6 +765,25 @@ pub extern "C" fn mc_game_runtime_resume_v1(handle: u64, generation: u64) -> i32
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_close_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+) -> i32 {
+    boundary(|| {
+        with_runtime_mut(handle, |runtime| {
+            runtime.close(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_destroy_v1(handle: u64) -> i32 {
     boundary(|| {
         let entry = runtime_arc(handle)?;
@@ -882,13 +929,13 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v7"
+            "carpet-flight-game-runtime/v8"
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v5"
+            "carpet-flight-native-game-runtime-json/v6"
         );
-        assert_eq!(contract["transport_version"], 5);
+        assert_eq!(contract["transport_version"], 6);
         assert_eq!(
             contract["modes"],
             serde_json::json!(["title", "loading", "playing", "paused"])
@@ -900,7 +947,8 @@ mod tests {
                 "open_level",
                 "load_replay_save",
                 "pause",
-                "resume"
+                "resume",
+                "close"
             ])
         );
         assert_eq!(
@@ -1339,6 +1387,65 @@ mod tests {
         // It has no paused_frame export and therefore proves no MC2 pre-gate
         // RNG/objective/presentation/audio work, replay-visible paused time,
         // L2/L3 pause policy, or application pause UI.
+    }
+
+    #[test]
+    fn runtime_close_returns_real_playing_session_to_title_on_the_same_handle() {
+        let mut handle = 0_u64;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(
+            bootstrap_package_set(
+                handle,
+                1,
+                &[
+                    level_three_package(),
+                    level_one_package(),
+                    level_two_package()
+                ],
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let playing = identity(handle);
+        let snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+
+        assert_eq!(
+            mc_game_runtime_close_v1(handle, 3, 1, 1),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(identity(handle), playing);
+        assert_eq!(
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            }),
+            snapshot
+        );
+
+        assert_eq!(mc_game_runtime_close_v1(handle, 3, 1, 0), MC_STATUS_OK);
+        let title = identity(handle);
+        assert_eq!(title["runtime_id"], handle.to_string());
+        assert_eq!(title["generation"], "4");
+        assert_eq!(title["mode"], "title");
+        assert!(title.get("pending_definition").is_none());
+        assert!(title.get("active_runtime_flow").is_none());
+        assert!(title.get("session").is_none());
+        let mut length = 0_u32;
+        assert_eq!(
+            mc_game_session_snapshot_json_v1(handle, std::ptr::null_mut(), 0, &raw mut length,),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            mc_game_runtime_close_v1(handle, 3, 1, 0),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(identity(handle), title);
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+
+        // No-Claim: close proves a guarded same-handle return to Rust Title.
+        // It does not select or open a new game, accept completion, present a
+        // Title menu, or persist the closed state.
     }
 
     #[test]

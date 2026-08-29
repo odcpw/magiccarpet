@@ -558,10 +558,15 @@ partial real implementation, not a completion claim:
   exact exit group and phase-12 carrier into the declared semantic Title node,
   then preserves the nested generation floor when the same handle starts a new
   Level 1 session so stale Level 3 guards cannot collide.
-  Native/Unity completion-transition exposure, production package discovery,
+  Independently of completion, an additive native/managed `close` transition
+  now validates the exact outer and nested guards and drops a Playing or
+  Paused session into Rust-owned Title on the same live handle. Production
+  Escape consumes that transition, clears the gameplay presentation and shows
+  the returned Title identity instead of inventing a client-side mode. Native/
+  Unity completion-transition exposure, production package discovery,
   installation and shell wiring,
-  an uninterrupted Level 1-to-Title playthrough, and Title/results presentation
-  remain open. The
+  an uninterrupted Level 1-to-Title playthrough, restart from the retained
+  resolver, and full Title/results presentation remain open. The
   quiescent boundary also does not yet implement `paused_frame`, so the MC2
   pre-gate RNG/objective/presentation work remains open. Its Unity transport
   now validates that flow identity and borrows snapshot, step, event and reset

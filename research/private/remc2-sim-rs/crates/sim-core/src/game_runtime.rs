@@ -14,7 +14,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v7";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v8";
 pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v1";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
@@ -768,6 +768,50 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.set_paused(guard, true, false)
     }
 
+    /// Abandon the active gameplay session and return this runtime to Title.
+    ///
+    /// Playing and Paused sessions are both accepted. The exact nested guard
+    /// is validated and its generation is advanced before the session is
+    /// dropped, preserving the monotonic generation floor used by a later
+    /// new-game/open boundary on the same runtime handle.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale outer or nested guards, runtimes without an active
+    /// session, and generation overflow without changing the runtime.
+    pub fn close(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let actual_mode = self.identity().mode;
+        if !matches!(actual_mode, RuntimeMode::Playing | RuntimeMode::Paused) {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing,
+                actual: actual_mode,
+            });
+        }
+        let next_runtime_generation = self.next_generation()?;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            unreachable!("validated runtime mode owns a gameplay session")
+        };
+        let next_session_generation = session
+            .advance_lifecycle_generation(session_guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?
+            .identity
+            .generation;
+        self.state = RuntimeState::Title {
+            session_generation: NonZeroU64::new(next_session_generation)
+                .expect("session lifecycle generations are non-zero"),
+        };
+        self.generation = next_runtime_generation;
+        Ok(self.identity())
+    }
+
     /// Observationally borrow the sole gameplay authority while the runtime is
     /// playing or paused.
     #[must_use]
@@ -1257,6 +1301,77 @@ mod tests {
         // guard invalidation. There is no paused_frame operation here, so it
         // does not prove the L1 pre-gate RNG/objective/presentation/audio
         // prefix, replay-visible paused time, L2/L3 pause policy, or pause UI.
+    }
+
+    #[test]
+    fn runtime_close_returns_paused_level_one_to_title_without_session_guard_aba() {
+        let catalog = default_catalog().unwrap();
+        let level_one = level_one_package();
+        let definition = Arc::new(load_mc2_campaign(&level_one, &catalog).unwrap());
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(92).unwrap();
+        let loading = runtime
+            .new_game(runtime.identity().guard(), Arc::clone(&definition))
+            .unwrap();
+        let playing = runtime
+            .open_level(
+                loading.guard(),
+                &Mc2CampaignAdapter,
+                Mc2CampaignInputs::new(&level_one),
+                92,
+            )
+            .unwrap();
+        let paused = runtime.pause(playing.guard()).unwrap();
+        let paused_guard = paused.session.as_ref().unwrap().guard();
+        let paused_snapshot = runtime.session().unwrap().snapshot();
+
+        let mut stale_tick = paused_guard;
+        stale_tick.expected_tick += 1;
+        let rejected = runtime.close(paused.guard(), stale_tick);
+        assert!(matches!(
+            rejected,
+            Err(RuntimeTransitionError::SessionGuard(error))
+                if error.code == SessionGuardErrorCode::TickMismatch
+        ));
+        assert_eq!(runtime.identity(), paused);
+        assert_eq!(runtime.session().unwrap().snapshot(), paused_snapshot);
+
+        let title = runtime.close(paused.guard(), paused_guard).unwrap();
+        assert_eq!(title.mode, RuntimeMode::Title);
+        assert_eq!(title.generation, paused.generation + 1);
+        assert!(title.pending_definition.is_none());
+        assert!(title.active_runtime_flow.is_none());
+        assert!(title.session.is_none());
+        assert!(runtime.session().is_none());
+
+        let restarted_loading = runtime
+            .new_game(title.guard(), Arc::clone(&definition))
+            .unwrap();
+        let restarted = runtime
+            .open_level(
+                restarted_loading.guard(),
+                &Mc2CampaignAdapter,
+                Mc2CampaignInputs::new(level_one),
+                92,
+            )
+            .unwrap();
+        assert_eq!(
+            restarted.session.as_ref().unwrap().generation,
+            paused_guard.generation + 1
+        );
+        assert_eq!(restarted.session.as_ref().unwrap().tick, 0);
+        let stale_step = runtime
+            .session_mut()
+            .unwrap()
+            .step(paused_guard, GameCommand::default());
+        assert!(matches!(
+            stale_step,
+            Err(GameSessionError::Guard(error))
+                if error.code == SessionGuardErrorCode::GenerationMismatch
+        ));
+
+        // No-Claim: close proves a guarded same-runtime return to semantic
+        // Title and a monotonic restart floor. It does not accept completion,
+        // choose a new package, present a Title menu, or save the closed state.
     }
 
     #[test]
