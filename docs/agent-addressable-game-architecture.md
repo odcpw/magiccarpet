@@ -648,7 +648,11 @@ partial real implementation, not a completion claim:
   their existing owners. The source-compatible F1FA/type-7 mutable SS2 delta
   decoder and hash/header checks are now owned by the internal `sim-ss2-tmap`
   crate, while selector qualification, clocks and draw scheduling remain in
-  their existing family owners. These are eight bounded physical
+  their existing family owners. The exact selector-global Archer texture-map
+  bank, immutable attack poses and latch clocks are now owned by the internal
+  `sim-archer-tmap` crate, while owner-cache qualification, terrain draw
+  admission and native session scheduling remain with their existing owners.
+  These are nine bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
