@@ -60,7 +60,8 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
 /// runtime carrier without claiming that family as an objective-absence target.
 #[must_use]
 pub const fn supports_authorable_creature_placement(kind: CreatureKind) -> bool {
-    supports_complete_creature_lifecycle(kind) || matches!(kind, CreatureKind::Goat)
+    supports_complete_creature_lifecycle(kind)
+        || matches!(kind, CreatureKind::Goat | CreatureKind::Worm)
 }
 
 /// Largest authored maximum-life value supported by the family's ordinary

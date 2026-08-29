@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 19.0 milestone, this is a binding target with
+As of the semantic-contract 20.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -441,8 +441,13 @@ partial real implementation, not a completion claim:
   ordinary movement and map-chain visit after reopen/reset. The eleven
   reset-live Level 3 Skeletons now relocate their exact imported carriers;
   one focused causal proof reaches the ordinary model-9 movement and map-chain
-  consumer after reopen/reset. Worm, Villager and Trader placements remain
-  read-only until their distinct placement authority is closed. All
+  consumer after reopen/reset. The ten positive-group Worm placements in
+  Levels 1 and 2 now bind their immutable authored feature before the real
+  multipart constructor copies the location into the root and all sixteen body
+  rows. One focused Level 1 proof follows that root through ordinary movement
+  and map-chain service after reopen/reset. The five reset-live Level 3 Worms,
+  plus Villager and Trader placements, remain read-only until their distinct
+  relocation authorities are closed. All
   thirty-nine package-present Experience Scroll placements across Levels 1-3
   bind to their immutable authored-feature rows before construction; the
   ordinary class-14 pickup callback consumes the authored location through XP
