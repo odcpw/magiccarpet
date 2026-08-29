@@ -8,6 +8,7 @@ members = [
     "crates/sim-ground-motion",
     "crates/sim-music",
     "crates/sim-render-camera",
+    "crates/sim-renderable-map-chain",
     "crates/sim-session",
     "crates/sim-input",
     "crates/sim-terrain-raster",

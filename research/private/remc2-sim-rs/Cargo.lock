@@ -214,6 +214,7 @@ dependencies = [
  "sim-input",
  "sim-music",
  "sim-render-camera",
+ "sim-renderable-map-chain",
  "sim-session",
  "sim-terrain-raster",
  "sim-voxel",
@@ -250,6 +251,10 @@ version = "0.1.0"
 
 [[package]]
 name = "sim-render-camera"
+version = "0.1.0"
+
+[[package]]
+name = "sim-renderable-map-chain"
 version = "0.1.0"
 
 [[package]]
