@@ -2213,7 +2213,7 @@ mod tests {
                 (CreatureKind::Archer, 18),
                 (CreatureKind::Skeleton, 11),
             ],
-            &[(CreatureKind::Skeleton, 11)],
+            &[(CreatureKind::Worm, 5), (CreatureKind::Skeleton, 11)],
             &[
                 (SpellKind::Shield, TilePosition { x: 85, y: 85 }, None),
                 (
@@ -2279,12 +2279,13 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 119);
+        assert_eq!(level_three_movable.len(), 124);
         for (kind, expected) in [
             (CreatureKind::Goat, 11),
             (CreatureKind::Archer, 18),
             (CreatureKind::Bee, 6),
             (CreatureKind::Dragon, 5),
+            (CreatureKind::Worm, 5),
         ] {
             assert_eq!(
                 level_three_movable
@@ -4877,6 +4878,186 @@ mod tests {
         // prior objectives/group activation, Worm combat/death, the other nine
         // authored Worm placements, Level 3 reset-live Worm relocation,
         // health/population authoring, save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_three_imported_worm_family_before_ordinary_visit_after_reopen()
+     {
+        const ROOT_SLOT: u16 = 201;
+        const BODY_COUNT: usize = 16;
+        const LAST_BODY_SLOT: u16 = 217;
+        const AUTHORED_MAP_TILE: u16 = u16::from_le_bytes([151, 19]);
+
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let worm = sim_definition::adapter::stable_entity_id("creature.worm.at_150_19").unwrap();
+        let package_tile = TilePosition { x: 150, y: 19 };
+        let authored_tile = TilePosition { x: 151, y: 19 };
+        let package_entity = base.level_definition().unwrap().entity(&worm).unwrap();
+        assert_eq!(
+            package_entity.kind(),
+            LevelEntityKind::Creature(CreatureKind::Worm)
+        );
+        assert_eq!(package_entity.position(), package_tile);
+        assert_eq!(
+            package_entity.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-imported-worm-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-imported-worm-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            82,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-imported-worm-placement",
+            &base,
+            "move-one-level-three-imported-worm-family",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(worm, package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let family = |session: &GameSession<Mc2CampaignBackend>| {
+            session.backend().campaign.level2_compatibility().entities()
+                [usize::from(ROOT_SLOT)..=usize::from(ROOT_SLOT) + BODY_COUNT]
+                .to_vec()
+        };
+        let package_family = family(&session);
+        assert_eq!(package_family.len(), BODY_COUNT + 1);
+        assert_eq!(
+            (
+                package_family[0].class,
+                package_family[0].model,
+                package_family[0].action,
+                package_family[0].source_id,
+            ),
+            (5, 3, 31, ROOT_SLOT)
+        );
+        for (offset, body) in package_family[1..].iter().enumerate() {
+            assert_eq!(
+                (body.class, body.model, body.action, body.source_id),
+                (5, 3, 232, ROOT_SLOT)
+            );
+            let expected_next = if offset + 1 == BODY_COUNT {
+                0
+            } else {
+                ROOT_SLOT + u16::try_from(offset).unwrap() + 2
+            };
+            assert_eq!(
+                u16::from_le_bytes(body.record_bytes()[56..58].try_into().unwrap()),
+                expected_next
+            );
+        }
+        assert_eq!(
+            (
+                package_family[0].position.x >> 8,
+                package_family[0].position.y >> 8
+            ),
+            (package_tile.x, package_tile.y)
+        );
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let authored_family = family(&session);
+        for (package, authored) in package_family.iter().zip(&authored_family) {
+            assert_eq!(authored.position.x, package.position.x.wrapping_add(1 << 8));
+            assert_eq!(authored.position.y, package.position.y);
+            assert_eq!(authored.position.z, package.position.z);
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(authored_family.iter().all(|entity| {
+            compatibility.economy().map_chains().tile_of(entity.index) == AUTHORED_MAP_TILE
+        }));
+        let worm_census = compatibility
+            .creature_runtime_census()
+            .entries()
+            .iter()
+            .filter(|identity| identity.root_slot == ROOT_SLOT)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(worm_census.len(), BODY_COUNT + 1);
+        assert_eq!(
+            worm_census
+                .iter()
+                .filter(|identity| {
+                    identity.role
+                        == crate::campaign::source_arena::CreatureRuntimeRole::MultipartPart
+                })
+                .count(),
+            BODY_COUNT
+        );
+        let authored_frame_zero = session.snapshot().value;
+
+        for _ in 0..4 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let visited_family = family(&session);
+        assert_ne!(visited_family[0].position, authored_family[0].position);
+        assert_ne!(visited_family[1].position, authored_family[1].position);
+        for (authored, visited) in authored_family.iter().zip(&visited_family) {
+            assert_eq!(visited.phase, authored.phase.wrapping_add(4));
+            let expected_tile = u16::from_le_bytes([
+                u8::try_from(visited.position.x >> 8).unwrap(),
+                u8::try_from(visited.position.y >> 8).unwrap(),
+            ]);
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .map_chains()
+                    .tile_of(visited.index),
+                expected_tile
+            );
+        }
+        assert!(session.backend().campaign.events().iter().all(|event| {
+            !matches!(
+                event,
+                Level2DispatchEvent::Error { source_slot, .. }
+                    if (ROOT_SLOT..=LAST_BODY_SLOT).contains(source_slot)
+            )
+        }));
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.snapshot().value, authored_frame_zero);
+        assert_eq!(family(&session), authored_family);
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 3 Worm placement crosses
+        // guarded publication, old-session isolation, explicit reopen, the
+        // exact imported root/body/map relocation, ordinary action-31/232
+        // visits, and reset. It does not prove the other four L3 Worm
+        // placements, organic combat/death, authored population or health,
+        // save/replay, or Unity presentation.
     }
 
     #[test]

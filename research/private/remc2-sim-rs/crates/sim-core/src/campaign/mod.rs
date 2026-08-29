@@ -305,6 +305,57 @@ impl CampaignSession {
                             .map_err(NativeWorldError::new)?;
                     }
                 }
+                spec::Mc2EntityRuntimeBinding::InitialMultipartFamily {
+                    root_source_slot,
+                    body_source_slots,
+                    kind,
+                    source_id,
+                } => {
+                    if *kind != entity.kind() {
+                        return Err(NativeWorldError::new(format!(
+                            "semantic entity {} private multipart binding kind diverges",
+                            entity.id().as_str()
+                        )));
+                    }
+                    let source = self
+                        .level2
+                        .entities()
+                        .get(usize::from(*root_source_slot))
+                        .filter(|source| {
+                            source.active
+                                && source.index == *root_source_slot
+                                && source.source_id == *source_id
+                        })
+                        .ok_or_else(|| {
+                            NativeWorldError::new(format!(
+                                "semantic entity {} lost its frame-zero multipart root",
+                                entity.id().as_str()
+                            ))
+                        })?;
+                    let original_tile = original.position();
+                    if source.position.x >> 8 != original_tile.x
+                        || source.position.y >> 8 != original_tile.y
+                    {
+                        return Err(NativeWorldError::new(format!(
+                            "semantic entity {} private multipart binding position diverges",
+                            entity.id().as_str()
+                        )));
+                    }
+                    if health_changed {
+                        return Err(NativeWorldError::new(format!(
+                            "semantic multipart entity {} has no writable health binding",
+                            entity.id().as_str()
+                        )));
+                    }
+                    if position_changed {
+                        self.level2.bind_level2_imported_multipart_position(
+                            *root_source_slot,
+                            body_source_slots,
+                            original_tile,
+                            entity.position(),
+                        )?;
+                    }
+                }
                 spec::Mc2EntityRuntimeBinding::AuthoredFeature {
                     authored_record,
                     kind,

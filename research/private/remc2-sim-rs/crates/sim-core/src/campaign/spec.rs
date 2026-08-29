@@ -498,6 +498,12 @@ pub(crate) enum Mc2EntityRuntimeBinding {
         kind: LevelEntityKind,
         source_id: u16,
     },
+    InitialMultipartFamily {
+        root_source_slot: u16,
+        body_source_slots: Box<[u16]>,
+        kind: LevelEntityKind,
+        source_id: u16,
+    },
     AuthoredFeature {
         authored_record: u16,
         kind: LevelEntityKind,
@@ -1274,16 +1280,31 @@ impl CampaignDefinition {
                 );
             }
             let row = matching[0];
-            movable_entity_bindings.insert(
-                entity_id.clone(),
-                Mc2EntityRuntimeBinding::InitialSource {
-                    initial_source_slot: row
-                        .initial_source_slot
-                        .expect("movable carrier is frame-zero"),
+            let initial_source_slot = row
+                .initial_source_slot
+                .expect("movable carrier is frame-zero");
+            let binding = if entity.kind() == LevelEntityKind::Creature(CreatureKind::Worm)
+                && row.class == 5
+                && row.model == 3
+                && row.action == 31
+            {
+                Mc2EntityRuntimeBinding::InitialMultipartFamily {
+                    root_source_slot: initial_source_slot,
+                    body_source_slots: initial_imported_worm_body_slots(
+                        entities,
+                        initial_source_slot,
+                    )?,
                     kind: entity.kind(),
                     source_id: row.authored_record,
-                },
-            );
+                }
+            } else {
+                Mc2EntityRuntimeBinding::InitialSource {
+                    initial_source_slot,
+                    kind: entity.kind(),
+                    source_id: row.authored_record,
+                }
+            };
+            movable_entity_bindings.insert(entity_id.clone(), binding);
         }
         for scenery in scenery_by_initial_source_slot.values() {
             if !semantic_level.semantic.entities().iter().any(|entity| {
@@ -1971,6 +1992,90 @@ fn initial_entity_tile(bytes: &[u8], source_slot: u16) -> Result<TilePosition> {
             ValidationStage::TypedMembers,
         )? >> 8,
     })
+}
+
+fn initial_imported_worm_body_slots(bytes: &[u8], root_source_slot: u16) -> Result<Box<[u16]>> {
+    const BODY_COUNT: usize = 16;
+    let root_offset = 12 + usize::from(root_source_slot) * ENTITY_RECORD_BYTES;
+    if bytes
+        .get(root_offset..root_offset + ENTITY_RECORD_BYTES)
+        .is_none()
+    {
+        return fail(
+            ValidationStage::TypedOperations,
+            format!("multipart root source slot {root_source_slot} is out of bounds"),
+        );
+    }
+    if bytes[root_offset + 2] != 1
+        || bytes[root_offset + 67] != 5
+        || bytes[root_offset + 68] != 3
+        || bytes[root_offset + 73] != 31
+        || read_u16(
+            bytes,
+            root_offset + 30,
+            "multipart root source id",
+            ValidationStage::TypedOperations,
+        )? != root_source_slot
+    {
+        return fail(
+            ValidationStage::TypedOperations,
+            format!("multipart root source slot {root_source_slot} has an invalid carrier"),
+        );
+    }
+    let mut body_slots = Vec::with_capacity(BODY_COUNT);
+    let mut next = read_u16(
+        bytes,
+        root_offset + 56,
+        "multipart root child relation",
+        ValidationStage::TypedOperations,
+    )?;
+    while next != 0 {
+        if body_slots.len() == BODY_COUNT || body_slots.contains(&next) {
+            return fail(
+                ValidationStage::TypedOperations,
+                format!("multipart root source slot {root_source_slot} has an invalid child chain"),
+            );
+        }
+        let body_offset = 12 + usize::from(next) * ENTITY_RECORD_BYTES;
+        if bytes
+            .get(body_offset..body_offset + ENTITY_RECORD_BYTES)
+            .is_none()
+            || bytes[body_offset + 2] != 1
+            || bytes[body_offset + 67] != 5
+            || bytes[body_offset + 68] != 3
+            || bytes[body_offset + 73] != 232
+            || read_u16(
+                bytes,
+                body_offset + 30,
+                "multipart body source id",
+                ValidationStage::TypedOperations,
+            )? != root_source_slot
+        {
+            return fail(
+                ValidationStage::TypedOperations,
+                format!(
+                    "multipart root source slot {root_source_slot} body source slot {next} diverges"
+                ),
+            );
+        }
+        body_slots.push(next);
+        next = read_u16(
+            bytes,
+            body_offset + 56,
+            "multipart body child relation",
+            ValidationStage::TypedOperations,
+        )?;
+    }
+    if body_slots.len() != BODY_COUNT {
+        return fail(
+            ValidationStage::TypedOperations,
+            format!(
+                "multipart root source slot {root_source_slot} has {} body rows, expected {BODY_COUNT}",
+                body_slots.len()
+            ),
+        );
+    }
+    Ok(body_slots.into_boxed_slice())
 }
 
 fn decode_behavior_rows(

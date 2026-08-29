@@ -19,7 +19,7 @@ use crate::campaign::{
 };
 use crate::level_definition::{
     BuildingKind, CreatureKind, ItemKind, MechanicKind, ObjectiveCondition, SceneryKind, SpellKind,
-    SwitchKind,
+    SwitchKind, TilePosition,
 };
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
@@ -5672,6 +5672,121 @@ impl Level2ResetSession {
                 .shared_spells
                 .sync_pickup_from_authority(&canonical_entity);
         }
+        Ok(())
+    }
+
+    /// Relocate one package-imported class-5/model-3 root and its exact
+    /// sixteen-row action-232 body chain by the same whole-tile delta. The
+    /// private package adapter has already joined the semantic entity to these
+    /// source slots; this boundary revalidates the live reset carrier before
+    /// atomically publishing positions and map membership.
+    pub(crate) fn bind_level2_imported_multipart_position(
+        &mut self,
+        root_source_slot: u16,
+        body_source_slots: &[u16],
+        package_tile: TilePosition,
+        authored_tile: TilePosition,
+    ) -> Result<()> {
+        const BODY_COUNT: usize = 16;
+        if body_source_slots.len() != BODY_COUNT {
+            return Err(NativeWorldError::new(format!(
+                "multipart root source slot {root_source_slot} has {} bound body rows, expected {BODY_COUNT}",
+                body_source_slots.len()
+            )));
+        }
+        let live = &mut self.session.state.live;
+        let entities = &live.economy.entities;
+        let root = entities
+            .get(usize::from(root_source_slot))
+            .filter(|entity| {
+                entity.active
+                    && entity.index == root_source_slot
+                    && entity.source_id == root_source_slot
+                    && entity.class == 5
+                    && entity.model == 3
+                    && entity.action == 31
+                    && entity.position.x >> 8 == package_tile.x
+                    && entity.position.y >> 8 == package_tile.y
+            })
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "multipart root source slot {root_source_slot} diverges from its package carrier"
+                ))
+            })?;
+        let root_z = root.position.z;
+        let mut expected_slot = u16::from_le_bytes(
+            root.record_bytes()[56..58]
+                .try_into()
+                .expect("entity record contains word-0x34"),
+        );
+        for &body_source_slot in body_source_slots {
+            if body_source_slot != expected_slot {
+                return Err(NativeWorldError::new(format!(
+                    "multipart root source slot {root_source_slot} body chain expected {expected_slot}, found {body_source_slot}"
+                )));
+            }
+            let body = entities
+                .get(usize::from(body_source_slot))
+                .filter(|entity| {
+                    entity.active
+                        && entity.index == body_source_slot
+                        && entity.source_id == root_source_slot
+                        && entity.class == 5
+                        && entity.model == 3
+                        && entity.action == 232
+                        && entity.position.z == root_z
+                })
+                .ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "multipart root source slot {root_source_slot} body source slot {body_source_slot} diverges"
+                    ))
+                })?;
+            expected_slot = u16::from_le_bytes(
+                body.record_bytes()[56..58]
+                    .try_into()
+                    .expect("entity record contains word-0x34"),
+            );
+        }
+        if expected_slot != 0 {
+            return Err(NativeWorldError::new(format!(
+                "multipart root source slot {root_source_slot} body chain does not terminate"
+            )));
+        }
+
+        let delta_x = authored_tile.x.wrapping_sub(package_tile.x).wrapping_shl(8);
+        let delta_y = authored_tile.y.wrapping_sub(package_tile.y).wrapping_shl(8);
+        let family_slots = std::iter::once(root_source_slot)
+            .chain(body_source_slots.iter().copied())
+            .collect::<Vec<_>>();
+        let targets = family_slots
+            .iter()
+            .map(|source_slot| {
+                let position = entities[usize::from(*source_slot)].position;
+                (
+                    *source_slot,
+                    Position {
+                        x: position.x.wrapping_add(delta_x),
+                        y: position.y.wrapping_add(delta_y),
+                        z: position.z,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut map_chains = live.economy.map_chains.clone();
+        for (source_slot, position) in &targets {
+            map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: *source_slot,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .map_err(NativeWorldError::new)?;
+        }
+        for (source_slot, position) in targets {
+            live.economy.entities[usize::from(source_slot)].set_position(position);
+        }
+        live.economy.map_chains = map_chains;
         Ok(())
     }
 
