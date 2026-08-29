@@ -58,6 +58,11 @@ pub const VILLAGER_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.villager.max_
 /// or reset-imported Worm root-and-body family's maximum-life parameter.
 pub const WORM_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.worm.max_life";
 
+/// Exact compiled capability required by packages whose Experience Scroll
+/// constructor and collector consume a per-instance experience award.
+pub const EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID: &str =
+    "engine.item.experience_scroll.experience_award";
+
 /// Exact compiled maximum-life capability for a creature family whose
 /// package constructor and damage/death lifecycle consume the parameter.
 #[must_use]
@@ -212,6 +217,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 WORM_MAX_LIFE_CAPABILITY_ID,
                 "Package-bound Worm root/body construction and complete damage/death lifecycle.",
+            ),
+            (
+                EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
+                "Package-bound Experience Scroll construction, collection, hide, and reclaim lifecycle.",
             ),
             (
                 "engine.flight.fixed_point",

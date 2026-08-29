@@ -2136,6 +2136,7 @@ impl Level2SharedSpellResetSession {
     pub fn collect_level2_experience_scroll(
         &mut self,
         source_slot: u16,
+        experience_award: i32,
         scroll_position: Position,
         local_player_slot: u8,
         local_player_entity_index: u16,
@@ -2196,8 +2197,8 @@ impl Level2SharedSpellResetSession {
                 if enabled_holders[family] == 0 {
                     continue;
                 }
-                let mut experience = owner.runtime_spell_experience[family]
-                    .wrapping_add(LEVEL2_EXPERIENCE_SCROLL_AWARD);
+                let mut experience =
+                    owner.runtime_spell_experience[family].wrapping_add(experience_award);
                 if family == usize::from(CASTLE_SPELL_FAMILY) {
                     experience = experience.min(7);
                 }

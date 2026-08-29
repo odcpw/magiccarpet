@@ -264,7 +264,7 @@ const ENTITY_PARAMETER_COUNT_U32: u32 = 157;
 const ENTITY_PARAMETER_BYTES: usize = 34;
 const PLAYER_SPELL_COUNT: usize = 26;
 const PLAYER_SPELL_COUNT_I16: i16 = 26;
-const LEVEL2_EXPERIENCE_SCROLL_AWARD: i32 = 4;
+pub(crate) const LEVEL2_EXPERIENCE_SCROLL_AWARD: i32 = 4;
 const LEVEL2_SCROLL_COLLISION_HALF_WIDTH: i16 = 768;
 const LEVEL2_SCROLL_COLLISION_VERTICAL_OFFSET: i16 = 37;
 const LEVEL2_SCROLL_COLLISION_HALF_HEIGHT: i16 = 1_280;
@@ -2375,6 +2375,8 @@ pub struct Level2AuthoredClass14Source {
     pub entity_rng: u16,
     pub authored_index: u16,
     pub model: u8,
+    /// Per-instance reward consumed by model 5. Model 3 carries no reward.
+    pub experience_award: Option<i32>,
     pub action: u8,
     pub particle: u16,
     /// `sub_51570` sets bit 0 unconditionally; `sub_51610` sets it only when

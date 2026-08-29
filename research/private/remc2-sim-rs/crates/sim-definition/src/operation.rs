@@ -9,10 +9,10 @@ use crate::level_definition::{LevelEntityKind, LevelObjectiveId, ObjectiveCondit
 use crate::{
     ARCHER_MAX_LIFE_CAPABILITY_ID, Access, BEE_MAX_LIFE_CAPABILITY_ID,
     CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError,
-    DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
-    GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
-    SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID,
-    WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
+    DefinitionErrorCode, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
+    FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition,
+    SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId, SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID,
+    VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -150,6 +150,12 @@ pub enum DefinitionOperation {
         max_life: u32,
         #[serde(default)]
         expected_max_life: Option<u32>,
+    },
+    SetExperienceScrollAward {
+        entity: LevelEntityId,
+        experience_award: u32,
+        #[serde(default)]
+        expected_experience_award: Option<u32>,
     },
     PutObjective {
         objective: LevelObjectiveId,
@@ -298,6 +304,26 @@ impl DefinitionOperation {
                     "read_back": "game get --id <entity-id>.max_life",
                 },
                 {
+                    "operation": "set_experience_scroll_award",
+                    "required_fields": ["entity", "experience_award"],
+                    "optional_fields": ["expected_experience_award"],
+                    "target_id": "<entity-id>.experience_award",
+                    "experience_award": {
+                        "type": "integer",
+                        "unit": "experience_points",
+                        "minimum": 1,
+                        "maximum": i32::MAX,
+                    },
+                    "expected_experience_award": "same type, unit, and bounds as experience_award",
+                    "required_capability": {
+                        "id": EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
+                        "exact_version": 1,
+                    },
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id <entity-id>.experience_award",
+                    "read_back": "game get --id <entity-id>.experience_award",
+                },
+                {
                     "operation": "put_objective",
                     "required_fields": ["objective", "condition"],
                     "optional_fields": ["expected_condition"],
@@ -366,6 +392,10 @@ impl DefinitionOperation {
             Self::SetEntityMaxLife { entity, .. } => {
                 SemanticId::parse(&format!("{}.max_life", entity.as_str()))
                     .expect("validated entity ID plus max_life is a semantic target")
+            }
+            Self::SetExperienceScrollAward { entity, .. } => {
+                SemanticId::parse(&format!("{}.experience_award", entity.as_str()))
+                    .expect("validated entity ID plus experience_award is a semantic target")
             }
             Self::PutObjective { objective, .. } => {
                 SemanticId::parse(&format!("{}.condition", objective.as_str()))
@@ -455,6 +485,7 @@ impl DefinitionOperation {
                 ..
             } | Self::MoveEntity { .. }
                 | Self::SetEntityMaxLife { .. }
+                | Self::SetExperienceScrollAward { .. }
                 | Self::PutObjective { .. }
                 | Self::SetMechanicCountdown { .. }
         ) || is_fireball_cost_operation
@@ -576,6 +607,46 @@ impl DefinitionOperation {
                 expected_max_life: *expected_max_life,
             });
         }
+        if let Self::SetExperienceScrollAward {
+            entity,
+            experience_award,
+            expected_experience_award,
+        } = self
+        {
+            let id = self.target_id();
+            let descriptor = definition
+                .level_experience_scroll_award_descriptor(&id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownSemanticId,
+                        entity.as_str(),
+                        "reward update names no package-bound Experience Scroll",
+                    )
+                })?;
+            if descriptor.access != Access::Writable {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    entity.as_str(),
+                    "Experience Scroll reward has no runtime consumer in this package",
+                ));
+            }
+            descriptor.validate_value(
+                &SemanticValue::Integer(i64::from(*experience_award)),
+                id.as_str(),
+            )?;
+            if let Some(expected) = expected_experience_award {
+                descriptor.validate_value(
+                    &SemanticValue::Integer(i64::from(*expected)),
+                    "expected_experience_award",
+                )?;
+            }
+            return Ok(ResolvedOperation::ExperienceScrollAwardSet {
+                id,
+                entity: entity.clone(),
+                experience_award: *experience_award,
+                expected_experience_award: *expected_experience_award,
+            });
+        }
         if let Self::PutObjective {
             objective,
             condition,
@@ -692,6 +763,9 @@ impl DefinitionOperation {
             Self::SetEntityMaxLife { .. } => {
                 unreachable!("entity maximum-life updates return above")
             }
+            Self::SetExperienceScrollAward { .. } => {
+                unreachable!("Experience Scroll reward updates return above")
+            }
             Self::PutObjective { .. } => unreachable!("objective puts return above"),
             Self::SetMechanicCountdown { .. } => {
                 unreachable!("mechanic countdown updates return above")
@@ -723,6 +797,12 @@ pub(crate) enum ResolvedOperation {
         entity: LevelEntityId,
         max_life: u32,
         expected_max_life: Option<u32>,
+    },
+    ExperienceScrollAwardSet {
+        id: SemanticId,
+        entity: LevelEntityId,
+        experience_award: u32,
+        expected_experience_award: Option<u32>,
     },
     ObjectivePut {
         id: SemanticId,

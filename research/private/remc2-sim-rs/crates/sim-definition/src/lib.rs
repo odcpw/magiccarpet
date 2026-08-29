@@ -26,11 +26,12 @@ pub use operation::{
 pub use package::{
     ARCHER_MAX_LIFE_CAPABILITY_ID, ArtifactKind, ArtifactNode, BEE_MAX_LIFE_CAPABILITY_ID,
     CREATURE_POLICY_CAPABILITY_ID, CompiledCapability, CompiledCapabilityRegistry,
-    DRAGON_MAX_LIFE_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
-    FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage, PackageProvenance,
-    PackageProvenanceKind, RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID,
-    TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID,
-    creature_max_life_capability_id, engine_capabilities,
+    DRAGON_MAX_LIFE_CAPABILITY_ID, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
+    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID,
+    GamePackage, PackageProvenance, PackageProvenanceKind, RequiredCapability,
+    SKELETON_MAX_LIFE_CAPABILITY_ID, TRADER_MAX_LIFE_CAPABILITY_ID,
+    VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
+    engine_capabilities,
 };
 pub use presentation_asset::{
     BoundPresentationAsset, CompatiblePresentationArtifact, INDEXED_SPRITE_SCHEMA,
@@ -56,8 +57,8 @@ use level_definition::{CreatureKind, LevelDefinition, LevelEntityKind};
 use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v7";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "28.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v8";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "29.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -669,6 +670,39 @@ impl GameDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_experience_scroll_award(
+        &self,
+        id: &level_definition::LevelEntityId,
+        experience_award: u32,
+        revision: u64,
+    ) -> Result<Self> {
+        if revision < self.revision {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidRequest,
+                "definition.revision",
+                "candidate definition revision must not move backward",
+            ));
+        }
+        let level = self.level_definition.as_ref().ok_or_else(|| {
+            DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                id.as_str(),
+                "definition has no semantic Experience Scroll consumer",
+            )
+        })?;
+        let mut candidate = self.clone();
+        candidate.level_definition = Some(
+            level
+                .with_experience_scroll_award(id, experience_award)
+                .map_err(|message| {
+                    DefinitionError::new(DefinitionErrorCode::InvalidRequest, id.as_str(), message)
+                })?,
+        );
+        candidate.revision = revision;
+        candidate.definition_hash = candidate.compute_hash();
+        Ok(candidate)
+    }
+
     /// Read one semantic authoring target from the immutable definition.
     #[must_use]
     pub fn semantic_target_value(&self, id: &SemanticId) -> Option<SemanticValue> {
@@ -700,6 +734,15 @@ impl GameDefinition {
                 .entity(&entity_id)
                 .and_then(level_definition::LevelEntityDefinition::creature_health)
                 .map(|config| SemanticValue::Integer(i64::from(config.max_life())));
+        }
+        if let Some(entity) = id.as_str().strip_suffix(".experience_award") {
+            let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
+            return self
+                .level_definition
+                .as_ref()?
+                .entity(&entity_id)
+                .and_then(level_definition::LevelEntityDefinition::experience_scroll)
+                .map(|config| SemanticValue::Integer(i64::from(config.experience_award())));
         }
         if let Some(objective) = id.as_str().strip_suffix(".condition") {
             let objective_id = level_definition::LevelObjectiveId::parse(objective).ok()?;
@@ -987,6 +1030,81 @@ impl GameDefinition {
                 SemanticId::parse(&format!("{}.max_life", entity.id().as_str()))
                     .ok()
                     .and_then(|id| self.level_creature_max_life_descriptor(&id))
+            })
+            .collect()
+    }
+
+    /// Describe one package-bound Experience Scroll reward target.
+    #[must_use]
+    pub fn level_experience_scroll_award_descriptor(
+        &self,
+        id: &SemanticId,
+    ) -> Option<SemanticDescriptor> {
+        let entity_id = id.as_str().strip_suffix(".experience_award")?;
+        let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
+        let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
+        let config = entity.experience_scroll()?;
+        let writable = matches!(
+            config.experience_award_access(),
+            level_definition::LevelEntityParameterAccess::SessionReset
+        ) && self.required_capabilities.iter().any(|requirement| {
+            requirement.id.as_str() == EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID
+                && requirement.exact_version == 1
+        });
+        let target_id = id.as_str().to_owned();
+        Some(SemanticDescriptor {
+            id: id.clone(),
+            descriptor_version: 1,
+            kind: DescriptorKind::EntityParameter,
+            value_type: ValueType::Integer,
+            unit: Some("experience_points".to_owned()),
+            default_value: SemanticValue::Integer(i64::from(config.default_experience_award())),
+            minimum: Some(1),
+            maximum: Some(i64::from(i32::MAX)),
+            enum_values: Vec::new(),
+            access: if writable { Access::Writable } else { Access::ReadOnly },
+            mutation_timing: MutationTiming::SessionReset,
+            determinism_role: "immutable per-instance Experience Scroll reward".to_owned(),
+            dependencies: vec![
+                entity.id().as_str().to_owned(),
+                format!("{EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID}@1"),
+                "package Experience Scroll constructor and collector".to_owned(),
+            ],
+            side_effects: if writable {
+                vec![
+                    "already-open sessions retain the package reward".to_owned(),
+                    "explicit reopen/reset binds the authored award before collection".to_owned(),
+                ]
+            } else { Vec::new() },
+            scope: format!("stable Experience Scroll {}", entity.id().as_str()),
+            provenance_origin: "package semantic level definition".to_owned(),
+            provenance_content_hash: self.package_graph_hash.clone(),
+            temporal_contract: Some(TemporalContract {
+                dispatch_phase: "definition_publication".to_owned(),
+                dispatch_key: target_id.clone(),
+                ordinary_producer: "validated SetExperienceScrollAward candidate".to_owned(),
+                handler: "guarded atomic definition compare-and-swap".to_owned(),
+                same_pass_epilogue: "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
+                following_pass_cleanup: "explicit reopen/reset binds the reward into the authored row; ordinary overlap awards XP, hides the row, and following-boundary reclaim removes it".to_owned(),
+                authoritative_reads: vec![target_id],
+                authoritative_writes: vec!["immutable LevelDefinition Experience Scroll reward".to_owned()],
+                rng_and_event_effects: "none during publication; collection event order remains scheduler-owned".to_owned(),
+            }),
+            summary: "Experience awarded by one package-bound Experience Scroll.".to_owned(),
+        })
+    }
+
+    #[must_use]
+    pub fn level_experience_scroll_award_descriptors(&self) -> Vec<SemanticDescriptor> {
+        self.level_definition
+            .as_ref()
+            .into_iter()
+            .flat_map(level_definition::LevelDefinition::entities)
+            .filter(|entity| entity.experience_scroll().is_some())
+            .filter_map(|entity| {
+                SemanticId::parse(&format!("{}.experience_award", entity.id().as_str()))
+                    .ok()
+                    .and_then(|id| self.level_experience_scroll_award_descriptor(&id))
             })
             .collect()
     }

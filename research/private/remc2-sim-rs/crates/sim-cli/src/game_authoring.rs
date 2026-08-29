@@ -410,12 +410,23 @@ fn inspect(arguments: &[String]) -> ExitCode {
         Ok(definition) => definition,
         Err(error) => return transaction_error("inspect", &error),
     };
-    let writable_surface = definition
+    let mut writable_surface = definition
         .semantic_descriptors(&catalog)
         .into_iter()
         .filter(|descriptor| descriptor.access.as_str() == "writable")
         .map(|descriptor| descriptor.id.as_str().to_owned())
         .collect::<Vec<_>>();
+    writable_surface.extend(
+        definition
+            .level_entity_position_descriptors()
+            .into_iter()
+            .chain(definition.level_countdown_arming_ticks_descriptors())
+            .chain(definition.level_creature_max_life_descriptors())
+            .chain(definition.level_experience_scroll_award_descriptors())
+            .chain(definition.level_objective_condition_descriptors())
+            .filter(|descriptor| descriptor.access.as_str() == "writable")
+            .map(|descriptor| descriptor.id.as_str().to_owned()),
+    );
     match store.inspect() {
         Ok(inspection) => workspace_success(
             "inspect",

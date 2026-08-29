@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
     build_level_definition, creature_entity_definition, entity_definition_with_position_access,
-    objective_definition, stable_entity_id, stable_objective_id, stable_rival_wizard_id,
+    experience_scroll_entity_definition, objective_definition, stable_entity_id,
+    stable_objective_id, stable_rival_wizard_id,
 };
 
 use crate::{
@@ -50,6 +51,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) building_by_authored_record: BTreeMap<u16, BuildingKind>,
     pub(crate) scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
+    pub(crate) item_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     pub(crate) mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
@@ -181,6 +183,7 @@ impl Mc2LevelDefinition {
         let mut building_by_authored_record = BTreeMap::new();
         let mut scenery_by_authored_record = BTreeMap::new();
         let mut item_by_authored_record = BTreeMap::new();
+        let mut item_entity_by_authored_record = BTreeMap::new();
         let mut switch_by_authored_record = BTreeMap::new();
         let mut mechanic_by_authored_record = BTreeMap::new();
         let mut mechanic_entity_by_authored_record = BTreeMap::new();
@@ -389,14 +392,16 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Item(kind),
                     position_access,
                 )?;
-                entities.push(entity_definition_with_position_access(
-                    id,
-                    LevelEntityKind::Item(kind),
+                entities.push(experience_scroll_entity_definition(
+                    id.clone(),
                     position,
                     activation_group,
                     position_access,
+                    crate::native_world::LEVEL2_EXPERIENCE_SCROLL_AWARD.cast_unsigned(),
+                    LevelEntityParameterAccess::SessionReset,
                 ));
                 item_by_authored_record.insert(feature.index, kind);
+                item_entity_by_authored_record.insert(feature.index, id);
                 continue;
             }
 
@@ -703,6 +708,7 @@ impl Mc2LevelDefinition {
             building_by_authored_record,
             scenery_by_authored_record,
             item_by_authored_record,
+            item_entity_by_authored_record,
             switch_by_authored_record,
             mechanic_by_authored_record,
             mechanic_entity_by_authored_record,

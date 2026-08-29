@@ -3749,6 +3749,7 @@ impl NativeWorldInspection {
             authored_scenery: definition.scenery_bindings().clone(),
             initial_source_scenery: definition.initial_scenery_bindings().clone(),
             authored_items: definition.item_bindings().clone(),
+            authored_item_entities: definition.item_entity_bindings(),
             authored_switches: definition.switch_bindings().clone(),
             initial_source_switches: definition.initial_switch_bindings().clone(),
             authored_mechanics: definition.mechanic_bindings().clone(),

@@ -10,10 +10,10 @@ use crate::{
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
     level_definition::{
         AbsenceCountdownDefinition, ActivationGroupId, CreatureHealthDefinition, CreatureKind,
-        LevelDefinition, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
-        LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
-        LevelObjectiveDefinition, LevelObjectiveId, ObjectiveCondition, RivalWizardId,
-        TilePosition,
+        ExperienceScrollDefinition, LevelDefinition, LevelEntityDefinition, LevelEntityId,
+        LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
+        LevelObjectiveConditionAccess, LevelObjectiveDefinition, LevelObjectiveId,
+        ObjectiveCondition, RivalWizardId, TilePosition,
     },
     runtime_flow::RuntimeFlowDefinition,
 };
@@ -92,6 +92,7 @@ pub const fn entity_definition(
         LevelEntityPositionAccess::ReadOnly,
         None,
         None,
+        None,
     )
 }
 
@@ -109,6 +110,7 @@ pub const fn entity_definition_with_position_access(
         position,
         activation_group,
         position_access,
+        None,
         None,
         None,
     )
@@ -132,6 +134,7 @@ pub const fn creature_entity_definition(
         position_access,
         None,
         Some(CreatureHealthDefinition::new(max_life, max_life_access)),
+        None,
     )
 }
 
@@ -160,6 +163,31 @@ pub const fn absence_countdown_entity_definition(
         position_access,
         Some(countdown),
         None,
+        None,
+    )
+}
+
+#[must_use]
+pub const fn experience_scroll_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    experience_award: u32,
+    experience_award_access: LevelEntityParameterAccess,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Item(crate::level_definition::ItemKind::ExperienceScroll),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        Some(ExperienceScrollDefinition::new(
+            experience_award,
+            experience_award_access,
+        )),
     )
 }
 

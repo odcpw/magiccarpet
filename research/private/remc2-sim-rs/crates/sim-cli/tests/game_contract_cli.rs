@@ -100,14 +100,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "28.0");
+    assert_eq!(capabilities["contract_version"], "29.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
-        "carpet-flight-change-set/v6"
+        "carpet-flight-change-set/v7"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["game_definition_schema"],
-        "carpet-flight-game-definition/v7"
+        "carpet-flight-game-definition/v8"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["operation"],
@@ -250,7 +250,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        18
+        19
     );
     let archer_health_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
@@ -324,6 +324,29 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         .expect("Worm maximum-life capability is discoverable");
     assert_eq!(worm_health_capability["version"], 1);
     assert_eq!(worm_health_capability["provider"], "engine_compiled");
+    let scroll_award_operation = capabilities["data"]["authoring"]["operation_schema"]["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["operation"] == "set_experience_scroll_award")
+        .expect("Experience Scroll award operation is discoverable");
+    assert_eq!(
+        scroll_award_operation["target_id"],
+        "<entity-id>.experience_award"
+    );
+    assert_eq!(
+        scroll_award_operation["experience_award"]["unit"],
+        "experience_points"
+    );
+    assert_eq!(scroll_award_operation["mutation_timing"], "session_reset");
+    let scroll_award_capability = capabilities["data"]["compiled_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["id"] == "engine.item.experience_scroll.experience_award")
+        .expect("Experience Scroll award capability is discoverable");
+    assert_eq!(scroll_award_capability["version"], 1);
+    assert_eq!(scroll_award_capability["provider"], "engine_compiled");
     let castle_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
         .unwrap()
@@ -451,7 +474,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "28.0");
+    assert_eq!(entities["contract_version"], "29.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -788,10 +811,10 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "28.0");
+    assert_eq!(described["contract_version"], "29.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v7"
+        "carpet-flight-game-definition/v8"
     );
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "mechanic");
@@ -896,7 +919,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v6"
+        "carpet-flight-change-set/v7"
     );
     assert_eq!(
         staged["data"]["change_set"]["operations"][0]["operation"],
@@ -1078,7 +1101,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "28.0");
+    assert_eq!(described["contract_version"], "29.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
     assert_eq!(descriptor["value_type"], "integer");
@@ -1133,7 +1156,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert_eq!(staged["data"]["published"], false);
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v6"
+        "carpet-flight-change-set/v7"
     );
     let change_set_path = temporary.0.join("firefly-max-life-change-set.json");
     fs::write(
@@ -1275,6 +1298,159 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     // zero-value rejection. The backend gate separately owns constructor and
     // damage consumption; this does not claim other creature families,
     // projectile travel, save/replay, or Unity editing UI.
+}
+
+#[test]
+fn real_experience_scroll_award_publishes_through_the_typed_cli() {
+    const ENTITY: &str = "item.experience_scroll.at_129_149";
+    const TARGET: &str = "item.experience_scroll.at_129_149.experience_award";
+    let campaign = level_two_campaign_fixture();
+    let campaign = campaign.to_str().unwrap();
+
+    let described = run(&[
+        "game",
+        "describe",
+        "--campaign-package",
+        campaign,
+        "--id",
+        TARGET,
+    ]);
+    assert!(described.status.success(), "{:?}", described.stderr);
+    assert!(described.stderr.is_empty());
+    let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+    let descriptor = &described["data"]["descriptors"][0];
+    assert_eq!(descriptor["kind"], "entity_parameter");
+    assert_eq!(descriptor["unit"], "experience_points");
+    assert_eq!(descriptor["access"], "writable");
+    assert_eq!(descriptor["mutation_timing"], "session_reset");
+    assert_eq!(descriptor["default_value"]["value"], 4);
+    assert_eq!(descriptor["effective_value"]["value"], 4);
+
+    let temporary = TempWorkspace::new("semantic-experience-scroll-award");
+    let workspace = temporary.0.to_str().unwrap();
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "semantic-experience-scroll-award",
+        "--campaign-package",
+        campaign,
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+    assert!(created.stderr.is_empty());
+
+    let changes_path = temporary.0.join("set-experience-scroll-award.json");
+    fs::write(
+        &changes_path,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "set_experience_scroll_award",
+            "entity": ENTITY,
+            "experience_award": 8,
+            "expected_experience_award": 4
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "publish-experience-scroll-award",
+        "--timing",
+        "session_reset",
+        "--changes",
+        changes_path.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    assert!(staged.stderr.is_empty());
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(staged["data"]["published"], false);
+    let change_set_path = temporary.0.join("experience-scroll-award-change-set.json");
+    fs::write(
+        &change_set_path,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    assert!(validated.stderr.is_empty());
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    assert_eq!(
+        validated["data"]["validation"]["affected_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let diff = run(&[
+        "game",
+        "diff",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+    ]);
+    assert!(diff.status.success(), "{:?}", diff.stderr);
+    assert!(diff.stderr.is_empty());
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(
+        diff["data"]["diff"],
+        serde_json::json!([{
+            "id": TARGET,
+            "before": {"type": "integer", "value": 4},
+            "after": {"type": "integer", "value": 8}
+        }])
+    );
+
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set_path.to_str().unwrap(),
+        "--validation-receipt",
+        validated["data"]["validation"]["receipt_hash"]
+            .as_str()
+            .unwrap(),
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    assert!(applied.stderr.is_empty());
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(
+        applied["data"]["receipt"]["applied_ids"],
+        serde_json::json!([TARGET])
+    );
+
+    let readback = run(&["game", "get", "--workspace", workspace, "--id", TARGET]);
+    assert!(readback.status.success(), "{:?}", readback.stderr);
+    assert!(readback.stderr.is_empty());
+    let readback: Value = serde_json::from_slice(&readback.stdout).unwrap();
+    assert_eq!(readback["identity"]["revision"], 2);
+    assert_eq!(readback["data"]["descriptor"]["default_value"]["value"], 4);
+    assert_eq!(
+        readback["data"]["descriptor"]["effective_value"]["value"],
+        8
+    );
+    assert_eq!(
+        readback["data"]["value"],
+        serde_json::json!({"type":"integer","value":8})
+    );
+
+    // No-Claim: this public gate proves one real package-bound scroll's closed
+    // descriptor, guarded publication, diff, and readback. The sim-core gate
+    // owns ordinary XP consumption, hide/reclaim, reopen, and reset.
 }
 
 #[test]
@@ -1552,10 +1728,10 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "28.0");
+    assert_eq!(described["contract_version"], "29.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v7"
+        "carpet-flight-game-definition/v8"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -1610,7 +1786,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert_eq!(staged["data"]["published"], false);
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v6"
+        "carpet-flight-change-set/v7"
     );
     let change_set_path = temporary.0.join("fireball-cost-change-set.json");
     fs::write(
@@ -1879,10 +2055,10 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "28.0");
+    assert_eq!(described["contract_version"], "29.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v7"
+        "carpet-flight-game-definition/v8"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -1942,7 +2118,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v6"
+        "carpet-flight-change-set/v7"
     );
     assert_eq!(
         staged["data"]["change_set"]["operations"][0]["operation"],
@@ -2161,10 +2337,10 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "28.0");
+    assert_eq!(described["contract_version"], "29.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v7"
+        "carpet-flight-game-definition/v8"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -2226,7 +2402,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v6"
+        "carpet-flight-change-set/v7"
     );
     let change_set_path = temporary.0.join("creature-absence-change-set.json");
     fs::write(
@@ -2692,7 +2868,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "28.0");
+        assert_eq!(described["contract_version"], "29.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -2877,7 +3053,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "28.0");
+    assert_eq!(described["contract_version"], "29.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");
@@ -3217,7 +3393,7 @@ fn authoring_cli_rejects_session_generation_and_duplicate_workspace_creation() {
     fs::write(
         &invalid_path,
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": "carpet-flight-change-set/v6",
+            "schema_version": "carpet-flight-change-set/v7",
             "target_workspace": "schema-workspace",
             "expected_definition_hash": definition_hash,
             "expected_definition_revision": 1,

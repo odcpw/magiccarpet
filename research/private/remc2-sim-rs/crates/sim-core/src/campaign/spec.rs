@@ -478,6 +478,7 @@ pub struct CampaignDefinition {
     scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     scenery_by_initial_source_slot: BTreeMap<u16, SceneryKind>,
     item_by_authored_record: BTreeMap<u16, ItemKind>,
+    item_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     switch_by_authored_record: BTreeMap<u16, SwitchKind>,
     switch_by_initial_source_slot: BTreeMap<u16, SwitchKind>,
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
@@ -1537,6 +1538,7 @@ impl CampaignDefinition {
             scenery_by_authored_record: semantic_level.scenery_by_authored_record,
             scenery_by_initial_source_slot,
             item_by_authored_record: semantic_level.item_by_authored_record,
+            item_entity_by_authored_record: semantic_level.item_entity_by_authored_record,
             switch_by_authored_record: semantic_level.switch_by_authored_record,
             switch_by_initial_source_slot,
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
@@ -1620,6 +1622,10 @@ impl CampaignDefinition {
 
     pub(crate) fn item_bindings(&self) -> &BTreeMap<u16, ItemKind> {
         &self.item_by_authored_record
+    }
+
+    pub(crate) fn item_entity_bindings(&self) -> BTreeMap<u16, LevelEntityId> {
+        self.item_entity_by_authored_record.clone()
     }
 
     pub(crate) fn switch_bindings(&self) -> &BTreeMap<u16, SwitchKind> {

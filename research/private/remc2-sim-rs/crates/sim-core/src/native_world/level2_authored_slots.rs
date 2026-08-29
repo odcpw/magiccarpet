@@ -3002,6 +3002,7 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         model: u8,
+        experience_award: Option<i32>,
         activation_group: i16,
         stage_tag: i16,
         position: Position,
@@ -3011,6 +3012,9 @@ impl Level2EconomyState {
             5 => (10, 280, 0, 768, 1280),
             _ => return None,
         };
+        if (model == 5) != experience_award.is_some_and(|award| award > 0) {
+            return None;
+        }
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
@@ -3031,6 +3035,7 @@ impl Level2EconomyState {
             entity_rng,
             authored_index,
             model,
+            experience_award,
             action,
             particle,
             control_flags,
@@ -7607,12 +7612,20 @@ impl Level2EconomyState {
             hasher.update(tail.control_flags.to_le_bytes());
             hasher.update([u8::from(tail.active)]);
         }
+        hasher.update(b"authored-class14-v2");
         hasher.update(self.class14_model3_handle.to_le_bytes());
         for source in &self.authored_class14 {
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
             hasher.update(source.authored_index.to_le_bytes());
             hasher.update([source.model, source.action]);
+            match source.experience_award {
+                Some(award) => {
+                    hasher.update([1]);
+                    hasher.update(award.to_le_bytes());
+                }
+                None => hasher.update([0]),
+            }
             hasher.update(source.particle.to_le_bytes());
             hasher.update([source.control_flags]);
             hasher.update(source.shift_rot_x.to_le_bytes());

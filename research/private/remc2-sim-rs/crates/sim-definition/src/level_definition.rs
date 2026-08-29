@@ -444,6 +444,43 @@ pub struct CreatureHealthDefinition {
     max_life_access: LevelEntityParameterAccess,
 }
 
+/// Immutable per-instance reward carried by one package-present Experience Scroll.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExperienceScrollDefinition {
+    default_experience_award: u32,
+    experience_award: u32,
+    #[serde(default, skip_serializing_if = "is_read_only_entity_parameter")]
+    experience_award_access: LevelEntityParameterAccess,
+}
+
+impl ExperienceScrollDefinition {
+    pub(crate) const fn new(
+        experience_award: u32,
+        experience_award_access: LevelEntityParameterAccess,
+    ) -> Self {
+        Self {
+            default_experience_award: experience_award,
+            experience_award,
+            experience_award_access,
+        }
+    }
+
+    #[must_use]
+    pub const fn default_experience_award(self) -> u32 {
+        self.default_experience_award
+    }
+
+    #[must_use]
+    pub const fn experience_award(self) -> u32 {
+        self.experience_award
+    }
+
+    #[must_use]
+    pub const fn experience_award_access(self) -> LevelEntityParameterAccess {
+        self.experience_award_access
+    }
+}
+
 impl CreatureHealthDefinition {
     pub(crate) const fn new(max_life: u32, max_life_access: LevelEntityParameterAccess) -> Self {
         Self {
@@ -581,6 +618,8 @@ pub struct LevelEntityDefinition {
     absence_countdown: Option<AbsenceCountdownDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    experience_scroll: Option<ExperienceScrollDefinition>,
 }
 
 impl LevelEntityDefinition {
@@ -592,6 +631,7 @@ impl LevelEntityDefinition {
         position_access: LevelEntityPositionAccess,
         absence_countdown: Option<AbsenceCountdownDefinition>,
         creature_health: Option<CreatureHealthDefinition>,
+        experience_scroll: Option<ExperienceScrollDefinition>,
     ) -> Self {
         Self {
             id,
@@ -602,6 +642,7 @@ impl LevelEntityDefinition {
             position_access,
             absence_countdown,
             creature_health,
+            experience_scroll,
         }
     }
 
@@ -644,6 +685,11 @@ impl LevelEntityDefinition {
     #[must_use]
     pub const fn creature_health(&self) -> Option<CreatureHealthDefinition> {
         self.creature_health
+    }
+
+    #[must_use]
+    pub const fn experience_scroll(&self) -> Option<ExperienceScrollDefinition> {
+        self.experience_scroll
     }
 }
 
@@ -722,6 +768,31 @@ impl LevelDefinition {
                 (_, Some(_)) => {
                     return Err(format!(
                         "non-creature entity {} carries creature-health configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
+            match (entity.kind, entity.experience_scroll) {
+                (LevelEntityKind::Item(ItemKind::ExperienceScroll), Some(config))
+                    if (1..=i32::MAX.cast_unsigned())
+                        .contains(&config.default_experience_award)
+                        && (1..=i32::MAX.cast_unsigned()).contains(&config.experience_award) => {}
+                (LevelEntityKind::Item(ItemKind::ExperienceScroll), Some(_)) => {
+                    return Err(format!(
+                        "semantic Experience Scroll {} has an invalid experience award",
+                        entity.id.as_str()
+                    ));
+                }
+                (LevelEntityKind::Item(ItemKind::ExperienceScroll), None) => {
+                    return Err(format!(
+                        "semantic Experience Scroll {} has no reward configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-Experience-Scroll entity {} carries reward configuration",
                         entity.id.as_str()
                     ));
                 }
@@ -993,6 +1064,46 @@ impl LevelDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_experience_scroll_award(
+        &self,
+        id: &LevelEntityId,
+        experience_award: u32,
+    ) -> Result<Self, String> {
+        if !(1..=i32::MAX.cast_unsigned()).contains(&experience_award) {
+            return Err(format!(
+                "semantic Experience Scroll {} award is outside 1..={}",
+                id.as_str(),
+                i32::MAX
+            ));
+        }
+        let mut candidate = self.clone();
+        let entity = candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == *id)
+            .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
+        let config = entity.experience_scroll.as_mut().ok_or_else(|| {
+            format!(
+                "semantic level entity {} is not an Experience Scroll",
+                id.as_str()
+            )
+        })?;
+        if config.experience_award_access != LevelEntityParameterAccess::SessionReset {
+            return Err(format!(
+                "semantic Experience Scroll {} award has no runtime consumer",
+                id.as_str()
+            ));
+        }
+        if config.experience_award == experience_award {
+            return Err(format!(
+                "semantic Experience Scroll {} already has the requested award",
+                id.as_str()
+            ));
+        }
+        config.experience_award = experience_award;
+        Ok(candidate)
+    }
+
     /// Verify that this definition differs from `base` only through semantic
     /// changes explicitly admitted at session reset.
     ///
@@ -1093,6 +1204,43 @@ impl LevelDefinition {
                 _ => {
                     return Err(format!(
                         "semantic level variant adds or removes creature-health configuration at {}",
+                        original.id.as_str()
+                    ));
+                }
+            }
+            match (candidate.experience_scroll, original.experience_scroll) {
+                (Some(candidate_config), Some(original_config)) => {
+                    if candidate_config.default_experience_award
+                        != original_config.default_experience_award
+                        || candidate_config.experience_award_access
+                            != original_config.experience_award_access
+                    {
+                        return Err(format!(
+                            "semantic level variant changes Experience Scroll reward structure at {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if candidate_config.experience_award != original_config.experience_award
+                        && original_config.experience_award_access
+                            != LevelEntityParameterAccess::SessionReset
+                    {
+                        return Err(format!(
+                            "semantic level variant changes read-only Experience Scroll reward {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if !(1..=i32::MAX.cast_unsigned()).contains(&candidate_config.experience_award)
+                    {
+                        return Err(format!(
+                            "semantic level variant gives Experience Scroll {} an invalid award",
+                            original.id.as_str()
+                        ));
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(format!(
+                        "semantic level variant adds or removes Experience Scroll reward configuration at {}",
                         original.id.as_str()
                     ));
                 }

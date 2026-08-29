@@ -6471,9 +6471,22 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
+        let experience_award = if feature.subtype == 5 {
+            Some(
+                i32::try_from(
+                    self.session
+                        .definition
+                        .authored_experience_scroll_award(feature.index)?,
+                )
+                .ok()?,
+            )
+        } else {
+            None
+        };
         self.session.state.live.economy.allocate_authored_class14(
             authored_index,
             u8::try_from(feature.subtype).ok()?,
+            experience_award,
             feature.activation_group,
             feature.stage_tag,
             position,
@@ -15302,7 +15315,7 @@ impl Level2ResetSession {
     }
 
     pub(super) fn step_level2_authored_class14(&mut self, source_slot: u16) -> bool {
-        let Some((model, position)) = self
+        let Some((model, experience_award, position)) = self
             .session
             .state
             .live
@@ -15310,7 +15323,7 @@ impl Level2ResetSession {
             .authored_class14()
             .iter()
             .find(|source| source.active && source.source_entity_index == source_slot)
-            .map(|source| (source.model, source.position))
+            .map(|source| (source.model, source.experience_award, source.position))
         else {
             return false;
         };
@@ -15344,6 +15357,7 @@ impl Level2ResetSession {
                 .shared_spells
                 .collect_level2_experience_scroll(
                     source_slot,
+                    experience_award.expect("live model-5 scroll carries a validated reward"),
                     snapped_position,
                     self.session.state.live.core.runtime.local_player_slot,
                     self.session.state.live.core.state.entity_index,

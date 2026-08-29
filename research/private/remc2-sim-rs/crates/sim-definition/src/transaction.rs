@@ -22,7 +22,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v6";
+pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v7";
 pub const WORKSPACE_SCHEMA: &str = "carpet-flight-definition-workspace/v1";
 pub const VALIDATION_RECEIPT_SCHEMA: &str = "carpet-flight-validation-receipt/v1";
 pub const APPLY_RECEIPT_SCHEMA: &str = "carpet-flight-apply-receipt/v1";
@@ -397,6 +397,39 @@ impl ChangeSetBuilder {
                 entity,
                 max_life,
                 expected_max_life: Some(expected_max_life),
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_experience_scroll_award(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        experience_award: u32,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetExperienceScrollAward {
+                entity,
+                experience_award,
+                expected_experience_award: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_experience_scroll_award_from(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        expected_experience_award: u32,
+        experience_award: u32,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetExperienceScrollAward {
+                entity,
+                experience_award,
+                expected_experience_award: Some(expected_experience_award),
             });
         self
     }
@@ -1541,6 +1574,60 @@ fn validate_against(
                     Err(error) => diagnostics.push(error.into()),
                 }
             }
+            ResolvedOperation::ExperienceScrollAwardSet {
+                id,
+                entity,
+                experience_award,
+                expected_experience_award,
+            } => {
+                required_timing = Some(required_timing.unwrap_or(RequestedTiming::SessionReset));
+                if !change_set
+                    .requested_timing
+                    .permits(MutationTiming::SessionReset)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "UNSAFE_TIMING".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "Experience Scroll reward authoring requires session_reset timing"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                let current = active
+                    .level_definition()
+                    .and_then(|level| level.entity(entity))
+                    .and_then(|candidate| candidate.experience_scroll())
+                    .map(|config| config.experience_award());
+                if expected_experience_award.is_some() && current != *expected_experience_award {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message:
+                            "Experience Scroll expected award does not match the active definition"
+                                .to_owned(),
+                    });
+                    continue;
+                }
+                if current == Some(*experience_award) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "Experience Scroll already has the requested award".to_owned(),
+                    });
+                    continue;
+                }
+                match proposed.with_experience_scroll_award(
+                    entity,
+                    *experience_award,
+                    candidate_revision,
+                ) {
+                    Ok(updated) => {
+                        proposed = updated;
+                        preliminarily_valid.insert(id.clone());
+                    }
+                    Err(error) => diagnostics.push(error.into()),
+                }
+            }
         }
     }
     for resolved in &resolved_operations {
@@ -1580,6 +1667,15 @@ fn validate_against(
                 ResolvedOperation::EntityMaxLifeSet {
                     entity, max_life, ..
                 } => candidate.with_creature_max_life(entity, *max_life, candidate_revision),
+                ResolvedOperation::ExperienceScrollAwardSet {
+                    entity,
+                    experience_award,
+                    ..
+                } => candidate.with_experience_scroll_award(
+                    entity,
+                    *experience_award,
+                    candidate_revision,
+                ),
             };
             match applied {
                 Ok(updated) => candidate = updated,

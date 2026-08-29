@@ -39,8 +39,9 @@ use crate::{
     game_definition::{
         ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFireballBinding,
         DefinitionFlightBinding, DefinitionGoatPolicyBinding, ENEMY_DEFAULT_POLICY_ID,
-        FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, RequiredCapability, SemanticCatalog,
-        SemanticId, creature_max_life_capability_id, default_catalog, engine_capabilities,
+        EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
+        RequiredCapability, SemanticCatalog, SemanticId, creature_max_life_capability_id,
+        default_catalog, engine_capabilities,
     },
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
@@ -275,6 +276,14 @@ pub fn load_mc2_campaign(
     }
     if descriptor.local_player_fireball_mana_cost().is_some() {
         requirement_ids.push(FIREBALL_MANA_COST_CAPABILITY_ID);
+    }
+    if descriptor
+        .level_definition()
+        .entities()
+        .iter()
+        .any(|entity| entity.experience_scroll().is_some())
+    {
+        requirement_ids.push(EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID);
     }
     for entity in descriptor
         .level_definition()
@@ -1728,6 +1737,37 @@ mod tests {
         store.active_definition().expect("published definition")
     }
 
+    fn publish_experience_scroll_award(
+        store: &WorkspaceStore,
+        catalog: &SemanticCatalog,
+        active: &GameDefinition,
+        entity: sim_definition::level_definition::LevelEntityId,
+        award: u32,
+    ) -> GameDefinition {
+        let change_set = ChangeSetBuilder::new(
+            "campaign-experience-scroll-award",
+            active,
+            "publish-experience-scroll-award",
+            RequestedTiming::SessionReset,
+        )
+        .set_experience_scroll_award_from(entity, 4, award)
+        .build()
+        .expect("typed Experience Scroll change set");
+        let validation = store
+            .validate(catalog, change_set.clone())
+            .expect("Experience Scroll change validates");
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .expect("Experience Scroll change publishes");
+        store.active_definition().expect("published definition")
+    }
+
     fn publish_enemy_goat_policy(
         store: &WorkspaceStore,
         catalog: &SemanticCatalog,
@@ -2147,6 +2187,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected_items
         );
+        let experience_scrolls = level
+            .entities()
+            .iter()
+            .filter(|entity| entity.kind() == LevelEntityKind::Item(ItemKind::ExperienceScroll))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            experience_scrolls.len(),
+            expected_items
+                .iter()
+                .find(|(kind, _)| *kind == ItemKind::ExperienceScroll)
+                .map_or(0, |(_, count)| *count)
+        );
+        assert!(experience_scrolls.iter().all(|entity| {
+            entity.experience_scroll().is_some_and(|config| {
+                config.default_experience_award() == 4
+                    && config.experience_award() == 4
+                    && config.experience_award_access() == LevelEntityParameterAccess::SessionReset
+            })
+        }));
+        if !experience_scrolls.is_empty() {
+            assert!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    })
+            );
+        }
         assert_eq!(
             level
                 .building_kinds()
@@ -10175,6 +10245,169 @@ mod tests {
         // model-39/model-54 construction. It does not make the other area
         // triggers movable or prove groups 9/10, dynamic switches, save/replay,
         // or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_experience_scroll_award_before_collection_after_reopen_and_reset()
+     {
+        const AUTHORED_RECORD: u16 = 248;
+        const AUTHORED_AWARD: u32 = 8;
+
+        fn collect_scroll(
+            session: &mut GameSession<Mc2CampaignBackend>,
+            expected_award: i32,
+        ) -> ([i32; 26], [i32; 26]) {
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .activate_authored_group_prerequisite_for_test(5)
+                .unwrap();
+            let scroll = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class14()
+                .iter()
+                .find(|source| source.authored_index == AUTHORED_RECORD)
+                .copied()
+                .unwrap();
+            assert_eq!(scroll.experience_award, Some(expected_award));
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let before = *compatibility.shared_spells().spell_experience();
+            let local_player = compatibility
+                .shared_spells()
+                .players()
+                .iter()
+                .find(|player| player.entity_index == compatibility.state.entity_index)
+                .unwrap();
+            let enabled = local_player.enabled_spell_holders;
+            let player_entity = compatibility.state.entity_index;
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player_entity, scroll.position)
+                .unwrap();
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let after = *compatibility.shared_spells().spell_experience();
+            for family in 0..after.len() {
+                if enabled[family] == 0 {
+                    assert_eq!(after[family], before[family]);
+                } else if family == usize::from(crate::level1_mission::CASTLE_SPELL_FAMILY) {
+                    assert_eq!(
+                        after[family],
+                        before[family].wrapping_add(expected_award).min(7)
+                    );
+                } else {
+                    assert_eq!(after[family], before[family].wrapping_add(expected_award));
+                }
+            }
+            let retained = compatibility
+                .economy()
+                .authored_class14()
+                .iter()
+                .find(|source| source.source_entity_index == scroll.source_entity_index)
+                .unwrap();
+            assert!(retained.active);
+            assert!(!retained.drawing_enabled);
+            (before, after)
+        }
+
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let scroll =
+            sim_definition::adapter::stable_entity_id("item.experience_scroll.at_129_149").unwrap();
+        let config = base
+            .level_definition()
+            .unwrap()
+            .entity(&scroll)
+            .unwrap()
+            .experience_scroll()
+            .unwrap();
+        assert_eq!(
+            (config.default_experience_award(), config.experience_award()),
+            (4, 4)
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-experience-scroll-award");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-experience-scroll-award",
+            base.clone(),
+        )
+        .unwrap();
+        let published = publish_experience_scroll_award(
+            &store,
+            &catalog,
+            &base,
+            scroll.clone(),
+            AUTHORED_AWARD,
+        );
+        assert_eq!(
+            published
+                .level_definition()
+                .unwrap()
+                .entity(&scroll)
+                .unwrap()
+                .experience_scroll()
+                .unwrap()
+                .experience_award(),
+            AUTHORED_AWARD
+        );
+
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            176,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let (_, package_after) = collect_scroll(&mut session, 4);
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published.clone()))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        let authored_frame_zero_hash = session.backend().campaign.state_hash();
+        let (_, authored_after) = collect_scroll(&mut session, AUTHORED_AWARD as i32);
+        assert_ne!(authored_after, package_after);
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            authored_frame_zero_hash
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class14()
+                .is_empty()
+        );
+        let (_, reset_after) = collect_scroll(&mut session, AUTHORED_AWARD as i32);
+        assert_eq!(reset_after, authored_after);
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves per-instance Experience Scroll reward publication,
+        // old-session isolation, constructor binding, ordinary local-player XP
+        // consumption, hide, explicit reopen, and reset for one real Level 2 row.
+        // It does not author placement in the same change, scroll population,
+        // enabled spell families, remote-player rewards, save/replay, or Unity UI.
     }
 
     #[test]
