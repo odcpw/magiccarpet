@@ -25,6 +25,8 @@ pub(crate) use archer::ARCHER_ACTION_HIT;
 pub(crate) use archer::ARCHER_MAX_LIFE;
 pub(crate) use dragon::DRAGON_LIFE;
 
+pub(crate) const BEE_MAX_LIFE: i16 = 3_000;
+
 #[cfg(test)]
 mod tests;
 

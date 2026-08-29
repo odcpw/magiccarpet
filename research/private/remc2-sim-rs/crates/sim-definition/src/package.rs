@@ -31,6 +31,10 @@ pub const FIREFLY_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.firefly.max_li
 pub const ARCHER_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.archer.max_life";
 
 /// Exact compiled capability required by packages which expose the ordinary
+/// authored Bee constructor's maximum-life parameter.
+pub const BEE_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.bee.max_life";
+
+/// Exact compiled capability required by packages which expose the ordinary
 /// Dragon root-and-body constructor's maximum-life parameter.
 pub const DRAGON_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.dragon.max_life";
 
@@ -40,6 +44,7 @@ pub const DRAGON_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.dragon.max_life
 pub const fn creature_max_life_capability_id(kind: CreatureKind) -> Option<&'static str> {
     match kind {
         CreatureKind::Archer => Some(ARCHER_MAX_LIFE_CAPABILITY_ID),
+        CreatureKind::Bee => Some(BEE_MAX_LIFE_CAPABILITY_ID),
         CreatureKind::Dragon => Some(DRAGON_MAX_LIFE_CAPABILITY_ID),
         CreatureKind::Firefly => Some(FIREFLY_MAX_LIFE_CAPABILITY_ID),
         _ => None,
@@ -146,6 +151,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 ARCHER_MAX_LIFE_CAPABILITY_ID,
                 "Package-bound Archer construction and complete damage/death lifecycle.",
+            ),
+            (
+                BEE_MAX_LIFE_CAPABILITY_ID,
+                "Package-bound authored Bee construction and complete damage/death lifecycle.",
             ),
             (
                 DRAGON_MAX_LIFE_CAPABILITY_ID,

@@ -251,13 +251,19 @@ impl Mc2LevelDefinition {
                 )?;
                 if matches!(
                     kind,
-                    CreatureKind::Firefly | CreatureKind::Archer | CreatureKind::Dragon
+                    CreatureKind::Firefly
+                        | CreatureKind::Archer
+                        | CreatureKind::Bee
+                        | CreatureKind::Dragon
                 ) {
                     let max_life = match kind {
                         CreatureKind::Firefly => {
                             crate::native_world::level2_class5::firefly::FIREFLY_LIFE
                         }
                         CreatureKind::Archer => crate::native_world::level2_class5::ARCHER_MAX_LIFE,
+                        CreatureKind::Bee => {
+                            i32::from(crate::native_world::level2_class5::BEE_MAX_LIFE)
+                        }
                         CreatureKind::Dragon => crate::native_world::level2_class5::DRAGON_LIFE,
                         _ => {
                             return Err(format!(

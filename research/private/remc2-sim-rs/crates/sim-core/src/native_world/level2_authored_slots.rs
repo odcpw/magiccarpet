@@ -1434,6 +1434,7 @@ impl Level2EconomyState {
         authored_index: u16,
         position: Position,
         stage_route: Option<Level2BeeStageRoute>,
+        max_life: i16,
         terrain: &SessionTerrain,
     ) -> Option<BeeCreatureRuntime> {
         let (action, stage_var1, stage_var2, stage_target) =
@@ -1456,6 +1457,7 @@ impl Level2EconomyState {
             stage_var1,
             stage_var2,
             stage_target,
+            max_life,
             terrain,
         )
     }
@@ -1480,6 +1482,7 @@ impl Level2EconomyState {
             0,
             12,
             None,
+            level2_class5::BEE_MAX_LIFE,
             terrain,
         )
     }
@@ -1495,9 +1498,10 @@ impl Level2EconomyState {
         stage_var1: u8,
         stage_var2: u8,
         stage_target: Option<Position>,
+        max_life: i16,
         terrain: &SessionTerrain,
     ) -> Option<BeeCreatureRuntime> {
-        if terrain.map_type != MapType::Day {
+        if terrain.map_type != MapType::Day || max_life <= 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -1546,9 +1550,9 @@ impl Level2EconomyState {
             // movement helper only consumes the later byte-1 bit 8 (0x800),
             // so the constructor's low-byte marker remains intact here.
             control_flags: 8 | u32::from(parent_entity_index != 0),
-            mana: 1500,
-            max_life: 3000,
-            life: 3000,
+            mana: i32::from(max_life) / 2,
+            max_life,
+            life: max_life,
             pending_damage: 0,
             pending_attacker_entity_index: 0,
             damage_attacker_entity_index: 0,

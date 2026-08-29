@@ -1273,9 +1273,9 @@ mod tests {
     use super::*;
     use crate::campaign::state::{ResetReceipt, ResetState, encode_reset_v1};
     use crate::game_definition::{
-        ARCHER_MAX_LIFE_CAPABILITY_ID, Access, ArtifactId, ChangeSetBuilder,
-        DRAGON_MAX_LIFE_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GamePackage,
-        IntegerParameter, OptionParameter, PresentationAssetSlot, PublicationFault,
+        ARCHER_MAX_LIFE_CAPABILITY_ID, Access, ArtifactId, BEE_MAX_LIFE_CAPABILITY_ID,
+        ChangeSetBuilder, DRAGON_MAX_LIFE_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
+        GamePackage, IntegerParameter, OptionParameter, PresentationAssetSlot, PublicationFault,
         RequestedTiming, SemanticValue, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
@@ -5162,6 +5162,298 @@ mod tests {
         // No-Claim: this is only the closed first-three-package Dragon
         // descriptor/capability census. The separate causal gate owns one
         // real root/body construction and one ordinary body damage visit.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_bee_max_life_before_mailbox_damage_after_reopen_and_reset() {
+        const BEE_RECORD: u16 = 229;
+        const GROUP_TWENTY_ONE_ROWS: &[u16] = &[229, 230, 231];
+        const PACKAGE_MAX_LIFE: u32 = 3_000;
+        const AUTHORED_MAX_LIFE: u32 = 6_000;
+        const DAMAGE: i32 = 3_500;
+
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let bee = sim_definition::adapter::stable_entity_id("creature.bee.at_97_17").unwrap();
+        let target = base.level_definition().unwrap().entity(&bee).unwrap();
+        assert_eq!(
+            target.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+        let descriptor = base
+            .level_creature_max_life_descriptor(
+                &sim_definition::SemanticId::parse("creature.bee.at_97_17.max_life").unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            (descriptor.minimum, descriptor.maximum),
+            (Some(1), Some(32_767))
+        );
+        assert!(base.required_capabilities().iter().any(|requirement| {
+            requirement.id.as_str() == BEE_MAX_LIFE_CAPABILITY_ID && requirement.exact_version == 1
+        }));
+
+        let workspace_root = temporary_workspace_path("campaign-bee-max-life");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-bee-max-life", base.clone()).unwrap();
+        let before_rejection = store.state_bytes().unwrap();
+        let out_of_range = ChangeSetBuilder::new(
+            "campaign-bee-max-life",
+            &base,
+            "reject-source-width-bee-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(bee.clone(), PACKAGE_MAX_LIFE, 32_768)
+        .build()
+        .unwrap();
+        let rejection = store.validate(&catalog, out_of_range).unwrap();
+        assert!(!rejection.accepted);
+        assert_eq!(rejection.diagnostics[0].code, "OUT_OF_RANGE");
+        assert_eq!(store.state_bytes().unwrap(), before_rejection);
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            83,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-bee-max-life",
+            &base,
+            "raise-one-level-two-bee-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(bee, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let construct_group_twenty_one = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(21)
+                .unwrap();
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 21,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == GROUP_TWENTY_ONE_ROWS
+            )));
+            compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|source| source.authored_index() == Some(BEE_RECORD))
+                .copied()
+                .unwrap()
+        };
+        let apply_damage = |session: &mut GameSession<Mc2CampaignBackend>, source_slot| {
+            let attacker = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            assert!(
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .economy_mut()
+                    .stage_bee_mailbox_damage_for_test(source_slot, attacker, DAMAGE)
+            );
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .copied()
+                .unwrap()
+        };
+        let drive_to_action_seventeen = |session: &mut GameSession<Mc2CampaignBackend>,
+                                         source_slot| {
+            for _ in 0..160 {
+                let source = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)
+                    .copied()
+                    .unwrap();
+                if source.action == 17 {
+                    return source;
+                }
+                assert!(!matches!(source.action, 20 | 21));
+                let player_position = if source.action == 23 {
+                    let mut position = source.position;
+                    crate::move_entity(&mut position, source.yaw, 0, 1_000);
+                    position.z = source.position.z;
+                    position
+                } else {
+                    crate::Position {
+                        x: source.position.x.wrapping_add(20_000),
+                        y: source.position.y.wrapping_add(20_000),
+                        z: source.position.z,
+                    }
+                };
+                let player = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .state
+                    .entity_index;
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .set_level2_entity_position(player, player_position)
+                    .unwrap();
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+            panic!("production Bee did not return to action 17")
+        };
+
+        let package_bee = construct_group_twenty_one(&mut session);
+        assert_eq!(
+            (
+                package_bee.max_life,
+                package_bee.life,
+                package_bee.mana,
+                package_bee.action
+            ),
+            (3_000, 3_000, 1_500, 23)
+        );
+        let package_bee = drive_to_action_seventeen(&mut session, package_bee.source_entity_index);
+        let package_after_damage = apply_damage(&mut session, package_bee.source_entity_index);
+        assert_eq!(
+            (package_after_damage.life, package_after_damage.action),
+            (-500, 20)
+        );
+
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        let authored_frame_zero_hash = session.backend().campaign.state_hash();
+        let authored_bee = construct_group_twenty_one(&mut session);
+        assert_eq!(
+            (
+                authored_bee.max_life,
+                authored_bee.life,
+                authored_bee.mana,
+                authored_bee.action
+            ),
+            (6_000, 6_000, 3_000, 23)
+        );
+        let authored_bee =
+            drive_to_action_seventeen(&mut session, authored_bee.source_entity_index);
+        let authored_after_damage = apply_damage(&mut session, authored_bee.source_entity_index);
+        assert_eq!(
+            (authored_after_damage.life, authored_after_damage.action),
+            (2_500, 18)
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            authored_frame_zero_hash
+        );
+        let reset_bee = construct_group_twenty_one(&mut session);
+        assert_eq!(
+            (
+                reset_bee.max_life,
+                reset_bee.life,
+                reset_bee.mana,
+                reset_bee.action
+            ),
+            (6_000, 6_000, 3_000, 23)
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this stages the already-proven real Level 2 group-21
+        // producer and one action-17 mailbox hit. It proves guarded
+        // per-instance Bee maximum-life publication, old-session isolation,
+        // the source-derived half-life mana carrier, explicit reopen/reset
+        // construction, and one ordinary damage visit. It does not prove
+        // organic objective progression, Bee targeting/combat/death, Morph
+        // Bees, other Bee instances or creature families, save/replay, or clients.
+    }
+
+    #[test]
+    fn campaign_packages_bind_only_level_two_and_three_bees_to_the_health_capability() {
+        let catalog = default_catalog().unwrap();
+        for (root, expected_bees) in [
+            (level_one_descriptor_fixture_path(), 0_usize),
+            (descriptor_fixture_path(), 12),
+            (level_three_descriptor_fixture_path(), 6),
+        ] {
+            let definition = load_mc2_campaign(&root, &catalog).unwrap();
+            let bees = definition
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.kind()
+                        == sim_definition::level_definition::LevelEntityKind::Creature(
+                            CreatureKind::Bee,
+                        )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(bees.len(), expected_bees);
+            assert!(bees.iter().all(|entity| {
+                entity.creature_health().is_some_and(|health| {
+                    health.default_max_life() == 3_000
+                        && health.max_life() == 3_000
+                        && health.max_life_access() == LevelEntityParameterAccess::SessionReset
+                })
+            }));
+            assert_eq!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == BEE_MAX_LIFE_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    }),
+                expected_bees > 0
+            );
+        }
+
+        // No-Claim: this is only the closed first-three-package Bee
+        // descriptor/capability census. The separate causal gate owns one
+        // real construction and ordinary damage visit.
     }
 
     #[test]

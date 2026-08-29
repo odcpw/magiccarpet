@@ -1555,8 +1555,8 @@ pub struct BeeCreatureRuntime {
     /// obstruction marker in bit 0x40000.
     pub control_flags: u32,
     /// `SetEvent144_49C70` initializes the Bee's death-conversion mana from
-    /// half of its max life (the pinned constructor therefore starts at
-    /// 1500, not zero).
+    /// half of its max life (the package-default constructor therefore starts
+    /// at 1500, while an authored maximum derives the matching half value).
     pub mana: i32,
     pub max_life: i16,
     pub life: i16,

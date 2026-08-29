@@ -56,6 +56,17 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
     )
 }
 
+/// Largest authored maximum-life value supported by the family's ordinary
+/// constructor and damage carrier.
+#[must_use]
+pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
+    match kind {
+        CreatureKind::Bee => Some(32_767),
+        CreatureKind::Archer | CreatureKind::Dragon | CreatureKind::Firefly => Some(2_147_483_647),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpellKind {
@@ -670,20 +681,14 @@ impl LevelDefinition {
                 (_, None) => {}
             }
             match (entity.kind, entity.creature_health) {
-                (
-                    LevelEntityKind::Creature(
-                        CreatureKind::Firefly | CreatureKind::Archer | CreatureKind::Dragon,
-                    ),
-                    Some(config),
-                ) if (1..=i32::MAX.cast_unsigned()).contains(&config.default_max_life)
-                    && (1..=i32::MAX.cast_unsigned()).contains(&config.max_life) => {}
-                (
-                    LevelEntityKind::Creature(
-                        kind
-                        @ (CreatureKind::Firefly | CreatureKind::Archer | CreatureKind::Dragon),
-                    ),
-                    Some(_),
-                ) => {
+                (LevelEntityKind::Creature(kind), Some(config))
+                    if creature_max_life_upper_bound(kind).is_some_and(|maximum| {
+                        (1..=maximum).contains(&config.default_max_life)
+                            && (1..=maximum).contains(&config.max_life)
+                    }) => {}
+                (LevelEntityKind::Creature(kind), Some(_))
+                    if creature_max_life_upper_bound(kind).is_some() =>
+                {
                     return Err(format!(
                         "semantic {} {} has an invalid maximum life",
                         kind.as_str(),
@@ -921,19 +926,33 @@ impl LevelDefinition {
         id: &LevelEntityId,
         max_life: u32,
     ) -> Result<Self, String> {
-        if !(1..=i32::MAX.cast_unsigned()).contains(&max_life) {
-            return Err(format!(
-                "semantic creature {} maximum life is outside 1..={}",
-                id.as_str(),
-                i32::MAX
-            ));
-        }
         let mut candidate = self.clone();
         let entity = candidate
             .entities
             .iter_mut()
             .find(|entity| entity.id == *id)
             .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
+        let kind = match entity.kind {
+            LevelEntityKind::Creature(kind) => kind,
+            _ => {
+                return Err(format!(
+                    "semantic level entity {} is not a creature",
+                    id.as_str()
+                ));
+            }
+        };
+        let maximum = creature_max_life_upper_bound(kind).ok_or_else(|| {
+            format!(
+                "semantic creature {} has no package-bound health consumer",
+                id.as_str()
+            )
+        })?;
+        if !(1..=maximum).contains(&max_life) {
+            return Err(format!(
+                "semantic creature {} maximum life is outside 1..={maximum}",
+                id.as_str()
+            ));
+        }
         let config = entity.creature_health.as_mut().ok_or_else(|| {
             format!(
                 "semantic level entity {} has no package-bound health consumer",
@@ -1036,7 +1055,16 @@ impl LevelDefinition {
                             original.id.as_str()
                         ));
                     }
-                    if !(1..=i32::MAX.cast_unsigned()).contains(&candidate_config.max_life) {
+                    let Some(maximum) = (match original.kind {
+                        LevelEntityKind::Creature(kind) => creature_max_life_upper_bound(kind),
+                        _ => None,
+                    }) else {
+                        return Err(format!(
+                            "semantic level variant gives non-creature {} health",
+                            original.id.as_str()
+                        ));
+                    };
+                    if !(1..=maximum).contains(&candidate_config.max_life) {
                         return Err(format!(
                             "semantic level variant gives creature {} invalid maximum life",
                             original.id.as_str()

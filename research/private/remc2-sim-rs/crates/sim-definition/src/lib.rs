@@ -24,11 +24,11 @@ pub use operation::{
     ArtifactId, DefinitionOperation, IntegerParameter, OptionParameter, PresentationAssetSlot,
 };
 pub use package::{
-    ARCHER_MAX_LIFE_CAPABILITY_ID, ArtifactKind, ArtifactNode, CREATURE_POLICY_CAPABILITY_ID,
-    CompiledCapability, CompiledCapabilityRegistry, DRAGON_MAX_LIFE_CAPABILITY_ID,
-    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GamePackage,
-    PackageProvenance, PackageProvenanceKind, RequiredCapability, creature_max_life_capability_id,
-    engine_capabilities,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, ArtifactKind, ArtifactNode, BEE_MAX_LIFE_CAPABILITY_ID,
+    CREATURE_POLICY_CAPABILITY_ID, CompiledCapability, CompiledCapabilityRegistry,
+    DRAGON_MAX_LIFE_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
+    FIREFLY_MAX_LIFE_CAPABILITY_ID, GamePackage, PackageProvenance, PackageProvenanceKind,
+    RequiredCapability, creature_max_life_capability_id, engine_capabilities,
 };
 pub use presentation_asset::{
     BoundPresentationAsset, CompatiblePresentationArtifact, INDEXED_SPRITE_SCHEMA,
@@ -55,7 +55,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v7";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "16.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "17.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -894,6 +894,23 @@ impl GameDefinition {
             level_definition::LevelEntityParameterAccess::SessionReset
         );
         let target_id = id.as_str().to_owned();
+        let mut side_effects = Vec::new();
+        if writable {
+            side_effects.push(format!(
+                "already-open sessions retain their original {} health",
+                creature.as_str()
+            ));
+            side_effects.push(
+                "explicit reopen/reset initializes both life and maximum life from this value"
+                    .to_owned(),
+            );
+            if creature == level_definition::CreatureKind::Bee {
+                side_effects.push(
+                    "the authored Bee constructor derives its death-conversion mana as half this value"
+                        .to_owned(),
+                );
+            }
+        }
         Some(SemanticDescriptor {
             id: id.clone(),
             descriptor_version: 1,
@@ -902,7 +919,9 @@ impl GameDefinition {
             unit: Some("life_points".to_owned()),
             default_value: SemanticValue::Integer(i64::from(config.default_max_life())),
             minimum: Some(1),
-            maximum: Some(i64::from(i32::MAX)),
+            maximum: Some(i64::from(
+                level_definition::creature_max_life_upper_bound(creature)?,
+            )),
             enum_values: Vec::new(),
             access: if writable {
                 Access::Writable
@@ -919,18 +938,7 @@ impl GameDefinition {
                     creature.as_str()
                 ),
             ],
-            side_effects: if writable {
-                vec![
-                    format!(
-                        "already-open sessions retain their original {} health",
-                        creature.as_str()
-                    ),
-                    "explicit reopen/reset initializes both life and maximum life from this value"
-                        .to_owned(),
-                ]
-            } else {
-                Vec::new()
-            },
+            side_effects,
             scope: format!("stable {} instance {}", creature.as_str(), entity.id().as_str()),
             provenance_origin: "package semantic level definition".to_owned(),
             provenance_content_hash: self.package_graph_hash.clone(),

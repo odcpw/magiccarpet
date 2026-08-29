@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 16.0 milestone, this is a binding target with
+As of the semantic-contract 17.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -365,6 +365,14 @@ partial real implementation, not a completion claim:
   damage through one body's ordinary mailbox after explicit reopen/reset.
   This does not author multiple Dragons in one transaction, prove organic
   combat or targeting, alter body count/motion/fireballs, support another
+  creature family, save/replay, or Unity UI;
+- every package-present authored Bee in the qualified Level 2 and 3
+  definitions now carries the same per-instance `max_life` descriptor with
+  the source-width bound `1..=32767`. The focused causal proof changes one
+  real Level 2 group-21 Bee from 3000 to 6000 life, preserves its constructor's
+  half-life mana derivation, and sends identical damage through the ordinary
+  action-17 mailbox after explicit reopen/reset. This does not author Morph
+  Bees, multiple Bees in one transaction, targeting/combat/death, another
   creature family, save/replay, or Unity UI;
 - the qualified Level 1 campaign package now retains two profile-pinned,
   canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its

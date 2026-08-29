@@ -6793,10 +6793,16 @@ impl Level2ResetSession {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
+        let max_life = self
+            .session
+            .definition
+            .authored_creature_max_life(feature.index)
+            .and_then(|value| i16::try_from(value).ok())?;
         let source = self.session.state.live.economy.allocate_authored_bee(
             feature.index,
             position,
             stage_route,
+            max_life,
             &self.session.state.live.terrain,
         )?;
         if let Some(route) = stage_route {
@@ -6983,6 +6989,21 @@ impl Level2EconomyTestView<'_> {
             .economy
             .economy
             .submit_authored_dragon_damage(source_slot, damage, attacker_slot)
+    }
+
+    pub(crate) fn stage_bee_mailbox_damage_for_test(
+        &mut self,
+        source_slot: u16,
+        attacker_slot: u16,
+        damage: i32,
+    ) -> bool {
+        self.session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .submit_authored_bee_damage(source_slot, damage, attacker_slot)
     }
 
     pub(crate) fn stage_authored_worm_attack_for_test(
@@ -8246,7 +8267,7 @@ impl Level2ResetSession {
         }
         for feature in rows
             .iter()
-            .filter(|feature| feature.kind == 5 && matches!(feature.subtype, 0 | 4 | 19))
+            .filter(|feature| feature.kind == 5 && matches!(feature.subtype, 0 | 2 | 4 | 19))
         {
             if feature.subtype == 19 && self.authored_firefly_stage_route(*feature).is_none() {
                 return Err(format!(

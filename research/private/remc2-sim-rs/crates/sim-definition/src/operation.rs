@@ -7,10 +7,10 @@
 
 use crate::level_definition::{LevelEntityKind, LevelObjectiveId, ObjectiveCondition};
 use crate::{
-    ARCHER_MAX_LIFE_CAPABILITY_ID, Access, CREATURE_POLICY_CAPABILITY_ID,
-    DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError, DefinitionErrorCode,
-    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GameDefinition, SemanticId,
-    SemanticValue, creature_max_life_capability_id,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, Access, BEE_MAX_LIFE_CAPABILITY_ID,
+    CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError,
+    DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
+    GameDefinition, SemanticId, SemanticValue, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -249,12 +249,16 @@ impl DefinitionOperation {
                         "type": "integer",
                         "unit": "life_points",
                         "minimum": 1,
-                        "maximum": i32::MAX,
+                        "maximum": "target descriptor -> maximum",
                     },
                     "expected_max_life": "same type, unit, and bounds as max_life",
                     "required_capability_by_creature_kind": {
                         "archer": {
                             "id": ARCHER_MAX_LIFE_CAPABILITY_ID,
+                            "exact_version": 1,
+                        },
+                        "bee": {
+                            "id": BEE_MAX_LIFE_CAPABILITY_ID,
                             "exact_version": 1,
                         },
                         "dragon": {
