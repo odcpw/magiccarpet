@@ -550,7 +550,9 @@ partial real implementation, not a completion claim:
   facet without opening either legacy registry. `MagicCarpetRuntime` has an
   explicit headless production mode that admits an unordered owner-local
   package set, lets Rust select the semantic entry, and drives fixed-step/reset
-  through that same handle. Production P-key input now toggles the same
+  through that same handle. Production mouse/JLIK steering and held movement
+  input now enter that same command path, while the semantic camera follows
+  only the Rust-returned player pose. Production P-key input toggles the same
   Rust-owned quiescent pause boundary and discards gameplay input received
   while paused rather than queuing it for resume. Its first bounded
   presentation consumer renders the live Level 1 Fireball described above.

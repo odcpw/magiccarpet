@@ -789,6 +789,7 @@ namespace MagicCarpet.Native
         private float steeringPitch;
         private sbyte appliedRoll;
         private sbyte appliedPitch;
+        private int gameRuntimeMovementFlags;
         private bool fireRequested;
         private bool rightSpellRequested;
         private bool selectedSpellRequested;
@@ -1013,6 +1014,12 @@ namespace MagicCarpet.Native
 
         internal int GameRuntimeProductionFireballMarkerCount =>
             gameRuntimeFireballMarkers.Count;
+
+        internal Quaternion GameRuntimeProductionCameraRotation =>
+            gameRuntimeCameraRig != null
+                ? gameRuntimeCameraRig.rotation
+                : throw new InvalidOperationException(
+                    "game runtime semantic camera is not initialized");
 
         internal Texture GameRuntimeProductionRenderedFireballTexture =>
             gameRuntimeFireballMarkers.Values.FirstOrDefault()?.Renderer
@@ -2564,13 +2571,27 @@ namespace MagicCarpet.Native
             {
                 return;
             }
-            var flags = ReadLiveMovementFlags();
-            appliedRoll = Cursor.lockState == CursorLockMode.Locked
-                ? ClampToSByte(steeringRoll)
-                : (sbyte)0;
-            appliedPitch = Cursor.lockState == CursorLockMode.Locked
-                ? ClampToSByte(steeringPitch)
-                : (sbyte)0;
+            var flags = gameRuntimeMovementFlags;
+            if (fireRequested)
+            {
+                flags |= 0x10;
+                fireRequested = false;
+            }
+            if (rightSpellRequested)
+            {
+                flags |= 0x20;
+                rightSpellRequested = false;
+            }
+            if (selectedSpellRequested)
+            {
+                flags |= 0x40;
+                selectedSpellRequested = false;
+            }
+            // Cursor ownership controls whether Unity accumulates input. The
+            // accumulated deflection itself is the command value at the fixed
+            // step and is cleared whenever the runtime enters Paused.
+            appliedRoll = ClampToSByte(steeringRoll);
+            appliedPitch = ClampToSByte(steeringPitch);
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
                 appliedRoll,
                 appliedPitch,
@@ -2848,6 +2869,30 @@ namespace MagicCarpet.Native
                     ApplyGameRuntimeProductionInput(
                         Input.GetKeyDown(KeyCode.P),
                         Input.GetMouseButtonDown(0));
+                    if (session.GameRuntimeIdentity().mode ==
+                            GameRuntimeTransport.PlayingMode &&
+                        Cursor.lockState == CursorLockMode.Locked)
+                    {
+                        ApplyGameRuntimeMovementInput(
+                            Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow),
+                            Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow),
+                            Input.GetKey(KeyCode.A),
+                            Input.GetKey(KeyCode.D));
+                        ApplyGameRuntimeSteeringInput(
+                            Input.GetAxisRaw("Mouse X"),
+                            Input.GetAxisRaw("Mouse Y"),
+                            Input.GetKey(KeyCode.J),
+                            Input.GetKey(KeyCode.L),
+                            Input.GetKey(KeyCode.I),
+                            Input.GetKey(KeyCode.K),
+                            Input.GetKeyDown(KeyCode.C) ||
+                                Input.GetMouseButtonDown(2),
+                            KeyboardDeflectionRate * Time.unscaledDeltaTime);
+                    }
+                    else
+                    {
+                        gameRuntimeMovementFlags = 0;
+                    }
                 }
                 return;
             }
@@ -2932,21 +2977,15 @@ namespace MagicCarpet.Native
             }
             else if (!AutomatedInput && Cursor.lockState == CursorLockMode.Locked)
             {
-                steeringRoll = Mathf.Clamp(
-                    steeringRoll + Input.GetAxisRaw("Mouse X") * MouseDeflectionGain,
-                    sbyte.MinValue,
-                    sbyte.MaxValue);
-                steeringPitch = Mathf.Clamp(
-                    steeringPitch - Input.GetAxisRaw("Mouse Y") * MouseDeflectionGain,
-                    sbyte.MinValue,
-                    sbyte.MaxValue);
-                var keyboardStep = KeyboardDeflectionRate * Time.unscaledDeltaTime;
-                if (Input.GetKey(KeyCode.J)) steeringRoll -= keyboardStep;
-                if (Input.GetKey(KeyCode.L)) steeringRoll += keyboardStep;
-                if (Input.GetKey(KeyCode.I)) steeringPitch -= keyboardStep;
-                if (Input.GetKey(KeyCode.K)) steeringPitch += keyboardStep;
-                steeringRoll = Mathf.Clamp(steeringRoll, sbyte.MinValue, sbyte.MaxValue);
-                steeringPitch = Mathf.Clamp(steeringPitch, sbyte.MinValue, sbyte.MaxValue);
+                AccumulateSteeringDeflection(
+                    Input.GetAxisRaw("Mouse X"),
+                    Input.GetAxisRaw("Mouse Y"),
+                    Input.GetKey(KeyCode.J),
+                    Input.GetKey(KeyCode.L),
+                    Input.GetKey(KeyCode.I),
+                    Input.GetKey(KeyCode.K),
+                    Input.GetKeyDown(KeyCode.C) || Input.GetMouseButtonDown(2),
+                    KeyboardDeflectionRate * Time.unscaledDeltaTime);
                 var cycleBackward =
                     Input.GetKey(KeyCode.LeftAlt) ||
                     Input.GetKey(KeyCode.RightAlt);
@@ -2974,10 +3013,6 @@ namespace MagicCarpet.Native
                     {
                         LatchSpellCastInput(true);
                     }
-                }
-                if (Input.GetKeyDown(KeyCode.C) || Input.GetMouseButtonDown(2))
-                {
-                    CenterSteering();
                 }
             }
             if (!AutomatedInput && !spellMenuOpen && Input.GetKeyDown(KeyCode.Space))
@@ -8576,6 +8611,8 @@ namespace MagicCarpet.Native
             var identity = session.GameRuntimeIdentity();
             if (pausePressed)
             {
+                CenterSteering();
+                gameRuntimeMovementFlags = 0;
                 fireRequested = false;
                 rightSpellRequested = false;
                 selectedSpellRequested = false;
@@ -8594,6 +8631,8 @@ namespace MagicCarpet.Native
             }
             if (identity.mode == GameRuntimeTransport.PausedMode)
             {
+                CenterSteering();
+                gameRuntimeMovementFlags = 0;
                 fireRequested = false;
                 rightSpellRequested = false;
                 selectedSpellRequested = false;
@@ -8610,11 +8649,101 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void ApplyGameRuntimeMovementInput(
+            bool accelerate,
+            bool decelerate,
+            bool strafeLeft,
+            bool strafeRight)
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "game runtime movement input requires a validated production owner");
+            var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.PausedMode)
+            {
+                gameRuntimeMovementFlags = 0;
+                return;
+            }
+            if (identity.mode != GameRuntimeTransport.PlayingMode)
+            {
+                throw new InvalidOperationException(
+                    $"game runtime movement input is unavailable in mode {identity.mode}");
+            }
+            gameRuntimeMovementFlags =
+                (accelerate ? 0x01 : 0) |
+                (decelerate ? 0x02 : 0) |
+                (strafeLeft ? 0x04 : 0) |
+                (strafeRight ? 0x08 : 0);
+        }
+
+        private void ApplyGameRuntimeSteeringInput(
+            float mouseX,
+            float mouseY,
+            bool steerLeft,
+            bool steerRight,
+            bool steerUp,
+            bool steerDown,
+            bool center,
+            float keyboardStep)
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "game runtime steering requires a validated production owner");
+            var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.PausedMode)
+            {
+                CenterSteering();
+                return;
+            }
+            if (identity.mode != GameRuntimeTransport.PlayingMode)
+            {
+                throw new InvalidOperationException(
+                    $"game runtime steering is unavailable in mode {identity.mode}");
+            }
+            AccumulateSteeringDeflection(
+                mouseX,
+                mouseY,
+                steerLeft,
+                steerRight,
+                steerUp,
+                steerDown,
+                center,
+                keyboardStep);
+        }
+
         internal void QualificationApplyGameRuntimeProductionInput(
             bool pausePressed,
             bool firePressed)
         {
             ApplyGameRuntimeProductionInput(pausePressed, firePressed);
+        }
+
+        internal void QualificationApplyGameRuntimeProductionSteering(
+            float mouseX,
+            float mouseY)
+        {
+            ApplyGameRuntimeSteeringInput(
+                mouseX,
+                mouseY,
+                false,
+                false,
+                false,
+                false,
+                false,
+                0f);
+        }
+
+        internal void QualificationApplyGameRuntimeProductionMovement(
+            bool accelerate,
+            bool decelerate,
+            bool strafeLeft,
+            bool strafeRight)
+        {
+            ApplyGameRuntimeMovementInput(
+                accelerate,
+                decelerate,
+                strafeLeft,
+                strafeRight);
         }
 
         internal void QualificationResetGameRuntimeProduction()
@@ -12578,6 +12707,37 @@ namespace MagicCarpet.Native
             appliedPitch = 0;
         }
 
+        private void AccumulateSteeringDeflection(
+            float mouseX,
+            float mouseY,
+            bool steerLeft,
+            bool steerRight,
+            bool steerUp,
+            bool steerDown,
+            bool center,
+            float keyboardStep)
+        {
+            if (center)
+            {
+                CenterSteering();
+                return;
+            }
+            steeringRoll = Mathf.Clamp(
+                steeringRoll + mouseX * MouseDeflectionGain,
+                sbyte.MinValue,
+                sbyte.MaxValue);
+            steeringPitch = Mathf.Clamp(
+                steeringPitch - mouseY * MouseDeflectionGain,
+                sbyte.MinValue,
+                sbyte.MaxValue);
+            if (steerLeft) steeringRoll -= keyboardStep;
+            if (steerRight) steeringRoll += keyboardStep;
+            if (steerUp) steeringPitch -= keyboardStep;
+            if (steerDown) steeringPitch += keyboardStep;
+            steeringRoll = Mathf.Clamp(steeringRoll, sbyte.MinValue, sbyte.MaxValue);
+            steeringPitch = Mathf.Clamp(steeringPitch, sbyte.MinValue, sbyte.MaxValue);
+        }
+
         private void LatchSpellCastInput(bool rightHand)
         {
             // Latched until exactly one FixedUpdate consumes it.
@@ -12902,6 +13062,8 @@ namespace MagicCarpet.Native
             gameRuntimeMode = false;
             gameRuntimeStartupReady = false;
             gameRuntimeCampaignSnapshot = null;
+            gameRuntimeMovementFlags = 0;
+            CenterSteering();
             level2StartupReady = false;
             level2Mode = false;
             spellMenuCommands.Clear();

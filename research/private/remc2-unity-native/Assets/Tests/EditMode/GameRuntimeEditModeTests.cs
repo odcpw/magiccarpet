@@ -123,6 +123,21 @@ namespace MagicCarpet.Native.Tests
                 Is.EqualTo(expected.value.player_motion.strafe_speed));
         }
 
+        private static int SignedAngle11(short value)
+        {
+            var wrapped = value & 0x07ff;
+            return wrapped >= 1024 ? wrapped - 2048 : wrapped;
+        }
+
+        private static Quaternion ExpectedRuntimeCameraRotation(
+            EngineSessionTransport.Pose pose)
+        {
+            return Quaternion.Euler(
+                -SignedAngle11(pose.display_pitch) * (360f / 2048f),
+                180f - pose.yaw * (360f / 2048f),
+                -SignedAngle11(pose.roll) * (360f / 2048f));
+        }
+
         [Test]
         [Timeout(180000)]
         public void RustGameRuntimeOwnsTitleLoadingAndRealLevelOnePlaying()
@@ -652,6 +667,78 @@ namespace MagicCarpet.Native.Tests
                 // existing quiescent Rust pause boundary and discards a Fireball
                 // click received while paused. It does not provide paused-frame
                 // service, pause menus/audio, or completion transitions.
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProductionGameRuntimeSteeringChangesRustPoseAndSemanticCameraOnSameHandle()
+        {
+            var root = new GameObject("resolver runtime steering input");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                var beforeIdentity = runtime.GameRuntimeProductionIdentity;
+                var before = runtime.GameRuntimeProductionCampaignSnapshot;
+                var cameraBefore = runtime.GameRuntimeProductionCameraRotation;
+                Assert.That(before.identity.tick, Is.EqualTo("0"));
+                Assert.That(
+                    Quaternion.Angle(
+                        cameraBefore,
+                        ExpectedRuntimeCameraRotation(before.value.player_pose)),
+                    Is.LessThan(0.001f));
+
+                runtime.QualificationApplyGameRuntimeProductionSteering(24f, -8f);
+                runtime.QualificationApplyGameRuntimeProductionMovement(
+                    true,
+                    false,
+                    false,
+                    false);
+                Assert.That(
+                    Quaternion.Angle(
+                        runtime.GameRuntimeProductionCameraRotation,
+                        cameraBefore),
+                    Is.LessThan(0.001f),
+                    "Unity input alone must not move the semantic camera");
+                runtime.QualificationDriveGameRuntimeFrames(3);
+
+                var afterIdentity = runtime.GameRuntimeProductionIdentity;
+                var after = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(afterIdentity.runtime_id, Is.EqualTo(beforeIdentity.runtime_id));
+                Assert.That(
+                    afterIdentity.session.session_id,
+                    Is.EqualTo(beforeIdentity.session.session_id));
+                Assert.That(after.identity.tick, Is.EqualTo("3"));
+                Assert.That(
+                    after.value.player_pose.roll != before.value.player_pose.roll ||
+                    after.value.player_pose.yaw != before.value.player_pose.yaw ||
+                    after.value.player_pose.display_pitch !=
+                        before.value.player_pose.display_pitch,
+                    Is.True,
+                    "the steering command must change the Rust-owned player pose");
+                Assert.That(
+                    Quaternion.Angle(
+                        runtime.GameRuntimeProductionCameraRotation,
+                        ExpectedRuntimeCameraRotation(after.value.player_pose)),
+                    Is.LessThan(0.001f));
+                Assert.That(
+                    Quaternion.Angle(
+                        runtime.GameRuntimeProductionCameraRotation,
+                        cameraBefore),
+                    Is.GreaterThan(0.01f));
+
+                // No-Claim: this proves production mouse/JLIK deflection reaches
+                // the same Rust runtime handle and the existing semantic camera
+                // follows the returned pose. It does not prove terrain/HUD/audio,
+                // spell-menu input, controller rebinding, or later-level cameras.
             }
             finally
             {
