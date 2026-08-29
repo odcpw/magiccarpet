@@ -1557,7 +1557,8 @@ mod tests {
         ChangeSetBuilder, DRAGON_MAX_LIFE_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
         GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage, IntegerParameter, OptionParameter,
         PresentationAssetSlot, PublicationFault, RequestedTiming, SKELETON_MAX_LIFE_CAPABILITY_ID,
-        SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, WorkspaceStore,
+        SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID,
+        WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::goat::{GoatBehaviorConfig, GoatStepEvent};
@@ -2040,6 +2041,17 @@ mod tests {
                     LevelEntityParameterAccess::SessionReset
                 );
             }
+            if kind == CreatureKind::Villager {
+                let health = entity
+                    .creature_health()
+                    .expect("every package-present Villager has a health binding");
+                assert_eq!(health.default_max_life(), 1_000);
+                assert_eq!(health.max_life(), 1_000);
+                assert_eq!(
+                    health.max_life_access(),
+                    LevelEntityParameterAccess::SessionReset
+                );
+            }
         }
         if expected_creatures
             .iter()
@@ -2065,6 +2077,20 @@ mod tests {
                     .iter()
                     .any(|requirement| {
                         requirement.id.as_str() == TRADER_MAX_LIFE_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    })
+            );
+        }
+        if expected_creatures
+            .iter()
+            .any(|(kind, _)| *kind == CreatureKind::Villager)
+        {
+            assert!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == VILLAGER_MAX_LIFE_CAPABILITY_ID
                             && requirement.exact_version == 1
                     })
             );
@@ -5791,6 +5817,171 @@ mod tests {
         // and action-113 mailbox damage branch. It does not prove organic group
         // progression, Trader targeting/death cleanup, other Traders, placement,
         // save/replay, or Unity UI.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_level_two_imported_villager_max_life_before_ordinary_damage_after_reopen_and_reset()
+     {
+        const PACKAGE_MAX_LIFE: u32 = 1_000;
+        const AUTHORED_MAX_LIFE: u32 = 2_000;
+        const DAMAGE: i32 = 1_500;
+
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let villager =
+            sim_definition::adapter::stable_entity_id("creature.villager.at_121_180").unwrap();
+        let package_entity = base.level_definition().unwrap().entity(&villager).unwrap();
+        assert_eq!(
+            package_entity.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-villager-max-life");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-villager-max-life", base.clone())
+                .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            95,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let source_slot = match session
+            .backend()
+            .campaign
+            .definition()
+            .movable_entity_binding(&villager)
+            .unwrap()
+        {
+            crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource {
+                initial_source_slot,
+                kind: LevelEntityKind::Creature(CreatureKind::Villager),
+                ..
+            } => *initial_source_slot,
+            binding => panic!("Villager has the wrong runtime binding: {binding:?}"),
+        };
+        let villager_state = |session: &GameSession<Mc2CampaignBackend>| {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|state| state.entity_index == source_slot)
+                .cloned()
+                .unwrap()
+        };
+        let stage_damage = |session: &mut GameSession<Mc2CampaignBackend>| {
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .ordinary_mut()
+                .inject_villager_damage(source_slot, DAMAGE, 1)
+                .unwrap();
+        };
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-villager-max-life",
+            &base,
+            "raise-one-level-two-villager-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(villager, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let package_state = villager_state(&session);
+        assert_eq!(
+            (package_state.max_life, package_state.life),
+            (
+                PACKAGE_MAX_LIFE.cast_signed(),
+                PACKAGE_MAX_LIFE.cast_signed()
+            )
+        );
+        stage_damage(&mut session);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let package_after = villager_state(&session);
+        assert_eq!(
+            (package_after.life, package_after.action),
+            (-500, crate::villager::VILLAGER_DEATH_ACTION)
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        let authored = villager_state(&session);
+        assert_eq!(
+            (authored.max_life, authored.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        let raw =
+            &session.backend().campaign.level2_compatibility().entities()[usize::from(source_slot)];
+        assert_eq!((raw.max_life, raw.life), (authored.max_life, authored.life));
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        stage_damage(&mut session);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let authored_after = villager_state(&session);
+        assert_eq!(
+            (authored_after.life, authored_after.action),
+            (500, crate::villager::VILLAGER_HIT_ACTION)
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = villager_state(&session);
+        assert_eq!(reset, authored);
+        let raw_reset =
+            &session.backend().campaign.level2_compatibility().entities()[usize::from(source_slot)];
+        assert_eq!(
+            (raw_reset.max_life, raw_reset.life),
+            (reset.max_life, reset.life)
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 2 Villager maximum-life
+        // edit crosses guarded publication, old-session isolation, raw/typed
+        // frame-zero synchronization, explicit reopen/reset, and the ordinary
+        // damage mailbox. It does not prove organic targeting/building entry,
+        // death cleanup/population effects, other Villagers, save/replay, or UI.
     }
 
     #[test]

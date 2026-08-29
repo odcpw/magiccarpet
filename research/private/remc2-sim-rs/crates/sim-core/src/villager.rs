@@ -35,6 +35,7 @@ pub const VILLAGER_HIT_ACTION: u8 = 110;
 pub const VILLAGER_DEATH_ACTION: u8 = 108;
 pub const VILLAGER_REMOVAL_ACTION: u8 = 109;
 pub const VILLAGER_PARAMETER_INDEX: u16 = 100;
+pub const VILLAGER_MAX_LIFE: i32 = 1_000;
 
 const SOURCE_DEATH_BURST_SUPPRESSED_FLAG: u32 = 0x0010_0000;
 
@@ -335,23 +336,35 @@ impl VillagerFamily {
     /// the same source row. Refuse a split package baseline, then move the
     /// typed owner to the authored position after the raw arena/map carrier
     /// has been relocated.
-    pub(crate) fn bind_frame_zero_semantic_position(
+    pub(crate) fn bind_frame_zero_semantic_variant(
         &mut self,
         entity_index: u16,
         package_position: Position,
         authored_position: Position,
+        package_max_life: i32,
+        authored_max_life: i32,
     ) -> Result<(), String> {
         let villager = self
             .villagers
             .iter_mut()
             .find(|villager| villager.entity_index == entity_index)
             .ok_or_else(|| format!("Villager source slot {entity_index} is absent"))?;
-        if villager.position != package_position {
+        if villager.position != package_position
+            || villager.max_life != package_max_life
+            || villager.life != package_max_life
+        {
             return Err(format!(
                 "Villager source slot {entity_index} diverges from its semantic package baseline"
             ));
         }
+        if authored_max_life <= 0 {
+            return Err(format!(
+                "Villager source slot {entity_index} authored maximum life must be positive"
+            ));
+        }
         villager.position = authored_position;
+        villager.max_life = authored_max_life;
+        villager.life = authored_max_life;
         Ok(())
     }
 

@@ -3627,14 +3627,22 @@ impl Level2OrdinaryResetSession {
         self.villagers.villagers()
     }
 
-    pub(crate) fn bind_frame_zero_villager_position(
+    pub(crate) fn bind_frame_zero_villager_variant(
         &mut self,
         entity_index: u16,
         package_position: Position,
         authored_position: Position,
+        package_max_life: i32,
+        authored_max_life: i32,
     ) -> Result<()> {
         self.villagers
-            .bind_frame_zero_semantic_position(entity_index, package_position, authored_position)
+            .bind_frame_zero_semantic_variant(
+                entity_index,
+                package_position,
+                authored_position,
+                package_max_life,
+                authored_max_life,
+            )
             .map_err(NativeWorldError::new)
     }
 

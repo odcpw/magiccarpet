@@ -30,7 +30,8 @@ pub use sim_definition::{
     ReadBackBinding, ReadBinding, RequestedTiming, RequiredCapability, Result,
     SEMANTIC_CONTRACT_VERSION, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticBinding, SemanticCatalog,
     SemanticDescriptor, SemanticId, SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, TemporalContract,
-    TransactionError, TransactionErrorCode, VALIDATION_RECEIPT_SCHEMA, ValidateBinding,
-    ValidationReceipt, ValueType, WORKSPACE_SCHEMA, WorkspaceInspection, WorkspaceStore,
-    creature_max_life_capability_id, default_catalog, engine_capabilities,
+    TransactionError, TransactionErrorCode, VALIDATION_RECEIPT_SCHEMA,
+    VILLAGER_MAX_LIFE_CAPABILITY_ID, ValidateBinding, ValidationReceipt, ValueType,
+    WORKSPACE_SCHEMA, WorkspaceInspection, WorkspaceStore, creature_max_life_capability_id,
+    default_catalog, engine_capabilities,
 };

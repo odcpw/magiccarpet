@@ -312,15 +312,35 @@ impl CampaignSession {
                         let authored_position = self.level2.session.state.live.economy.entities
                             [usize::from(*initial_source_slot)]
                         .position;
+                        let package_max_life = original
+                            .creature_health()
+                            .map(|health| health.max_life().cast_signed())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic Villager {} package carrier has no health binding",
+                                    entity.id().as_str()
+                                ))
+                            })?;
+                        let authored_max_life = entity
+                            .creature_health()
+                            .map(|health| health.max_life().cast_signed())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic Villager {} authored carrier has no health binding",
+                                    entity.id().as_str()
+                                ))
+                            })?;
                         self.level2
                             .session
                             .state
                             .live
                             .ordinary
-                            .bind_frame_zero_villager_position(
+                            .bind_frame_zero_villager_variant(
                                 *initial_source_slot,
                                 source.position,
                                 authored_position,
+                                package_max_life,
+                                authored_max_life,
                             )?;
                     }
                     if *kind

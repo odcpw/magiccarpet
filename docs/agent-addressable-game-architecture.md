@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 26.0 milestone, this is a binding target with
+As of the semantic-contract 27.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -402,6 +402,14 @@ partial real implementation, not a completion claim:
   through pre-kill while the authored authority remains live. This does not
   prove organic group progression, Trader targeting/death cleanup, other
   Traders, save/replay, or Unity UI;
+- all fifty-seven package-present reset-live Villagers in Levels 1 and 2 now
+  carry a per-instance `max_life` descriptor. Explicit reopen/reset updates
+  both the imported source row and the typed Villager-family carrier before
+  the ordinary damage mailbox consumes it. The focused causal proof changes
+  one Level 2 Villager from 1000 to 2000 life so identical damage kills the
+  package authority while the authored authority enters its hit action. This
+  does not prove organic targeting/building entry, death cleanup/population
+  effects, other Villagers, save/replay, or Unity UI;
 - the qualified Level 1 campaign package now retains two profile-pinned,
   canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its
   semantic projectile slot binds the base payload and discovers the fade
