@@ -233,6 +233,7 @@ dependencies = [
  "sim-combat-tmap",
  "sim-definition",
  "sim-economy-tmap",
+ "sim-enhanced-presentation",
  "sim-firefly-tmap",
  "sim-frozen-actor-tmap",
  "sim-goat-map-chain",
@@ -264,6 +265,13 @@ name = "sim-economy-tmap"
 version = "0.1.0"
 dependencies = [
  "sim-ss2-tmap",
+]
+
+[[package]]
+name = "sim-enhanced-presentation"
+version = "0.1.0"
+dependencies = [
+ "sim-classic-hd",
 ]
 
 [[package]]
