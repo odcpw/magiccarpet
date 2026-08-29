@@ -27,6 +27,7 @@ pub(crate) use archer::ARCHER_MAX_LIFE;
 pub(crate) use dragon::DRAGON_LIFE;
 
 pub(crate) const BEE_MAX_LIFE: i16 = 3_000;
+pub(crate) const WORM_MAX_LIFE: i32 = 9_000;
 
 #[cfg(test)]
 mod tests;
@@ -218,6 +219,27 @@ impl Level2EconomyState {
         )
     }
 
+    /// Allocate a semantic Worm root and its sixteen copied body rows through
+    /// the ordinary model-3 constructor.
+    pub fn allocate_authored_worm(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+        max_life: i32,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredClass5Source> {
+        if max_life <= 0 {
+            return None;
+        }
+        self.allocate_authored_class5_with_max_life(
+            authored_index,
+            3,
+            position,
+            Some(max_life),
+            terrain,
+        )
+    }
+
     fn allocate_authored_class5_with_max_life(
         &mut self,
         authored_index: u16,
@@ -258,7 +280,18 @@ impl Level2EconomyState {
                 0,
                 crate::goat::GOAT_RENDER_PARAMETER_INDEX,
             ),
-            3 => (25, 64, 16, 30, 9_000, 2_250, 4_500, 0, 0, 88),
+            3 => (
+                25,
+                64,
+                16,
+                30,
+                max_life_override.unwrap_or(WORM_MAX_LIFE),
+                2_250,
+                4_500,
+                0,
+                0,
+                88,
+            ),
             9 => (
                 72,
                 20,

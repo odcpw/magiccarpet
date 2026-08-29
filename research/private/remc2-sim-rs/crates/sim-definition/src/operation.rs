@@ -12,7 +12,7 @@ use crate::{
     DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID,
     GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
     SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID,
-    creature_max_life_capability_id,
+    WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -285,6 +285,10 @@ impl DefinitionOperation {
                         },
                         "villager": {
                             "id": VILLAGER_MAX_LIFE_CAPABILITY_ID,
+                            "exact_version": 1,
+                        },
+                        "worm": {
+                            "id": WORM_MAX_LIFE_CAPABILITY_ID,
                             "exact_version": 1,
                         },
                     },

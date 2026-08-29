@@ -399,18 +399,32 @@ impl CampaignSession {
                             entity.id().as_str()
                         )));
                     }
-                    if health_changed {
-                        return Err(NativeWorldError::new(format!(
-                            "semantic multipart entity {} has no writable health binding",
-                            entity.id().as_str()
-                        )));
-                    }
-                    if position_changed {
-                        self.level2.bind_level2_imported_multipart_position(
+                    if position_changed || health_changed {
+                        let package_max_life = original
+                            .creature_health()
+                            .map(|health| health.max_life().cast_signed())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic multipart entity {} package carrier has no health binding",
+                                    entity.id().as_str()
+                                ))
+                            })?;
+                        let authored_max_life = entity
+                            .creature_health()
+                            .map(|health| health.max_life().cast_signed())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic multipart entity {} authored carrier has no health binding",
+                                    entity.id().as_str()
+                                ))
+                            })?;
+                        self.level2.bind_level2_imported_multipart_variant(
                             *root_source_slot,
                             body_source_slots,
                             original_tile,
                             entity.position(),
+                            package_max_life,
+                            authored_max_life,
                         )?;
                     }
                 }

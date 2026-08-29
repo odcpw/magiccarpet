@@ -29,7 +29,7 @@ pub use package::{
     DRAGON_MAX_LIFE_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage, PackageProvenance,
     PackageProvenanceKind, RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID,
-    TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID,
+    TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID,
     creature_max_life_capability_id, engine_capabilities,
 };
 pub use presentation_asset::{
@@ -57,7 +57,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v7";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "27.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "28.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {

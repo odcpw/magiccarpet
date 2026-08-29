@@ -5708,17 +5708,19 @@ impl Level2ResetSession {
         Ok(())
     }
 
-    /// Relocate one package-imported class-5/model-3 root and its exact
-    /// sixteen-row action-232 body chain by the same whole-tile delta. The
+    /// Bind one package-imported class-5/model-3 root and its exact sixteen-row
+    /// action-232 body chain to a semantic position and maximum life. The
     /// private package adapter has already joined the semantic entity to these
-    /// source slots; this boundary revalidates the live reset carrier before
-    /// atomically publishing positions and map membership.
-    pub(crate) fn bind_level2_imported_multipart_position(
+    /// source slots; this boundary revalidates every live reset carrier before
+    /// atomically publishing position, health, and map membership.
+    pub(crate) fn bind_level2_imported_multipart_variant(
         &mut self,
         root_source_slot: u16,
         body_source_slots: &[u16],
         package_tile: TilePosition,
         authored_tile: TilePosition,
+        package_max_life: i32,
+        authored_max_life: i32,
     ) -> Result<()> {
         const BODY_COUNT: usize = 16;
         if body_source_slots.len() != BODY_COUNT {
@@ -5740,6 +5742,8 @@ impl Level2ResetSession {
                     && entity.action == 31
                     && entity.position.x >> 8 == package_tile.x
                     && entity.position.y >> 8 == package_tile.y
+                    && entity.max_life == package_max_life
+                    && entity.life == package_max_life
             })
             .ok_or_else(|| {
                 NativeWorldError::new(format!(
@@ -5768,6 +5772,8 @@ impl Level2ResetSession {
                         && entity.model == 3
                         && entity.action == 232
                         && entity.position.z == root_z
+                        && entity.max_life == package_max_life
+                        && entity.life == package_max_life
                 })
                 .ok_or_else(|| {
                     NativeWorldError::new(format!(
@@ -5817,7 +5823,9 @@ impl Level2ResetSession {
                 .map_err(NativeWorldError::new)?;
         }
         for (source_slot, position) in targets {
-            live.economy.entities[usize::from(source_slot)].set_position(position);
+            let source = &mut live.economy.entities[usize::from(source_slot)];
+            source.set_position(position);
+            source.bind_frame_zero_max_life(authored_max_life);
         }
         live.economy.map_chains = map_chains;
         Ok(())
@@ -8769,15 +8777,26 @@ impl Level2ResetSession {
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
                     );
+                    let max_life = self
+                        .session
+                        .definition
+                        .authored_creature_max_life(feature.index)
+                        .map(u32::cast_signed)
+                        .ok_or_else(|| {
+                            format!(
+                                "authored Worm row {} lost its preflight maximum-life binding",
+                                feature.index
+                            )
+                        })?;
                     if self
                         .session
                         .state
                         .live
                         .economy
-                        .allocate_authored_class5(
+                        .allocate_authored_worm(
                             feature.index,
-                            3,
                             position,
+                            max_life,
                             &self.session.state.live.terrain,
                         )
                         .is_some()
@@ -9606,12 +9625,19 @@ impl Level2ResetSession {
                 let terrain = &self.session.state.live.terrain;
                 let position =
                     feature.world_position(terrain.ground_height(feature.world_position(0)));
-                let Some(source) = self.session.state.live.economy.allocate_authored_class5(
-                    feature.index,
-                    3,
-                    position,
-                    terrain,
-                ) else {
+                let max_life = self
+                    .session
+                    .definition
+                    .authored_creature_max_life(feature.index)
+                    .map(u32::cast_signed);
+                let Some(source) = max_life.and_then(|max_life| {
+                    self.session.state.live.economy.allocate_authored_worm(
+                        feature.index,
+                        position,
+                        max_life,
+                        terrain,
+                    )
+                }) else {
                     self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
@@ -10284,7 +10310,20 @@ impl Level2ResetSession {
         for feature in rows {
             let terrain = &self.session.state.live.terrain;
             let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
-            let source = if feature.subtype == 9 {
+            let source = if feature.subtype == 3 {
+                self.session
+                    .definition
+                    .authored_creature_max_life(feature.index)
+                    .map(u32::cast_signed)
+                    .and_then(|max_life| {
+                        self.session.state.live.economy.allocate_authored_worm(
+                            feature.index,
+                            position,
+                            max_life,
+                            terrain,
+                        )
+                    })
+            } else if feature.subtype == 9 {
                 let max_life = self
                     .session
                     .definition

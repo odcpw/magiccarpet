@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 27.0 milestone, this is a binding target with
+As of the semantic-contract 28.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -410,6 +410,15 @@ partial real implementation, not a completion claim:
   package authority while the authored authority enters its hit action. This
   does not prove organic targeting/building entry, death cleanup/population
   effects, other Villagers, save/replay, or Unity UI;
+- all four Level 1, six Level 2 and five Level 3 package-present Worms now
+  carry per-instance `max_life` descriptors backed by one exact compiled
+  root/body lifecycle capability. Dynamic group construction and reset-import
+  both copy the authored value into the root and all sixteen body carriers on
+  explicit reopen/reset. The focused causal proof changes one Worm in each
+  representation from 9000 to 18000 life: identical child damage kills the
+  package authority but leaves the authored family live. This does not prove
+  organic group progression, every Worm instance, targeting/projectiles,
+  population authoring, save/replay, or Unity UI;
 - the qualified Level 1 campaign package now retains two profile-pinned,
   canonical `carpet-flight-indexed-sprite/v1` one-frame Fireball assets. Its
   semantic projectile slot binds the base payload and discovers the fade

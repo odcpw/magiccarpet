@@ -79,7 +79,8 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
         | CreatureKind::Goat
         | CreatureKind::Skeleton
         | CreatureKind::Trader
-        | CreatureKind::Villager => Some(2_147_483_647),
+        | CreatureKind::Villager
+        | CreatureKind::Worm => Some(2_147_483_647),
         _ => None,
     }
 }

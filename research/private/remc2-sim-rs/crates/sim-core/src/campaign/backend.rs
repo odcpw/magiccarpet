@@ -1558,7 +1558,7 @@ mod tests {
         GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage, IntegerParameter, OptionParameter,
         PresentationAssetSlot, PublicationFault, RequestedTiming, SKELETON_MAX_LIFE_CAPABILITY_ID,
         SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID,
-        WorkspaceStore,
+        WORM_MAX_LIFE_CAPABILITY_ID, WorkspaceStore,
     };
     use crate::game_session::{GameSession, SessionGuard};
     use crate::goat::{GoatBehaviorConfig, GoatStepEvent};
@@ -5448,6 +5448,422 @@ mod tests {
         // visits, and reset. It does not prove the other four L3 Worm
         // placements, organic combat/death, authored population or health,
         // save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_dynamic_and_imported_worm_max_life_before_child_damage_after_reopen_and_reset()
+     {
+        const DYNAMIC_RECORD: u16 = 307;
+        const IMPORTED_ROOT: u16 = 201;
+        const BODY_COUNT: usize = 16;
+        const PACKAGE_MAX_LIFE: u32 = 9_000;
+        const AUTHORED_MAX_LIFE: u32 = 18_000;
+        const DAMAGE: i32 = 10_000;
+
+        let catalog = default_catalog().unwrap();
+
+        let level_one_root = level_one_descriptor_fixture_path();
+        let level_one_base = load_mc2_campaign(&level_one_root, &catalog).unwrap();
+        let dynamic_worm =
+            sim_definition::adapter::stable_entity_id("creature.worm.at_110_97").unwrap();
+        let dynamic_entity = level_one_base
+            .level_definition()
+            .unwrap()
+            .entity(&dynamic_worm)
+            .unwrap();
+        assert_eq!(
+            dynamic_entity.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+        assert!(
+            level_one_base
+                .required_capabilities()
+                .iter()
+                .any(|requirement| {
+                    requirement.id.as_str() == WORM_MAX_LIFE_CAPABILITY_ID
+                        && requirement.exact_version == 1
+                })
+        );
+
+        let level_one_workspace = temporary_workspace_path("campaign-dynamic-worm-max-life");
+        let level_one_store = WorkspaceStore::create(
+            &level_one_workspace,
+            "campaign-dynamic-worm-max-life",
+            level_one_base.clone(),
+        )
+        .unwrap();
+        let level_one_change = ChangeSetBuilder::new(
+            "campaign-dynamic-worm-max-life",
+            &level_one_base,
+            "raise-one-dynamic-worm-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(dynamic_worm, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let level_one_validation = level_one_store
+            .validate(&catalog, level_one_change.clone())
+            .unwrap();
+        assert!(
+            level_one_validation.accepted,
+            "{:#?}",
+            level_one_validation.diagnostics
+        );
+        level_one_store
+            .apply(
+                &catalog,
+                level_one_change,
+                &level_one_validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let level_one_published = level_one_store.active_definition().unwrap();
+        let mut dynamic_session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(level_one_base),
+            91,
+            Mc2CampaignInputs::new(&level_one_root),
+        )
+        .unwrap();
+        let construct_dynamic = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(4)
+                .unwrap();
+            let root = compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == DYNAMIC_RECORD)
+                .copied()
+                .unwrap();
+            let children = compatibility
+                .economy()
+                .authored_class5_model3_children()
+                .iter()
+                .filter(|child| child.parent_entity_index == root.source_entity_index)
+                .copied()
+                .collect::<Vec<_>>();
+            assert_eq!(children.len(), BODY_COUNT);
+            (root, children)
+        };
+        let damage_dynamic = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let attacker = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            let (_, child_slot) = session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_authored_worm_child_mailbox_for_test(DYNAMIC_RECORD, 12, attacker, DAMAGE)
+                .unwrap();
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            let child = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5_model3_children()
+                .iter()
+                .find(|child| child.source_entity_index == child_slot)
+                .copied()
+                .unwrap();
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            let root = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.authored_index == DYNAMIC_RECORD)
+                .copied()
+                .unwrap();
+            (child, root)
+        };
+
+        let (package_dynamic, package_children) = construct_dynamic(&mut dynamic_session);
+        assert_eq!(
+            (package_dynamic.max_life, package_dynamic.life),
+            (
+                PACKAGE_MAX_LIFE.cast_signed(),
+                PACKAGE_MAX_LIFE.cast_signed()
+            )
+        );
+        assert!(package_children.iter().all(|child| {
+            (child.max_life, child.life)
+                == (
+                    PACKAGE_MAX_LIFE.cast_signed(),
+                    PACKAGE_MAX_LIFE.cast_signed(),
+                )
+        }));
+        let (package_child_after, package_root_after) = damage_dynamic(&mut dynamic_session);
+        assert_eq!(package_child_after.life, -1_000);
+        assert_eq!(package_root_after.action, 28);
+
+        dynamic_session
+            .reopen(guard(&dynamic_session), Arc::new(level_one_published))
+            .unwrap();
+        let dynamic_authored_reset_hash = dynamic_session.backend().campaign.state_hash();
+        let (authored_dynamic, authored_children) = construct_dynamic(&mut dynamic_session);
+        assert_eq!(
+            (authored_dynamic.max_life, authored_dynamic.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        assert!(authored_children.iter().all(|child| {
+            (child.max_life, child.life)
+                == (
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                )
+        }));
+        let (authored_child_after, authored_root_after) = damage_dynamic(&mut dynamic_session);
+        assert_eq!(authored_child_after.life, 8_000);
+        assert!(authored_root_after.active && authored_root_after.action != 28);
+
+        dynamic_session.reset(guard(&dynamic_session)).unwrap();
+        assert_eq!(
+            dynamic_session.backend().campaign.state_hash(),
+            dynamic_authored_reset_hash
+        );
+        let (reset_dynamic, reset_children) = construct_dynamic(&mut dynamic_session);
+        assert_eq!(
+            (reset_dynamic.max_life, reset_dynamic.life),
+            (
+                AUTHORED_MAX_LIFE.cast_signed(),
+                AUTHORED_MAX_LIFE.cast_signed()
+            )
+        );
+        assert!(reset_children.iter().all(|child| {
+            (child.max_life, child.life)
+                == (
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                )
+        }));
+
+        let level_three_root = level_three_descriptor_fixture_path();
+        let level_three_base = load_mc2_campaign(&level_three_root, &catalog).unwrap();
+        let imported_worm =
+            sim_definition::adapter::stable_entity_id("creature.worm.at_150_19").unwrap();
+        let imported_entity = level_three_base
+            .level_definition()
+            .unwrap()
+            .entity(&imported_worm)
+            .unwrap();
+        assert_eq!(
+            imported_entity.creature_health().map(|health| (
+                health.default_max_life(),
+                health.max_life(),
+                health.max_life_access(),
+            )),
+            Some((
+                PACKAGE_MAX_LIFE,
+                PACKAGE_MAX_LIFE,
+                LevelEntityParameterAccess::SessionReset,
+            ))
+        );
+        assert!(
+            level_three_base
+                .required_capabilities()
+                .iter()
+                .any(|requirement| {
+                    requirement.id.as_str() == WORM_MAX_LIFE_CAPABILITY_ID
+                        && requirement.exact_version == 1
+                })
+        );
+
+        let level_three_workspace = temporary_workspace_path("campaign-imported-worm-max-life");
+        let level_three_store = WorkspaceStore::create(
+            &level_three_workspace,
+            "campaign-imported-worm-max-life",
+            level_three_base.clone(),
+        )
+        .unwrap();
+        let level_three_change = ChangeSetBuilder::new(
+            "campaign-imported-worm-max-life",
+            &level_three_base,
+            "raise-one-imported-worm-max-life",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(imported_worm, PACKAGE_MAX_LIFE, AUTHORED_MAX_LIFE)
+        .build()
+        .unwrap();
+        let level_three_validation = level_three_store
+            .validate(&catalog, level_three_change.clone())
+            .unwrap();
+        assert!(
+            level_three_validation.accepted,
+            "{:#?}",
+            level_three_validation.diagnostics
+        );
+        level_three_store
+            .apply(
+                &catalog,
+                level_three_change,
+                &level_three_validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let level_three_published = level_three_store.active_definition().unwrap();
+        let mut imported_session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(level_three_base),
+            92,
+            Mc2CampaignInputs::new(&level_three_root),
+        )
+        .unwrap();
+        let imported_family = |session: &GameSession<Mc2CampaignBackend>| {
+            session.backend().campaign.level2_compatibility().entities()
+                [usize::from(IMPORTED_ROOT)..=usize::from(IMPORTED_ROOT) + BODY_COUNT]
+                .to_vec()
+        };
+        let damage_imported = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let attacker = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            let child_slot = session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .stage_imported_worm_child_mailbox_for_test(IMPORTED_ROOT, 0, attacker, DAMAGE)
+                .unwrap();
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            let child = session.backend().campaign.level2_compatibility().entities()
+                [usize::from(child_slot)]
+            .clone();
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            let root = session.backend().campaign.level2_compatibility().entities()
+                [usize::from(IMPORTED_ROOT)]
+            .clone();
+            (child, root)
+        };
+
+        let package_imported = imported_family(&imported_session);
+        assert!(package_imported.iter().all(|row| {
+            (row.max_life, row.life)
+                == (
+                    PACKAGE_MAX_LIFE.cast_signed(),
+                    PACKAGE_MAX_LIFE.cast_signed(),
+                )
+        }));
+        let (package_imported_child, package_imported_root) =
+            damage_imported(&mut imported_session);
+        assert_eq!(package_imported_child.life, -1_000);
+        assert_eq!(package_imported_root.action, 28);
+
+        imported_session
+            .reopen(guard(&imported_session), Arc::new(level_three_published))
+            .unwrap();
+        let imported_authored_reset_hash = imported_session.backend().campaign.state_hash();
+        let authored_imported = imported_family(&imported_session);
+        assert_eq!(authored_imported.len(), BODY_COUNT + 1);
+        assert!(authored_imported.iter().all(|row| {
+            (row.max_life, row.life)
+                == (
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                )
+        }));
+        let (authored_imported_child, authored_imported_root) =
+            damage_imported(&mut imported_session);
+        assert_eq!(authored_imported_child.life, 8_000);
+        assert!(authored_imported_root.active && authored_imported_root.action != 28);
+
+        imported_session.reset(guard(&imported_session)).unwrap();
+        assert_eq!(
+            imported_session.backend().campaign.state_hash(),
+            imported_authored_reset_hash
+        );
+        assert!(imported_family(&imported_session).iter().all(|row| {
+            (row.max_life, row.life)
+                == (
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                    AUTHORED_MAX_LIFE.cast_signed(),
+                )
+        }));
+
+        std::fs::remove_dir_all(&level_one_workspace).unwrap();
+        std::fs::remove_dir_all(&level_three_workspace).unwrap();
+        // No-Claim: this stages one already-proven Level-1 group-4 constructor
+        // and one child mailbox in each real carrier. It proves guarded Worm
+        // maximum-life publication, old-session isolation, all sixteen copied
+        // dynamic and imported body values, explicit reopen/reset, and ordinary
+        // child-damage/root-death consumption. It does not prove organic group
+        // progression, every Worm instance, targeting/projectiles, population
+        // authoring, save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_packages_bind_every_first_three_level_worm_health_descriptor() {
+        let catalog = default_catalog().unwrap();
+        for (root, expected_worms) in [
+            (level_one_descriptor_fixture_path(), 4_usize),
+            (descriptor_fixture_path(), 6),
+            (level_three_descriptor_fixture_path(), 5),
+        ] {
+            let definition = load_mc2_campaign(&root, &catalog).unwrap();
+            let worms = definition
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.kind()
+                        == sim_definition::level_definition::LevelEntityKind::Creature(
+                            CreatureKind::Worm,
+                        )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(worms.len(), expected_worms);
+            assert!(worms.iter().all(|entity| {
+                entity.creature_health().is_some_and(|health| {
+                    health.default_max_life() == 9_000
+                        && health.max_life() == 9_000
+                        && health.max_life_access() == LevelEntityParameterAccess::SessionReset
+                })
+            }));
+            assert!(
+                definition
+                    .required_capabilities()
+                    .iter()
+                    .any(|requirement| {
+                        requirement.id.as_str() == WORM_MAX_LIFE_CAPABILITY_ID
+                            && requirement.exact_version == 1
+                    })
+            );
+        }
+
+        // No-Claim: this is the closed first-three-package Worm descriptor
+        // census. The separate causal gate owns one real dynamic and imported
+        // child-damage visit; this census does not claim every Worm was
+        // constructed, damaged, killed, or observed through a client.
     }
 
     #[test]

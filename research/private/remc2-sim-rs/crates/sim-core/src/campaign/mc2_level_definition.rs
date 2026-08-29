@@ -259,6 +259,7 @@ impl Mc2LevelDefinition {
                         | CreatureKind::Skeleton
                         | CreatureKind::Trader
                         | CreatureKind::Villager
+                        | CreatureKind::Worm
                 ) {
                     let max_life = match kind {
                         CreatureKind::Firefly => {
@@ -273,6 +274,7 @@ impl Mc2LevelDefinition {
                         CreatureKind::Skeleton => 1_000,
                         CreatureKind::Trader => crate::native_world::level2_class5::TRADER_MAX_LIFE,
                         CreatureKind::Villager => crate::villager::VILLAGER_MAX_LIFE,
+                        CreatureKind::Worm => crate::native_world::level2_class5::WORM_MAX_LIFE,
                         _ => {
                             return Err(format!(
                                 "semantic creature {} has no maximum-life binding",

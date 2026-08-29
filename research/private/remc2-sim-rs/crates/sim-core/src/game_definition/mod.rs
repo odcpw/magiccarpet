@@ -32,6 +32,6 @@ pub use sim_definition::{
     SemanticDescriptor, SemanticId, SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, TemporalContract,
     TransactionError, TransactionErrorCode, VALIDATION_RECEIPT_SCHEMA,
     VILLAGER_MAX_LIFE_CAPABILITY_ID, ValidateBinding, ValidationReceipt, ValueType,
-    WORKSPACE_SCHEMA, WorkspaceInspection, WorkspaceStore, creature_max_life_capability_id,
-    default_catalog, engine_capabilities,
+    WORKSPACE_SCHEMA, WORM_MAX_LIFE_CAPABILITY_ID, WorkspaceInspection, WorkspaceStore,
+    creature_max_life_capability_id, default_catalog, engine_capabilities,
 };
