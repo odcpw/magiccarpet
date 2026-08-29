@@ -3689,6 +3689,17 @@ impl Level2OrdinaryResetSession {
         self.houses.step_source_slot(source_slot, terrain)
     }
 
+    pub(crate) fn bind_frame_zero_house_position(
+        &mut self,
+        entity_index: u16,
+        package_position: Position,
+        authored_position: Position,
+    ) -> Result<()> {
+        self.houses
+            .bind_frame_zero_semantic_position(entity_index, package_position, authored_position)
+            .map_err(NativeWorldError::new)
+    }
+
     pub(super) fn apply_house_terrain_events(
         &mut self,
         economy: &mut Level2EconomyState,

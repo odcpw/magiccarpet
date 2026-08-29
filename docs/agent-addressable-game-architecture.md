@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 23.0 milestone, this is a binding target with
+As of the semantic-contract 24.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -458,7 +458,14 @@ partial real implementation, not a completion claim:
   their imported arena row and reset-live typed-family carrier through an
   exact private source-record binding. One focused Level 2 proof follows a
   real free Villager through its ordinary movement and map membership after
-  reopen/reset. All
+  reopen/reset. The eighty-five package-present Houses with an exact
+  reset-live source occurrence now relocate both their imported arena row and
+  typed `HouseFamily` through the same private occurrence binding. One focused
+  Level 1 proof follows a real action-52 House through its ordinary numeric
+  visit and map membership after reopen/reset. The remaining one hundred
+  eighteen construction-only, grouped or otherwise unbound House rows stay
+  read-only. This does not author House construction
+  parameters, ownership, population, health, damage or destruction. All
   thirty-nine package-present Experience Scroll placements across Levels 1-3
   bind to their immutable authored-feature rows before construction; the
   ordinary class-14 pickup callback consumes the authored location through XP

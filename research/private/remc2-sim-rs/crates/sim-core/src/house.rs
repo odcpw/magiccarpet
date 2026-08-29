@@ -584,6 +584,31 @@ impl HouseFamily {
         &self.houses
     }
 
+    /// Bind one reset-live semantic House before its first scheduler visit.
+    ///
+    /// The imported arena and this typed family are parallel projections of
+    /// the same source row. Refuse a split package baseline before moving the
+    /// typed owner to the authored position.
+    pub(crate) fn bind_frame_zero_semantic_position(
+        &mut self,
+        entity_index: u16,
+        package_position: Position,
+        authored_position: Position,
+    ) -> Result<(), String> {
+        let house = self
+            .houses
+            .iter_mut()
+            .find(|house| house.entity_index == entity_index)
+            .ok_or_else(|| format!("House source slot {entity_index} is absent"))?;
+        if house.position != package_position {
+            return Err(format!(
+                "House source slot {entity_index} diverges from its semantic package baseline"
+            ));
+        }
+        house.position = authored_position;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn house_mut(&mut self, entity_index: u16) -> Option<&mut HouseState> {
         self.houses

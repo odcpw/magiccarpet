@@ -323,6 +323,25 @@ impl CampaignSession {
                                 authored_position,
                             )?;
                     }
+                    if *kind
+                        == crate::level_definition::LevelEntityKind::Building(
+                            crate::level_definition::BuildingKind::House,
+                        )
+                    {
+                        let authored_position = self.level2.session.state.live.economy.entities
+                            [usize::from(*initial_source_slot)]
+                        .position;
+                        self.level2
+                            .session
+                            .state
+                            .live
+                            .ordinary
+                            .bind_frame_zero_house_position(
+                                *initial_source_slot,
+                                source.position,
+                                authored_position,
+                            )?;
+                    }
                 }
                 spec::Mc2EntityRuntimeBinding::InitialMultipartFamily {
                     root_source_slot,

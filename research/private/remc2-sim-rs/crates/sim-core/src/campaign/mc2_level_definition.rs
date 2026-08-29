@@ -871,6 +871,12 @@ fn bind_private_entity(
                     Mc2MovableRuntimeHint::ResetKindAndPosition
                 }
             }
+            LevelEntityKind::Building(BuildingKind::House) => {
+                // Authored record and reset source identities differ, and
+                // qualified packages may contain duplicate House tiles. The
+                // validated occurrence join resolves the private source row.
+                Mc2MovableRuntimeHint::AuthoredRecord(feature.index)
+            }
             LevelEntityKind::Switch(_) if feature.activation_group != 0 => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }

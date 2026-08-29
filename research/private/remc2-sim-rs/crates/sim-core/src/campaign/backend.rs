@@ -1678,6 +1678,7 @@ mod tests {
         expected_scenery: &[(SceneryKind, usize)],
         expected_items: &[(ItemKind, usize)],
         expected_buildings: &[(BuildingKind, usize)],
+        expected_writable_houses: usize,
         expected_switches: &[(SwitchKind, usize)],
         expected_mechanics: &[(MechanicKind, TilePosition, Option<u16>)],
         expected_objectives: &[ObjectiveCondition],
@@ -1824,6 +1825,17 @@ mod tests {
         );
         assert_eq!(
             level
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.kind() == LevelEntityKind::Building(BuildingKind::House)
+                        && entity.position_access() == LevelEntityPositionAccess::SessionReset
+                })
+                .count(),
+            expected_writable_houses
+        );
+        assert_eq!(
+            level
                 .switch_kinds()
                 .map(|kind| (kind, level.authored_switch_count(kind)))
                 .collect::<Vec<_>>(),
@@ -1906,6 +1918,7 @@ mod tests {
             ],
             &[(ItemKind::ExperienceScroll, 5)],
             &[(BuildingKind::House, 81)],
+            23,
             &[
                 (SwitchKind::AreaEntryTrigger, 24),
                 (SwitchKind::AreaExitTrigger, 2),
@@ -1995,6 +2008,7 @@ mod tests {
                     !matches!(
                         entity.kind(),
                         LevelEntityKind::Creature(CreatureKind::Goat | CreatureKind::Villager)
+                            | LevelEntityKind::Building(BuildingKind::House)
                     )
                 })
                 .map(|entity| entity.id().as_str())
@@ -2079,6 +2093,15 @@ mod tests {
                 .count(),
             28
         );
+        assert_eq!(
+            level_one_movable
+                .iter()
+                .filter(|entity| {
+                    entity.kind() == LevelEntityKind::Building(BuildingKind::House)
+                })
+                .count(),
+            23
+        );
         let level_two = assert_package_content(
             &descriptor_fixture_path(),
             &[
@@ -2108,6 +2131,7 @@ mod tests {
             ],
             &[(ItemKind::ExperienceScroll, 24)],
             &[(BuildingKind::House, 25)],
+            13,
             &[
                 (SwitchKind::AreaEntryTrigger, 17),
                 (SwitchKind::AreaExitTrigger, 4),
@@ -2145,7 +2169,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_two_movable.len(), 184);
+        assert_eq!(level_two_movable.len(), 197);
         for (kind, expected) in [
             (CreatureKind::Goat, 36),
             (CreatureKind::Archer, 4),
@@ -2163,6 +2187,15 @@ mod tests {
                 expected
             );
         }
+        assert_eq!(
+            level_two_movable
+                .iter()
+                .filter(|entity| {
+                    entity.kind() == LevelEntityKind::Building(BuildingKind::House)
+                })
+                .count(),
+            13
+        );
         assert_eq!(
             level_two_movable
                 .iter()
@@ -2246,6 +2279,7 @@ mod tests {
             ],
             &[(ItemKind::ExperienceScroll, 10)],
             &[(BuildingKind::House, 97)],
+            49,
             &[
                 (SwitchKind::AreaEntryTrigger, 4),
                 (SwitchKind::LevelExitGate, 1),
@@ -2295,7 +2329,7 @@ mod tests {
             .iter()
             .filter(|entity| entity.position_access() == LevelEntityPositionAccess::SessionReset)
             .collect::<Vec<_>>();
-        assert_eq!(level_three_movable.len(), 124);
+        assert_eq!(level_three_movable.len(), 173);
         for (kind, expected) in [
             (CreatureKind::Goat, 11),
             (CreatureKind::Archer, 18),
@@ -2311,6 +2345,15 @@ mod tests {
                 expected
             );
         }
+        assert_eq!(
+            level_three_movable
+                .iter()
+                .filter(|entity| {
+                    entity.kind() == LevelEntityKind::Building(BuildingKind::House)
+                })
+                .count(),
+            49
+        );
         assert_eq!(
             level_three_movable
                 .iter()
@@ -5496,6 +5539,234 @@ mod tests {
         // reopen, one ordinary Villager visit, and reset. It does not prove
         // the other fifty-six placements, organic targeting/building entry,
         // combat/death, population changes, save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_level_one_house_before_ordinary_action_52_after_reopen() {
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let workspace_root = temporary_workspace_path("campaign-house-placement");
+        let store =
+            WorkspaceStore::create(&workspace_root, "campaign-house-placement", base.clone())
+                .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            90,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let house_bindings = base
+            .level_definition()
+            .unwrap()
+            .entities()
+            .iter()
+            .filter(|entity| {
+                entity.kind() == LevelEntityKind::Building(BuildingKind::House)
+                    && entity.position_access() == LevelEntityPositionAccess::SessionReset
+            })
+            .filter_map(|entity| {
+                match session
+                    .backend()
+                    .campaign
+                    .definition()
+                    .movable_entity_binding(entity.id())
+                    .unwrap()
+                {
+                    crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource {
+                        initial_source_slot,
+                        kind,
+                        ..
+                    } => {
+                        assert_eq!(*kind, LevelEntityKind::Building(BuildingKind::House));
+                        Some((entity, *initial_source_slot))
+                    }
+                    crate::campaign::spec::Mc2EntityRuntimeBinding::AuthoredFeature { .. } => None,
+                    crate::campaign::spec::Mc2EntityRuntimeBinding::InitialMultipartFamily {
+                        ..
+                    } => panic!("semantic House cannot bind a multipart carrier"),
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(house_bindings.len(), 23);
+        assert_eq!(
+            house_bindings
+                .iter()
+                .map(|(_, source_slot)| *source_slot)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            house_bindings.len(),
+            "duplicate semantic House tiles must bind distinct source occurrences"
+        );
+        let package_house = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| {
+                house.active
+                    && house.action == 52
+                    && house_bindings
+                        .iter()
+                        .any(|(_, source_slot)| *source_slot == house.entity_index)
+            })
+            .copied()
+            .expect("real Level 1 contains a position-bound ordinary action-52 House");
+        let (house_entity, source_slot) = house_bindings
+            .into_iter()
+            .find(|(_, source_slot)| *source_slot == package_house.entity_index)
+            .expect("ordinary action-52 House has one semantic identity");
+        let house_id = house_entity.id().clone();
+        let package_tile = house_entity.position();
+        let authored_tile = TilePosition {
+            x: if package_tile.x < u16::from(u8::MAX) {
+                package_tile.x + 1
+            } else {
+                package_tile.x - 1
+            },
+            y: package_tile.y,
+        };
+        assert_eq!(source_slot, package_house.entity_index);
+        assert_eq!(
+            (package_house.position.x >> 8, package_house.position.y >> 8),
+            (package_tile.x, package_tile.y)
+        );
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-house-placement",
+            &base,
+            "move-one-level-one-house",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(house_id, package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == source_slot)
+                .copied(),
+            Some(package_house)
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.identity.generation,
+                reopened.identity.definition_revision
+            ),
+            (2, 2)
+        );
+        let authored = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == source_slot)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            (authored.position.x >> 8, authored.position.y >> 8),
+            (authored_tile.x, authored_tile.y)
+        );
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility.entities()[usize::from(source_slot)].position,
+            authored.position
+        );
+        assert_eq!(
+            compatibility.economy().map_chains().tile_of(source_slot),
+            u16::from_le_bytes([
+                u8::try_from(authored_tile.x).unwrap(),
+                u8::try_from(authored_tile.y).unwrap(),
+            ])
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let visited = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == source_slot)
+            .copied()
+            .expect("ordinary House remains live after action 52");
+        assert_eq!(visited.phase, authored.phase.wrapping_add(1));
+        assert_eq!(
+            (visited.position.x >> 8, visited.position.y >> 8),
+            (authored_tile.x, authored_tile.y)
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::House {
+                        source_slot: actual,
+                        ..
+                    } if *actual == source_slot
+                ))
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == source_slot)
+                .copied(),
+            Some(authored)
+        );
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().entities()[usize::from(source_slot)]
+                .position,
+            authored.position
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one reset-live Level 1 House crosses guarded
+        // publication, old-session isolation, the exact private occurrence
+        // binding, raw/typed/map synchronization, explicit reopen, one real
+        // action-52 visit, and reset. It does not prove the other eighty-four
+        // writable placements, construction parameters, ownership, population,
+        // damage/destruction, save/replay, or Unity presentation.
     }
 
     #[test]

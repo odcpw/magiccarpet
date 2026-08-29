@@ -1223,14 +1223,16 @@ impl CampaignDefinition {
                 );
                 continue;
             }
-            let villager_source_slot = if entity.kind()
-                == LevelEntityKind::Creature(CreatureKind::Villager)
-            {
+            let occurrence_source_slot = if matches!(
+                entity.kind(),
+                LevelEntityKind::Creature(CreatureKind::Villager)
+                    | LevelEntityKind::Building(BuildingKind::House)
+            ) {
                 let Mc2MovableRuntimeHint::AuthoredRecord(authored_record) = hint else {
                     return fail(
                         ValidationStage::TypedOperations,
                         format!(
-                            "movable semantic Villager {} lacks authored occurrence identity",
+                            "movable semantic entity {} lacks authored occurrence identity",
                             entity_id.as_str()
                         ),
                     );
@@ -1248,8 +1250,7 @@ impl CampaignDefinition {
                             .semantic
                             .entity(candidate_id)
                             .filter(|candidate| {
-                                candidate.kind()
-                                    == LevelEntityKind::Creature(CreatureKind::Villager)
+                                candidate.kind() == entity.kind()
                                     && candidate.position() == entity.position()
                             })
                             .map(|_| *candidate_record)
@@ -1263,7 +1264,7 @@ impl CampaignDefinition {
                     return fail(
                         ValidationStage::TypedOperations,
                         format!(
-                            "movable semantic Villager {} lost its authored occurrence",
+                            "movable semantic entity {} lost its authored occurrence",
                             entity_id.as_str()
                         ),
                     );
@@ -1273,10 +1274,20 @@ impl CampaignDefinition {
                     let Some(source_slot) = row.initial_source_slot else {
                         continue;
                     };
-                    if Mc2LevelDefinition::creature_for_reset_selector(
-                        row.class, row.model, row.action,
-                    ) == Some(CreatureKind::Villager)
-                        && initial_entity_tile(entities, source_slot)? == entity.position()
+                    let same_kind = match entity.kind() {
+                        LevelEntityKind::Creature(CreatureKind::Villager) => {
+                            Mc2LevelDefinition::creature_for_reset_selector(
+                                row.class, row.model, row.action,
+                            ) == Some(CreatureKind::Villager)
+                        }
+                        LevelEntityKind::Building(BuildingKind::House) => {
+                            Mc2LevelDefinition::building_for_reset_selector(
+                                row.class, row.model, row.action,
+                            ) == Some(BuildingKind::House)
+                        }
+                        _ => false,
+                    };
+                    if same_kind && initial_entity_tile(entities, source_slot)? == entity.position()
                     {
                         source_occurrences.push(source_slot);
                     }
@@ -1286,7 +1297,7 @@ impl CampaignDefinition {
                     return fail(
                         ValidationStage::TypedOperations,
                         format!(
-                            "movable semantic Villager {} has {} authored and {} frame-zero occurrences at its package position",
+                            "movable semantic entity {} has {} authored and {} frame-zero occurrences at its package position",
                             entity_id.as_str(),
                             authored_occurrences.len(),
                             source_occurrences.len()
@@ -1323,16 +1334,23 @@ impl CampaignDefinition {
                             row.class, row.model, row.action,
                         ) == Some(expected)
                     }
+                    LevelEntityKind::Building(expected) => {
+                        Mc2LevelDefinition::building_for_reset_selector(
+                            row.class, row.model, row.action,
+                        ) == Some(expected)
+                    }
                     _ => false,
                 };
                 if !kind_matches {
                     continue;
                 }
                 let identity_matches = match hint {
-                    Mc2MovableRuntimeHint::AuthoredRecord(authored_record) => villager_source_slot
-                        .map_or(row.authored_record == *authored_record, |slot| {
-                            source_slot == slot
-                        }),
+                    Mc2MovableRuntimeHint::AuthoredRecord(authored_record) => {
+                        occurrence_source_slot
+                            .map_or(row.authored_record == *authored_record, |slot| {
+                                source_slot == slot
+                            })
+                    }
                     Mc2MovableRuntimeHint::AuthoredFeature(_) => unreachable!(
                         "authored-feature bindings are validated before frame-zero matching"
                     ),
