@@ -165,7 +165,13 @@ impl CampaignSession {
             let position_changed = entity.position() != original.position();
             let health_changed = entity.creature_health().map(|health| health.max_life())
                 != original.creature_health().map(|health| health.max_life());
-            if !position_changed && !health_changed {
+            let overlap_changed = entity
+                .switch_overlap()
+                .map(|overlap| overlap.overlap_extent_tiles())
+                != original
+                    .switch_overlap()
+                    .map(|overlap| overlap.overlap_extent_tiles());
+            if !position_changed && !health_changed && !overlap_changed {
                 continue;
             }
             if position_changed
@@ -263,6 +269,31 @@ impl CampaignSession {
                         let source = &mut self.level2.session.state.live.economy.entities
                             [usize::from(*initial_source_slot)];
                         source.bind_frame_zero_max_life(authored_max_life);
+                    }
+                    if overlap_changed {
+                        let package_extent = original
+                            .switch_overlap()
+                            .map(|overlap| overlap.overlap_extent_tiles())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic switch {} package carrier has no overlap binding",
+                                    entity.id().as_str()
+                                ))
+                            })?;
+                        let authored_extent = entity
+                            .switch_overlap()
+                            .map(|overlap| overlap.overlap_extent_tiles())
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "semantic switch {} authored carrier has no overlap binding",
+                                    entity.id().as_str()
+                                ))
+                            })?;
+                        self.level2.bind_frame_zero_switch_overlap_variant(
+                            *initial_source_slot,
+                            package_extent,
+                            authored_extent,
+                        )?;
                     }
                     if *kind
                         == crate::level_definition::LevelEntityKind::Creature(

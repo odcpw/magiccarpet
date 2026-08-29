@@ -7,9 +7,9 @@
 
 use crate::level_definition::{LevelEntityKind, LevelObjectiveId, ObjectiveCondition};
 use crate::{
-    ARCHER_MAX_LIFE_CAPABILITY_ID, Access, BEE_MAX_LIFE_CAPABILITY_ID,
-    CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError,
-    DefinitionErrorCode, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID, Access,
+    BEE_MAX_LIFE_CAPABILITY_ID, CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID,
+    DefinitionError, DefinitionErrorCode, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
     EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition,
     HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
@@ -356,7 +356,10 @@ impl DefinitionOperation {
                     "target_id": "<entity-id>.overlap_extent_tiles",
                     "overlap_extent_tiles": {"type": "integer", "unit": "tiles", "minimum": 1, "maximum": 127},
                     "expected_overlap_extent_tiles": "same type, unit, and bounds as overlap_extent_tiles",
-                    "required_capability": {"id": EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, "exact_version": 1},
+                    "required_capability_by_switch_kind": {
+                        "area_entry_trigger": {"id": AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID, "exact_version": 1},
+                        "exit_sequence_trigger": {"id": EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, "exact_version": 1}
+                    },
                     "mutation_timing": "session_reset",
                     "describe": "game describe --id <entity-id>.overlap_extent_tiles",
                     "read_back": "game get --id <entity-id>.overlap_extent_tiles",

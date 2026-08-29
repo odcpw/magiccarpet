@@ -71,6 +71,9 @@ pub const HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID: &str = "engine.building.house.li
 pub const EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID: &str =
     "engine.switch.exit_sequence.overlap_extent";
 
+/// Exact compiled capability required by package-bound Area Entry overlap triggers.
+pub const AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID: &str = "engine.switch.area_entry.overlap_extent";
+
 /// Exact compiled maximum-life capability for a creature family whose
 /// package constructor and damage/death lifecycle consume the parameter.
 #[must_use]
@@ -237,6 +240,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
                 "Package-bound Exit Sequence construction, strict overlap, transition start, and trigger consumption lifecycle.",
+            ),
+            (
+                AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID,
+                "Package-bound Area Entry construction/import, strict overlap, authored-group activation, and trigger consumption lifecycle.",
             ),
             (
                 "engine.flight.fixed_point",

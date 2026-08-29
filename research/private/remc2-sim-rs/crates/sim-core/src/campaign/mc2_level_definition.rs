@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
-    build_level_definition, creature_entity_definition, entity_definition_with_position_access,
-    exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
-    house_construction_entity_definition, objective_definition, stable_entity_id,
-    stable_objective_id, stable_rival_wizard_id,
+    area_entry_trigger_entity_definition, build_level_definition, creature_entity_definition,
+    entity_definition_with_position_access, exit_sequence_trigger_entity_definition,
+    experience_scroll_entity_definition, house_construction_entity_definition,
+    objective_definition, stable_entity_id, stable_objective_id, stable_rival_wizard_id,
 };
 
 use crate::{
@@ -459,7 +459,26 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Switch(kind),
                     position_access,
                 )?;
-                if kind == SwitchKind::ExitSequenceTrigger {
+                if kind == SwitchKind::AreaEntryTrigger
+                    // Level 2 row 111 is consumed by the dedicated switch-25
+                    // model-76 route, which has no word-10 overlap carrier.
+                    && !(selection.external_level == 2 && feature.index == 111)
+                {
+                    if !(1..=127).contains(&feature.word_10) {
+                        return Err(format!(
+                            "authored Area Entry trigger {} overlap extent is outside 1..=127",
+                            feature.index
+                        ));
+                    }
+                    entities.push(area_entry_trigger_entity_definition(
+                        id,
+                        position,
+                        activation_group,
+                        position_access,
+                        feature.word_10,
+                        LevelEntityParameterAccess::SessionReset,
+                    ));
+                } else if kind == SwitchKind::ExitSequenceTrigger {
                     let group = activation_group.ok_or_else(|| {
                         format!(
                             "authored Exit Sequence trigger {} has no activation group",

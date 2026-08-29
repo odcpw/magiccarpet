@@ -541,10 +541,7 @@ impl CampaignDefinition {
         self.authored_switches.get(&authored_record).copied()
     }
 
-    pub(crate) fn authored_exit_sequence_overlap_extent(
-        &self,
-        authored_record: u16,
-    ) -> Option<u16> {
+    pub(crate) fn authored_switch_overlap_extent(&self, authored_record: u16) -> Option<u16> {
         let entity_id = self.authored_switch_entities.get(&authored_record)?;
         self.semantic_level
             .as_ref()?

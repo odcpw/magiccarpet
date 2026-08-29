@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 31.0 milestone, this is a binding target with
+As of the semantic-contract 32.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -458,7 +458,15 @@ partial real implementation, not a completion claim:
   triggers bind their immutable feature before construction. Their ordinary
   overlap cadence consumes the authored location; Objective and Level Exit
   gates remain read-only because their package positions are not gameplay
-  inputs. The same authored-feature carrier now makes all sixty-one
+  inputs. All forty-four package-present Area Entry triggers across Levels
+  1-3 now also expose their source-derived strict-overlap extent through the
+  typed session-reset switch operation. Grouped construction and
+  reset-imported carriers bind the authored extent before the ordinary
+  overlap callback; one focused Level 3 proof changes a real trigger from two
+  to four tiles, activates its exact group 8, consumes the trigger and
+  reproduces the authored carrier after reset. Area Exit, Level Exit and
+  Objective triggers remain outside this parameter surface. The same
+  authored-feature carrier now makes all sixty-one
   positive-group placements for complete-lifecycle Bee, Dragon, Archer,
   Firefly and Skeleton families writable across Levels 1-3. Their real group
   producers construct the ordinary shared-arena creature at the authored

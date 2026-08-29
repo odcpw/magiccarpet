@@ -37,8 +37,9 @@ use crate::{
         spec::{CampaignDefinition as CampaignDescriptor, CampaignSelection},
     },
     game_definition::{
-        ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFireballBinding,
-        DefinitionFlightBinding, DefinitionGoatPolicyBinding, ENEMY_DEFAULT_POLICY_ID,
+        AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID, ArtifactKind, DefinitionError,
+        DefinitionErrorCode, DefinitionFireballBinding, DefinitionFlightBinding,
+        DefinitionGoatPolicyBinding, ENEMY_DEFAULT_POLICY_ID,
         EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
         FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
         RequiredCapability, SemanticCatalog, SemanticId, creature_max_life_capability_id,
@@ -298,7 +299,27 @@ pub fn load_mc2_campaign(
         .level_definition()
         .entities()
         .iter()
-        .any(|entity| entity.switch_overlap().is_some())
+        .any(|entity| {
+            entity.switch_overlap().is_some()
+                && entity.kind()
+                    == sim_definition::level_definition::LevelEntityKind::Switch(
+                        sim_definition::level_definition::SwitchKind::AreaEntryTrigger,
+                    )
+        })
+    {
+        requirement_ids.push(AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID);
+    }
+    if descriptor
+        .level_definition()
+        .entities()
+        .iter()
+        .any(|entity| {
+            entity.switch_overlap().is_some()
+                && entity.kind()
+                    == sim_definition::level_definition::LevelEntityKind::Switch(
+                        sim_definition::level_definition::SwitchKind::ExitSequenceTrigger,
+                    )
+        })
     {
         requirement_ids.push(EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID);
     }
@@ -10561,6 +10582,215 @@ mod tests {
         // model-39/model-54 construction. It does not make the other area
         // triggers movable or prove groups 9/10, dynamic switches, save/replay,
         // or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_binds_area_entry_overlap_extent_before_level_three_group8_after_reopen_and_reset()
+     {
+        const TRIGGER_RECORD: u16 = 207;
+        const TRIGGER_SLOT: u16 = 224;
+        const GROUP8_ROWS: &[u16] = &[208, 209, 210, 211, 212, 213, 214, 215];
+
+        fn place_player_at_package_boundary(session: &mut GameSession<Mc2CampaignBackend>) {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.state.entity_index;
+            let trigger_position = compatibility.entities()[usize::from(TRIGGER_SLOT)].position;
+            let player_half_width = i16::from_le_bytes(
+                compatibility.entities()[usize::from(player)].record_bytes()[88..90]
+                    .try_into()
+                    .unwrap(),
+            );
+            let package_boundary =
+                u16::try_from((2_i32 << 8) + i32::from(player_half_width)).unwrap();
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(
+                    player,
+                    crate::Position {
+                        x: trigger_position.x.wrapping_add(package_boundary),
+                        ..trigger_position
+                    },
+                )
+                .unwrap();
+        }
+
+        fn step_until_group8(session: &mut GameSession<Mc2CampaignBackend>) -> bool {
+            for _ in 0..8 {
+                place_player_at_package_boundary(session);
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+                if session.backend().campaign.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot: TRIGGER_SLOT,
+                            group: 8,
+                            authored_indices,
+                            ..
+                        } if authored_indices.as_ref() == GROUP8_ROWS
+                    )
+                }) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        let catalog = default_catalog().unwrap();
+        let level_one = load_mc2_campaign(&level_one_descriptor_fixture_path(), &catalog).unwrap();
+        let level_two = load_mc2_campaign(&descriptor_fixture_path(), &catalog).unwrap();
+        let root = level_three_descriptor_fixture_path();
+        let level_three = load_mc2_campaign(&root, &catalog).unwrap();
+        for (definition, expected_count) in [(&level_one, 24), (&level_two, 16), (&level_three, 4)]
+        {
+            let configured = definition
+                .level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.kind() == LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger)
+                })
+                .filter_map(|entity| entity.switch_overlap())
+                .collect::<Vec<_>>();
+            assert_eq!(configured.len(), expected_count);
+            assert!(configured.iter().all(|config| {
+                config.overlap_extent_tiles_access() == LevelEntityParameterAccess::SessionReset
+                    && config.default_overlap_extent_tiles() == config.overlap_extent_tiles()
+            }));
+        }
+        let trigger =
+            sim_definition::adapter::stable_entity_id("switch.area_entry_trigger.at_218_93")
+                .unwrap();
+        let package_config = level_three
+            .level_definition()
+            .unwrap()
+            .entity(&trigger)
+            .unwrap()
+            .switch_overlap()
+            .unwrap();
+        assert_eq!(package_config.default_overlap_extent_tiles(), 2);
+        assert_eq!(package_config.overlap_extent_tiles(), 2);
+
+        let workspace_root = temporary_workspace_path("campaign-l3-area-entry-overlap");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-l3-area-entry-overlap",
+            level_three.clone(),
+        )
+        .unwrap();
+        let wrong_family =
+            sim_definition::adapter::stable_entity_id("switch.level_exit_gate.at_226_173").unwrap();
+        let fake = ChangeSetBuilder::new(
+            "campaign-l3-area-entry-overlap",
+            &level_three,
+            "reject-level-exit-gate-overlap",
+            RequestedTiming::SessionReset,
+        )
+        .set_switch_overlap_extent(wrong_family, 4)
+        .build()
+        .unwrap();
+        assert!(!store.validate(&catalog, fake).unwrap().accepted);
+
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(level_three.clone()),
+            97,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let change_set = ChangeSetBuilder::new(
+            "campaign-l3-area-entry-overlap",
+            &level_three,
+            "set-level-three-area-entry-overlap",
+            RequestedTiming::SessionReset,
+        )
+        .set_switch_overlap_extent_from(trigger.clone(), 2, 4)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(
+            published.semantic_target_value(
+                &SemanticId::parse("switch.area_entry_trigger.at_218_93.overlap_extent_tiles",)
+                    .unwrap(),
+            ),
+            Some(sim_definition::SemanticValue::Integer(4))
+        );
+
+        let package_root = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .level2_imported_switch_roots
+            .iter()
+            .find(|root| root.authored_index == TRIGGER_RECORD)
+            .copied()
+            .unwrap();
+        assert_eq!(package_root.word_10, 2);
+        place_player_at_package_boundary(&mut session);
+        assert!(!step_until_group8(&mut session));
+
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        let authored_reset_hash = session.backend().campaign.state_hash();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let authored_root = compatibility
+            .session
+            .state
+            .live
+            .level2_imported_switch_roots
+            .iter()
+            .find(|root| root.authored_index == TRIGGER_RECORD)
+            .copied()
+            .unwrap();
+        assert_eq!(authored_root.word_10, 4);
+        place_player_at_package_boundary(&mut session);
+        assert!(step_until_group8(&mut session));
+        let fired = &session.backend().campaign.level2_compatibility().entities()
+            [usize::from(TRIGGER_SLOT)];
+        assert!(fired.active && fired.drawing_disabled());
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            reset
+                .session
+                .state
+                .live
+                .level2_imported_switch_roots
+                .iter()
+                .find(|root| root.authored_index == TRIGGER_RECORD)
+                .map(|root| root.word_10),
+            Some(4)
+        );
+        place_player_at_package_boundary(&mut session);
+        assert!(step_until_group8(&mut session));
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: proves all package-present Area Entry triggers expose their
+        // source word-10 overlap extent, and one real Level 3 reset-imported
+        // trigger binds 2-to-4 across guarded publication, old-session
+        // isolation, strict overlap, exact group-8 activation, consumption,
+        // and reset. It does not author Area Exit/Level Exit/Objective triggers,
+        // target groups, cadence, placement, player bounds, save/replay, or UI.
     }
 
     #[test]

@@ -24,12 +24,12 @@ pub use operation::{
     ArtifactId, DefinitionOperation, IntegerParameter, OptionParameter, PresentationAssetSlot,
 };
 pub use package::{
-    ARCHER_MAX_LIFE_CAPABILITY_ID, ArtifactKind, ArtifactNode, BEE_MAX_LIFE_CAPABILITY_ID,
-    CREATURE_POLICY_CAPABILITY_ID, CompiledCapability, CompiledCapabilityRegistry,
-    DRAGON_MAX_LIFE_CAPABILITY_ID, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
-    EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
-    FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage,
-    HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, PackageProvenance, PackageProvenanceKind,
+    ARCHER_MAX_LIFE_CAPABILITY_ID, AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID, ArtifactKind,
+    ArtifactNode, BEE_MAX_LIFE_CAPABILITY_ID, CREATURE_POLICY_CAPABILITY_ID, CompiledCapability,
+    CompiledCapabilityRegistry, DRAGON_MAX_LIFE_CAPABILITY_ID,
+    EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
+    FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID,
+    GamePackage, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, PackageProvenance, PackageProvenanceKind,
     RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID, TRADER_MAX_LIFE_CAPABILITY_ID,
     VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     engine_capabilities,
@@ -59,7 +59,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v10";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "31.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "32.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -1279,12 +1279,28 @@ impl GameDefinition {
         let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
         let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
         let config = entity.switch_overlap()?;
+        let (capability_id, switch_family, consumer) = match entity.kind() {
+            level_definition::LevelEntityKind::Switch(
+                level_definition::SwitchKind::AreaEntryTrigger,
+            ) => (
+                AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID,
+                "Area Entry",
+                "package Area Entry constructor/import and authored-group overlap consumer",
+            ),
+            level_definition::LevelEntityKind::Switch(
+                level_definition::SwitchKind::ExitSequenceTrigger,
+            ) => (
+                EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
+                "Exit Sequence",
+                "package Exit Sequence constructor and transition overlap consumer",
+            ),
+            _ => return None,
+        };
         let writable = matches!(
             config.overlap_extent_tiles_access(),
             level_definition::LevelEntityParameterAccess::SessionReset
         ) && self.required_capabilities.iter().any(|requirement| {
-            requirement.id.as_str() == EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID
-                && requirement.exact_version == 1
+            requirement.id.as_str() == capability_id && requirement.exact_version == 1
         });
         let target_id = id.as_str().to_owned();
         Some(SemanticDescriptor {
@@ -1305,11 +1321,11 @@ impl GameDefinition {
                 Access::ReadOnly
             },
             mutation_timing: MutationTiming::SessionReset,
-            determinism_role: "immutable Exit Sequence strict-overlap extent".to_owned(),
+            determinism_role: format!("immutable {switch_family} strict-overlap extent"),
             dependencies: vec![
                 entity.id().as_str().to_owned(),
-                format!("{EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID}@1"),
-                "package Exit Sequence constructor and overlap consumer".to_owned(),
+                format!("{capability_id}@1"),
+                consumer.to_owned(),
             ],
             side_effects: if writable {
                 vec![
@@ -1320,7 +1336,7 @@ impl GameDefinition {
             } else {
                 Vec::new()
             },
-            scope: format!("stable Exit Sequence trigger {}", entity.id().as_str()),
+            scope: format!("stable {switch_family} trigger {}", entity.id().as_str()),
             provenance_origin: "package semantic level definition".to_owned(),
             provenance_content_hash: self.package_graph_hash.clone(),
             temporal_contract: Some(TemporalContract {
@@ -1330,17 +1346,16 @@ impl GameDefinition {
                 handler: "guarded atomic definition compare-and-swap".to_owned(),
                 same_pass_epilogue:
                     "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
-                following_pass_cleanup: "explicit reopen/reset binds the extent into grouped construction; strict overlap starts LevelExitSequence and consumes the trigger".to_owned(),
+                following_pass_cleanup: format!("explicit reopen/reset binds the extent into {switch_family} construction/import; strict overlap reaches the ordinary consumer and advances its lifecycle"),
                 authoritative_reads: vec![target_id],
                 authoritative_writes: vec![
-                    "immutable LevelDefinition Exit Sequence overlap extent".to_owned(),
+                    format!("immutable LevelDefinition {switch_family} overlap extent"),
                 ],
                 rng_and_event_effects:
                     "none during publication; overlap cadence and transition events remain scheduler-owned"
                         .to_owned(),
             }),
-            summary: "Strict XY overlap extent for one package-bound Exit Sequence trigger."
-                .to_owned(),
+            summary: format!("Strict XY overlap extent for one package-bound {switch_family} trigger."),
         })
     }
 

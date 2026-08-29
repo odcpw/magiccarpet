@@ -4429,6 +4429,67 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    pub(crate) fn bind_frame_zero_switch_overlap_variant(
+        &mut self,
+        source_slot: u16,
+        package_extent: u16,
+        authored_extent: u16,
+    ) -> std::result::Result<(), NativeWorldError> {
+        let root_index = self
+            .session
+            .state
+            .live
+            .level2_imported_switch_roots
+            .iter()
+            .position(|root| root.source_slot == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "semantic switch source slot {source_slot} has no imported overlap carrier"
+                ))
+            })?;
+        let root = self.session.state.live.level2_imported_switch_roots[root_index];
+        if root.word_10.cast_unsigned() != package_extent {
+            return Err(NativeWorldError::new(format!(
+                "semantic switch source slot {source_slot} package overlap extent diverges: live {}, semantic {package_extent}",
+                root.word_10
+            )));
+        }
+        let package_half_extent = package_extent.wrapping_shl(8).cast_signed();
+        let entity = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get_mut(usize::from(source_slot))
+            .filter(|entity| entity.active && entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "semantic switch source slot {source_slot} lost its imported live row"
+                ))
+            })?;
+        let live_half_width = i16::from_le_bytes(
+            entity.record_bytes()[88..90]
+                .try_into()
+                .expect("imported switch half-width bytes"),
+        );
+        let live_half_depth = i16::from_le_bytes(
+            entity.record_bytes()[90..92]
+                .try_into()
+                .expect("imported switch half-depth bytes"),
+        );
+        if live_half_width != package_half_extent || live_half_depth != package_half_extent {
+            return Err(NativeWorldError::new(format!(
+                "semantic switch source slot {source_slot} package overlap carrier diverges: live {live_half_width}/{live_half_depth}, semantic {package_half_extent}"
+            )));
+        }
+        let authored_half_extent = authored_extent.wrapping_shl(8).cast_signed();
+        entity.set_source_overlap_half_extents(authored_half_extent, authored_half_extent);
+        self.session.state.live.level2_imported_switch_roots[root_index].word_10 =
+            authored_extent.cast_signed();
+        Ok(())
+    }
+
     pub(crate) fn creature_identity_for_source_slot(
         &self,
         source_slot: u16,
@@ -8175,11 +8236,16 @@ impl Level2ResetSession {
             });
             return;
         };
-        let Some(switch_word_10) = i16::try_from(switch_row.word_10).ok() else {
+        let Some(switch_word_10) = self
+            .session
+            .definition
+            .authored_switch_overlap_extent(switch_row.index)
+            .and_then(|extent| i16::try_from(extent).ok())
+        else {
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
-                message: "Level 2 row 274 has an invalid word_10".to_string(),
+                message: "Level 2 row 274 has no semantic overlap extent".to_string(),
             });
             return;
         };
@@ -8199,7 +8265,7 @@ impl Level2ResetSession {
         let Some(model12_overlap_extent) = self
             .session
             .definition
-            .authored_exit_sequence_overlap_extent(model12_row.index)
+            .authored_switch_overlap_extent(model12_row.index)
             .and_then(|extent| i16::try_from(extent).ok())
         else {
             self.push_dispatch_effect(Level2DispatchEvent::Error {
@@ -9043,14 +9109,12 @@ impl Level2ResetSession {
                         self.canonical_terrain()
                             .ground_height(feature.world_position(0)),
                     );
-                    let word_10 = if model == 12 {
-                        self.session
-                            .definition
-                            .authored_exit_sequence_overlap_extent(feature.index)
-                            .and_then(|extent| i16::try_from(extent).ok())
-                    } else {
-                        i16::try_from(feature.word_10).ok()
-                    };
+                    let word_10 = self
+                        .session
+                        .definition
+                        .authored_switch_overlap_extent(feature.index)
+                        .and_then(|extent| i16::try_from(extent).ok())
+                        .or_else(|| i16::try_from(feature.word_10).ok());
                     let Some(word_10) = word_10 else {
                         self.push_dispatch_effect(Level2DispatchEvent::Error {
                             pass,
@@ -11671,7 +11735,9 @@ impl Level2ResetSession {
             root.phase = advanced;
             root.model = entity.model;
             root.target_group = entity.source_id;
-            root.word_10 = i16::from_le_bytes([entity.record[20], entity.record[21]]);
+            // The imported raw row reuses word 0x10 as its live rebroadcast
+            // cooldown. The package-authored overlap extent remains immutable
+            // in the typed root and must not be overwritten by that counter.
             root.position = entity.position;
             root.drawing_enabled = !entity.drawing_disabled();
             root.active = entity.active;

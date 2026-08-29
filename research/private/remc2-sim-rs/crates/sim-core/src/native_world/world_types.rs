@@ -176,6 +176,15 @@ impl EntitySnapshot {
         &self.record
     }
 
+    /// Bind the reset-time XY half extents consumed by imported switch
+    /// overlap callbacks. These are render-pose fields in the source record,
+    /// but class-11 model-0/model-1 callbacks use them as their strict
+    /// horizontal overlap bounds.
+    pub(super) fn set_source_overlap_half_extents(&mut self, half_width: i16, half_depth: i16) {
+        self.record[88..90].copy_from_slice(&half_width.to_le_bytes());
+        self.record[90..92].copy_from_slice(&half_depth.to_le_bytes());
+    }
+
     /// Raw source `playerEntityIndex_0x94_148`, exported four bytes after the
     /// original source offset because the package record carries a four-byte
     /// header.  This relation is distinct from `parentId_0x28` and from the

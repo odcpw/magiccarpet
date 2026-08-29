@@ -909,24 +909,34 @@ impl LevelDefinition {
                 (_, None) => {}
             }
             match (entity.kind, entity.switch_overlap) {
-                (LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger), Some(config))
-                    if (1..=127).contains(&config.default_overlap_extent_tiles)
-                        && (1..=127).contains(&config.overlap_extent_tiles) => {}
-                (LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger), Some(_)) => {
+                (
+                    LevelEntityKind::Switch(
+                        SwitchKind::AreaEntryTrigger | SwitchKind::ExitSequenceTrigger,
+                    ),
+                    Some(config),
+                ) if (1..=127).contains(&config.default_overlap_extent_tiles)
+                    && (1..=127).contains(&config.overlap_extent_tiles) => {}
+                (
+                    LevelEntityKind::Switch(
+                        SwitchKind::AreaEntryTrigger | SwitchKind::ExitSequenceTrigger,
+                    ),
+                    Some(_),
+                ) => {
                     return Err(format!(
-                        "semantic Exit Sequence trigger {} has an invalid overlap extent",
+                        "semantic switch {} has an invalid overlap extent",
                         entity.id.as_str()
                     ));
                 }
                 (LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger), None) => {
                     return Err(format!(
-                        "semantic Exit Sequence trigger {} has no overlap configuration",
+                        "semantic switch {} has no overlap configuration",
                         entity.id.as_str()
                     ));
                 }
+                (LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger), None) => {}
                 (_, Some(_)) => {
                     return Err(format!(
-                        "non-Exit-Sequence entity {} carries switch overlap configuration",
+                        "unsupported entity {} carries switch overlap configuration",
                         entity.id.as_str()
                     ));
                 }
@@ -1285,7 +1295,7 @@ impl LevelDefinition {
     ) -> Result<Self, String> {
         if !(1..=127).contains(&overlap_extent_tiles) {
             return Err(format!(
-                "semantic Exit Sequence trigger {} overlap extent is outside 1..=127",
+                "semantic switch {} overlap extent is outside 1..=127",
                 id.as_str()
             ));
         }
@@ -1297,19 +1307,19 @@ impl LevelDefinition {
             .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
         let config = entity.switch_overlap.as_mut().ok_or_else(|| {
             format!(
-                "semantic level entity {} is not an Exit Sequence trigger",
+                "semantic level entity {} has no switch overlap configuration",
                 id.as_str()
             )
         })?;
         if config.overlap_extent_tiles_access != LevelEntityParameterAccess::SessionReset {
             return Err(format!(
-                "semantic Exit Sequence trigger {} overlap extent has no runtime consumer",
+                "semantic switch {} overlap extent has no runtime consumer",
                 id.as_str()
             ));
         }
         if config.overlap_extent_tiles == overlap_extent_tiles {
             return Err(format!(
-                "semantic Exit Sequence trigger {} already has the requested overlap extent",
+                "semantic switch {} already has the requested overlap extent",
                 id.as_str()
             ));
         }
@@ -1502,7 +1512,7 @@ impl LevelDefinition {
                             != original_config.overlap_extent_tiles_access
                     {
                         return Err(format!(
-                            "semantic level variant changes Exit Sequence overlap structure at {}",
+                            "semantic level variant changes switch overlap structure at {}",
                             original.id.as_str()
                         ));
                     }
@@ -1511,13 +1521,13 @@ impl LevelDefinition {
                             != LevelEntityParameterAccess::SessionReset
                     {
                         return Err(format!(
-                            "semantic level variant changes read-only Exit Sequence overlap extent {}",
+                            "semantic level variant changes read-only switch overlap extent {}",
                             original.id.as_str()
                         ));
                     }
                     if !(1..=127).contains(&candidate_config.overlap_extent_tiles) {
                         return Err(format!(
-                            "semantic level variant gives Exit Sequence trigger {} an invalid overlap extent",
+                            "semantic level variant gives switch {} an invalid overlap extent",
                             original.id.as_str()
                         ));
                     }
