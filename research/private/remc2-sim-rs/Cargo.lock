@@ -208,6 +208,7 @@ dependencies = [
  "sha2",
  "sim-collision",
  "sim-definition",
+ "sim-goat-map-chain",
  "sim-ground-motion",
  "sim-input",
  "sim-session",
@@ -223,6 +224,10 @@ dependencies = [
  "serde_json",
  "sha2",
 ]
+
+[[package]]
+name = "sim-goat-map-chain"
+version = "0.1.0"
 
 [[package]]
 name = "sim-ground-motion"

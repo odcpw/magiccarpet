@@ -515,8 +515,11 @@ partial real implementation, not a completion claim:
   ground-creature retry and terrain-transition algorithm is now owned by the
   internal `sim-ground-motion` crate; `sim-core` retains only its fixed-width
   `FlightWorld` projection while Archer, Dragon and Firefly lifecycles keep
-  their existing scheduler/RNG authority. This is the first bounded physical
-  extraction, not a claim that the remaining `sim-core` monolith has been
+  their existing scheduler/RNG authority. The dependency-free Goat source-map
+  chain is now owned by the internal `sim-goat-map-chain` crate, while the
+  existing `sim_core::goat_map_chain` path remains a compatibility façade and
+  Goat scheduling stays in `sim-core`. These are two bounded physical
+  extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
   coverage remain open; the current Unity build enters one gameplay scene
