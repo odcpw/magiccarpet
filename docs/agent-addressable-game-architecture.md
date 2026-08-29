@@ -661,7 +661,10 @@ partial real implementation, not a completion claim:
   immutable Dolmen frame and selector-global Villager clocks are now owned by
   the internal `sim-frozen-actor-tmap` crate, while owner-cache qualification,
   terrain draw admission and native session scheduling remain with their
-  existing owners. These are eleven bounded physical
+  existing owners. The selector-global Firefly texture-map bank and its latch
+  clocks are now owned by the internal `sim-firefly-tmap` crate, while
+  owner-cache qualification, terrain draw admission and native session
+  scheduling remain with their existing owners. These are twelve bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
