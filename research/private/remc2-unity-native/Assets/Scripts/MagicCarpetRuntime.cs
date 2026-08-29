@@ -1004,6 +1004,9 @@ namespace MagicCarpet.Native
         internal EngineSessionTransport.CampaignSnapshotObservation
             GameRuntimeProductionCampaignSnapshot => gameRuntimeCampaignSnapshot;
 
+        internal string GameRuntimeProductionFlightHudText =>
+            FormatGameRuntimeFlightHudText();
+
         internal Texture2D GameRuntimeProductionFireballTexture =>
             gameRuntimeFireballAsset?.value == null
                 ? null
@@ -11705,6 +11708,35 @@ namespace MagicCarpet.Native
             return false;
         }
 
+        private string FormatGameRuntimeFlightHudText()
+        {
+            var observation = gameRuntimeCampaignSnapshot;
+            if (session == null || observation?.value?.player_pose == null ||
+                observation.value.player_motion == null)
+            {
+                return "CARPET FLIGHT — RUST GAME RUNTIME\n" +
+                    "waiting for authoritative campaign snapshot";
+            }
+            var identity = session.GameRuntimeIdentity();
+            var pose = observation.value.player_pose;
+            var motion = observation.value.player_motion;
+            return $"CARPET FLIGHT — RUST GAME RUNTIME · " +
+                $"{identity.mode.ToUpperInvariant()}\n" +
+                $"speed {motion.actual_speed,4} / {motion.target_speed,4}  " +
+                $"strafe {motion.strafe_speed,4}  altitude {pose.z,6}  " +
+                $"tick {observation.identity.tick}\n" +
+                "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
+                "C centre · Space fire · P pause";
+        }
+
+        private void DrawGameRuntimeFlightHud()
+        {
+            GUI.Label(
+                new Rect(24, 18, Mathf.Min(900, Screen.width - 48), 110),
+                FormatGameRuntimeFlightHudText(),
+                hudStyle);
+        }
+
         private void OnGUI()
         {
             if (TrySuppressNativeFinalOnGui())
@@ -11740,6 +11772,11 @@ namespace MagicCarpet.Native
             if (campaignSession != null && level2Mode)
             {
                 DrawLevel2DayHud();
+                return;
+            }
+            if (gameRuntimeMode)
+            {
+                DrawGameRuntimeFlightHud();
                 return;
             }
             if (session == null) return;

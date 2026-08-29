@@ -749,6 +749,72 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void ProductionGameRuntimeFlightHudReadsReturnedRustMotionOnSameHandle()
+        {
+            var root = new GameObject("resolver runtime flight HUD");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                var beforeIdentity = runtime.GameRuntimeProductionIdentity;
+                var before = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Is.EqualTo(
+                        "CARPET FLIGHT — RUST GAME RUNTIME · PLAYING\n" +
+                        $"speed {before.value.player_motion.actual_speed,4} / " +
+                        $"{before.value.player_motion.target_speed,4}  " +
+                        $"strafe {before.value.player_motion.strafe_speed,4}  " +
+                        $"altitude {before.value.player_pose.z,6}  " +
+                        $"tick {before.identity.tick}\n" +
+                        "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
+                        "C centre · Space fire · P pause"));
+
+                runtime.QualificationApplyGameRuntimeProductionMovement(
+                    true,
+                    false,
+                    true,
+                    false);
+                runtime.QualificationDriveGameRuntimeFrames(3);
+
+                var afterIdentity = runtime.GameRuntimeProductionIdentity;
+                var after = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(afterIdentity.runtime_id, Is.EqualTo(beforeIdentity.runtime_id));
+                Assert.That(
+                    afterIdentity.session.session_id,
+                    Is.EqualTo(beforeIdentity.session.session_id));
+                Assert.That(after.identity.tick, Is.EqualTo("3"));
+                Assert.That(
+                    after.value.player_motion.actual_speed,
+                    Is.Not.EqualTo(before.value.player_motion.actual_speed));
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Is.EqualTo(
+                        "CARPET FLIGHT — RUST GAME RUNTIME · PLAYING\n" +
+                        $"speed {after.value.player_motion.actual_speed,4} / " +
+                        $"{after.value.player_motion.target_speed,4}  " +
+                        $"strafe {after.value.player_motion.strafe_speed,4}  " +
+                        $"altitude {after.value.player_pose.z,6}  " +
+                        $"tick {after.identity.tick}\n" +
+                        "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
+                        "C centre · Space fire · P pause"));
+
+                // No-Claim: this proves the production HUD text consumes the
+                // same-handle Rust motion, altitude, mode, and tick returned by
+                // the campaign snapshot. It does not prove source-art HUD assets,
+                // life/mana/spells/objectives, minimap/terrain/audio, or later levels.
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void ProductionMagicCarpetRuntimeRendersTheSemanticFireballAssetWithoutOwnerCache()
         {
             const string content =
