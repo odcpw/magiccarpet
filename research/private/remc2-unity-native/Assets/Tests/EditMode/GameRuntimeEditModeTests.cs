@@ -307,6 +307,96 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void ProductionMagicCarpetRuntimeRestoresItsReplayIntoOneFreshOwner()
+        {
+            var nativeSessions = NativeSession.ActiveSessionCount;
+            var campaignSessions = NativeCampaignSession.ActiveSessionCount;
+            Assert.That(campaignSessions, Is.Zero);
+            var arguments = RuntimeArguments(
+                LevelThreePackage, LevelOnePackage, LevelTwoPackage);
+            byte[] replaySave = null;
+            GameRuntimeTransport.Identity sourceIdentity = null;
+            EngineSessionTransport.CampaignSnapshotObservation sourceSnapshot = null;
+
+            var sourceRoot = new GameObject("replay source production owner");
+            sourceRoot.SetActive(false);
+            var source = sourceRoot.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                source.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                source.QualificationDriveGameRuntimeFrames(3);
+                sourceIdentity = source.GameRuntimeProductionIdentity;
+                sourceSnapshot = source.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(sourceIdentity.session.tick, Is.EqualTo("3"));
+                replaySave = source.QualificationSaveGameRuntimeProductionReplay();
+                Assert.That(replaySave, Is.Not.Empty);
+                Assert.That(source.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("3"));
+                AssertSameCampaignState(
+                    sourceSnapshot,
+                    source.GameRuntimeProductionCampaignSnapshot);
+            }
+            finally
+            {
+                source.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(sourceRoot);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
+
+            var restoredRoot = new GameObject("replay restored production owner");
+            restoredRoot.SetActive(false);
+            var restored = restoredRoot.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                restored.QualificationInitializeGameRuntimeProductionFromReplay(
+                    replaySave,
+                    arguments);
+                Assert.That(restored.GameRuntimeProductionStartupReady, Is.True);
+                var restoredIdentity = restored.GameRuntimeProductionIdentity;
+                Assert.That(restoredIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(restoredIdentity.generation, Is.EqualTo("2"));
+                Assert.That(restoredIdentity.session.generation, Is.EqualTo("1"));
+                Assert.That(restoredIdentity.session.tick, Is.EqualTo("3"));
+                Assert.That(
+                    restoredIdentity.session.session_id,
+                    Is.Not.EqualTo(sourceIdentity.session.session_id));
+                Assert.That(
+                    restoredIdentity.session.package_graph_hash,
+                    Is.EqualTo(sourceIdentity.session.package_graph_hash));
+                Assert.That(
+                    restoredIdentity.session.definition_hash,
+                    Is.EqualTo(sourceIdentity.session.definition_hash));
+                Assert.That(
+                    restoredIdentity.active_runtime_flow.bound_level_id,
+                    Is.EqualTo(sourceIdentity.active_runtime_flow.bound_level_id));
+                AssertSameCampaignState(
+                    sourceSnapshot,
+                    restored.GameRuntimeProductionCampaignSnapshot);
+
+                restored.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(
+                    restored.GameRuntimeProductionIdentity.session.tick,
+                    Is.EqualTo("4"));
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions + 1));
+                Assert.That(
+                    NativeCampaignSession.ActiveSessionCount,
+                    Is.EqualTo(campaignSessions));
+            }
+            finally
+            {
+                restored.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(restoredRoot);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));
+
+            // No-Claim: this proves the production runtime owner can emit and
+            // restore opaque real-L1 replay bytes into a fresh same-authority
+            // facade. It does not provide filesystem/menu storage, paused or
+            // cross-level saves, migration, cloud sync, or completion handling.
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void ProductionNativeSessionFacadeOwnsOneResolverRuntimeHandle()
         {
             var nativeSessions = NativeSession.ActiveSessionCount;

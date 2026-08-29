@@ -148,6 +148,23 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal static NativeSession OpenGameRuntimeReplay(
+            byte[] replaySave,
+            params GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
+            var runtime = new GameRuntimeTransport();
+            try
+            {
+                runtime.LoadReplay(replaySave, packages);
+                return new NativeSession(runtime.Handle, gameRuntime: runtime);
+            }
+            catch
+            {
+                runtime.Dispose();
+                throw;
+            }
+        }
+
         internal bool UsesEngineContract => engine != null;
 
         internal bool UsesGameRuntimeContract => gameRuntime != null;
@@ -196,6 +213,12 @@ namespace MagicCarpet.Native
         internal EngineSessionTransport.CampaignSnapshotObservation GameRuntimeCampaignReset()
         {
             return gameRuntime?.CampaignReset() ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
+        internal byte[] GameRuntimeSaveReplay()
+        {
+            return gameRuntime?.SaveReplay() ?? throw new InvalidOperationException(
                 "session does not own a game runtime");
         }
 

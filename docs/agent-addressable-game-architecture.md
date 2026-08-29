@@ -553,8 +553,11 @@ partial real implementation, not a completion claim:
   native and managed transports treat those bytes as opaque, bind save to the
   exact Playing runtime/session generation and tick, and atomically load them
   with a complete unordered package-resource set into one fresh resolver-owned
-  handle. This is one Level 1 replay checkpoint, not paused or cross-level
-  persistence, filesystem/UI storage, migration or a full campaign save;
+  handle. The production `NativeSession` and `MagicCarpetRuntime` owner now
+  carry that same replay through disposal into one fresh same-authority owner
+  and resume ordinary fixed-step play. This is one Level 1 replay checkpoint,
+  not paused or cross-level persistence, filesystem/UI storage, migration or a
+  full campaign save;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed

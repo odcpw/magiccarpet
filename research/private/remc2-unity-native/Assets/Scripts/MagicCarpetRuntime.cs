@@ -8555,6 +8555,45 @@ namespace MagicCarpet.Native
             UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
         }
 
+        internal byte[] QualificationSaveGameRuntimeProductionReplay()
+        {
+            Require(
+                GameRuntimeProductionStartupReady,
+                "game runtime replay save requires a validated production owner");
+            return session.GameRuntimeSaveReplay();
+        }
+
+        internal void QualificationInitializeGameRuntimeProductionFromReplay(
+            byte[] replaySave,
+            params string[] arguments)
+        {
+            Require(
+                !gameObject.activeInHierarchy &&
+                session == null &&
+                campaignSession == null,
+                "game runtime replay route starts before Awake with no owner handle");
+            disposed = false;
+            fatalError = null;
+            gameRuntimeMode = false;
+            gameRuntimeStartupReady = false;
+            try
+            {
+                ConfigureStartupArguments(arguments);
+                Require(
+                    gameRuntimeRequested,
+                    "game runtime replay qualification requires -mc-game-runtime");
+                OpenAndValidateGameRuntimeProductionReplaySession(
+                    replaySave,
+                    GameRuntimePackagesFromArguments(arguments));
+            }
+            catch (Exception exception)
+            {
+                fatalError = exception.ToString();
+                DisposeSession();
+                throw;
+            }
+        }
+
         internal void QualificationRequestGameRuntimeFireball()
         {
             Require(
@@ -11879,6 +11918,13 @@ namespace MagicCarpet.Native
             return NativeSession.OpenGameRuntime(packages);
         }
 
+        internal static NativeSession OpenGameRuntimeReplaySessionForPackages(
+            byte[] replaySave,
+            params GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
+            return NativeSession.OpenGameRuntimeReplay(replaySave, packages);
+        }
+
         private static GameRuntimeTransport.InstalledPackageResource[]
             GameRuntimePackagesFromArguments(string[] arguments)
         {
@@ -11915,7 +11961,25 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "a native gameplay owner is already attached to this runtime");
             }
-            var opened = OpenGameRuntimeSessionForPackages(packages);
+            AttachAndValidateGameRuntimeProductionSession(
+                OpenGameRuntimeSessionForPackages(packages));
+        }
+
+        private void OpenAndValidateGameRuntimeProductionReplaySession(
+            byte[] replaySave,
+            GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
+            if (session != null || campaignSession != null)
+            {
+                throw new InvalidOperationException(
+                    "a native gameplay owner is already attached to this runtime");
+            }
+            AttachAndValidateGameRuntimeProductionSession(
+                OpenGameRuntimeReplaySessionForPackages(replaySave, packages));
+        }
+
+        private void AttachAndValidateGameRuntimeProductionSession(NativeSession opened)
+        {
             try
             {
                 var identity = opened.GameRuntimeIdentity();
