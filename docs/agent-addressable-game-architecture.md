@@ -604,12 +604,17 @@ partial real implementation, not a completion claim:
   from that same returned Rust snapshot. Generic life and mana bars derive their
   fill directly from those authoritative values on every draw. One real Fireball
   charge changes the projected mana and bar width, and reset restores both
-  without client-side resource arithmetic.
+  without client-side resource arithmetic. The campaign snapshot now also
+  carries Rust-authored semantic objective progress: the current objective ID,
+  completed and total counts, and the authoritative all-satisfied flag derived
+  from the live local objective carrier plus its bound level definition. Unity
+  presents that projection in the same-handle telemetry strip and never
+  reconstructs objective state in C#.
   After each fixed step the same owner now drains the ordered,
   opaque-actor semantic event pages through the nested session guard and shows
   the latest retained event in that strip without replaying it on another poll.
-  Source-art HUD, spell/objective UI, terrain, world-space effects and audio
-  playback have not yet migrated to this owner. The resolver
+  Source-art HUD, localized objective text, spell UI, terrain, world-space
+  effects and audio playback have not yet migrated to this owner. The resolver
   can now serialize one real Level 1 Playing or quiescent Paused session as its immutable
   semantic definition, ordered neutral command trace and exact state/terrain/
   effect receipts, then guard-first replay it into a fresh runtime/session and
@@ -672,7 +677,13 @@ partial real implementation, not a completion claim:
   existing owners. The selector-global Firefly texture-map bank and its latch
   clocks are now owned by the internal `sim-firefly-tmap` crate, while
   owner-cache qualification, terrain draw admission and native session
-  scheduling remain with their existing owners. These are twelve bounded physical
+  scheduling remain with their existing owners. The immutable static-world
+  texture-map bank is now owned by the internal `sim-static-world-tmap` crate,
+  while owner-cache qualification and render scheduling remain in `sim-core`.
+  The qualified Level 1 castle and mana-economy texture-map bank and clock are
+  now owned by the internal `sim-economy-tmap` crate, while owner-cache
+  qualification, native/render scheduling and the cross-domain mana-size
+  consumer remain in `sim-core`. These are fourteen bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain

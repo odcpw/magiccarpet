@@ -365,7 +365,7 @@ namespace MagicCarpet.Native.Tests
                 var campaignProfile = transport.NegotiatedContract.session_profiles
                     .Single(profile =>
                         profile.profile == EngineSessionTransport.CampaignProfile);
-                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v3"));
+                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v4"));
                 Assert.That(
                     campaignProfile.capabilities,
                     Is.EqualTo(new[]
@@ -380,6 +380,14 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(initial.value.state_hash, Has.Length.EqualTo(16));
                 Assert.That(initial.value.terrain_hash, Has.Length.EqualTo(16));
                 Assert.That(initial.value.effect_journal_sha256, Has.Length.EqualTo(64));
+                Assert.That(
+                    initial.value.objective_progress.current_objective,
+                    Is.EqualTo("objective.reach.payahandra_ruins"));
+                Assert.That(initial.value.objective_progress.completed_count, Is.Zero);
+                Assert.That(initial.value.objective_progress.total_count, Is.EqualTo(5));
+                Assert.That(
+                    initial.value.objective_progress.all_objectives_satisfied,
+                    Is.False);
                 Assert.That(initial.value.presentation_entities, Is.Empty);
 
                 for (var poll = 0; poll < 3; poll++)

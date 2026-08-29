@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v4";
+pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v5";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -57,6 +57,19 @@ pub struct PlayerVitals {
     pub max_life: i32,
     pub mana: i32,
     pub max_mana: i32,
+}
+
+/// Authoritative progress through the bound level's semantic objectives.
+///
+/// The optional current objective is the semantic identity selected by the
+/// live Rust runtime. Clients may present this projection but do not infer or
+/// advance objective state themselves.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct ObjectiveProgress {
+    pub current_objective: Option<SemanticId>,
+    pub completed_count: u32,
+    pub total_count: u32,
+    pub all_objectives_satisfied: bool,
 }
 
 /// Package-neutral pose for one live presentation entity. Coordinates use
@@ -124,6 +137,7 @@ pub struct CampaignSnapshot {
     pub player_pose: PlayerPose,
     pub player_motion: PlayerMotion,
     pub player_vitals: PlayerVitals,
+    pub objective_progress: ObjectiveProgress,
     pub presentation_entities: Vec<PresentationEntity>,
 }
 

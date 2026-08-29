@@ -48,8 +48,8 @@ use crate::{
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
         GameCommand, GameCompletion, GameCompletionStatus, GameEvent, GameSessionBackend,
-        LateralControl, LongitudinalControl, PlayerMotion, PlayerPose, PlayerVitals,
-        PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId,
+        LateralControl, LongitudinalControl, ObjectiveProgress, PlayerMotion, PlayerPose,
+        PlayerVitals, PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId,
     },
     level1_mission::FIREBALL_LOGICAL_HEIGHT,
     native_world::{Level2DispatchEvent, Level2SharedSpellEvent},
@@ -1245,8 +1245,40 @@ impl GameSessionBackend for Mc2CampaignBackend {
 
     fn snapshot(&self) -> Self::Snapshot {
         let flight = &self.campaign.level2.state;
-        let shared_spells = self.campaign.level2_compatibility().shared_spells();
+        let compatibility = self.campaign.level2_compatibility();
+        let shared_spells = compatibility.shared_spells();
         let player_entity = shared_spells.player_entity();
+        let level = compatibility
+            .semantic_level_definition()
+            .expect("campaign backend retains its bound semantic level definition");
+        let local_objective = compatibility
+            .runtime()
+            .objectives
+            .first()
+            .expect("campaign runtime retains its local objective carrier");
+        let total_count = u32::try_from(level.objectives().len())
+            .expect("validated level objective count fits u32");
+        let completed_count = u32::try_from(
+            local_objective
+                .stage_selectors
+                .iter()
+                .take(level.objectives().len())
+                .filter(|selector| **selector == 2)
+                .count(),
+        )
+        .expect("validated level objective count fits u32");
+        let all_objectives_satisfied = local_objective.is_level_end != 0;
+        let current_objective = (!all_objectives_satisfied)
+            .then(|| {
+                level
+                    .objectives()
+                    .get(usize::from(local_objective.text_selector))
+            })
+            .flatten()
+            .map(|objective| {
+                SemanticId::parse(objective.id().as_str())
+                    .expect("validated level objective ID is a semantic ID")
+            });
         let presentation_entities = self
             .fireball_projectile_asset
             .as_ref()
@@ -1304,6 +1336,12 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 max_life: player_entity.max_life,
                 mana: shared_spells.player_mana(),
                 max_mana: player_entity.max_mana,
+            },
+            objective_progress: ObjectiveProgress {
+                current_objective,
+                completed_count,
+                total_count,
+                all_objectives_satisfied,
             },
             presentation_entities,
         }
@@ -4549,6 +4587,98 @@ mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.snapshot().value.player_vitals, initial);
+    }
+
+    #[test]
+    fn campaign_snapshot_projects_semantic_objective_progress_for_real_levels_one_two_and_three() {
+        let catalog = default_catalog().unwrap();
+        let cases = [
+            (
+                level_one_descriptor_fixture_path(),
+                "objective.reach.my_beacon",
+            ),
+            (
+                descriptor_fixture_path(),
+                "objective.reach.payahandra_ruins",
+            ),
+            (
+                level_three_descriptor_fixture_path(),
+                "objective.clear.undead_horde",
+            ),
+        ];
+        for (index, (root, current_objective)) in cases.into_iter().enumerate() {
+            let definition = load_mc2_campaign(&root, &catalog).unwrap();
+            let session = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(definition),
+                70 + index as u64,
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap();
+            let progress = session.snapshot().value.objective_progress;
+            assert_eq!(
+                progress.current_objective.as_ref().map(SemanticId::as_str),
+                Some(current_objective)
+            );
+            assert_eq!(progress.completed_count, 0);
+            assert_eq!(progress.total_count, 5);
+            assert!(!progress.all_objectives_satisfied);
+        }
+
+        let root = level_one_descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &catalog).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            73,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let first_waypoint = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let stage = &compatibility.runtime().stages[0];
+            crate::Position {
+                x: stage.axis_x.cast_unsigned(),
+                y: stage.axis_y.cast_unsigned(),
+                z: compatibility.state.position.z,
+            }
+        };
+        for _ in 0..512 {
+            if session.snapshot().value.objective_progress.completed_count == 1 {
+                break;
+            }
+            let state = session.backend().campaign.level2_compatibility().state;
+            let desired =
+                i16::try_from(crate::heading_for_positions(state.position, first_waypoint))
+                    .expect("source heading is 11-bit");
+            let correction = crate::turn_toward(state.yaw, desired, 127);
+            session
+                .step(
+                    guard(&session),
+                    GameCommand {
+                        longitudinal: LongitudinalControl::Accelerate,
+                        roll_axis: correction.clamp(-24, 24) as i8,
+                        pitch_axis: -127,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+        }
+        let progressed = session.snapshot().value.objective_progress;
+        assert_eq!(progressed.completed_count, 1);
+        assert_eq!(progressed.total_count, 5);
+        assert_eq!(
+            progressed
+                .current_objective
+                .as_ref()
+                .map(SemanticId::as_str),
+            Some("objective.reach.foot_of_spire")
+        );
+        assert!(!progressed.all_objectives_satisfied);
+        // No-Claim: this proves initial objective IDs/counts from the real
+        // package-bound L1/L2/L3 carriers and ordinary commanded L1 waypoint
+        // advancement through the neutral snapshot. It does not complete a
+        // level, stage combat, localize objective text, or prove clients.
     }
 
     #[test]

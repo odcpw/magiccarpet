@@ -11886,7 +11886,8 @@ namespace MagicCarpet.Native
             var observation = gameRuntimeCampaignSnapshot;
             if (observation?.value?.player_pose == null ||
                 observation.value.player_motion == null ||
-                observation.value.player_vitals == null)
+                observation.value.player_vitals == null ||
+                observation.value.objective_progress == null)
             {
                 return "CARPET FLIGHT — RUST GAME RUNTIME\n" +
                     "waiting for authoritative campaign snapshot";
@@ -11894,6 +11895,7 @@ namespace MagicCarpet.Native
             var pose = observation.value.player_pose;
             var motion = observation.value.player_motion;
             var vitals = observation.value.player_vitals;
+            var objective = observation.value.objective_progress;
             var latestEvent = gameRuntimeRecentSemanticEvents.Count == 0
                 ? "none"
                 : FormatGameRuntimeSemanticEvent(gameRuntimeRecentSemanticEvents.Last());
@@ -11904,9 +11906,22 @@ namespace MagicCarpet.Native
                 $"tick {observation.identity.tick}\n" +
                 $"life {vitals.life,6} / {vitals.max_life,6}  " +
                 $"mana {vitals.mana,6} / {vitals.max_mana,6}\n" +
+                FormatGameRuntimeObjectiveHudText(objective) + "\n" +
                 $"event {latestEvent}\n" +
                 "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
                 "C centre · Space fire · P pause · Escape close";
+        }
+
+        private static string FormatGameRuntimeObjectiveHudText(
+            EngineSessionTransport.ObjectiveProgress progress)
+        {
+            var current = progress.all_objectives_satisfied
+                ? "all satisfied"
+                : string.IsNullOrEmpty(progress.current_objective)
+                    ? "unavailable"
+                    : progress.current_objective;
+            return $"objective {current} · {progress.completed_count}/" +
+                $"{progress.total_count} complete";
         }
 
         private static string FormatGameRuntimeSemanticEvent(

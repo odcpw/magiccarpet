@@ -429,8 +429,8 @@ pub extern "C" fn mc_game_session_contract_json_v1(
     boundary(|| {
         let contract = serde_json::json!({
             "engine_contract": sim_session::GAME_SESSION_CONTRACT,
-            "transport_contract": "carpet-flight-native-json/v4",
-            "transport_version": 4,
+            "transport_contract": "carpet-flight-native-json/v5",
+            "transport_version": 5,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "u64_hash_encoding": "lowercase-hex-16",
@@ -443,7 +443,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 },
                 {
                     "profile": "mc2-campaign",
-                    "snapshot_value": "campaign_snapshot/v3",
+                    "snapshot_value": "campaign_snapshot/v4",
                     "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities"]
                 }
             ],
@@ -866,12 +866,12 @@ mod tests {
         let contract = read_json(|buffer, capacity, length| {
             mc_game_session_contract_json_v1(buffer, capacity, length)
         });
-        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v4");
+        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v5");
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-json/v4"
+            "carpet-flight-native-json/v5"
         );
-        assert_eq!(contract["transport_version"], 4);
+        assert_eq!(contract["transport_version"], 5);
         assert_eq!(contract["u64_counter_encoding"], "decimal-string");
         assert_eq!(contract["u64_hash_encoding"], "lowercase-hex-16");
         assert_eq!(contract["limits"]["maximum_command_json_bytes"], 4_096);
@@ -1230,7 +1230,7 @@ mod tests {
             ])
         );
         assert_eq!(profiles[1]["profile"], "mc2-campaign");
-        assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v3");
+        assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v4");
         assert_eq!(
             profiles[1]["capabilities"],
             serde_json::json!([
@@ -1278,6 +1278,15 @@ mod tests {
         assert_eq!(initial["identity"]["definition_revision"], "1");
         assert_eq!(initial["value"]["tick"], "0");
         assert_eq!(initial["value"]["effect_head"], "0");
+        assert_eq!(
+            initial["value"]["objective_progress"],
+            serde_json::json!({
+                "current_objective": "objective.reach.payahandra_ruins",
+                "completed_count": 0,
+                "total_count": 5,
+                "all_objectives_satisfied": false
+            })
+        );
         assert_eq!(
             initial["value"]["state_hash"],
             format!("{:016x}", direct.state_hash())
@@ -1607,6 +1616,15 @@ mod tests {
             })
         );
         assert_eq!(
+            initial["value"]["objective_progress"],
+            serde_json::json!({
+                "current_objective": "objective.reach.my_beacon",
+                "completed_count": 0,
+                "total_count": 5,
+                "all_objectives_satisfied": false
+            })
+        );
+        assert_eq!(
             initial["value"]["presentation_entities"],
             serde_json::json!([])
         );
@@ -1650,6 +1668,10 @@ mod tests {
         let charged = campaign_snapshot(handle);
         assert_eq!(charged["value"]["player_vitals"]["mana"], 900);
         assert_eq!(charged["value"]["player_vitals"]["life"], 10_000);
+        assert_eq!(
+            charged["value"]["objective_progress"],
+            initial["value"]["objective_progress"]
+        );
 
         assert_eq!(mc_game_session_reset_v1(handle, 1, 2), MC_STATUS_OK);
         let reset = campaign_snapshot(handle);
@@ -1661,6 +1683,10 @@ mod tests {
         assert_eq!(
             reset["value"]["presentation_entities"],
             serde_json::json!([])
+        );
+        assert_eq!(
+            reset["value"]["objective_progress"],
+            initial["value"]["objective_progress"]
         );
         assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
         // No-Claim: this proves the real native campaign snapshot carries one

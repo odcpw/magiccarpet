@@ -133,6 +133,18 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 actual.value.player_vitals.max_mana,
                 Is.EqualTo(expected.value.player_vitals.max_mana));
+            Assert.That(
+                actual.value.objective_progress.current_objective,
+                Is.EqualTo(expected.value.objective_progress.current_objective));
+            Assert.That(
+                actual.value.objective_progress.completed_count,
+                Is.EqualTo(expected.value.objective_progress.completed_count));
+            Assert.That(
+                actual.value.objective_progress.total_count,
+                Is.EqualTo(expected.value.objective_progress.total_count));
+            Assert.That(
+                actual.value.objective_progress.all_objectives_satisfied,
+                Is.EqualTo(expected.value.objective_progress.all_objectives_satisfied));
         }
 
         private static int SignedAngle11(short value)
@@ -894,6 +906,9 @@ namespace MagicCarpet.Native.Tests
                         $"{before.value.player_vitals.max_life,6}  " +
                         $"mana {before.value.player_vitals.mana,6} / " +
                         $"{before.value.player_vitals.max_mana,6}\n" +
+                        $"objective {before.value.objective_progress.current_objective} · " +
+                        $"{before.value.objective_progress.completed_count}/" +
+                        $"{before.value.objective_progress.total_count} complete\n" +
                         "event none\n" +
                         "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
                         "C centre · Space fire · P pause · Escape close"));
@@ -933,6 +948,9 @@ namespace MagicCarpet.Native.Tests
                         $"{after.value.player_vitals.max_life,6}  " +
                         $"mana {after.value.player_vitals.mana,6} / " +
                         $"{after.value.player_vitals.max_mana,6}\n" +
+                        $"objective {after.value.objective_progress.current_objective} · " +
+                        $"{after.value.objective_progress.completed_count}/" +
+                        $"{after.value.objective_progress.total_count} complete\n" +
                         $"event {latestEvent}\n" +
                         "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
                         "C centre · Space fire · P pause · Escape close"));
@@ -942,6 +960,82 @@ namespace MagicCarpet.Native.Tests
                 // the campaign snapshot. It does not prove source-art HUD assets,
                 // source-art life/mana gauges, spells/objectives, minimap/terrain/audio,
                 // or later levels.
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProductionGameRuntimeObjectiveHudConsumesRustSemanticProgressOnSameHandle()
+        {
+            var root = new GameObject("resolver runtime objective HUD");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                var beforeIdentity = runtime.GameRuntimeProductionIdentity;
+                var before = runtime.GameRuntimeProductionCampaignSnapshot;
+                var progress = before.value.objective_progress;
+                Assert.That(progress, Is.Not.Null);
+                Assert.That(
+                    progress.current_objective,
+                    Is.EqualTo("objective.reach.my_beacon"));
+                Assert.That(progress.completed_count, Is.Zero);
+                Assert.That(progress.total_count, Is.EqualTo(5));
+                Assert.That(progress.all_objectives_satisfied, Is.False);
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Does.Contain(
+                        "objective objective.reach.my_beacon · 0/5 complete"));
+
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var steppedIdentity = runtime.GameRuntimeProductionIdentity;
+                var stepped = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(
+                    steppedIdentity.runtime_id,
+                    Is.EqualTo(beforeIdentity.runtime_id));
+                Assert.That(
+                    steppedIdentity.session.session_id,
+                    Is.EqualTo(beforeIdentity.session.session_id));
+                Assert.That(
+                    stepped.identity.session_id,
+                    Is.EqualTo(before.identity.session_id));
+                Assert.That(stepped.identity.tick, Is.EqualTo("1"));
+                Assert.That(
+                    stepped.value.objective_progress.current_objective,
+                    Is.EqualTo(progress.current_objective));
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Does.Contain(
+                        "objective objective.reach.my_beacon · 0/5 complete"));
+
+                runtime.QualificationResetGameRuntimeProduction();
+                var reset = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(
+                    reset.identity.session_id,
+                    Is.EqualTo(before.identity.session_id));
+                Assert.That(reset.identity.generation, Is.EqualTo("2"));
+                Assert.That(
+                    reset.value.objective_progress.current_objective,
+                    Is.EqualTo("objective.reach.my_beacon"));
+                Assert.That(reset.value.objective_progress.completed_count, Is.Zero);
+                Assert.That(reset.value.objective_progress.total_count, Is.EqualTo(5));
+                Assert.That(
+                    runtime.GameRuntimeProductionFlightHudText,
+                    Does.Contain(
+                        "objective objective.reach.my_beacon · 0/5 complete"));
+
+                // No-Claim: this proves the real Level 1 Rust snapshot's
+                // semantic objective ID and counts are presented by Unity on
+                // one runtime/session handle through step and reset. It does
+                // not localize objective text, complete the objective in
+                // Unity, or prove later-level HUD presentation.
             }
             finally
             {

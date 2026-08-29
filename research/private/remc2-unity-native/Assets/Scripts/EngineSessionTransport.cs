@@ -17,8 +17,8 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class EngineSessionTransport
     {
-        internal const string EngineContract = "carpet-flight-game-session/v4";
-        internal const string TransportContract = "carpet-flight-native-json/v4";
+        internal const string EngineContract = "carpet-flight-game-session/v5";
+        internal const string TransportContract = "carpet-flight-native-json/v5";
         internal const string OwnedProfile = "mc2-owned";
         internal const string CampaignProfile = "mc2-campaign";
         private const string CampaignDescriptorEnvelope = "campaign-definition.json";
@@ -106,6 +106,15 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class ObjectiveProgress
+        {
+            public string current_objective;
+            public uint completed_count;
+            public uint total_count;
+            public bool all_objectives_satisfied;
+        }
+
+        [Serializable]
         internal sealed class SnapshotValue
         {
             public string tick;
@@ -137,6 +146,7 @@ namespace MagicCarpet.Native
             public Pose player_pose;
             public Motion player_motion;
             public PlayerVitals player_vitals;
+            public ObjectiveProgress objective_progress;
             public PresentationEntity[] presentation_entities;
         }
 
@@ -761,7 +771,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.engine_contract != EngineContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 4 ||
+                contract.transport_version != 5 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.u64_hash_encoding != "lowercase-hex-16" ||
@@ -783,7 +793,7 @@ namespace MagicCarpet.Native
             ValidateProfile(
                 contract,
                 CampaignProfile,
-                "campaign_snapshot/v3",
+                "campaign_snapshot/v4",
                 RequiredCampaignCapabilities);
         }
 
@@ -855,6 +865,7 @@ namespace MagicCarpet.Native
         {
             if (value == null || value.player_pose == null || value.player_motion == null ||
                 value.player_vitals == null ||
+                value.objective_progress == null ||
                 value.presentation_entities == null ||
                 value.tick != identity.tick)
             {
@@ -866,6 +877,16 @@ namespace MagicCarpet.Native
             {
                 throw new InvalidOperationException(
                     "neutral campaign player vitals are invalid");
+            }
+            var objectiveProgress = value.objective_progress;
+            if (objectiveProgress.completed_count > objectiveProgress.total_count ||
+                (objectiveProgress.all_objectives_satisfied &&
+                 !string.IsNullOrEmpty(objectiveProgress.current_objective)) ||
+                (!string.IsNullOrEmpty(objectiveProgress.current_objective) &&
+                 string.IsNullOrWhiteSpace(objectiveProgress.current_objective)))
+            {
+                throw new InvalidOperationException(
+                    "neutral campaign objective progress is invalid");
             }
             ParseCounter(value.effect_head, "effect_head");
             ParseHash(value.state_hash, "state_hash");
