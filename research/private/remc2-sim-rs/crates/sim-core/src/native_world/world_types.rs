@@ -3745,6 +3745,7 @@ impl NativeWorldInspection {
             authored_spells: definition.spell_bindings().clone(),
             spell_families: definition.spell_families().clone(),
             authored_buildings: definition.building_bindings().clone(),
+            authored_building_entities: definition.authored_building_entity_bindings(),
             initial_source_buildings: definition.initial_building_bindings().clone(),
             authored_scenery: definition.scenery_bindings().clone(),
             initial_source_scenery: definition.initial_scenery_bindings().clone(),

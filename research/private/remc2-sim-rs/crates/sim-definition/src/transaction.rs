@@ -22,7 +22,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v7";
+pub const CHANGE_SET_SCHEMA: &str = "carpet-flight-change-set/v8";
 pub const WORKSPACE_SCHEMA: &str = "carpet-flight-definition-workspace/v1";
 pub const VALIDATION_RECEIPT_SCHEMA: &str = "carpet-flight-validation-receipt/v1";
 pub const APPLY_RECEIPT_SCHEMA: &str = "carpet-flight-apply-receipt/v1";
@@ -430,6 +430,39 @@ impl ChangeSetBuilder {
                 entity,
                 experience_award,
                 expected_experience_award: Some(expected_experience_award),
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_house_life_mana_scalar(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        life_mana_scalar: u16,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetHouseLifeManaScalar {
+                entity,
+                life_mana_scalar,
+                expected_life_mana_scalar: None,
+            });
+        self
+    }
+
+    #[must_use]
+    pub fn set_house_life_mana_scalar_from(
+        mut self,
+        entity: crate::level_definition::LevelEntityId,
+        expected_life_mana_scalar: u16,
+        life_mana_scalar: u16,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetHouseLifeManaScalar {
+                entity,
+                life_mana_scalar,
+                expected_life_mana_scalar: Some(expected_life_mana_scalar),
             });
         self
     }
@@ -1628,6 +1661,60 @@ fn validate_against(
                     Err(error) => diagnostics.push(error.into()),
                 }
             }
+            ResolvedOperation::HouseLifeManaScalarSet {
+                id,
+                entity,
+                life_mana_scalar,
+                expected_life_mana_scalar,
+            } => {
+                required_timing = Some(required_timing.unwrap_or(RequestedTiming::SessionReset));
+                if !change_set
+                    .requested_timing
+                    .permits(MutationTiming::SessionReset)
+                {
+                    diagnostics.push(Diagnostic {
+                        code: "UNSAFE_TIMING".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "grouped House scalar authoring requires session_reset timing"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                let current = active
+                    .level_definition()
+                    .and_then(|level| level.entity(entity))
+                    .and_then(|candidate| candidate.house_construction())
+                    .map(|config| config.life_mana_scalar());
+                if expected_life_mana_scalar.is_some() && current != *expected_life_mana_scalar {
+                    diagnostics.push(Diagnostic {
+                        code: "CONFLICT".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message:
+                            "grouped House expected scalar does not match the active definition"
+                                .to_owned(),
+                    });
+                    continue;
+                }
+                if current == Some(*life_mana_scalar) {
+                    diagnostics.push(Diagnostic {
+                        code: "INVALID_REQUEST".to_owned(),
+                        path_or_id: id.as_str().to_owned(),
+                        message: "grouped House already has the requested scalar".to_owned(),
+                    });
+                    continue;
+                }
+                match proposed.with_house_life_mana_scalar(
+                    entity,
+                    *life_mana_scalar,
+                    candidate_revision,
+                ) {
+                    Ok(updated) => {
+                        proposed = updated;
+                        preliminarily_valid.insert(id.clone());
+                    }
+                    Err(error) => diagnostics.push(error.into()),
+                }
+            }
         }
     }
     for resolved in &resolved_operations {
@@ -1674,6 +1761,15 @@ fn validate_against(
                 } => candidate.with_experience_scroll_award(
                     entity,
                     *experience_award,
+                    candidate_revision,
+                ),
+                ResolvedOperation::HouseLifeManaScalarSet {
+                    entity,
+                    life_mana_scalar,
+                    ..
+                } => candidate.with_house_life_mana_scalar(
+                    entity,
+                    *life_mana_scalar,
                     candidate_revision,
                 ),
             };

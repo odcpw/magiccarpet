@@ -79,6 +79,7 @@ pub struct CampaignDefinition {
     authored_spells: BTreeMap<u16, SpellKind>,
     spell_families: BTreeMap<SpellKind, u8>,
     authored_buildings: BTreeMap<u16, BuildingKind>,
+    authored_building_entities: BTreeMap<u16, LevelEntityId>,
     initial_source_buildings: BTreeMap<u16, BuildingKind>,
     authored_scenery: BTreeMap<u16, SceneryKind>,
     initial_source_scenery: BTreeMap<u16, SceneryKind>,
@@ -109,6 +110,7 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) authored_spells: BTreeMap<u16, SpellKind>,
     pub(crate) spell_families: BTreeMap<SpellKind, u8>,
     pub(crate) authored_buildings: BTreeMap<u16, BuildingKind>,
+    pub(crate) authored_building_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) initial_source_buildings: BTreeMap<u16, BuildingKind>,
     pub(crate) authored_scenery: BTreeMap<u16, SceneryKind>,
     pub(crate) initial_source_scenery: BTreeMap<u16, SceneryKind>,
@@ -377,6 +379,7 @@ impl CampaignDefinition {
             authored_spells: BTreeMap::new(),
             spell_families: BTreeMap::new(),
             authored_buildings: BTreeMap::new(),
+            authored_building_entities: BTreeMap::new(),
             initial_source_buildings: BTreeMap::new(),
             authored_scenery: BTreeMap::new(),
             initial_source_scenery: BTreeMap::new(),
@@ -404,6 +407,7 @@ impl CampaignDefinition {
         self.authored_spells = bindings.authored_spells;
         self.spell_families = bindings.spell_families;
         self.authored_buildings = bindings.authored_buildings;
+        self.authored_building_entities = bindings.authored_building_entities;
         self.initial_source_buildings = bindings.initial_source_buildings;
         self.authored_scenery = bindings.authored_scenery;
         self.initial_source_scenery = bindings.initial_source_scenery;
@@ -490,6 +494,15 @@ impl CampaignDefinition {
         authored_record: u16,
     ) -> Option<BuildingKind> {
         self.authored_buildings.get(&authored_record).copied()
+    }
+
+    pub(crate) fn authored_house_life_mana_scalar(&self, authored_record: u16) -> Option<u16> {
+        let entity_id = self.authored_building_entities.get(&authored_record)?;
+        self.semantic_level
+            .as_ref()?
+            .entity(entity_id)?
+            .house_construction()
+            .map(|config| config.life_mana_scalar())
     }
 
     pub(crate) fn building_for_initial_source_slot(

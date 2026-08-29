@@ -63,6 +63,10 @@ pub const WORM_MAX_LIFE_CAPABILITY_ID: &str = "engine.creature.worm.max_life";
 pub const EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID: &str =
     "engine.item.experience_scroll.experience_award";
 
+/// Exact compiled capability required by packages whose grouped House
+/// constructor consumes an authorable construction-to-live scalar.
+pub const HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID: &str = "engine.building.house.life_mana_scalar";
+
 /// Exact compiled maximum-life capability for a creature family whose
 /// package constructor and damage/death lifecycle consume the parameter.
 #[must_use]
@@ -221,6 +225,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
                 "Package-bound Experience Scroll construction, collection, hide, and reclaim lifecycle.",
+            ),
+            (
+                HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
+                "Package-bound grouped House construction and live damage/destruction lifecycle.",
             ),
             (
                 "engine.flight.fixed_point",

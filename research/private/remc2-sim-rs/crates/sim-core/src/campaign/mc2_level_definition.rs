@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
     build_level_definition, creature_entity_definition, entity_definition_with_position_access,
-    experience_scroll_entity_definition, objective_definition, stable_entity_id,
-    stable_objective_id, stable_rival_wizard_id,
+    experience_scroll_entity_definition, house_construction_entity_definition,
+    objective_definition, stable_entity_id, stable_objective_id, stable_rival_wizard_id,
 };
 
 use crate::{
@@ -360,13 +360,37 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Building(kind),
                     position_access,
                 )?;
-                entities.push(entity_definition_with_position_access(
-                    id,
-                    LevelEntityKind::Building(kind),
-                    position,
-                    activation_group,
-                    position_access,
-                ));
+                let authored_group_house = selection == CampaignSelection::LEVEL1
+                    && (13..=32).contains(&feature.activation_group)
+                    && feature.parameter_1
+                        == u16::from(crate::house::AUTHORED_HOUSE_BUILDING_INDEX);
+                if authored_group_house {
+                    let group = activation_group.ok_or_else(|| {
+                        format!(
+                            "authored grouped House {} has no activation group",
+                            feature.index
+                        )
+                    })?;
+                    let life_mana_scalar =
+                        HouseParameter::level_one(crate::house::AUTHORED_HOUSE_BUILDING_INDEX)
+                            .expect("qualified Level 1 BLDGPRM row 37")
+                            .life_mana_scalar;
+                    entities.push(house_construction_entity_definition(
+                        id.clone(),
+                        position,
+                        group,
+                        life_mana_scalar,
+                        LevelEntityParameterAccess::SessionReset,
+                    ));
+                } else {
+                    entities.push(entity_definition_with_position_access(
+                        id,
+                        LevelEntityKind::Building(kind),
+                        position,
+                        activation_group,
+                        position_access,
+                    ));
+                }
                 building_by_authored_record.insert(feature.index, kind);
                 continue;
             }

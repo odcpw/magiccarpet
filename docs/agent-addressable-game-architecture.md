@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 29.0 milestone, this is a binding target with
+As of the semantic-contract 30.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -502,8 +502,15 @@ partial real implementation, not a completion claim:
   class-14 pickup callback, which applies it to enabled local spell families,
   hides the row in the same pass and reclaims it at the following boundary.
   This does not author scroll population, enabled spell families, remote-player
-  reward policy, persistence or Unity UI. The three package-present
-  Exit Portal placements use the same authored-feature binding; the real exit
+  reward policy, persistence or Unity UI. The thirty-four complete-lifecycle
+  grouped Level 1 Houses now expose their source-derived construction
+  life/mana scalar. Guarded publication leaves open sessions unchanged;
+  explicit reopen/reset passes the authored scalar into the real action-51
+  constructor, whose unchanged thirty visits produce scalar-times-1000 live
+  health before ordinary action-52 damage. This does not author construction
+  countdown, footprint, selector, ownership, residents, population, reset-live
+  or unbound Houses, Level 2/3 Houses, save/replay, or Unity UI. The three
+  package-present Exit Portal placements use the same authored-feature binding; the real exit
   trigger captures the constructed portal and player action 12 consumes its
   authored position for transition heading and movement. Movement preserves
   sub-tile position and map membership, plus the shared spell projection for

@@ -216,9 +216,35 @@ impl HouseState {
         source_position: Position,
         world: Option<&dyn FlightWorld>,
     ) -> Self {
+        let life_mana_scalar = HouseParameter::level_one(AUTHORED_HOUSE_BUILDING_INDEX)
+            .expect("qualified Level 1 BLDGPRM row 37")
+            .life_mana_scalar;
+        Self::authored_level_one_with_life_mana_scalar(
+            source_entity_index,
+            entity_rng,
+            xtype,
+            source_position,
+            world,
+            life_mana_scalar,
+        )
+    }
+
+    pub(crate) fn authored_level_one_with_life_mana_scalar(
+        source_entity_index: u16,
+        entity_rng: u16,
+        xtype: u8,
+        source_position: Position,
+        world: Option<&dyn FlightWorld>,
+        life_mana_scalar: u16,
+    ) -> Self {
         let position = authored_level_one_house_position(source_position, world);
-        let parameter = HouseParameter::level_one(AUTHORED_HOUSE_BUILDING_INDEX)
+        let source_parameter = HouseParameter::level_one(AUTHORED_HOUSE_BUILDING_INDEX)
             .expect("qualified Level 1 BLDGPRM row 37");
+        let parameter = HouseParameter::from_source_record(
+            life_mana_scalar,
+            source_parameter.flags,
+            source_parameter.destruction_successor,
+        );
         Self {
             entity_index: source_entity_index,
             source_id: source_entity_index,

@@ -28,8 +28,8 @@ pub use package::{
     CREATURE_POLICY_CAPABILITY_ID, CompiledCapability, CompiledCapabilityRegistry,
     DRAGON_MAX_LIFE_CAPABILITY_ID, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
     FIREBALL_MANA_COST_CAPABILITY_ID, FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID,
-    GamePackage, PackageProvenance, PackageProvenanceKind, RequiredCapability,
-    SKELETON_MAX_LIFE_CAPABILITY_ID, TRADER_MAX_LIFE_CAPABILITY_ID,
+    GamePackage, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, PackageProvenance, PackageProvenanceKind,
+    RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID, TRADER_MAX_LIFE_CAPABILITY_ID,
     VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     engine_capabilities,
 };
@@ -57,8 +57,8 @@ use level_definition::{CreatureKind, LevelDefinition, LevelEntityKind};
 use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v8";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "29.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v9";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "30.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -703,6 +703,39 @@ impl GameDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_house_life_mana_scalar(
+        &self,
+        id: &level_definition::LevelEntityId,
+        life_mana_scalar: u16,
+        revision: u64,
+    ) -> Result<Self> {
+        if revision < self.revision {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::InvalidRequest,
+                "definition.revision",
+                "candidate definition revision must not move backward",
+            ));
+        }
+        let level = self.level_definition.as_ref().ok_or_else(|| {
+            DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                id.as_str(),
+                "definition has no semantic grouped-House consumer",
+            )
+        })?;
+        let mut candidate = self.clone();
+        candidate.level_definition = Some(
+            level
+                .with_house_life_mana_scalar(id, life_mana_scalar)
+                .map_err(|message| {
+                    DefinitionError::new(DefinitionErrorCode::InvalidRequest, id.as_str(), message)
+                })?,
+        );
+        candidate.revision = revision;
+        candidate.definition_hash = candidate.compute_hash();
+        Ok(candidate)
+    }
+
     /// Read one semantic authoring target from the immutable definition.
     #[must_use]
     pub fn semantic_target_value(&self, id: &SemanticId) -> Option<SemanticValue> {
@@ -743,6 +776,15 @@ impl GameDefinition {
                 .entity(&entity_id)
                 .and_then(level_definition::LevelEntityDefinition::experience_scroll)
                 .map(|config| SemanticValue::Integer(i64::from(config.experience_award())));
+        }
+        if let Some(entity) = id.as_str().strip_suffix(".life_mana_scalar") {
+            let entity_id = level_definition::LevelEntityId::parse(entity).ok()?;
+            return self
+                .level_definition
+                .as_ref()?
+                .entity(&entity_id)
+                .and_then(level_definition::LevelEntityDefinition::house_construction)
+                .map(|config| SemanticValue::Integer(i64::from(config.life_mana_scalar())));
         }
         if let Some(objective) = id.as_str().strip_suffix(".condition") {
             let objective_id = level_definition::LevelObjectiveId::parse(objective).ok()?;
@@ -1105,6 +1147,81 @@ impl GameDefinition {
                 SemanticId::parse(&format!("{}.experience_award", entity.id().as_str()))
                     .ok()
                     .and_then(|id| self.level_experience_scroll_award_descriptor(&id))
+            })
+            .collect()
+    }
+
+    /// Describe one package-bound grouped House construction scalar target.
+    #[must_use]
+    pub fn level_house_life_mana_scalar_descriptor(
+        &self,
+        id: &SemanticId,
+    ) -> Option<SemanticDescriptor> {
+        let entity_id = id.as_str().strip_suffix(".life_mana_scalar")?;
+        let entity_id = level_definition::LevelEntityId::parse(entity_id).ok()?;
+        let entity = self.level_definition.as_ref()?.entity(&entity_id)?;
+        let config = entity.house_construction()?;
+        let writable = matches!(
+            config.life_mana_scalar_access(),
+            level_definition::LevelEntityParameterAccess::SessionReset
+        ) && self.required_capabilities.iter().any(|requirement| {
+            requirement.id.as_str() == HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID
+                && requirement.exact_version == 1
+        });
+        let target_id = id.as_str().to_owned();
+        Some(SemanticDescriptor {
+            id: id.clone(),
+            descriptor_version: 1,
+            kind: DescriptorKind::EntityParameter,
+            value_type: ValueType::Integer,
+            unit: Some("life_mana_scalar".to_owned()),
+            default_value: SemanticValue::Integer(i64::from(config.default_life_mana_scalar())),
+            minimum: Some(1),
+            maximum: Some(i64::from(u16::MAX)),
+            enum_values: Vec::new(),
+            access: if writable { Access::Writable } else { Access::ReadOnly },
+            mutation_timing: MutationTiming::SessionReset,
+            determinism_role: "immutable grouped House construction-to-live scalar".to_owned(),
+            dependencies: vec![
+                entity.id().as_str().to_owned(),
+                format!("{HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID}@1"),
+                "package grouped House constructor and action-51/action-52 lifecycle".to_owned(),
+            ],
+            side_effects: if writable {
+                vec![
+                    "already-open sessions retain the package scalar".to_owned(),
+                    "explicit reopen/reset binds the authored scalar before construction".to_owned(),
+                ]
+            } else { Vec::new() },
+            scope: format!("stable grouped House {}", entity.id().as_str()),
+            provenance_origin: "package semantic level definition".to_owned(),
+            provenance_content_hash: self.package_graph_hash.clone(),
+            temporal_contract: Some(TemporalContract {
+                dispatch_phase: "definition_publication".to_owned(),
+                dispatch_key: target_id.clone(),
+                ordinary_producer: "validated SetHouseLifeManaScalar candidate".to_owned(),
+                handler: "guarded atomic definition compare-and-swap".to_owned(),
+                same_pass_epilogue: "receipt/read-back commit; already-open sessions remain unchanged".to_owned(),
+                following_pass_cleanup: "explicit reopen/reset binds the scalar into grouped House construction; action 51 publishes live life and action 52 consumes damage".to_owned(),
+                authoritative_reads: vec![target_id],
+                authoritative_writes: vec!["immutable LevelDefinition grouped House scalar".to_owned()],
+                rng_and_event_effects: "none during publication; construction and damage ordering remain scheduler-owned".to_owned(),
+            }),
+            summary: "Construction-to-live life and mana scalar for one package-bound grouped House.".to_owned(),
+        })
+    }
+
+    #[must_use]
+    pub fn level_house_life_mana_scalar_descriptors(&self) -> Vec<SemanticDescriptor> {
+        self.level_definition
+            .as_ref()
+            .into_iter()
+            .flat_map(level_definition::LevelDefinition::entities)
+            .filter(|entity| entity.house_construction().is_some())
+            .filter_map(|entity| {
+                SemanticId::parse(&format!("{}.life_mana_scalar", entity.id().as_str()))
+                    .ok()
+                    .and_then(|id| self.level_house_life_mana_scalar_descriptor(&id))
             })
             .collect()
     }

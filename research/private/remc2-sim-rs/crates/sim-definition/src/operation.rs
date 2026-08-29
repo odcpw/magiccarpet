@@ -11,8 +11,9 @@ use crate::{
     CREATURE_POLICY_CAPABILITY_ID, DRAGON_MAX_LIFE_CAPABILITY_ID, DefinitionError,
     DefinitionErrorCode, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition,
-    SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId, SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID,
-    VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
+    HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId,
+    SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID,
+    WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -156,6 +157,12 @@ pub enum DefinitionOperation {
         experience_award: u32,
         #[serde(default)]
         expected_experience_award: Option<u32>,
+    },
+    SetHouseLifeManaScalar {
+        entity: LevelEntityId,
+        life_mana_scalar: u16,
+        #[serde(default)]
+        expected_life_mana_scalar: Option<u16>,
     },
     PutObjective {
         objective: LevelObjectiveId,
@@ -324,6 +331,18 @@ impl DefinitionOperation {
                     "read_back": "game get --id <entity-id>.experience_award",
                 },
                 {
+                    "operation": "set_house_life_mana_scalar",
+                    "required_fields": ["entity", "life_mana_scalar"],
+                    "optional_fields": ["expected_life_mana_scalar"],
+                    "target_id": "<entity-id>.life_mana_scalar",
+                    "life_mana_scalar": {"type": "integer", "minimum": 1, "maximum": u16::MAX},
+                    "expected_life_mana_scalar": "same type and bounds as life_mana_scalar",
+                    "required_capability": {"id": HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, "exact_version": 1},
+                    "mutation_timing": "session_reset",
+                    "describe": "game describe --id <entity-id>.life_mana_scalar",
+                    "read_back": "game get --id <entity-id>.life_mana_scalar",
+                },
+                {
                     "operation": "put_objective",
                     "required_fields": ["objective", "condition"],
                     "optional_fields": ["expected_condition"],
@@ -396,6 +415,10 @@ impl DefinitionOperation {
             Self::SetExperienceScrollAward { entity, .. } => {
                 SemanticId::parse(&format!("{}.experience_award", entity.as_str()))
                     .expect("validated entity ID plus experience_award is a semantic target")
+            }
+            Self::SetHouseLifeManaScalar { entity, .. } => {
+                SemanticId::parse(&format!("{}.life_mana_scalar", entity.as_str()))
+                    .expect("validated entity ID plus life_mana_scalar is a semantic target")
             }
             Self::PutObjective { objective, .. } => {
                 SemanticId::parse(&format!("{}.condition", objective.as_str()))
@@ -486,6 +509,7 @@ impl DefinitionOperation {
             } | Self::MoveEntity { .. }
                 | Self::SetEntityMaxLife { .. }
                 | Self::SetExperienceScrollAward { .. }
+                | Self::SetHouseLifeManaScalar { .. }
                 | Self::PutObjective { .. }
                 | Self::SetMechanicCountdown { .. }
         ) || is_fireball_cost_operation
@@ -647,6 +671,46 @@ impl DefinitionOperation {
                 expected_experience_award: *expected_experience_award,
             });
         }
+        if let Self::SetHouseLifeManaScalar {
+            entity,
+            life_mana_scalar,
+            expected_life_mana_scalar,
+        } = self
+        {
+            let id = self.target_id();
+            let descriptor = definition
+                .level_house_life_mana_scalar_descriptor(&id)
+                .ok_or_else(|| {
+                    DefinitionError::new(
+                        DefinitionErrorCode::UnknownSemanticId,
+                        entity.as_str(),
+                        "scalar update names no package-bound grouped House",
+                    )
+                })?;
+            if descriptor.access != Access::Writable {
+                return Err(DefinitionError::new(
+                    DefinitionErrorCode::DependencyFailed,
+                    entity.as_str(),
+                    "grouped House scalar has no runtime consumer in this package",
+                ));
+            }
+            descriptor.validate_value(
+                &SemanticValue::Integer(i64::from(*life_mana_scalar)),
+                id.as_str(),
+            )?;
+            if let Some(expected) = expected_life_mana_scalar {
+                descriptor.validate_value(
+                    &SemanticValue::Integer(i64::from(*expected)),
+                    "expected_life_mana_scalar",
+                )?;
+            }
+            return Ok(ResolvedOperation::HouseLifeManaScalarSet {
+                id,
+                entity: entity.clone(),
+                life_mana_scalar: *life_mana_scalar,
+                expected_life_mana_scalar: *expected_life_mana_scalar,
+            });
+        }
         if let Self::PutObjective {
             objective,
             condition,
@@ -766,6 +830,9 @@ impl DefinitionOperation {
             Self::SetExperienceScrollAward { .. } => {
                 unreachable!("Experience Scroll reward updates return above")
             }
+            Self::SetHouseLifeManaScalar { .. } => {
+                unreachable!("grouped House scalar updates return above")
+            }
             Self::PutObjective { .. } => unreachable!("objective puts return above"),
             Self::SetMechanicCountdown { .. } => {
                 unreachable!("mechanic countdown updates return above")
@@ -803,6 +870,12 @@ pub(crate) enum ResolvedOperation {
         entity: LevelEntityId,
         experience_award: u32,
         expected_experience_award: Option<u32>,
+    },
+    HouseLifeManaScalarSet {
+        id: SemanticId,
+        entity: LevelEntityId,
+        life_mana_scalar: u16,
+        expected_life_mana_scalar: Option<u16>,
     },
     ObjectivePut {
         id: SemanticId,

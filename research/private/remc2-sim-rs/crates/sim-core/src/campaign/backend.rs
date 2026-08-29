@@ -40,8 +40,8 @@ use crate::{
         ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFireballBinding,
         DefinitionFlightBinding, DefinitionGoatPolicyBinding, ENEMY_DEFAULT_POLICY_ID,
         EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
-        RequiredCapability, SemanticCatalog, SemanticId, creature_max_life_capability_id,
-        default_catalog, engine_capabilities,
+        HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, RequiredCapability, SemanticCatalog, SemanticId,
+        creature_max_life_capability_id, default_catalog, engine_capabilities,
     },
     game_session::{
         CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
@@ -284,6 +284,14 @@ pub fn load_mc2_campaign(
         .any(|entity| entity.experience_scroll().is_some())
     {
         requirement_ids.push(EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID);
+    }
+    if descriptor
+        .level_definition()
+        .entities()
+        .iter()
+        .any(|entity| entity.house_construction().is_some())
+    {
+        requirement_ids.push(HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID);
     }
     for entity in descriptor
         .level_definition()
@@ -7253,6 +7261,243 @@ mod tests {
         // construction parameter authoring, ownership, residents, damage or
         // destruction, the read-only group--1 Houses, Level 2/3 grouped Houses,
         // save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_binds_real_grouped_house_life_mana_scalar_before_construction_damage_after_reopen_and_reset()
+     {
+        const HOUSE_RECORD: u16 = 107;
+        const GROUP: u16 = 13;
+
+        fn trigger_group_thirteen(session: &mut GameSession<Mc2CampaignBackend>) -> u16 {
+            let trigger_id =
+                sim_definition::adapter::stable_entity_id("switch.area_entry_trigger.at_165_211")
+                    .unwrap();
+            let trigger_slot = match session
+                .backend()
+                .campaign
+                .definition()
+                .movable_entity_binding(&trigger_id)
+                .unwrap()
+            {
+                crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource {
+                    initial_source_slot,
+                    kind: LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger),
+                    ..
+                } => *initial_source_slot,
+                binding => panic!("group-13 trigger has the wrong runtime binding: {binding:?}"),
+            };
+            let (player_slot, trigger_position) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                (
+                    compatibility.state.entity_index,
+                    compatibility.entities()[usize::from(trigger_slot)].position,
+                )
+            };
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player_slot, trigger_position)
+                .unwrap();
+            for _ in 0..8 {
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+                if session.backend().campaign.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot,
+                            group: GROUP,
+                            authored_indices,
+                            ..
+                        } if *source_slot == trigger_slot
+                            && authored_indices.contains(&HOUSE_RECORD)
+                    )
+                }) {
+                    break;
+                }
+            }
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_house_source_slot(HOUSE_RECORD)
+                .expect("the real group-13 producer constructs House record 107")
+        }
+
+        fn house(
+            session: &GameSession<Mc2CampaignBackend>,
+            source_slot: u16,
+        ) -> crate::house::HouseState {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| house.active && house.entity_index == source_slot)
+                .copied()
+                .expect("grouped House remains in the ordinary typed family")
+        }
+
+        fn finish_construction(
+            session: &mut GameSession<Mc2CampaignBackend>,
+            source_slot: u16,
+        ) -> (crate::house::HouseState, usize) {
+            let initial_life = house(session, source_slot).life;
+            let mut visits = usize::try_from(30_i32.wrapping_sub(initial_life)).unwrap();
+            while house(session, source_slot).action == crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION {
+                assert!(visits < 31, "grouped House construction did not complete");
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+                visits += 1;
+            }
+            (house(session, source_slot), visits)
+        }
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let house_id =
+            sim_definition::adapter::stable_entity_id("building.house.at_156_215").unwrap();
+        let package_house = base.level_definition().unwrap().entity(&house_id).unwrap();
+        assert_eq!(
+            package_house
+                .house_construction()
+                .expect("grouped House exposes its construction scalar")
+                .life_mana_scalar(),
+            20
+        );
+        assert_eq!(
+            base.level_definition()
+                .unwrap()
+                .entities()
+                .iter()
+                .filter(|entity| entity.house_construction().is_some())
+                .count(),
+            34
+        );
+        assert!(package_house.creature_health().is_none());
+        assert!(package_house.absence_countdown().is_none());
+
+        let workspace_root = temporary_workspace_path("campaign-grouped-house-scalar");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-grouped-house-scalar",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            95,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-grouped-house-scalar",
+            &base,
+            "set-level-one-grouped-house-scalar",
+            RequestedTiming::SessionReset,
+        )
+        .set_house_life_mana_scalar_from(house_id.clone(), 20, 40)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+        assert_eq!(
+            published
+                .level_definition()
+                .unwrap()
+                .entity(&house_id)
+                .unwrap()
+                .house_construction()
+                .unwrap()
+                .life_mana_scalar(),
+            40
+        );
+
+        let fake = ChangeSetBuilder::new(
+            "campaign-grouped-house-scalar",
+            &published,
+            "reject-house-max-life-countdown-fake",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life(house_id.clone(), 40)
+        .set_mechanic_countdown(house_id.clone(), 40)
+        .build()
+        .unwrap();
+        let fake_validation = store.validate(&catalog, fake).unwrap();
+        assert!(!fake_validation.accepted);
+
+        let package_slot = trigger_group_thirteen(&mut session);
+        let (package_live, package_visits) = finish_construction(&mut session, package_slot);
+        assert_eq!(package_visits, 30);
+        assert_eq!(package_live.parameter.life_mana_scalar, 20);
+        assert_eq!(package_live.life, 20_000);
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .ordinary_mut()
+            .inject_house_damage(package_slot, 25_000, 1)
+            .unwrap();
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            house(&session, package_slot).action,
+            crate::house::HOUSE_REMOVE_ACTION
+        );
+
+        session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        let authored_reset_hash = session.backend().campaign.state_hash();
+        let authored_slot = trigger_group_thirteen(&mut session);
+        let (authored_live, authored_visits) = finish_construction(&mut session, authored_slot);
+        assert_eq!(authored_visits, 30);
+        assert_eq!(authored_live.parameter.life_mana_scalar, 40);
+        assert_eq!(authored_live.life, 40_000);
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .ordinary_mut()
+            .inject_house_damage(authored_slot, 25_000, 1)
+            .unwrap();
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let surviving = house(&session, authored_slot);
+        assert_eq!(surviving.action, crate::house::HOUSE_LIVE_ACTION);
+        assert_eq!(surviving.life, 15_000);
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset_slot = trigger_group_thirteen(&mut session);
+        let (reset_live, reset_visits) = finish_construction(&mut session, reset_slot);
+        assert_eq!(reset_visits, 30);
+        assert_eq!(reset_live.parameter.life_mana_scalar, 40);
+        assert_eq!(reset_live.life, 40_000);
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: proves one source-derived construction parameter across guarded publication, old-session isolation, real group production, action-51 completion, action-52 damage discrimination and reset for the 34 complete-lifecycle Level-1 grouped Houses. It does not author construction countdown, footprint, building selector, ownership, residents, population, the reset-live/unbound Houses, Level 2/3 Houses, save/replay, or Unity UI.
     }
 
     #[test]

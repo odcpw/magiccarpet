@@ -6538,17 +6538,22 @@ impl Level2ResetSession {
             source_position,
             Some(self.canonical_terrain()),
         );
+        let life_mana_scalar = self
+            .session
+            .definition
+            .authored_house_life_mana_scalar(feature.index)?;
         let live = &mut self.session.state.live;
         let (source_slot, entity_rng) = live
             .economy
             .economy
             .allocate_authored_house_slot(feature.index, position)?;
-        let house = HouseState::authored_level_one(
+        let house = HouseState::authored_level_one_with_life_mana_scalar(
             source_slot,
             entity_rng,
             feature.parameter_2 as u8,
             source_position,
             Some(&live.terrain),
+            life_mana_scalar,
         );
         if live.ordinary.houses.insert_builder_house(house).is_err() {
             live.economy

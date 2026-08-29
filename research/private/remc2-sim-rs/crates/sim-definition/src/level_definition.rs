@@ -453,6 +453,44 @@ pub struct ExperienceScrollDefinition {
     experience_award_access: LevelEntityParameterAccess,
 }
 
+/// Immutable construction parameter for one package-present grouped House
+/// whose action-51 completion and live damage lifecycle are bound.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HouseConstructionDefinition {
+    default_life_mana_scalar: u16,
+    life_mana_scalar: u16,
+    #[serde(default, skip_serializing_if = "is_read_only_entity_parameter")]
+    life_mana_scalar_access: LevelEntityParameterAccess,
+}
+
+impl HouseConstructionDefinition {
+    pub(crate) const fn new(
+        life_mana_scalar: u16,
+        life_mana_scalar_access: LevelEntityParameterAccess,
+    ) -> Self {
+        Self {
+            default_life_mana_scalar: life_mana_scalar,
+            life_mana_scalar,
+            life_mana_scalar_access,
+        }
+    }
+
+    #[must_use]
+    pub const fn default_life_mana_scalar(self) -> u16 {
+        self.default_life_mana_scalar
+    }
+
+    #[must_use]
+    pub const fn life_mana_scalar(self) -> u16 {
+        self.life_mana_scalar
+    }
+
+    #[must_use]
+    pub const fn life_mana_scalar_access(self) -> LevelEntityParameterAccess {
+        self.life_mana_scalar_access
+    }
+}
+
 impl ExperienceScrollDefinition {
     pub(crate) const fn new(
         experience_award: u32,
@@ -620,6 +658,8 @@ pub struct LevelEntityDefinition {
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    house_construction: Option<HouseConstructionDefinition>,
 }
 
 impl LevelEntityDefinition {
@@ -632,6 +672,7 @@ impl LevelEntityDefinition {
         absence_countdown: Option<AbsenceCountdownDefinition>,
         creature_health: Option<CreatureHealthDefinition>,
         experience_scroll: Option<ExperienceScrollDefinition>,
+        house_construction: Option<HouseConstructionDefinition>,
     ) -> Self {
         Self {
             id,
@@ -643,6 +684,7 @@ impl LevelEntityDefinition {
             absence_countdown,
             creature_health,
             experience_scroll,
+            house_construction,
         }
     }
 
@@ -690,6 +732,11 @@ impl LevelEntityDefinition {
     #[must_use]
     pub const fn experience_scroll(&self) -> Option<ExperienceScrollDefinition> {
         self.experience_scroll
+    }
+
+    #[must_use]
+    pub const fn house_construction(&self) -> Option<HouseConstructionDefinition> {
+        self.house_construction
     }
 }
 
@@ -793,6 +840,23 @@ impl LevelDefinition {
                 (_, Some(_)) => {
                     return Err(format!(
                         "non-Experience-Scroll entity {} carries reward configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
+            match (entity.kind, entity.house_construction) {
+                (LevelEntityKind::Building(BuildingKind::House), Some(config))
+                    if config.default_life_mana_scalar > 0 && config.life_mana_scalar > 0 => {}
+                (LevelEntityKind::Building(BuildingKind::House), Some(_)) => {
+                    return Err(format!(
+                        "semantic House {} has an invalid life/mana scalar",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-House entity {} carries House construction configuration",
                         entity.id.as_str()
                     ));
                 }
@@ -1104,6 +1168,46 @@ impl LevelDefinition {
         Ok(candidate)
     }
 
+    pub(crate) fn with_house_life_mana_scalar(
+        &self,
+        id: &LevelEntityId,
+        life_mana_scalar: u16,
+    ) -> Result<Self, String> {
+        if life_mana_scalar == 0 {
+            return Err(format!(
+                "semantic House {} life/mana scalar is outside 1..={}",
+                id.as_str(),
+                u16::MAX
+            ));
+        }
+        let mut candidate = self.clone();
+        let entity = candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == *id)
+            .ok_or_else(|| format!("unknown semantic level entity {}", id.as_str()))?;
+        let config = entity.house_construction.as_mut().ok_or_else(|| {
+            format!(
+                "semantic level entity {} is not a construction-bound House",
+                id.as_str()
+            )
+        })?;
+        if config.life_mana_scalar_access != LevelEntityParameterAccess::SessionReset {
+            return Err(format!(
+                "semantic House {} life/mana scalar has no runtime consumer",
+                id.as_str()
+            ));
+        }
+        if config.life_mana_scalar == life_mana_scalar {
+            return Err(format!(
+                "semantic House {} already has the requested life/mana scalar",
+                id.as_str()
+            ));
+        }
+        config.life_mana_scalar = life_mana_scalar;
+        Ok(candidate)
+    }
+
     /// Verify that this definition differs from `base` only through semantic
     /// changes explicitly admitted at session reset.
     ///
@@ -1241,6 +1345,42 @@ impl LevelDefinition {
                 _ => {
                     return Err(format!(
                         "semantic level variant adds or removes Experience Scroll reward configuration at {}",
+                        original.id.as_str()
+                    ));
+                }
+            }
+            match (candidate.house_construction, original.house_construction) {
+                (Some(candidate_config), Some(original_config)) => {
+                    if candidate_config.default_life_mana_scalar
+                        != original_config.default_life_mana_scalar
+                        || candidate_config.life_mana_scalar_access
+                            != original_config.life_mana_scalar_access
+                    {
+                        return Err(format!(
+                            "semantic level variant changes House construction structure at {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if candidate_config.life_mana_scalar != original_config.life_mana_scalar
+                        && original_config.life_mana_scalar_access
+                            != LevelEntityParameterAccess::SessionReset
+                    {
+                        return Err(format!(
+                            "semantic level variant changes read-only House construction parameter {}",
+                            original.id.as_str()
+                        ));
+                    }
+                    if candidate_config.life_mana_scalar == 0 {
+                        return Err(format!(
+                            "semantic level variant gives House {} an invalid life/mana scalar",
+                            original.id.as_str()
+                        ));
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(format!(
+                        "semantic level variant adds or removes House construction configuration at {}",
                         original.id.as_str()
                     ));
                 }

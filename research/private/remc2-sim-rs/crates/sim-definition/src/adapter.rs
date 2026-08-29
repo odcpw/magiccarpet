@@ -10,10 +10,10 @@ use crate::{
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
     level_definition::{
         AbsenceCountdownDefinition, ActivationGroupId, CreatureHealthDefinition, CreatureKind,
-        ExperienceScrollDefinition, LevelDefinition, LevelEntityDefinition, LevelEntityId,
-        LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
-        LevelObjectiveConditionAccess, LevelObjectiveDefinition, LevelObjectiveId,
-        ObjectiveCondition, RivalWizardId, TilePosition,
+        ExperienceScrollDefinition, HouseConstructionDefinition, LevelDefinition,
+        LevelEntityDefinition, LevelEntityId, LevelEntityKind, LevelEntityParameterAccess,
+        LevelEntityPositionAccess, LevelObjectiveConditionAccess, LevelObjectiveDefinition,
+        LevelObjectiveId, ObjectiveCondition, RivalWizardId, TilePosition,
     },
     runtime_flow::RuntimeFlowDefinition,
 };
@@ -93,6 +93,7 @@ pub const fn entity_definition(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -110,6 +111,7 @@ pub const fn entity_definition_with_position_access(
         position,
         activation_group,
         position_access,
+        None,
         None,
         None,
         None,
@@ -134,6 +136,7 @@ pub const fn creature_entity_definition(
         position_access,
         None,
         Some(CreatureHealthDefinition::new(max_life, max_life_access)),
+        None,
         None,
     )
 }
@@ -164,6 +167,7 @@ pub const fn absence_countdown_entity_definition(
         Some(countdown),
         None,
         None,
+        None,
     )
 }
 
@@ -187,6 +191,31 @@ pub const fn experience_scroll_entity_definition(
         Some(ExperienceScrollDefinition::new(
             experience_award,
             experience_award_access,
+        )),
+        None,
+    )
+}
+
+#[must_use]
+pub const fn house_construction_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: ActivationGroupId,
+    life_mana_scalar: u16,
+    life_mana_scalar_access: LevelEntityParameterAccess,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Building(crate::level_definition::BuildingKind::House),
+        position,
+        Some(activation_group),
+        LevelEntityPositionAccess::ReadOnly,
+        None,
+        None,
+        None,
+        Some(HouseConstructionDefinition::new(
+            life_mana_scalar,
+            life_mana_scalar_access,
         )),
     )
 }

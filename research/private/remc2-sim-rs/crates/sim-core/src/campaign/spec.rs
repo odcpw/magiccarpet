@@ -1608,6 +1608,19 @@ impl CampaignDefinition {
         &self.building_by_authored_record
     }
 
+    pub(crate) fn authored_building_entity_bindings(&self) -> BTreeMap<u16, LevelEntityId> {
+        self.movable_entity_bindings
+            .iter()
+            .filter_map(|(entity_id, binding)| match binding {
+                Mc2EntityRuntimeBinding::AuthoredFeature {
+                    authored_record,
+                    kind: LevelEntityKind::Building(_),
+                } => Some((*authored_record, entity_id.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn initial_building_bindings(&self) -> &BTreeMap<u16, BuildingKind> {
         &self.building_by_initial_source_slot
     }

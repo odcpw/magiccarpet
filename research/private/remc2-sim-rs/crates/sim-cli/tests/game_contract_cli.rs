@@ -100,14 +100,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
-    assert_eq!(capabilities["contract_version"], "29.0");
+    assert_eq!(capabilities["contract_version"], "30.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
-        "carpet-flight-change-set/v7"
+        "carpet-flight-change-set/v8"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["game_definition_schema"],
-        "carpet-flight-game-definition/v8"
+        "carpet-flight-game-definition/v9"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["operation"],
@@ -250,7 +250,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        19
+        20
     );
     let archer_health_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
@@ -347,6 +347,37 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         .expect("Experience Scroll award capability is discoverable");
     assert_eq!(scroll_award_capability["version"], 1);
     assert_eq!(scroll_award_capability["provider"], "engine_compiled");
+    let house_life_operation = capabilities["data"]["authoring"]["operation_schema"]["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["operation"] == "set_house_life_mana_scalar")
+        .expect("House construction life/mana-scalar operation is discoverable");
+    assert_eq!(
+        house_life_operation["target_id"],
+        "<entity-id>.life_mana_scalar"
+    );
+    assert_eq!(house_life_operation["life_mana_scalar"]["minimum"], 1);
+    assert_eq!(
+        house_life_operation["life_mana_scalar"]["maximum"],
+        u16::MAX
+    );
+    assert_eq!(
+        house_life_operation["required_capability"],
+        serde_json::json!({
+            "id": "engine.building.house.life_mana_scalar",
+            "exact_version": 1
+        })
+    );
+    assert_eq!(house_life_operation["mutation_timing"], "session_reset");
+    let house_life_capability = capabilities["data"]["compiled_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["id"] == "engine.building.house.life_mana_scalar")
+        .expect("House construction life/mana-scalar capability is discoverable");
+    assert_eq!(house_life_capability["version"], 1);
+    assert_eq!(house_life_capability["provider"], "engine_compiled");
     let castle_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
         .unwrap()
@@ -474,7 +505,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "29.0");
+    assert_eq!(entities["contract_version"], "30.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -811,10 +842,10 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "29.0");
+    assert_eq!(described["contract_version"], "30.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v8"
+        "carpet-flight-game-definition/v9"
     );
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "mechanic");
@@ -919,7 +950,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v7"
+        "carpet-flight-change-set/v8"
     );
     assert_eq!(
         staged["data"]["change_set"]["operations"][0]["operation"],
@@ -1101,7 +1132,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "29.0");
+    assert_eq!(described["contract_version"], "30.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
     assert_eq!(descriptor["value_type"], "integer");
@@ -1156,7 +1187,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert_eq!(staged["data"]["published"], false);
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v7"
+        "carpet-flight-change-set/v8"
     );
     let change_set_path = temporary.0.join("firefly-max-life-change-set.json");
     fs::write(
@@ -1728,10 +1759,10 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "29.0");
+    assert_eq!(described["contract_version"], "30.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v8"
+        "carpet-flight-game-definition/v9"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -1786,7 +1817,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert_eq!(staged["data"]["published"], false);
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v7"
+        "carpet-flight-change-set/v8"
     );
     let change_set_path = temporary.0.join("fireball-cost-change-set.json");
     fs::write(
@@ -2055,10 +2086,10 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "29.0");
+    assert_eq!(described["contract_version"], "30.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v8"
+        "carpet-flight-game-definition/v9"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -2118,7 +2149,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v7"
+        "carpet-flight-change-set/v8"
     );
     assert_eq!(
         staged["data"]["change_set"]["operations"][0]["operation"],
@@ -2337,10 +2368,10 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "29.0");
+    assert_eq!(described["contract_version"], "30.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v8"
+        "carpet-flight-game-definition/v9"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -2402,7 +2433,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
     assert_eq!(
         staged["data"]["change_set"]["schema_version"],
-        "carpet-flight-change-set/v7"
+        "carpet-flight-change-set/v8"
     );
     let change_set_path = temporary.0.join("creature-absence-change-set.json");
     fs::write(
@@ -2868,7 +2899,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "29.0");
+        assert_eq!(described["contract_version"], "30.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -3053,7 +3084,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "29.0");
+    assert_eq!(described["contract_version"], "30.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");
@@ -3393,7 +3424,7 @@ fn authoring_cli_rejects_session_generation_and_duplicate_workspace_creation() {
     fs::write(
         &invalid_path,
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": "carpet-flight-change-set/v7",
+            "schema_version": "carpet-flight-change-set/v8",
             "target_workspace": "schema-workspace",
             "expected_definition_hash": definition_hash,
             "expected_definition_revision": 1,
