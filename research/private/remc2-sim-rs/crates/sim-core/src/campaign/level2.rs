@@ -299,7 +299,7 @@ fn validate_semantic_building_dispatch(
     );
     match (building_kind, handler) {
         (Some(BuildingKind::House), ExistingHandler::Class10Effects)
-            if (source_is_house && raw_action == 52)
+            if (source_is_house && matches!(raw_action, 51..=53))
                 || (source_is_house_construction && raw_action == 51) =>
         {
             Ok(())
@@ -733,23 +733,36 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 self.owner.session.state.live.economy.advance_global_rng();
             }
             PassPhase::FollowingPassCleanup => {
-                let hidden_house_slots = {
+                let (hidden_house_slots, hidden_authored_house_slots) = {
                     let live = &self.owner.session.state.live;
-                    live.ordinary
+                    let hidden = live
+                        .ordinary
                         .houses()
                         .iter()
+                        .filter(|house| !house.active)
+                        .copied()
+                        .collect::<Vec<_>>();
+                    let imported = hidden
+                        .iter()
                         .filter(|house| {
-                            !house.active
-                                && live
-                                    .economy
-                                    .entities
-                                    .get(usize::from(house.entity_index))
-                                    .is_some_and(|entity| {
-                                        entity.active && entity.drawing_disabled()
-                                    })
+                            live.economy
+                                .entities
+                                .get(usize::from(house.entity_index))
+                                .is_some_and(|entity| entity.active && entity.drawing_disabled())
                         })
                         .map(|house| (house.entity_index, house.rng))
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    let authored = hidden
+                        .iter()
+                        .filter(|house| {
+                            live.economy
+                                .economy
+                                .authored_house_record(house.entity_index)
+                                .is_some()
+                        })
+                        .map(|house| (house.entity_index, house.rng))
+                        .collect::<Vec<_>>();
+                    (imported, authored)
                 };
                 let hidden_house_slot_set = hidden_house_slots
                     .iter()
@@ -804,6 +817,15 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     let live = &mut self.owner.session.state.live;
                     live.economy.entities[usize::from(source_slot)].reclaim_source_row();
                     live.economy
+                        .economy
+                        .reclaim_house_source_slot_at_source_boundary(source_slot, source_rng);
+                }
+                for (source_slot, source_rng) in hidden_authored_house_slots {
+                    self.owner
+                        .session
+                        .state
+                        .live
+                        .economy
                         .economy
                         .reclaim_house_source_slot_at_source_boundary(source_slot, source_rng);
                 }
@@ -4552,7 +4574,18 @@ impl Level2ResetSession {
             Level2SourceRoute::House => self
                 .session
                 .definition
-                .building_for_initial_source_slot(source_slot),
+                .building_for_initial_source_slot(source_slot)
+                .or_else(|| {
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .authored_house_record(source_slot)
+                        .and_then(|record| {
+                            self.session.definition.building_for_authored_record(record)
+                        })
+                }),
             Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                 kind: Level2DynamicArenaKind::AuthoredModel45,
                 ..
@@ -6467,6 +6500,42 @@ impl Level2ResetSession {
             .live
             .economy
             .allocate_authored_tree(authored_index, position)
+    }
+
+    /// Materialize one qualified Level 1 group-13-through-32 House through
+    /// the same numeric arena, typed House family and map chain used by the
+    /// ordinary class-10 handler.
+    fn allocate_level_one_authored_house(&mut self, feature: AuthoredFeature) -> Option<u16> {
+        if (feature.kind, feature.subtype) != (10, 45)
+            || !(13..=32).contains(&feature.activation_group)
+            || feature.parameter_1 != u16::from(crate::house::AUTHORED_HOUSE_BUILDING_INDEX)
+        {
+            return None;
+        }
+        let source_position = feature.world_position(0);
+        let position = crate::house::authored_level_one_house_position(
+            source_position,
+            Some(self.canonical_terrain()),
+        );
+        let live = &mut self.session.state.live;
+        let (source_slot, entity_rng) = live
+            .economy
+            .economy
+            .allocate_authored_house_slot(feature.index, position)?;
+        let house = HouseState::authored_level_one(
+            source_slot,
+            entity_rng,
+            feature.parameter_2 as u8,
+            source_position,
+            Some(&live.terrain),
+        );
+        if live.ordinary.houses.insert_builder_house(house).is_err() {
+            live.economy
+                .economy
+                .rollback_authored_house_slot(source_slot);
+            return None;
+        }
+        Some(source_slot)
     }
 
     /// Materialize one authored class-2/model-1/action-3 stone through the
@@ -8769,6 +8838,12 @@ impl Level2ResetSession {
                     }
                 }
                 (10, 45) => {
+                    if feature.parameter_1 == u16::from(crate::house::AUTHORED_HOUSE_BUILDING_INDEX)
+                        && (13..=32).contains(&feature.activation_group)
+                    {
+                        let _ = self.allocate_level_one_authored_house(feature);
+                        continue;
+                    }
                     let position = feature.world_position(
                         self.session
                             .state

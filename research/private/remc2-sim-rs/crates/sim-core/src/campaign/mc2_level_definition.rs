@@ -872,10 +872,17 @@ fn bind_private_entity(
                 }
             }
             LevelEntityKind::Building(BuildingKind::House) => {
-                // Authored record and reset source identities differ, and
-                // qualified packages may contain duplicate House tiles. The
-                // validated occurrence join resolves the private source row.
-                Mc2MovableRuntimeHint::AuthoredRecord(feature.index)
+                if feature.activation_group > 0
+                    && (13..=32).contains(&feature.activation_group)
+                    && feature.parameter_1 == u16::from(crate::house::AUTHORED_HOUSE_BUILDING_INDEX)
+                {
+                    Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
+                } else {
+                    // Authored record and reset source identities differ, and
+                    // qualified packages may contain duplicate House tiles.
+                    // The validated occurrence join resolves the private row.
+                    Mc2MovableRuntimeHint::AuthoredRecord(feature.index)
+                }
             }
             LevelEntityKind::Switch(_) if feature.activation_group != 0 => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)

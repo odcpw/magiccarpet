@@ -19,6 +19,12 @@ pub const HOUSE_TERRAIN_TO_LIVE_ACTION: u8 = 51;
 pub const HOUSE_LIVE_ACTION: u8 = 52;
 pub const HOUSE_REMOVE_ACTION: u8 = 53;
 
+pub(crate) const AUTHORED_HOUSE_BUILDING_INDEX: u8 = 37;
+pub(crate) const AUTHORED_HOUSE_FOOTPRINT_WIDTH: u8 = 5;
+pub(crate) const AUTHORED_HOUSE_FOOTPRINT_HEIGHT: u8 = 5;
+pub(crate) const AUTHORED_HOUSE_COLLISION_HALF_WIDTH: i16 = 1_280;
+pub(crate) const AUTHORED_HOUSE_COLLISION_HALF_HEIGHT: i16 = 256;
+
 const SOURCE_DISABLED_FLAG: u32 = 0x0000_0400;
 const POSSESSED_FLAG: u32 = 0x0020_0000;
 
@@ -200,6 +206,51 @@ pub struct HouseState {
 }
 
 impl HouseState {
+    /// Construct the qualified Level 1 group-13-through-32 House after the
+    /// shared source arena has assigned its numeric slot. Both the sealed
+    /// mission and the campaign scheduler use this exact source projection.
+    pub(crate) fn authored_level_one(
+        source_entity_index: u16,
+        entity_rng: u16,
+        xtype: u8,
+        source_position: Position,
+        world: Option<&dyn FlightWorld>,
+    ) -> Self {
+        let position = authored_level_one_house_position(source_position, world);
+        let parameter = HouseParameter::level_one(AUTHORED_HOUSE_BUILDING_INDEX)
+            .expect("qualified Level 1 BLDGPRM row 37");
+        Self {
+            entity_index: source_entity_index,
+            source_id: source_entity_index,
+            active: true,
+            // Constructor low byte 9 followed by AddEventToMap's bit 2.
+            control_flags: 0x0000_000d,
+            max_life: 30,
+            life: 30,
+            occupants: 2,
+            rng: entity_rng,
+            position,
+            collision_vertical_offset: 0,
+            collision_half_width: AUTHORED_HOUSE_COLLISION_HALF_WIDTH,
+            collision_half_depth: AUTHORED_HOUSE_COLLISION_HALF_WIDTH,
+            collision_half_height: AUTHORED_HOUSE_COLLISION_HALF_HEIGHT,
+            action: HOUSE_TERRAIN_TO_LIVE_ACTION,
+            phase: source_entity_index as u8,
+            xtype,
+            build_tail: 0,
+            building_index: AUTHORED_HOUSE_BUILDING_INDEX,
+            capacity: i16::from(AUTHORED_HOUSE_FOOTPRINT_WIDTH)
+                .wrapping_mul(i16::from(AUTHORED_HOUSE_FOOTPRINT_HEIGHT))
+                >> 4,
+            owner_entity_index: 0,
+            pending_damage: 0,
+            pending_attacker: 0,
+            pending_possession_owner: 0,
+            pending_possession_payload: 0,
+            parameter,
+        }
+    }
+
     /// Decode one validated exported source row.
     ///
     /// # Errors
@@ -454,6 +505,39 @@ impl HouseState {
         self.phase = self.phase.wrapping_add(1);
         events
     }
+}
+
+pub(crate) fn authored_level_one_house_position(
+    source_position: Position,
+    world: Option<&dyn FlightWorld>,
+) -> Position {
+    let mut position = Position {
+        x: source_position.x & 0xff00,
+        y: source_position.y & 0xff00,
+        z: source_position.z,
+    };
+    let mut start_x =
+        (position.x >> 8).to_le_bytes()[0].wrapping_sub(AUTHORED_HOUSE_FOOTPRINT_WIDTH / 2);
+    let start_y =
+        (position.y >> 8).to_le_bytes()[0].wrapping_sub(AUTHORED_HOUSE_FOOTPRINT_HEIGHT / 2);
+    if start_x.wrapping_add(start_y) & 1 != 0 {
+        position.x = position.x.wrapping_add(256);
+        start_x = start_x.wrapping_add(1);
+    }
+    if let Some(world) = world {
+        position.z = (0..AUTHORED_HOUSE_FOOTPRINT_HEIGHT)
+            .flat_map(|row| {
+                (0..AUTHORED_HOUSE_FOOTPRINT_WIDTH).map(move |column| Position {
+                    x: u16::from(start_x.wrapping_add(column)) << 8,
+                    y: u16::from(start_y.wrapping_add(row)) << 8,
+                    z: 0,
+                })
+            })
+            .map(|sample| world.ground_height(sample))
+            .min()
+            .expect("authored house footprint is non-empty");
+    }
+    position
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

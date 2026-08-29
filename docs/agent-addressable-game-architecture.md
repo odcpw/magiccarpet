@@ -318,7 +318,7 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 24.0 milestone, this is a binding target with
+As of the semantic-contract 25.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
@@ -462,9 +462,13 @@ partial real implementation, not a completion claim:
   reset-live source occurrence now relocate both their imported arena row and
   typed `HouseFamily` through the same private occurrence binding. One focused
   Level 1 proof follows a real action-52 House through its ordinary numeric
-  visit and map membership after reopen/reset. The remaining one hundred
-  eighteen construction-only, grouped or otherwise unbound House rows stay
-  read-only. This does not author House construction
+  visit and map membership after reopen/reset. The thirty-four positive-group
+  Level 1 Houses now bind their immutable authored feature before the real
+  group producer constructs the ordinary action-51 carrier. One focused proof
+  moves group-13 record 107, drives the source countdown and owner-pinned BUILD
+  footprint to a live action-52 House, and reproduces the authored placement
+  after reset. The remaining eighty-four construction-only or otherwise
+  unbound House rows stay read-only. This does not author House construction
   parameters, ownership, population, health, damage or destruction. All
   thirty-nine package-present Experience Scroll placements across Levels 1-3
   bind to their immutable authored-feature rows before construction; the

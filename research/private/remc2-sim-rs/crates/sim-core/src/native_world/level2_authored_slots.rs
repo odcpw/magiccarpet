@@ -146,6 +146,8 @@ impl Level2EconomyState {
 
             source_owner,
 
+            authored_house_record_by_source: BTreeMap::new(),
+
             owner_class,
             owner_max_mana,
 
@@ -537,6 +539,7 @@ impl Level2EconomyState {
                     .filter(|burst| !burst.active)
                     .map(|burst| burst.source_entity_index),
             )
+            .chain(self.authored_house_record_by_source.keys().copied())
             .collect::<BTreeSet<_>>();
         // The source scans current class-zero rows. `free_slots` is the
         // canonical Rust projection of that live set, including slots freed
@@ -3124,11 +3127,65 @@ impl Level2EconomyState {
         self.source_owner.insert(source_slot, owner_entity_index);
     }
 
+    /// Reserve one shared numeric row for a typed authored House. Publication
+    /// of the slot, map link, RNG and private semantic identity is atomic.
+    pub(super) fn allocate_authored_house_slot(
+        &mut self,
+        authored_record: u16,
+        position: Position,
+    ) -> Option<(u16, u16)> {
+        let source_slot = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_slot);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_slot, None);
+            return None;
+        }
+        self.source_rng.insert(source_slot, entity_rng);
+        self.source_owner.insert(source_slot, 0);
+        self.owner_class.insert(source_slot, HOUSE_CLASS);
+        self.authored_house_record_by_source
+            .insert(source_slot, authored_record);
+        Some((source_slot, entity_rng))
+    }
+
+    #[must_use]
+    pub(super) fn authored_house_record(&self, source_slot: u16) -> Option<u16> {
+        self.authored_house_record_by_source
+            .get(&source_slot)
+            .copied()
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn authored_house_source_slot(&self, authored_record: u16) -> Option<u16> {
+        self.authored_house_record_by_source
+            .iter()
+            .find_map(|(source_slot, record)| (*record == authored_record).then_some(*source_slot))
+    }
+
+    pub(super) fn rollback_authored_house_slot(&mut self, source_slot: u16) {
+        self.authored_house_record_by_source.remove(&source_slot);
+        self.source_owner.remove(&source_slot);
+        self.owner_class.remove(&source_slot);
+        self.source_rng.remove(&source_slot);
+        self.release_slot(source_slot, None);
+    }
+
     pub(super) fn reclaim_house_source_slot_at_source_boundary(
         &mut self,
         source_slot: u16,
         source_rng: u16,
     ) {
+        self.authored_house_record_by_source.remove(&source_slot);
         self.source_owner.remove(&source_slot);
         self.owner_class.remove(&source_slot);
         self.source_rng.remove(&source_slot);
@@ -6815,6 +6872,11 @@ impl Level2EconomyState {
         for (slot, owner) in &self.source_owner {
             hasher.update(slot.to_le_bytes());
             hasher.update(owner.to_le_bytes());
+        }
+        hasher.update(b"authored-house-record-by-source-v1");
+        for (slot, authored_record) in &self.authored_house_record_by_source {
+            hasher.update(slot.to_le_bytes());
+            hasher.update(authored_record.to_le_bytes());
         }
         for (owner, class) in &self.owner_class {
             hasher.update(owner.to_le_bytes());

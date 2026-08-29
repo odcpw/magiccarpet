@@ -1203,6 +1203,12 @@ impl CampaignDefinition {
                             .get(authored_record)
                             == Some(&expected_kind)
                     }
+                    LevelEntityKind::Building(expected_kind) => {
+                        semantic_level
+                            .building_by_authored_record
+                            .get(authored_record)
+                            == Some(&expected_kind)
+                    }
                     _ => false,
                 };
                 if !carrier_matches {

@@ -1918,7 +1918,7 @@ mod tests {
             ],
             &[(ItemKind::ExperienceScroll, 5)],
             &[(BuildingKind::House, 81)],
-            23,
+            57,
             &[
                 (SwitchKind::AreaEntryTrigger, 24),
                 (SwitchKind::AreaExitTrigger, 2),
@@ -2100,7 +2100,7 @@ mod tests {
                     entity.kind() == LevelEntityKind::Building(BuildingKind::House)
                 })
                 .count(),
-            23
+            57
         );
         let level_two = assert_package_content(
             &descriptor_fixture_path(),
@@ -5767,6 +5767,353 @@ mod tests {
         // action-52 visit, and reset. It does not prove the other eighty-four
         // writable placements, construction parameters, ownership, population,
         // damage/destruction, save/replay, or Unity presentation.
+    }
+
+    #[test]
+    fn campaign_backend_moves_real_grouped_level_one_house_through_construction_after_reopen() {
+        const HOUSE_RECORD: u16 = 107;
+        const GROUP: u16 = 13;
+
+        fn trigger_group_thirteen(session: &mut GameSession<Mc2CampaignBackend>) -> u16 {
+            let trigger_id =
+                sim_definition::adapter::stable_entity_id("switch.area_entry_trigger.at_165_211")
+                    .unwrap();
+            let trigger_slot = match session
+                .backend()
+                .campaign
+                .definition()
+                .movable_entity_binding(&trigger_id)
+                .unwrap()
+            {
+                crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource {
+                    initial_source_slot,
+                    kind: LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger),
+                    ..
+                } => *initial_source_slot,
+                binding => panic!("group-13 trigger has the wrong runtime binding: {binding:?}"),
+            };
+            let (player_slot, trigger_position) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                (
+                    compatibility.state.entity_index,
+                    compatibility.entities()[usize::from(trigger_slot)].position,
+                )
+            };
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player_slot, trigger_position)
+                .unwrap();
+
+            for _ in 0..8 {
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+                if session.backend().campaign.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot,
+                            group: GROUP,
+                            authored_indices,
+                            ..
+                        } if *source_slot == trigger_slot
+                            && authored_indices.contains(&HOUSE_RECORD)
+                    )
+                }) {
+                    break;
+                }
+            }
+            let compatibility = session.backend().campaign.level2_compatibility();
+            assert!(compatibility.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group: GROUP,
+                        authored_indices,
+                        ..
+                    } if *source_slot == trigger_slot
+                        && authored_indices.contains(&HOUSE_RECORD)
+                )
+            }));
+            assert!(
+                compatibility
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| { !matches!(event, Level2DispatchEvent::Error { .. }) })
+            );
+            compatibility
+                .economy()
+                .authored_house_source_slot(HOUSE_RECORD)
+                .expect("the real group-13 producer constructs House record 107")
+        }
+
+        fn expected_house_position(
+            session: &GameSession<Mc2CampaignBackend>,
+            tile: TilePosition,
+        ) -> crate::Position {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            crate::house::authored_level_one_house_position(
+                crate::Position {
+                    x: tile.x << 8,
+                    y: tile.y << 8,
+                    z: 0,
+                },
+                Some(compatibility.canonical_terrain()),
+            )
+        }
+
+        fn constructed_house(
+            session: &GameSession<Mc2CampaignBackend>,
+            source_slot: u16,
+        ) -> crate::house::HouseState {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| house.active && house.entity_index == source_slot)
+                .copied()
+                .expect("the authored House remains in the ordinary shared family")
+        }
+
+        let root = level_one_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&root, &catalog).unwrap();
+        let house_id =
+            sim_definition::adapter::stable_entity_id("building.house.at_156_215").unwrap();
+        let house = base.level_definition().unwrap().entity(&house_id).unwrap();
+        let package_tile = TilePosition { x: 156, y: 215 };
+        let authored_tile = TilePosition { x: 164, y: 216 };
+        assert_eq!(house.kind(), LevelEntityKind::Building(BuildingKind::House));
+        assert_eq!(house.position(), package_tile);
+        assert_eq!(
+            house.position_access(),
+            LevelEntityPositionAccess::SessionReset
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-grouped-house-placement");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-grouped-house-placement",
+            base.clone(),
+        )
+        .unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            94,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        assert!(matches!(
+            session
+                .backend()
+                .campaign
+                .definition()
+                .movable_entity_binding(&house_id),
+            Some(
+                crate::campaign::spec::Mc2EntityRuntimeBinding::AuthoredFeature {
+                    authored_record: HOUSE_RECORD,
+                    kind: LevelEntityKind::Building(BuildingKind::House),
+                }
+            )
+        ));
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-grouped-house-placement",
+            &base,
+            "move-level-one-grouped-house",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(house_id, package_tile, authored_tile)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let published = store.active_definition().unwrap();
+
+        let package_slot = trigger_group_thirteen(&mut session);
+        let package_house = constructed_house(&session, package_slot);
+        assert_eq!(
+            package_house.position,
+            expected_house_position(&session, package_tile),
+            "publication must not mutate the already-open package generation"
+        );
+        assert_eq!(session.identity().definition_hash, base.definition_hash());
+
+        let reopened = session
+            .reopen(guard(&session), Arc::new(published))
+            .unwrap();
+        assert_eq!(reopened.identity.generation, 2);
+        assert_eq!(reopened.identity.definition_revision, 2);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == HOUSE_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        let authored_reset_hash = session.backend().campaign.state_hash();
+
+        let authored_slot = trigger_group_thirteen(&mut session);
+        let authored = constructed_house(&session, authored_slot);
+        let authored_position = expected_house_position(&session, authored_tile);
+        assert_eq!(authored.position, authored_position);
+        assert_ne!(
+            authored.position,
+            expected_house_position(&session, package_tile)
+        );
+        assert_eq!(authored.action, crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION);
+        assert_eq!(
+            authored.building_index,
+            crate::house::AUTHORED_HOUSE_BUILDING_INDEX
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .map_chains()
+                .is_linked(authored_slot)
+        );
+        let starting_life = authored.life;
+        assert!((1..=30).contains(&starting_life));
+        let mut saw_construction_pass = session.backend().campaign.events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::House {
+                    source_slot,
+                    events,
+                    ..
+                } if *source_slot == authored_slot
+                    && events.iter().any(|event| matches!(
+                        event,
+                        crate::house::HouseStepEvent::ConstructionPass { .. }
+                    ))
+            )
+        });
+        let mut visits = 0_usize;
+        while constructed_house(&session, authored_slot).action
+            == crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION
+        {
+            assert!(visits < usize::try_from(starting_life).unwrap());
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            visits += 1;
+            saw_construction_pass |= session.backend().campaign.events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::House {
+                        source_slot,
+                        events,
+                        ..
+                    } if *source_slot == authored_slot
+                        && events.iter().any(|event| matches!(
+                            event,
+                            crate::house::HouseStepEvent::ConstructionPass { .. }
+                        ))
+                )
+            });
+        }
+        let live = constructed_house(&session, authored_slot);
+        assert!(saw_construction_pass);
+        assert_eq!(visits, usize::try_from(starting_life).unwrap());
+        assert_eq!(live.action, crate::house::HOUSE_LIVE_ACTION);
+        assert_eq!(live.life, 20_000);
+        assert_eq!(
+            (live.position.x, live.position.y),
+            (authored_position.x, authored_position.y)
+        );
+        let terrain = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .canonical_terrain();
+        assert_ne!(live.position.z, authored_position.z);
+        assert_eq!(
+            live.position.z,
+            crate::FlightWorld::ground_height(terrain, live.position)
+        );
+        assert!(session.backend().campaign.events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::House {
+                    source_slot,
+                    events,
+                    ..
+                } if *source_slot == authored_slot
+                    && events.iter().any(|event| matches!(
+                        event,
+                        crate::house::HouseStepEvent::ConstructionCompleted { .. }
+                    ))
+            )
+        }));
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .map_chains()
+                .is_linked(authored_slot)
+        );
+
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
+        let reset = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            reset.economy().authored_house_source_slot(HOUSE_RECORD),
+            None
+        );
+        assert!(
+            reset
+                .ordinary()
+                .houses()
+                .iter()
+                .all(|house| { house.entity_index != authored_slot || !house.active })
+        );
+        assert_eq!(
+            reset
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == HOUSE_RECORD)
+                .map(|feature| (feature.tile_x, feature.tile_y)),
+            Some((authored_tile.x, authored_tile.y))
+        );
+        let reset_slot = trigger_group_thirteen(&mut session);
+        assert_eq!(
+            constructed_house(&session, reset_slot).position,
+            authored_position
+        );
+
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        // No-Claim: this proves one positive-group Level 1 House placement
+        // crosses guarded publication, old-session isolation, the real
+        // group-13 area-entry producer, source-correct construction, the
+        // ordinary action-51 countdown/completion, map retention, and reset.
+        // It does not prove the other thirty-three grouped placements,
+        // construction parameter authoring, ownership, residents, damage or
+        // destruction, the read-only group--1 Houses, Level 2/3 grouped Houses,
+        // save/replay, or Unity presentation.
     }
 
     #[test]

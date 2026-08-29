@@ -56,7 +56,7 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v7";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "24.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "25.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {

@@ -42,8 +42,9 @@ use crate::{
     },
     heading_for_positions,
     house::{
-        HOUSE_CLASS, HOUSE_MODEL, HouseFamily, HouseParameter, HouseResidentEntry, HouseState,
-        HouseStepEvent, decode_campaign_house_parameters,
+        AUTHORED_HOUSE_BUILDING_INDEX, AUTHORED_HOUSE_FOOTPRINT_HEIGHT,
+        AUTHORED_HOUSE_FOOTPRINT_WIDTH, HOUSE_CLASS, HOUSE_MODEL, HouseFamily, HouseParameter,
+        HouseResidentEntry, HouseState, HouseStepEvent, decode_campaign_house_parameters,
     },
     latch_command_with_context,
     legacy_terrain::{
@@ -325,6 +326,17 @@ const LEVEL2_QUALIFIED_BUILD_DAT_BYTES: u64 = 80_064;
 const LEVEL2_QUALIFIED_BUILD_TAB_SHA256: &str =
     "e064a1520e96f65c13fde9a05918d240ee4f708ab6aefc793ec8b391f220c05e";
 const LEVEL2_QUALIFIED_BUILD_TAB_BYTES: u64 = 462;
+// Exact BUILD0-0.DAT row 37 selected by the qualified Level 1 group-13
+// through group-32 House records. Campaign preflight pins the complete owner
+// BUILD0-0.DAT/TAB artifacts before this private MC2 projection is admitted.
+const LEVEL_ONE_AUTHORED_HOUSE_BUILD_CELLS_SHA256: &str =
+    "5ac240123c3e536718c0d37b1b9cf25a3903580095eb284593683bf83713a0d0";
+const LEVEL_ONE_AUTHORED_HOUSE_BUILD_CELLS: [u8; 50] = [
+    0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0xff, 0x00, 0x08, 0x00, 0x08, 0x07, 0x08, 0x07,
+    0x08, 0x07, 0xff, 0x00, 0x08, 0x00, 0x08, 0x07, 0x08, 0x66, 0x08, 0x07, 0xff, 0x00, 0x08, 0x00,
+    0x08, 0x07, 0x08, 0x07, 0x08, 0x07, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
+    0xff, 0x00,
+];
 const LEVEL2_BAD_STONE_SLOTS: [u16; 4] = [33, 34, 35, 36];
 const LEVEL2_BAD_STONE_PARAMETER: u16 = 60;
 const LEVEL2_BAD_STONE_PARTICLE: u16 = 270;
@@ -2906,6 +2918,11 @@ pub struct Level2EconomyState {
 
     source_owner: BTreeMap<u16, u16>,
 
+    /// Private identity for authored class-10/model-45 Houses that occupy a
+    /// shared numeric slot while their typed live state resides in
+    /// `HouseFamily`. The authored record remains inside the MC2 adapter.
+    authored_house_record_by_source: BTreeMap<u16, u16>,
+
     owner_class: BTreeMap<u16, u8>,
 
     pub(crate) owner_max_mana: BTreeMap<u16, i32>,
@@ -4335,13 +4352,23 @@ impl NativeWorld {
                 })
             })
             .transpose()?;
-        let (level2_castle_stage_footprints, level2_house_build_footprints) = owner_cache
-            .filter(|_| definition.identity == CampaignSelection::LEVEL2)
-            .map(|owner_cache| {
-                load_level2_castle_stage_footprints(owner_cache, &owner_export_package_sha256)
-            })
-            .transpose()?
-            .unwrap_or_default();
+        let (level2_castle_stage_footprints, level2_house_build_footprints) = if definition.identity
+            == CampaignSelection::LEVEL1
+        {
+            let footprint = qualified_level_one_authored_house_footprint()?;
+            (
+                BTreeMap::new(),
+                BTreeMap::from([(AUTHORED_HOUSE_BUILDING_INDEX, footprint)]),
+            )
+        } else {
+            owner_cache
+                .filter(|_| definition.identity == CampaignSelection::LEVEL2)
+                .map(|owner_cache| {
+                    load_level2_castle_stage_footprints(owner_cache, &owner_export_package_sha256)
+                })
+                .transpose()?
+                .unwrap_or_default()
+        };
 
         Ok(NativeWorldInspection {
             profile: OwnerPackageProfile::Campaign,
@@ -8876,6 +8903,23 @@ fn validate_level2_v5_owner_cache_identity(
         require_exact_u64(bindings, name, expected, "Level 2 gameplay cache bindings")?;
     }
     Ok(())
+}
+
+fn qualified_level_one_authored_house_footprint() -> Result<CastleBuildFootprint> {
+    if sha256_hex(&LEVEL_ONE_AUTHORED_HOUSE_BUILD_CELLS)
+        != LEVEL_ONE_AUTHORED_HOUSE_BUILD_CELLS_SHA256
+    {
+        return Err(NativeWorldError::new(
+            "compiled Level 1 authored House BUILD row 37 changed",
+        ));
+    }
+    CastleBuildFootprint::from_owner_cells(
+        AUTHORED_HOUSE_BUILDING_INDEX,
+        AUTHORED_HOUSE_FOOTPRINT_WIDTH,
+        AUTHORED_HOUSE_FOOTPRINT_HEIGHT,
+        &LEVEL_ONE_AUTHORED_HOUSE_BUILD_CELLS,
+    )
+    .map_err(NativeWorldError::new)
 }
 
 fn load_level2_castle_stage_footprints(
