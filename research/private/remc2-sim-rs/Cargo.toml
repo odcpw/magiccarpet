@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/atlas-registry",
+    "crates/sim-classic-hd",
     "crates/sim-collision",
     "crates/sim-definition",
     "crates/sim-goat-map-chain",

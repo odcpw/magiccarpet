@@ -622,7 +622,10 @@ partial real implementation, not a completion claim:
   existing owners. The dependency-free renderable source-map chain is now
   owned by the internal `sim-renderable-map-chain` crate, while reset import,
   live entity synchronization and projectile collision remain with their
-  existing `sim-core` owners. These are six bounded physical
+  existing `sim-core` owners. Checked Classic HD render profiles, frame buffers
+  and writer primitives are now owned by the internal `sim-classic-hd` crate,
+  while terrain/raster production and native session scheduling remain with
+  their existing owners. These are seven bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain

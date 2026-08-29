@@ -183,6 +183,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-classic-hd"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "sim-cli"
 version = "0.1.0"
 dependencies = [
@@ -206,6 +213,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sim-classic-hd",
  "sim-collision",
  "sim-definition",
  "sim-goat-map-chain",
