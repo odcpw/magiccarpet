@@ -647,7 +647,7 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
-        public void ProductionGameRuntimePauseInputFreezesNativeOwnerAndDropsPausedFireInput()
+        public void ProductionGameRuntimePausedUpdateServicesRustAndDropsPausedFireInput()
         {
             var root = new GameObject("resolver runtime pause input");
             root.SetActive(false);
@@ -671,15 +671,39 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     runtime.GameRuntimeProductionPauseOverlayText,
                     Is.EqualTo("PAUSED\nP resume \u00b7 Escape close"));
-                runtime.QualificationDriveGameRuntimeFrames(2);
-                var frozen = runtime.GameRuntimeProductionCampaignSnapshot;
-                Assert.That(frozen.identity.tick, Is.EqualTo(beforePause.identity.tick));
-                Assert.That(frozen.value.state_hash, Is.EqualTo(beforePause.value.state_hash));
-                Assert.That(frozen.value.terrain_hash, Is.EqualTo(beforePause.value.terrain_hash));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var afterFirstPausedUpdate = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(
-                    frozen.value.effect_journal_sha256,
+                    afterFirstPausedUpdate.identity.tick,
+                    Is.EqualTo(beforePause.identity.tick));
+                Assert.That(
+                    afterFirstPausedUpdate.value.state_hash,
+                    Is.Not.EqualTo(beforePause.value.state_hash));
+                Assert.That(
+                    afterFirstPausedUpdate.value.terrain_hash,
+                    Is.EqualTo(beforePause.value.terrain_hash));
+                Assert.That(
+                    afterFirstPausedUpdate.value.effect_journal_sha256,
                     Is.EqualTo(beforePause.value.effect_journal_sha256));
-                Assert.That(frozen.value.presentation_entities, Is.Empty);
+                Assert.That(afterFirstPausedUpdate.value.presentation_entities, Is.Empty);
+
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var afterSecondPausedUpdate = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(
+                    afterSecondPausedUpdate.identity.tick,
+                    Is.EqualTo(beforePause.identity.tick));
+                Assert.That(
+                    afterSecondPausedUpdate.value.state_hash,
+                    Is.Not.EqualTo(afterFirstPausedUpdate.value.state_hash));
+                Assert.That(
+                    afterSecondPausedUpdate.value.player_pose.x,
+                    Is.EqualTo(beforePause.value.player_pose.x));
+                Assert.That(
+                    afterSecondPausedUpdate.value.player_pose.y,
+                    Is.EqualTo(beforePause.value.player_pose.y));
+                Assert.That(
+                    afterSecondPausedUpdate.value.player_pose.z,
+                    Is.EqualTo(beforePause.value.player_pose.z));
 
                 runtime.QualificationApplyGameRuntimeProductionInput(false, true);
                 runtime.QualificationApplyGameRuntimeProductionInput(true, false);
@@ -692,11 +716,11 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(resumed.identity.tick, Is.EqualTo("2"));
                 Assert.That(resumed.value.presentation_entities, Is.Empty);
 
-                // No-Claim: this proves production P-key ownership for the
-                // existing quiescent Rust pause boundary, presents that native
-                // mode visibly, and discards a Fireball click received while
-                // paused. It does not provide paused-frame service, pause-menu
-                // commands/audio, or completion transitions.
+                // This proves each production paused FixedUpdate services one
+                // Rust-owned replay-visible pre-gate frame, freezes gameplay
+                // tick/pose, presents Paused visibly, and drops a Fireball
+                // click received while paused. It does not claim later-level
+                // pause policy, pause-menu commands/audio, or completion.
             }
             finally
             {
@@ -1324,7 +1348,7 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
-        public void RustGameRuntimePauseResumeFreezesTheSameLevelOneSession()
+        public void RustGameRuntimePausedFrameServicesTheSameLevelOneSession()
         {
             using var runtime = new GameRuntimeTransport();
             runtime.BootstrapPackageSet(ResolverPackages());
@@ -1361,16 +1385,31 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 NativeSim.mc_game_session_reset_v1(runtime.Handle, 2, 0),
                 Is.EqualTo(NativeSim.InvalidArgument));
-            var frozen = runtime.CampaignSnapshot();
-            Assert.That(frozen.identity.tick, Is.EqualTo(before.identity.tick));
-            Assert.That(frozen.value.state_hash, Is.EqualTo(before.value.state_hash));
-            Assert.That(frozen.value.terrain_hash, Is.EqualTo(before.value.terrain_hash));
+            var afterFirstPausedFrame = runtime.CampaignPausedFrame();
+            Assert.That(afterFirstPausedFrame.identity.tick, Is.EqualTo(before.identity.tick));
             Assert.That(
-                frozen.value.effect_journal_sha256,
+                afterFirstPausedFrame.value.state_hash,
+                Is.Not.EqualTo(before.value.state_hash));
+            Assert.That(
+                afterFirstPausedFrame.value.terrain_hash,
+                Is.EqualTo(before.value.terrain_hash));
+            Assert.That(
+                afterFirstPausedFrame.value.effect_journal_sha256,
                 Is.EqualTo(before.value.effect_journal_sha256));
-            Assert.That(frozen.value.player_pose.x, Is.EqualTo(before.value.player_pose.x));
-            Assert.That(frozen.value.player_pose.y, Is.EqualTo(before.value.player_pose.y));
-            Assert.That(frozen.value.player_pose.z, Is.EqualTo(before.value.player_pose.z));
+            Assert.That(
+                afterFirstPausedFrame.value.player_pose.x,
+                Is.EqualTo(before.value.player_pose.x));
+            Assert.That(
+                afterFirstPausedFrame.value.player_pose.y,
+                Is.EqualTo(before.value.player_pose.y));
+            Assert.That(
+                afterFirstPausedFrame.value.player_pose.z,
+                Is.EqualTo(before.value.player_pose.z));
+            var afterSecondPausedFrame = runtime.CampaignPausedFrame();
+            Assert.That(afterSecondPausedFrame.identity.tick, Is.EqualTo(before.identity.tick));
+            Assert.That(
+                afterSecondPausedFrame.value.state_hash,
+                Is.Not.EqualTo(afterFirstPausedFrame.value.state_hash));
 
             var resumed = runtime.Resume();
             Assert.That(resumed.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
@@ -1398,9 +1437,10 @@ namespace MagicCarpet.Native.Tests
                 Is.EqualTo(NativeSim.Ok));
             Assert.That(runtime.IdentitySnapshot().session.tick, Is.EqualTo("1"));
 
-            // No-Claim: this is a quiescent pause boundary only. There is no
-            // paused_frame transport or MC2 pre-gate RNG/objective/presentation
-            // service, replay-visible paused time, or production pause UI.
+            // This proves the managed transport services two real-L1 native
+            // paused frames while gameplay identity/tick/pose remain frozen,
+            // then resumes ordinary stepping. Production consumption is owned
+            // by the dedicated MagicCarpetRuntime paused-Update test.
         }
 
         [Test]

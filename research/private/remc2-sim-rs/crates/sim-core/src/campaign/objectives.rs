@@ -12,6 +12,10 @@ pub struct ObjectiveState {
     pub stage_index: u8,
     /// `byte_0x36E02`, consumed by remc2's objective-presentation service.
     pub objective_presentation_phase: u8,
+    /// Frame-local palette cadence used by the objective-presentation gate.
+    /// The source initializes this normalized carrier at one and saturates it
+    /// at three before presenting a pending objective.
+    pub objective_presentation_palette_mod: u8,
     /// Remaining objective-textbox presentation ticks.
     pub objective_textbox_ticks: u8,
     pub objectives: Box<[RuntimeObjective]>,
@@ -28,6 +32,7 @@ impl ObjectiveState {
         Self {
             stage_index,
             objective_presentation_phase,
+            objective_presentation_palette_mod: 1,
             objective_textbox_ticks,
             objectives,
         }

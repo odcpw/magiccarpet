@@ -3294,6 +3294,31 @@ impl RuntimeSnapshot {
         &self.bytes
     }
 
+    /// Service the source-visible objective presentation cadence that remains
+    /// outside the paused `UpdateEntities` gate. This changes presentation
+    /// carriers only; it never advances the gameplay turn or player input.
+    pub(super) fn service_paused_objective_presentation(&mut self) {
+        self.objective_presentation_palette_mod = self
+            .objective_presentation_palette_mod
+            .saturating_add(1)
+            .min(3);
+        if self.objective_textbox_ticks != 0 {
+            self.objective_textbox_ticks -= 1;
+            self.bytes[69] = self.objective_textbox_ticks;
+        }
+        if self.objective_presentation_phase != 0 && self.objective_presentation_palette_mod >= 3 {
+            self.objective_presentation_phase = 0;
+            self.objective_textbox_ticks = 200;
+            self.bytes[67] = 0;
+            self.bytes[69] = 200;
+        }
+    }
+
+    pub(super) fn request_objective_presentation(&mut self) {
+        self.objective_presentation_phase = 1;
+        self.bytes[67] = 1;
+    }
+
     /// `sub_12330` advances only the high byte of the selected runtime
     /// StageVar's word before applying its thinning rule. Keep the decoded
     /// record and the lossless runtime byte carrier synchronized so reset and

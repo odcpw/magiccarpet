@@ -2591,6 +2591,13 @@ namespace MagicCarpet.Native
             ulong generation);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_paused_frame_v1(
+            ulong handle,
+            ulong runtimeGeneration,
+            ulong sessionGeneration,
+            ulong expectedTick);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_resume_v1(
             ulong handle,
             ulong generation);

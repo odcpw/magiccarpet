@@ -2589,7 +2589,15 @@ namespace MagicCarpet.Native
                     gameRuntimeReplaySavePath);
                 Debug.Log($"MC_GAME_RUNTIME_REPLAY_SAVED path={gameRuntimeReplaySavePath}");
             }
-            if (session.GameRuntimeIdentity().mode != GameRuntimeTransport.PlayingMode)
+            var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.PausedMode)
+            {
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedFrame();
+                DrainGameRuntimeSemanticEvents();
+                UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+                return;
+            }
+            if (identity.mode != GameRuntimeTransport.PlayingMode)
             {
                 return;
             }

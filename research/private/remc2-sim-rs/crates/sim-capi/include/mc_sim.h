@@ -1342,6 +1342,11 @@ int32_t mc_game_runtime_restart_new_game_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_pause_v1(
     uint64_t handle, uint64_t generation);
+int32_t mc_game_runtime_paused_frame_v1(
+    uint64_t handle,
+    uint64_t runtime_generation,
+    uint64_t session_generation,
+    uint64_t expected_tick);
 int32_t mc_game_runtime_resume_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_close_v1(

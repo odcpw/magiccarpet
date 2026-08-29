@@ -10,11 +10,11 @@ use crate::game_session::{
     GameAdapter, GameCompletion, GameCompletionStatus, GameSession, GameSessionBackend,
     GameSessionError, OpenSessionError, SessionGuard, SessionGuardError, SessionIdentity,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v8";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v9";
 pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v1";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
@@ -32,6 +32,16 @@ pub enum RuntimeMode {
     Loading,
     Playing,
     Paused,
+}
+
+/// Deterministic operations retained by package replay adapters. Paused
+/// frames remain ordered relative to gameplay commands because their source
+/// RNG/objective/presentation work can affect later authoritative state.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub(crate) enum ReplayOperation<C> {
+    Step { command: C },
+    PausedFrame,
 }
 
 impl RuntimeMode {
@@ -262,6 +272,16 @@ pub enum RestorePlayingError<E> {
         command_index: usize,
         error: GameSessionError<E>,
     },
+    ReplayPausedFrame {
+        operation_index: usize,
+        error: GameSessionError<E>,
+    },
+}
+
+#[derive(Debug)]
+pub enum PausedFrameError<E> {
+    Transition(RuntimeTransitionError),
+    Session(GameSessionError<E>),
 }
 
 impl<E: fmt::Display> fmt::Display for RestorePlayingError<E> {
@@ -275,6 +295,13 @@ impl<E: fmt::Display> fmt::Display for RestorePlayingError<E> {
             } => write!(
                 formatter,
                 "save replay command {command_index} was rejected: {error}"
+            ),
+            Self::ReplayPausedFrame {
+                operation_index,
+                error,
+            } => write!(
+                formatter,
+                "save replay paused frame {operation_index} was rejected: {error}"
             ),
         }
     }
@@ -514,7 +541,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         definition: Arc<GameDefinition>,
         adapter: &A,
         session_id: u64,
-        commands: I,
+        operations: I,
         paused: bool,
         resolve_input: F,
         verify: V,
@@ -523,7 +550,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         A: GameAdapter<Backend = B, Error = B::Error>,
         F: FnOnce(&GameDefinition) -> Result<A::OpenInput, RuntimeTransitionError>,
         V: FnOnce(&GameSession<B>) -> Result<(), RuntimeTransitionError>,
-        I: IntoIterator<Item = B::Command>,
+        I: IntoIterator<Item = ReplayOperation<B::Command>>,
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -552,14 +579,24 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             input,
         )
         .map_err(RestorePlayingError::Session)?;
-        for (command_index, command) in commands.into_iter().enumerate() {
+        for (operation_index, operation) in operations.into_iter().enumerate() {
             let guard = candidate.identity().guard();
-            candidate
-                .step(guard, command)
-                .map_err(|error| RestorePlayingError::ReplayStep {
-                    command_index,
-                    error,
-                })?;
+            match operation {
+                ReplayOperation::Step { command } => {
+                    candidate.step(guard, command).map_err(|error| {
+                        RestorePlayingError::ReplayStep {
+                            command_index: operation_index,
+                            error,
+                        }
+                    })?
+                }
+                ReplayOperation::PausedFrame => candidate.paused_frame(guard).map_err(|error| {
+                    RestorePlayingError::ReplayPausedFrame {
+                        operation_index,
+                        error,
+                    }
+                })?,
+            };
         }
         verify(&candidate).map_err(RestorePlayingError::Transition)?;
         self.state = RuntimeState::Playing {
@@ -766,6 +803,40 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         guard: RuntimeGuard,
     ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
         self.set_paused(guard, true, false)
+    }
+
+    /// Service one package-declared paused frame through the sole nested
+    /// session authority. Outer guard and mode validation precede the nested
+    /// session guard; every rejection leaves both owners unchanged.
+    pub fn paused_frame(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+    ) -> Result<RuntimeIdentity, PausedFrameError<B::Error>> {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)
+            .map_err(PausedFrameError::Transition)?;
+        let actual_mode = self.identity().mode;
+        if actual_mode != RuntimeMode::Paused {
+            return Err(PausedFrameError::Transition(
+                RuntimeTransitionError::InvalidMode {
+                    expected: RuntimeMode::Paused,
+                    actual: actual_mode,
+                },
+            ));
+        }
+        let RuntimeState::Playing {
+            session,
+            paused: true,
+        } = &mut self.state
+        else {
+            unreachable!("validated Paused mode owns a paused gameplay session")
+        };
+        session
+            .paused_frame(session_guard)
+            .map_err(PausedFrameError::Session)?;
+        Ok(self.identity())
     }
 
     /// Abandon the active gameplay session and return this runtime to Title.
@@ -975,6 +1046,21 @@ mod tests {
                     .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
             },
             PathBuf::from,
+        )
+    }
+
+    fn level_one_paused_carriers(runtime: &GameRuntime<Mc2CampaignBackend>) -> (u32, u8, u8, u8) {
+        let campaign = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .compatibility_campaign()
+            .level2_compatibility();
+        (
+            campaign.source_global_rng(),
+            campaign.runtime().objective_presentation_phase,
+            campaign.runtime().objective_presentation_palette_mod,
+            campaign.runtime().objective_textbox_ticks,
         )
     }
 
@@ -1211,7 +1297,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_pause_resume_freezes_real_level_one_and_invalidates_session_guards() {
+    fn runtime_paused_frame_services_real_level_one_source_prefix_with_exact_guards() {
         let catalog = default_catalog().unwrap();
         let level_one = level_one_package();
         let definition = Arc::new(load_mc2_campaign(&level_one, &catalog).unwrap());
@@ -1248,6 +1334,80 @@ mod tests {
         assert_eq!(paused_snapshot.identity, *paused_session);
         assert_eq!(runtime.session().unwrap().snapshot(), paused_snapshot);
 
+        let paused_guard = paused.session.as_ref().unwrap().guard();
+        let carriers_before = level_one_paused_carriers(&runtime);
+
+        let rejected_outer = runtime.paused_frame(playing.guard(), paused_guard);
+        assert!(matches!(
+            rejected_outer,
+            Err(PausedFrameError::Transition(RuntimeTransitionError::Guard(error)))
+                if error.code == RuntimeGuardErrorCode::GenerationMismatch
+        ));
+        assert_eq!(runtime.identity(), paused);
+        assert_eq!(runtime.session().unwrap().snapshot(), paused_snapshot);
+
+        let rejected_nested = runtime.paused_frame(paused.guard(), pre_pause_session_guard);
+        assert!(matches!(
+            rejected_nested,
+            Err(PausedFrameError::Session(GameSessionError::Guard(error)))
+                if error.code == SessionGuardErrorCode::GenerationMismatch
+        ));
+        assert_eq!(runtime.identity(), paused);
+        assert_eq!(runtime.session().unwrap().snapshot(), paused_snapshot);
+
+        let first_paused = runtime
+            .paused_frame(paused.guard(), paused_guard)
+            .expect("real Level 1 paused source prefix");
+        assert_eq!(first_paused, paused, "paused frame changes no identity");
+        let after_first = runtime.session().unwrap().snapshot();
+        assert_eq!(after_first.identity, paused_snapshot.identity);
+        assert_eq!(after_first.value.tick, paused_snapshot.value.tick);
+        assert_eq!(
+            after_first.value.player_pose,
+            paused_snapshot.value.player_pose
+        );
+        assert_eq!(
+            after_first.value.player_motion,
+            paused_snapshot.value.player_motion
+        );
+        assert_ne!(
+            after_first.value.state_hash,
+            paused_snapshot.value.state_hash
+        );
+        let carriers_after_first = level_one_paused_carriers(&runtime);
+        assert_eq!(
+            carriers_after_first.0,
+            carriers_before.0.wrapping_mul(9_377).wrapping_add(9_439),
+            "paused UpdateEntities stores exactly its pre-gate RNG draw"
+        );
+        assert_eq!(
+            carriers_after_first.2,
+            carriers_before.2.saturating_add(1).min(3),
+            "outer objective presentation palette remains live"
+        );
+
+        runtime
+            .paused_frame(paused.guard(), paused_guard)
+            .expect("second real Level 1 paused source prefix");
+        let after_second = runtime.session().unwrap().snapshot();
+        assert_eq!(after_second.identity, paused_snapshot.identity);
+        assert_eq!(after_second.value.tick, paused_snapshot.value.tick);
+        assert_eq!(
+            after_second.value.player_pose,
+            paused_snapshot.value.player_pose
+        );
+        let carriers_after_second = level_one_paused_carriers(&runtime);
+        assert_eq!(
+            carriers_after_second.0,
+            carriers_after_first
+                .0
+                .wrapping_mul(9_377)
+                .wrapping_add(9_439)
+        );
+        assert_eq!(carriers_after_second.1, 0);
+        assert_eq!(carriers_after_second.2, 3);
+        assert_eq!(carriers_after_second.3, 200);
+
         let before_stale_pause = runtime.identity();
         let stale_pause = runtime.pause(playing.guard());
         assert!(matches!(
@@ -1256,7 +1416,7 @@ mod tests {
                 if error.code == RuntimeGuardErrorCode::GenerationMismatch
         ));
         assert_eq!(runtime.identity(), before_stale_pause);
-        assert_eq!(runtime.session().unwrap().snapshot(), paused_snapshot);
+        assert_eq!(runtime.session().unwrap().snapshot(), after_second);
 
         let resumed = runtime.pause(paused.guard());
         assert!(matches!(
@@ -1276,7 +1436,9 @@ mod tests {
         assert_eq!(resumed_session.generation, 3);
         assert_eq!(resumed_session.tick, before.identity.tick);
         let after_resume = runtime.session().unwrap().snapshot();
-        assert_eq!(after_resume.value, before.value);
+        assert_eq!(after_resume.value.tick, before.value.tick);
+        assert_eq!(after_resume.value.player_pose, before.value.player_pose);
+        assert_ne!(after_resume.value.state_hash, before.value.state_hash);
 
         let stale_session_step = runtime
             .session_mut()
@@ -1297,10 +1459,10 @@ mod tests {
             .unwrap();
         assert_eq!(stepped.identity.tick, before.identity.tick + 1);
 
-        // No-Claim: this gate proves only the quiescent runtime boundary and
-        // guard invalidation. There is no paused_frame operation here, so it
-        // does not prove the L1 pre-gate RNG/objective/presentation/audio
-        // prefix, replay-visible paused time, L2/L3 pause policy, or pause UI.
+        // This gate proves the real Level 1 package's bounded source prefix,
+        // outer-before-nested guard precedence, frozen gameplay tick/pose,
+        // and ordinary resumed stepping. It does not claim Level 2/3 pause
+        // policy or client presentation.
     }
 
     #[test]

@@ -1052,7 +1052,12 @@ fn digest_source_rng_inputs(
 #[must_use]
 fn digest_objectives(objectives: &super::objectives::ObjectiveState) -> CanonicalDigest {
     digest_with(|hasher| {
-        hasher.update([objectives.stage_index]);
+        hasher.update([
+            objectives.stage_index,
+            objectives.objective_presentation_phase,
+            objectives.objective_presentation_palette_mod,
+            objectives.objective_textbox_ticks,
+        ]);
         append_len(hasher, objectives.objectives.len());
         for objective in &objectives.objectives {
             hasher.update([

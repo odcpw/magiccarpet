@@ -414,6 +414,10 @@ pub trait GameSessionBackend {
     fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
     fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error>;
+    /// Service deterministic backend work that the bound package declares
+    /// before its gameplay pause gate. Implementations must not advance the
+    /// gameplay tick or execute a gameplay command.
+    fn paused_frame(&mut self) -> Result<(), Self::Error>;
     fn reset_for_definition(&mut self, definition: &GameDefinition) -> Result<(), Self::Error>;
 }
 
@@ -636,6 +640,21 @@ impl<B: GameSessionBackend> GameSession<B> {
         Ok(self.snapshot())
     }
 
+    /// Service one package-declared paused frame after exact nested guard
+    /// validation. The session generation and gameplay tick remain fixed;
+    /// only deterministic pre-gate backend carriers may change.
+    pub fn paused_frame(
+        &mut self,
+        guard: SessionGuard,
+    ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
+        self.validate_guard(guard)
+            .map_err(GameSessionError::Guard)?;
+        self.backend
+            .paused_frame()
+            .map_err(GameSessionError::Backend)?;
+        Ok(self.snapshot())
+    }
+
     /// Reset against the already-bound immutable definition.
     pub fn reset(
         &mut self,
@@ -811,6 +830,10 @@ mod tests {
         fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
             self.command_total += command;
             self.tick += 1;
+            Ok(())
+        }
+
+        fn paused_frame(&mut self) -> Result<(), Self::Error> {
             Ok(())
         }
 

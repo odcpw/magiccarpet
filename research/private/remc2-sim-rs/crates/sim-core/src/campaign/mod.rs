@@ -145,6 +145,12 @@ impl CampaignSession {
             .step_outer_turn_with_tuning(command, speed_index, tuning)
     }
 
+    /// Service exactly one source-authorized paused frame without advancing
+    /// the gameplay command path or tick.
+    pub(crate) fn paused_frame(&mut self) {
+        self.level2.service_paused_outer_frame();
+    }
+
     pub fn reset(&mut self) {
         self.level2.reset();
     }

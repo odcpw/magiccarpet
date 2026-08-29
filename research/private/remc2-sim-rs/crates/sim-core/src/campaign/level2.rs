@@ -5630,6 +5630,12 @@ impl Level2ResetSession {
             if completed.is_empty() {
                 continue;
             }
+            self.session
+                .state
+                .live
+                .core
+                .runtime
+                .request_objective_presentation();
             for stage_index in completed {
                 self.session
                     .state
@@ -18668,6 +18674,35 @@ impl Level2ResetSession {
         speed_index: u8,
     ) -> Vec<crate::StepEvidence> {
         self.step_outer_turn_with_tuning(command, speed_index, crate::FlightTuning::CLASSIC)
+    }
+
+    /// Execute the bounded source prefix and outer objective/presentation
+    /// service that remain live while `UpdateEntities` is paused. No source
+    /// callback, player input, gameplay turn, or flight tick is advanced.
+    pub(crate) fn service_paused_outer_frame(&mut self) {
+        self.session.state.scratch.dispatch_events.clear();
+        self.session.state.scratch.nyphur_dispatch_traces.clear();
+        self.session.state.live.economy.advance_global_rng();
+        let class5_model_present = self
+            .session
+            .state
+            .live
+            .economy
+            .rebuilt_class5_model_presence();
+        let model45_building_selectors = self
+            .session
+            .state
+            .live
+            .source_model45_building_selectors
+            .clone();
+        self.advance_level2_objectives(&class5_model_present, &model45_building_selectors);
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .service_paused_objective_presentation();
+        self.flush_shared_effects();
     }
 
     pub(crate) fn step_outer_turn_with_tuning(

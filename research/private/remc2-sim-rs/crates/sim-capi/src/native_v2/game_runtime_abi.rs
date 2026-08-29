@@ -13,13 +13,13 @@ use sim_core::{
         Mc2CampaignInputs, Mc2CampaignReplaySaveError, Mc2RuntimePackageResolver,
     },
     game_runtime::{
-        GameRuntime, OpenLevelError, RuntimeGuard, RuntimeGuardError, RuntimeGuardErrorCode,
-        RuntimeMode, RuntimeTransitionError,
+        GameRuntime, OpenLevelError, PausedFrameError, RuntimeGuard, RuntimeGuardError,
+        RuntimeGuardErrorCode, RuntimeMode, RuntimeTransitionError,
     },
 };
 use sim_session::{GameSession, OpenSessionError, SessionGuard};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v7";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v8";
 const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
 const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
 const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
@@ -264,6 +264,30 @@ impl RuntimeRecord {
         Ok(())
     }
 
+    fn paused_frame(
+        &mut self,
+        handle: u64,
+        runtime_generation: u64,
+        session_generation: u64,
+        expected_tick: u64,
+    ) -> AbiResult<()> {
+        self.validate_transition(handle, runtime_generation, RuntimeMode::Paused)?;
+        self.runtime
+            .paused_frame(
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation: runtime_generation,
+                },
+                SessionGuard {
+                    session_id: handle,
+                    generation: session_generation,
+                    expected_tick,
+                },
+            )
+            .map_err(map_paused_frame_error)?;
+        Ok(())
+    }
+
     fn resume(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
         self.validate_transition(handle, generation, RuntimeMode::Paused)?;
         self.runtime
@@ -457,6 +481,29 @@ fn map_replay_save_error(error: Mc2CampaignReplaySaveError) -> AbiError {
             MC_STATUS_VALIDATION_FAILED,
             format!("REPLAY_STEP_REJECTED at command {command_index}: {error}"),
         ),
+        Mc2CampaignReplaySaveError::Restore(
+            sim_core::game_runtime::RestorePlayingError::ReplayPausedFrame {
+                operation_index,
+                error,
+            },
+        ) => AbiError::new(
+            MC_STATUS_VALIDATION_FAILED,
+            format!("REPLAY_PAUSED_FRAME_REJECTED at operation {operation_index}: {error}"),
+        ),
+    }
+}
+
+fn map_paused_frame_error(
+    error: PausedFrameError<sim_core::campaign::backend::CampaignBackendError>,
+) -> AbiError {
+    match error {
+        PausedFrameError::Transition(error) => map_transition_error(error),
+        PausedFrameError::Session(sim_session::GameSessionError::Guard(error)) => {
+            super::game_session_abi::map_guard_error(error)
+        }
+        PausedFrameError::Session(sim_session::GameSessionError::Backend(error)) => {
+            super::game_session_abi::map_campaign_error(error)
+        }
     }
 }
 
@@ -592,11 +639,11 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 7,
+            "transport_version": 8,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "loading", "playing", "paused"],
-            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "load_replay_save", "pause", "resume", "close"],
+            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "load_replay_save", "pause", "paused_frame", "resume", "close"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
             "installed_package_set": {
@@ -612,6 +659,13 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
                 "client_semantics": "opaque_utf8_json"
+            },
+            "paused_frame": {
+                "transport": "mc_game_runtime_paused_frame_v1",
+                "gameplay_tick": "frozen",
+                "session_identity": "unchanged",
+                "deterministic_work": "package_declared_pre_gate",
+                "replay": "ordered_operation"
             },
             "runtime_flow": {
                 "title": "absent",
@@ -790,6 +844,25 @@ pub extern "C" fn mc_game_runtime_pause_v1(handle: u64, generation: u64) -> i32 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_paused_frame_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+) -> i32 {
+    boundary(|| {
+        with_runtime_mut(handle, |runtime| {
+            runtime.paused_frame(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_resume_v1(handle: u64, generation: u64) -> i32 {
     boundary(|| with_runtime_mut(handle, |runtime| runtime.resume(handle, generation)))
 }
@@ -959,13 +1032,13 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v8"
+            "carpet-flight-game-runtime/v9"
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v7"
+            "carpet-flight-native-game-runtime-json/v8"
         );
-        assert_eq!(contract["transport_version"], 7);
+        assert_eq!(contract["transport_version"], 8);
         assert_eq!(
             contract["modes"],
             serde_json::json!(["title", "loading", "playing", "paused"])
@@ -978,6 +1051,7 @@ mod tests {
                 "open_level",
                 "load_replay_save",
                 "pause",
+                "paused_frame",
                 "resume",
                 "close"
             ])
@@ -1008,11 +1082,21 @@ mod tests {
         assert_eq!(
             contract["replay_save"],
             serde_json::json!({
-                "save_contract": "carpet-flight-mc2-campaign-replay-save/v2",
+                "save_contract": "carpet-flight-mc2-campaign-replay-save/v3",
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
                 "client_semantics": "opaque_utf8_json"
+            })
+        );
+        assert_eq!(
+            contract["paused_frame"],
+            serde_json::json!({
+                "transport": "mc_game_runtime_paused_frame_v1",
+                "gameplay_tick": "frozen",
+                "session_identity": "unchanged",
+                "deterministic_work": "package_declared_pre_gate",
+                "replay": "ordered_operation"
             })
         );
         assert_eq!(
@@ -1176,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_replay_save_round_trips_real_level_one_across_fresh_handle() {
+    fn runtime_paused_frames_round_trip_real_level_one_across_fresh_handle() {
         let package_paths = [
             level_three_package(),
             level_one_package(),
@@ -1217,11 +1301,44 @@ mod tests {
         }
         assert_eq!(mc_game_runtime_pause_v1(source, 3), MC_STATUS_OK);
         let source_identity = identity(source);
-        let source_snapshot = read_json(|buffer, capacity, length| {
+        let before_paused_frames = read_json(|buffer, capacity, length| {
             mc_game_session_snapshot_json_v1(source, buffer, capacity, length)
         });
         assert_eq!(source_identity["mode"], "paused");
         assert_eq!(source_identity["session"]["tick"], "3");
+        assert_eq!(
+            mc_game_runtime_paused_frame_v1(source, 3, 2, 3),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(identity(source), source_identity);
+        assert_eq!(
+            mc_game_runtime_paused_frame_v1(source, 4, 1, 3),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(identity(source), source_identity);
+        assert_eq!(
+            mc_game_runtime_paused_frame_v1(source, 4, 2, 3),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_game_runtime_paused_frame_v1(source, 4, 2, 3),
+            MC_STATUS_OK
+        );
+        let source_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(source, buffer, capacity, length)
+        });
+        assert_eq!(
+            source_snapshot["identity"],
+            before_paused_frames["identity"]
+        );
+        assert_ne!(
+            source_snapshot["value"]["state_hash"],
+            before_paused_frames["value"]["state_hash"]
+        );
+        assert_eq!(
+            source_snapshot["value"]["terrain_hash"],
+            before_paused_frames["value"]["terrain_hash"]
+        );
         let save = read_bytes(|buffer, capacity, length| {
             mc_game_runtime_save_replay_json_v1(source, 4, 2, 3, buffer, capacity, length)
         });
@@ -1235,9 +1352,12 @@ mod tests {
         let save_json: Value = serde_json::from_slice(&save).unwrap();
         assert_eq!(
             save_json["save_contract"],
-            "carpet-flight-mc2-campaign-replay-save/v2"
+            "carpet-flight-mc2-campaign-replay-save/v3"
         );
-        assert_eq!(save_json["commands"].as_array().unwrap().len(), 3);
+        let operations = save_json["operations"].as_array().unwrap();
+        assert_eq!(operations.len(), 5);
+        assert_eq!(operations[3]["operation"], "paused_frame");
+        assert_eq!(operations[4]["operation"], "paused_frame");
         assert_eq!(save_json["paused"], true);
 
         let mut restored = 0_u64;
@@ -1303,10 +1423,10 @@ mod tests {
         assert_eq!(mc_game_runtime_destroy_v1(source), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(restored), MC_STATUS_OK);
 
-        // No-Claim: this proves one opaque quiescent-Paused real-L1 replay
-        // save crosses the native ABI, remains mutation-frozen, and resumes
-        // on a fresh resolver-owned handle. It does not prove paused-frame
-        // service, cross-level saves, migration, or production save UI.
+        // This proves two ordered real-L1 paused-frame services cross the
+        // native ABI, survive an opaque replay save on a fresh resolver-owned
+        // handle, preserve the gameplay tick, and reproduce the authoritative
+        // snapshot. It does not claim later-level pause policy or save UI.
     }
 
     #[test]

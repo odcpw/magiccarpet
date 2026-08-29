@@ -532,6 +532,12 @@ impl GameSessionBackend for SealedLevel1Backend {
         Ok(())
     }
 
+    fn paused_frame(&mut self) -> Result<(), Self::Error> {
+        // The sealed compatibility session is not owned by GameRuntime. Its
+        // legacy pause transport remains the sole caller of that route.
+        Ok(())
+    }
+
     fn reset_for_definition(&mut self, definition: &GameDefinition) -> Result<(), Self::Error> {
         if definition.package_graph_hash() != self.package_graph_hash
             || definition.artifact_graph_hash() != self.artifact_graph_hash

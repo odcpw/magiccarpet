@@ -593,9 +593,13 @@ partial real implementation, not a completion claim:
   floor. Native/Unity completion-transition exposure, production package
   discovery, installation and shell wiring, an uninterrupted Level 1-to-Title
   playthrough, quick-load after close, and full Title/results presentation
-  remain open. The
-  quiescent boundary also does not yet implement `paused_frame`, so the MC2
-  pre-gate RNG/objective/presentation work remains open. Its Unity transport
+  remain open. The runtime now exposes a guard-bound `paused_frame` operation
+  for the qualified Level 1 package. Each call executes the source-authorized
+  pre-gate global-RNG and objective-presentation prefix while freezing the
+  gameplay tick, player pose/motion and terrain. Paused frames are retained in
+  exact order with gameplay commands, and the v3 replay envelope reproduces
+  their authoritative state on a fresh resolver-owned handle. Level 2/3 pause
+  policy and pause-menu audio remain open. Its Unity transport
   now validates that flow identity and borrows snapshot, step, event and reset
   operations from the nested session on that same runtime handle, without a
   second session or destroy path. The production `NativeSession` facade can
@@ -606,8 +610,11 @@ partial real implementation, not a completion claim:
   through that same handle. Production mouse/JLIK steering and held movement
   input now enter that same command path, while the semantic camera follows
   only the Rust-returned player pose. Production P-key input toggles the same
-  Rust-owned quiescent pause boundary and discards gameplay input received
-  while paused rather than queuing it for resume. Its first bounded
+  Rust-owned pause boundary, discards gameplay input received while paused
+  rather than queuing it for resume, and services exactly one Rust
+  `paused_frame` from each production paused fixed update. The visible pause
+  overlay and returned snapshots remain projections; C# owns no paused
+  gameplay state. Its first bounded
   presentation consumer renders the live Level 1 Fireball described above.
   A generic flight telemetry strip now also renders actual and target speed,
   strafe speed, altitude, tick, runtime mode and numeric local-player life/mana
@@ -626,8 +633,9 @@ partial real implementation, not a completion claim:
   the latest retained event in that strip without replaying it on another poll.
   Source-art HUD, localized objective text, spell UI, terrain, world-space
   effects and audio playback have not yet migrated to this owner. The resolver
-  can now serialize one real Level 1 Playing or quiescent Paused session as its immutable
-  semantic definition, ordered neutral command trace and exact state/terrain/
+  can now serialize one real Level 1 Playing or Paused session as its immutable
+  semantic definition, ordered neutral command-and-paused-frame operation
+  trace and exact state/terrain/
   effect receipts, then guard-first replay it into a fresh runtime/session and
   publish only after every receipt matches. A self-consistent envelope with a
   false state receipt is rejected while Title remains unchanged. Additive
@@ -641,9 +649,9 @@ partial real implementation, not a completion claim:
   file before reading, and still treats the contents as opaque Rust data. This
   writer is triggered by F5 or the same internal request seam when
   `-mc-runtime-replay-save <path>` is configured, and the loader is selected by
-  the production `-mc-runtime-replay-load` startup option. This is one Level 1 replay
-  checkpoint, not paused-frame service, cross-level persistence, menu UI,
-  migration or a full campaign save;
+  the production `-mc-runtime-replay-load` startup option. This is one Level 1
+  replay checkpoint including replay-visible paused time, not cross-level
+  persistence, menu UI, migration or a full campaign save;
 - broader placement/spawn/behavior/asset authoring and the remaining objective
   fields are not yet complete, and
   package definition/behavior artifacts are not yet fully parsed as the typed
@@ -694,7 +702,19 @@ partial real implementation, not a completion claim:
   The qualified Level 1 castle and mana-economy texture-map bank and clock are
   now owned by the internal `sim-economy-tmap` crate, while owner-cache
   qualification, native/render scheduling and the cross-domain mana-size
-  consumer remain in `sim-core`. These are fourteen bounded physical
+  consumer remain in `sim-core`. The fixed-profile indexed MAIN smoothing and
+  temporal TABLESN blend are now owned by `sim-indexed-postprocess`, while
+  world rendering, prior-frame storage and final presentation remain with the
+  existing `sim-core` consumers. The generation-bound Enhanced presentation
+  ledger and its typed immutable records are now owned by
+  `sim-enhanced-presentation`, while gameplay projection and Unity transport
+  scheduling remain with their existing owners. The shared class-11
+  absence-countdown state machine is now owned by `sim-countdown-switch`, while
+  authoritative family membership, sound, group activation and reclaim remain
+  in `sim-core`. The source-shaped outdoor terrain pnt5, fog and TABLESN-row
+  integer helpers are now owned by `sim-terrain-presentation`, while terrain
+  traversal, rasterization and frame delivery remain with their existing
+  consumers. These are eighteen bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain

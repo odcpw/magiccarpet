@@ -16,13 +16,13 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v8";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v9";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v7";
+            "carpet-flight-native-game-runtime-json/v8";
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
-            "carpet-flight-mc2-campaign-replay-save/v2";
+            "carpet-flight-mc2-campaign-replay-save/v3";
         internal const int MaximumReplaySaveJsonBytes = 16 * 1024 * 1024;
         internal const string TitleMode = "title";
         internal const string LoadingMode = "loading";
@@ -45,6 +45,7 @@ namespace MagicCarpet.Native
             public string package_profile;
             public InstalledPackageSetTransport installed_package_set;
             public ReplaySaveTransport replay_save;
+            public PausedFrameTransport paused_frame;
             public RuntimeFlowContract runtime_flow;
             public Limits limits;
         }
@@ -67,6 +68,16 @@ namespace MagicCarpet.Native
             public string load_transport;
             public string load_package_authority;
             public string client_semantics;
+        }
+
+        [Serializable]
+        internal sealed class PausedFrameTransport
+        {
+            public string transport;
+            public string gameplay_tick;
+            public string session_identity;
+            public string deterministic_work;
+            public string replay;
         }
 
         [Serializable]
@@ -387,6 +398,36 @@ namespace MagicCarpet.Native
                 "resume game runtime");
         }
 
+        internal EngineSessionTransport.CampaignSnapshotObservation CampaignPausedFrame()
+        {
+            RequireSessionMode(allowPaused: true, "campaign paused frame");
+            if (Current.mode != PausedMode)
+            {
+                throw new InvalidOperationException(
+                    "campaign paused frame requires Paused mode");
+            }
+            var before = Current;
+            Check(
+                NativeSim.mc_game_runtime_paused_frame_v1(
+                    RequireHandle(),
+                    ParseCounter(before.generation, "generation"),
+                    ParseCounter(before.session.generation, "session_generation"),
+                    ParseCounter(before.session.tick, "tick")),
+                "service game runtime paused frame");
+            var identity = IdentitySnapshot();
+            if (identity.mode != PausedMode ||
+                identity.generation != before.generation ||
+                !PreservesSessionBinding(before.session, identity.session) ||
+                identity.session.generation != before.session.generation ||
+                identity.session.tick != before.session.tick ||
+                !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow))
+            {
+                throw new InvalidOperationException(
+                    "paused frame mutated the runtime or gameplay session identity");
+            }
+            return CampaignSnapshot();
+        }
+
         internal Identity Close()
         {
             if ((Current?.mode != PlayingMode && Current?.mode != PausedMode) ||
@@ -540,7 +581,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 7 ||
+                contract.transport_version != 8 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
@@ -566,6 +607,12 @@ namespace MagicCarpet.Native
                 contract.replay_save.load_package_authority !=
                     "complete_unordered_resource_set" ||
                 contract.replay_save.client_semantics != "opaque_utf8_json" ||
+                contract.paused_frame == null ||
+                contract.paused_frame.transport != "mc_game_runtime_paused_frame_v1" ||
+                contract.paused_frame.gameplay_tick != "frozen" ||
+                contract.paused_frame.session_identity != "unchanged" ||
+                contract.paused_frame.deterministic_work != "package_declared_pre_gate" ||
+                contract.paused_frame.replay != "ordered_operation" ||
                 contract.runtime_flow == null ||
                 contract.runtime_flow.title != "absent" ||
                 contract.runtime_flow.loading != "pending_definition.runtime_flow" ||
@@ -582,7 +629,7 @@ namespace MagicCarpet.Native
                 contract.transitions == null ||
                 !new[] {
                     "bootstrap_package_set", "restart_new_game", "open_level",
-                    "load_replay_save", "pause", "resume", "close"
+                    "load_replay_save", "pause", "paused_frame", "resume", "close"
                 }
                     .SequenceEqual(contract.transitions))
             {

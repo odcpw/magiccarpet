@@ -546,9 +546,9 @@ impl Mc2CampaignInputs {
     }
 }
 
-pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v2";
+pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v3";
 pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
-pub const MAX_MC2_CAMPAIGN_REPLAY_COMMANDS: usize = 1_000_000;
+pub const MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS: usize = 1_000_000;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -556,7 +556,7 @@ struct Mc2CampaignReplaySave {
     save_contract: String,
     paused: bool,
     definition: GameDefinition,
-    commands: Vec<GameCommand>,
+    operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
     expected_tick: u64,
     expected_state_hash: u64,
     expected_terrain_hash: u64,
@@ -570,7 +570,7 @@ struct Mc2CampaignReplaySavePayload<'a> {
     save_contract: &'a str,
     paused: bool,
     definition: &'a GameDefinition,
-    commands: &'a [GameCommand],
+    operations: &'a [crate::game_runtime::ReplayOperation<GameCommand>],
     expected_tick: u64,
     expected_state_hash: u64,
     expected_terrain_hash: u64,
@@ -582,14 +582,14 @@ impl Mc2CampaignReplaySave {
     fn new(
         paused: bool,
         definition: GameDefinition,
-        commands: Vec<GameCommand>,
+        operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
         snapshot: &CampaignSnapshot,
     ) -> Self {
         let mut save = Self {
             save_contract: MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT.to_owned(),
             paused,
             definition,
-            commands,
+            operations,
             expected_tick: snapshot.tick,
             expected_state_hash: snapshot.state_hash,
             expected_terrain_hash: snapshot.terrain_hash,
@@ -606,7 +606,7 @@ impl Mc2CampaignReplaySave {
             save_contract: &self.save_contract,
             paused: self.paused,
             definition: &self.definition,
-            commands: &self.commands,
+            operations: &self.operations,
             expected_tick: self.expected_tick,
             expected_state_hash: self.expected_state_hash,
             expected_terrain_hash: self.expected_terrain_hash,
@@ -897,18 +897,18 @@ impl Mc2RuntimePackageResolver {
             .verify_semantic_variant_of(&package.definition, &catalog)
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
         let snapshot = session.backend().snapshot();
-        if session.backend().replay_commands.len() > MAX_MC2_CAMPAIGN_REPLAY_COMMANDS {
+        if session.backend().replay_operations.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
                 message: format!(
-                    "session has {} commands, exceeding the {MAX_MC2_CAMPAIGN_REPLAY_COMMANDS}-command bound",
-                    session.backend().replay_commands.len()
+                    "session has {} replay operations, exceeding the {MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS}-operation bound",
+                    session.backend().replay_operations.len()
                 ),
             });
         }
         let save = Mc2CampaignReplaySave::new(
             mode == crate::game_runtime::RuntimeMode::Paused,
             session.definition().as_ref().clone(),
-            session.backend().replay_commands.clone(),
+            session.backend().replay_operations.clone(),
             &snapshot,
         );
         let bytes =
@@ -957,11 +957,11 @@ impl Mc2RuntimePackageResolver {
                 message: "save contract or receipt digest does not verify".to_owned(),
             });
         }
-        if save.commands.len() > MAX_MC2_CAMPAIGN_REPLAY_COMMANDS {
+        if save.operations.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
                 message: format!(
-                    "save has {} commands, exceeding the {MAX_MC2_CAMPAIGN_REPLAY_COMMANDS}-command bound",
-                    save.commands.len()
+                    "save has {} replay operations, exceeding the {MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS}-operation bound",
+                    save.operations.len()
                 ),
             });
         }
@@ -986,7 +986,7 @@ impl Mc2RuntimePackageResolver {
             .verify_semantic_variant_of(&package.definition, &catalog)
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
         let definition = Arc::new(save.definition);
-        let commands = save.commands;
+        let operations = save.operations;
         let expected_tick = save.expected_tick;
         let expected_state_hash = save.expected_state_hash;
         let expected_terrain_hash = save.expected_terrain_hash;
@@ -999,7 +999,7 @@ impl Mc2RuntimePackageResolver {
                 definition,
                 &Mc2CampaignAdapter,
                 session_id,
-                commands,
+                operations,
                 paused,
                 |_| Ok(package.inputs.clone()),
                 move |candidate| {
@@ -1086,7 +1086,7 @@ pub struct Mc2CampaignBackend {
     package_base: GameDefinition,
     package_graph_hash: String,
     artifact_graph_hash: String,
-    replay_commands: Vec<GameCommand>,
+    replay_operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
 }
 
 impl GameAdapter for Mc2CampaignAdapter {
@@ -1167,7 +1167,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             goat_policy_binding,
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
-            replay_commands: Vec::new(),
+            replay_operations: Vec::new(),
             package_base,
         })
     }
@@ -1422,7 +1422,17 @@ impl GameSessionBackend for Mc2CampaignBackend {
             return Err(CampaignBackendError::StepRejected { message });
         }
         self.campaign = candidate;
-        self.replay_commands.push(command);
+        self.replay_operations
+            .push(crate::game_runtime::ReplayOperation::Step { command });
+        Ok(())
+    }
+
+    fn paused_frame(&mut self) -> Result<(), Self::Error> {
+        let mut candidate = self.campaign.clone();
+        candidate.paused_frame();
+        self.campaign = candidate;
+        self.replay_operations
+            .push(crate::game_runtime::ReplayOperation::PausedFrame);
         Ok(())
     }
 
@@ -1477,7 +1487,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.fireball_binding = fireball_binding;
         self.fireball_projectile_asset = fireball_projectile_asset;
         self.goat_policy_binding = goat_policy_binding;
-        self.replay_commands.clear();
+        self.replay_operations.clear();
         Ok(())
     }
 }
